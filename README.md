@@ -22,7 +22,7 @@ Quality gate:
 ```bash
 python -m pytest -q
 python -m ruff check src tests
-python -m mypy src
+python -m mypy src tests
 ```
 
 Live DB use needs `RESEARKA_DATABASE_TOKEN`:
