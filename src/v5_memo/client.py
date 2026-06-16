@@ -2,14 +2,109 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
+import urllib.parse
+from dataclasses import replace
 from html import unescape
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from v5_memo.schemas import CorpusHit
+
+
+class OpenAlexFullCorpusSearchClient:
+    """Synchronous client for OpenAlex works search over the full corpus."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str = "https://api.openalex.org",
+        mailto: str = "",
+        timeout: float = 20.0,
+        year_min: int = 1900,
+        year_max: int = 2100,
+        max_variants: int = 8,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._mailto = mailto.strip()
+        self._timeout = timeout
+        self._year_min = year_min
+        self._year_max = year_max
+        self._max_variants = max(1, max_variants)
+
+    @classmethod
+    def from_env(cls) -> OpenAlexFullCorpusSearchClient:
+        return cls(
+            base_url=os.environ.get("V5_MEMO_OPENALEX_URL", "https://api.openalex.org"),
+            mailto=os.environ.get("V5_MEMO_OPENALEX_MAILTO", os.environ.get("OPENALEX_MAILTO", "")),
+        )
+
+    def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
+        variants = _query_variants(query, limit=self._max_variants)
+        if not variants:
+            return []
+        seed_terms = _query_terms(query)
+        per_variant_limit = max(5, min(50, limit))
+        best: dict[str, tuple[float, CorpusHit]] = {}
+        for variant in variants:
+            hits = self._search_works(variant, limit=per_variant_limit)
+            variant_terms = _query_terms(variant)
+            for rank, hit in enumerate(hits, start=1):
+                score = _rerank_score(hit, seed_terms=seed_terms, variant_terms=variant_terms, rank=rank)
+                scored = replace(
+                    hit,
+                    metadata={
+                        **hit.metadata,
+                        "search_variant": variant,
+                        "rerank_score": round(score, 4),
+                    },
+                )
+                current = best.get(scored.source_key)
+                if current is None or score > current[0]:
+                    best[scored.source_key] = (score, scored)
+        return [hit for _, hit in sorted(best.values(), key=lambda item: item[0], reverse=True)[:limit]]
+
+    def _search_works(self, query: str, *, limit: int) -> list[CorpusHit]:
+        params = {
+            "search": query[:1024],
+            "filter": ",".join(
+                [
+                    "type:article",
+                    "has_abstract:true",
+                    f"from_publication_date:{self._year_min}-01-01",
+                    f"to_publication_date:{self._year_max}-12-31",
+                ]
+            ),
+            "per-page": str(max(1, min(limit, 200))),
+            "select": ",".join(
+                [
+                    "id",
+                    "doi",
+                    "display_name",
+                    "title",
+                    "abstract_inverted_index",
+                    "publication_year",
+                    "primary_location",
+                    "cited_by_count",
+                ]
+            ),
+        }
+        if self._mailto:
+            params["mailto"] = self._mailto
+        request = Request(
+            f"{self._base_url}/works?{urllib.parse.urlencode(params)}",
+            headers={"User-Agent": "v5-memo/0.1"},
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=self._timeout) as response:
+                data: Any = json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError, ValueError):
+            return []
+        return _parse_openalex_response(data)
 
 
 class ResearkaSearchClient:
@@ -72,6 +167,50 @@ def _parse_corpus_search_response(data: Any) -> list[CorpusHit]:
     return [hit for item in data if (hit := _parse_paper_hit(item))]
 
 
+def _parse_openalex_response(data: Any) -> list[CorpusHit]:
+    if not isinstance(data, dict):
+        return []
+    results = data.get("results")
+    if not isinstance(results, list):
+        return []
+    match_count = _int_or_none((data.get("meta") or {}).get("count"))
+    return [
+        hit
+        for item in results
+        if (hit := _parse_openalex_work(item, match_count=match_count)) is not None
+    ]
+
+
+def _parse_openalex_work(item: Any, *, match_count: int | None) -> CorpusHit | None:
+    if not isinstance(item, dict):
+        return None
+    title = _clean(item.get("display_name") or item.get("title"), limit=500)
+    if not title:
+        return None
+    doi = _normalize_doi(item.get("doi"))
+    openalex_id = _clean(item.get("id"), limit=256)
+    primary_location = item.get("primary_location")
+    location = primary_location if isinstance(primary_location, dict) else {}
+    source_raw = location.get("source")
+    source = source_raw if isinstance(source_raw, dict) else {}
+    venue = _clean(source.get("display_name"), limit=200) or None
+    return CorpusHit(
+        hit_id=doi or openalex_id or title,
+        title=title,
+        abstract=_abstract_from_inverted_index(item.get("abstract_inverted_index")),
+        source="openalex:full-corpus",
+        year=_int_or_none(item.get("publication_year")),
+        url=f"https://doi.org/{doi}" if doi else openalex_id,
+        doi=doi,
+        venue=venue,
+        metadata={
+            "openalex_id": openalex_id,
+            "cited_by_count": _int_or_none(item.get("cited_by_count")),
+            "query_match_count": match_count,
+        },
+    )
+
+
 def _parse_paper_hit(item: Any) -> CorpusHit | None:
     if not isinstance(item, dict):
         return None
@@ -105,6 +244,80 @@ def _clean(value: object, *, limit: int) -> str:
         return ""
     text = re.sub(r"<[^>]+>", " ", unescape(value))
     return " ".join(text.split())[:limit]
+
+
+def _normalize_doi(value: object) -> str | None:
+    doi = _clean(value, limit=256)
+    if not doi:
+        return None
+    return re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi, flags=re.I) or None
+
+
+def _abstract_from_inverted_index(value: object) -> str:
+    if not isinstance(value, dict):
+        return ""
+    positioned: list[tuple[int, str]] = []
+    for word, positions in value.items():
+        if not isinstance(word, str) or not isinstance(positions, list):
+            continue
+        for position in positions:
+            parsed = _int_or_none(position)
+            if parsed is not None and parsed >= 0:
+                positioned.append((parsed, word))
+    return _clean(" ".join(word for _, word in sorted(positioned)), limit=4000)
+
+
+def _query_terms(query: str) -> tuple[str, ...]:
+    return tuple(
+        token
+        for token in re.findall(r"[A-Za-z0-9+]+", query.casefold())
+        if len(token) > 1 and token not in {"and", "or", "the", "with", "for", "from", "into"}
+    )
+
+
+def _query_variants(query: str, *, limit: int) -> list[str]:
+    terms = _query_terms(query)
+    if not terms:
+        return []
+    candidates: list[tuple[str, ...]] = [terms]
+    max_window = min(4, len(terms))
+    for size in range(max_window, 1, -1):
+        candidates.extend(tuple(terms[start : start + size]) for start in range(0, len(terms) - size + 1))
+    if len(terms) > 3:
+        candidates.extend(tuple(term for idx, term in enumerate(terms) if idx != drop) for drop in range(len(terms)))
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        text = " ".join(candidate)
+        if text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+        if len(out) >= limit:
+            return out
+    return out
+
+
+def _rerank_score(
+    hit: CorpusHit,
+    *,
+    seed_terms: tuple[str, ...],
+    variant_terms: tuple[str, ...],
+    rank: int,
+) -> float:
+    text = hit.text.casefold()
+    seed_coverage = _coverage(seed_terms, text)
+    variant_coverage = _coverage(variant_terms, text)
+    cited = hit.metadata.get("cited_by_count")
+    citation_score = math.log10(max(0, cited) + 1) if isinstance(cited, int | float) else 0.0
+    return (seed_coverage * 70.0) + (variant_coverage * 20.0) + (citation_score * 4.0) - rank
+
+
+def _coverage(terms: tuple[str, ...], text: str) -> float:
+    if not terms:
+        return 0.0
+    return sum(1 for term in terms if term in text) / len(terms)
 
 
 def _int_or_none(value: object) -> int | None:
