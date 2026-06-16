@@ -1,4 +1,4 @@
-"""Small stdlib search clients for OpenAlex and Researka."""
+"""Small stdlib search clients for OpenAlex, Researka, and full raw corpus search."""
 from __future__ import annotations
 
 import json
@@ -162,6 +162,66 @@ class ResearkaSearchClient:
         return _parse_corpus_search_response(data)
 
 
+class FullRawCorpusSearchClient:
+    """Client for a real indexed/searchable 450M+ raw corpus service."""
+
+    def __init__(
+        self,
+        *,
+        search_url: str,
+        token: str = "",
+        timeout: float = 45.0,
+        year_min: int = 1900,
+        year_max: int = 2100,
+    ) -> None:
+        self._search_url = search_url.strip()
+        self._token = token.strip()
+        self._timeout = timeout
+        self._year_min = year_min
+        self._year_max = year_max
+
+    @classmethod
+    def from_env(cls) -> FullRawCorpusSearchClient:
+        return cls(
+            search_url=os.environ.get("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", ""),
+            token=os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", ""),
+        )
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._search_url)
+
+    def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
+        if not self._search_url or not query.strip():
+            return []
+        payload = {
+            "query": query[:1024],
+            "limit": max(1, min(limit, 200)),
+            "top_k": max(1, min(limit, 200)),
+            "year_min": self._year_min,
+            "year_max": self._year_max,
+            "corpus": "full_raw_450m_plus",
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "v5-memo/0.1",
+        }
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        request = Request(
+            self._search_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self._timeout) as response:
+                data: Any = json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError, ValueError):
+            return []
+        return _parse_full_raw_search_response(data)
+
+
 class HybridCorpusSearchClient:
     """Merge multiple corpus search surfaces behind one searcher contract."""
 
@@ -197,6 +257,23 @@ def _parse_corpus_search_response(data: Any) -> list[CorpusHit]:
     if not isinstance(data, list):
         return []
     return [hit for item in data if (hit := _parse_paper_hit(item))]
+
+
+def _parse_full_raw_search_response(data: Any) -> list[CorpusHit]:
+    meta: dict[str, Any] = {}
+    items: Any = data
+    if isinstance(data, dict):
+        raw_meta = data.get("meta")
+        meta = raw_meta if isinstance(raw_meta, dict) else {}
+        items = data.get("results", data.get("hits", []))
+    if not isinstance(items, list):
+        return []
+    match_count = _int_or_none(meta.get("count") or meta.get("total") or meta.get("total_count"))
+    return [
+        hit
+        for item in items
+        if (hit := _parse_full_raw_paper_hit(item, match_count=match_count)) is not None
+    ]
 
 
 def _parse_openalex_response(data: Any) -> list[CorpusHit]:
@@ -269,6 +346,59 @@ def _parse_paper_hit(item: Any) -> CorpusHit | None:
             "pmcid": pmcid,
             "cited_by_count": _int_or_none(item.get("cited_by_count")),
             "similarity_score": _float_or_none(item.get("similarity_score")),
+        },
+    )
+
+
+def _parse_full_raw_paper_hit(item: Any, *, match_count: int | None) -> CorpusHit | None:
+    if not isinstance(item, dict):
+        return None
+    title = _clean(item.get("title") or item.get("display_name") or item.get("name"), limit=500)
+    if not title:
+        return None
+    doi = _normalize_doi(item.get("doi"))
+    pmid = _clean(item.get("pmid"), limit=64)
+    pmcid = _clean(item.get("pmcid"), limit=64)
+    openalex_id = _clean(item.get("openalex_id") or item.get("openalex") or item.get("id"), limit=256)
+    s2_id = _clean(
+        item.get("semantic_scholar_id") or item.get("s2_id") or item.get("corpus_id"),
+        limit=128,
+    )
+    arxiv_id = _clean(item.get("arxiv_id") or item.get("arxiv"), limit=128)
+    origin = _clean(item.get("source") or item.get("raw_source") or item.get("provider"), limit=80)
+    url = _clean(item.get("url"), limit=512)
+    primary_location = item.get("primary_location")
+    location = primary_location if isinstance(primary_location, dict) else {}
+    source_raw = location.get("source")
+    source = source_raw if isinstance(source_raw, dict) else {}
+    venue = (
+        _clean(item.get("journal") or item.get("venue") or item.get("source_name"), limit=200)
+        or _clean(source.get("display_name"), limit=200)
+        or None
+    )
+    abstract = _clean(
+        item.get("abstract") or item.get("abstract_text") or item.get("description"),
+        limit=4000,
+    ) or _abstract_from_inverted_index(item.get("abstract_inverted_index"))
+    return CorpusHit(
+        hit_id=doi or pmid or pmcid or s2_id or arxiv_id or openalex_id or title,
+        title=title,
+        abstract=abstract,
+        source=f"fullraw:{origin.casefold()}" if origin else "fullraw:450m-plus",
+        year=_int_or_none(item.get("year") or item.get("publication_year")),
+        url=f"https://doi.org/{doi}" if doi else url or openalex_id,
+        doi=doi,
+        venue=venue,
+        metadata={
+            "pmid": pmid,
+            "pmcid": pmcid,
+            "openalex_id": openalex_id,
+            "semantic_scholar_id": s2_id,
+            "arxiv_id": arxiv_id,
+            "raw_source": origin,
+            "cited_by_count": _int_or_none(item.get("cited_by_count") or item.get("citation_count")),
+            "score": _float_or_none(item.get("score") or item.get("search_score")),
+            "query_match_count": match_count,
         },
     )
 

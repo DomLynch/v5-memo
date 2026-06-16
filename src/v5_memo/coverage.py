@@ -36,7 +36,11 @@ def current_search_coverage() -> SearchCoverage:
         "(verified VPS slice: 25,181,785 papers, 1,015,859 embeddings, "
         "24,814,247 Tantivy rows); "
         "local raw 450M+ corpus: "
-        + ("configured" if full_raw else "not configured/searchable by V5 yet")
+        + (
+            f"configured through {full_raw_url}"
+            if full_raw
+            else "not configured/searchable by V5 yet"
+        )
     )
     return SearchCoverage(
         openalex_full_corpus_api=True,

@@ -6,6 +6,7 @@ import sys
 from collections.abc import Sequence
 
 from v5_memo.client import (
+    FullRawCorpusSearchClient,
     HybridCorpusSearchClient,
     OpenAlexFullCorpusSearchClient,
     ResearkaSearchClient,
@@ -59,7 +60,11 @@ def main() -> None:
     parser.add_argument("--require-full-raw-corpus", action="store_true")
     parser.add_argument("--planner", choices=["seed", "minimax"])
     parser.add_argument("--planner-limit", type=int, default=8)
-    parser.add_argument("--searcher", choices=["openalex", "researka", "hybrid", "smart"], default="openalex")
+    parser.add_argument(
+        "--searcher",
+        choices=["openalex", "researka", "fullraw", "hybrid", "smart"],
+        default="openalex",
+    )
     parser.add_argument("--writer", choices=["template", "minimax"])
     args = parser.parse_args()
 
@@ -80,13 +85,21 @@ def main() -> None:
     searcher: CorpusSearcher
     if args.demo:
         searcher = DemoSearch()
+    elif searcher_mode == "fullraw":
+        require_full_raw_corpus()
+        searcher = FullRawCorpusSearchClient.from_env()
     elif searcher_mode == "researka":
         searcher = ResearkaSearchClient.from_env()
     elif searcher_mode == "hybrid":
-        searcher = HybridCorpusSearchClient([
+        searchers: list[CorpusSearcher] = []
+        full_raw = FullRawCorpusSearchClient.from_env()
+        if full_raw.configured:
+            searchers.append(full_raw)
+        searchers.extend([
             ResearkaSearchClient.from_env(),
             OpenAlexFullCorpusSearchClient.from_env(),
         ])
+        searcher = HybridCorpusSearchClient(searchers)
     else:
         searcher = OpenAlexFullCorpusSearchClient.from_env()
     memo_writer = render_memo
