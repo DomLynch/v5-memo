@@ -57,14 +57,15 @@ def main() -> None:
     memo_writer = render_memo
     if args.writer == "minimax":
         memo_writer = MiniMaxM3MemoWriter.from_env().render
-    queries = args.query or [
+    base_queries = args.query or [
         "sleep NAD salvage mitochondrial stress",
         "exercise NAD salvage mitochondrial repair",
     ]
+    queries = base_queries
     if args.planner == "minimax":
         queries = MiniMaxM3SearchPlanner.from_env().plan(
             topic=args.topic,
-            seed_queries=queries,
+            seed_queries=base_queries,
             limit=args.planner_limit,
         )
     result = build_alpha_memo(
@@ -72,6 +73,7 @@ def main() -> None:
         seed_queries=queries,
         searcher=searcher,
         memo_writer=memo_writer,
+        anchor_queries=base_queries,
     )
     print(result.markdown)
 

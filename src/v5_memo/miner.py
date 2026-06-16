@@ -28,6 +28,7 @@ def mine_insights(
     hits: Sequence[CorpusHit],
     *,
     topic: str,
+    required_anchor_terms: Sequence[str] = (),
     max_candidates: int = 5,
 ) -> list[InsightCandidate]:
     """Return ranked alpha candidates from source-diverse hit pairs."""
@@ -36,11 +37,19 @@ def mine_insights(
         return []
 
     topic_tokens = _tokens(topic)
-    token_sets = {hit.hit_id: _tokens(hit.text) - topic_tokens for hit in clean_hits}
+    full_token_sets = {hit.hit_id: _tokens(hit.text) for hit in clean_hits}
+    token_sets = {hit.hit_id: full_token_sets[hit.hit_id] - topic_tokens for hit in clean_hits}
+    anchor_terms = frozenset(required_anchor_terms)
     doc_counts = Counter(term for terms in token_sets.values() for term in terms)
 
     candidates: list[InsightCandidate] = []
     for left, right in combinations(clean_hits, 2):
+        if anchor_terms and not _pair_has_anchor(
+            full_token_sets[left.hit_id],
+            full_token_sets[right.hit_id],
+            anchor_terms,
+        ):
+            continue
         bridge = _bridge_terms(token_sets[left.hit_id], token_sets[right.hit_id], doc_counts)
         if not bridge:
             continue
@@ -84,6 +93,37 @@ def _dedupe_hits(hits: Sequence[CorpusHit]) -> list[CorpusHit]:
 
 def _tokens(text: str) -> frozenset[str]:
     return frozenset(t for t in _WORD.findall(text.casefold()) if t not in _STOP)
+
+
+def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 2) -> tuple[str, ...]:
+    """Return ordered anchor terms that chosen receipt pairs must preserve."""
+    generic = {
+        "angle",
+        "condition",
+        "exercise",
+        "mechanism",
+        "response",
+        "stress",
+    }
+    out: list[str] = []
+    seen: set[str] = set()
+    for query in seed_queries:
+        for token in _WORD.findall(query.casefold()):
+            if token in _STOP or token in generic or token in seen:
+                continue
+            seen.add(token)
+            out.append(token)
+            if len(out) >= limit:
+                return tuple(out)
+    return tuple(out)
+
+
+def _pair_has_anchor(
+    left_tokens: frozenset[str],
+    right_tokens: frozenset[str],
+    anchor_terms: frozenset[str],
+) -> bool:
+    return bool(left_tokens & anchor_terms) and bool(right_tokens & anchor_terms)
 
 
 def _bridge_terms(

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>V5 Alpha Memo - Latest Run</title>
+    <title>V5 Alpha Memo - Latest Smart Run</title>
     <style>
       :root {
         color-scheme: light;
@@ -28,7 +28,7 @@
       }
 
       main {
-        max-width: 880px;
+        max-width: 900px;
         margin: 0 auto;
         padding: 48px 24px 72px;
       }
@@ -56,7 +56,7 @@
 
       h2 {
         font-size: 19px;
-        margin: 28px 0 8px;
+        margin: 30px 0 10px;
       }
 
       p {
@@ -99,11 +99,7 @@
         padding: 30px;
       }
 
-      .score {
-        color: var(--muted);
-      }
-
-      ol {
+      ul {
         padding-left: 24px;
       }
 
@@ -130,16 +126,18 @@
     <main>
       <header>
         <p class="eyebrow">V5 Alpha Memo</p>
-        <h1>Latest Run</h1>
+        <h1>Latest Smart Run</h1>
         <div class="meta">
           <span>Generated: 2026-06-16</span>
-          <span>Source: OpenAlex full-corpus API</span>
+          <span>Source: MiniMax-M3 planner + OpenAlex full-corpus API + MiniMax-M3 writer</span>
         </div>
       </header>
 
       <section>
         <h2>Run Command</h2>
         <pre><code>PYTHONPATH=src python3 -m v5_memo \
+  --planner minimax \
+  --writer minimax \
   --topic "NAD salvage, mitochondrial stress, and exercise response" \
   --query "NAD salvage mitochondrial stress exercise response" \
   --query "NAD salvage mitochondrial stress" \
@@ -149,27 +147,30 @@
       <article class="memo">
         <h1>Alpha memo: NAD salvage, mitochondrial stress, and exercise response</h1>
 
-        <p><strong>Alpha hypothesis:</strong> NAD salvage, mitochondrial stress, and exercise response may be hiding a design / imaging / medical boundary condition: impaired chronotropic exercise stress and ovarian aging characterized oxidative point in different directions.</p>
+        <h2>Core signal</h2>
+        <p>Two 2016 reviews frame NAD+ depletion as a driver of both aging and early carcinogenesis, and both endorse NAD+ restoration as the countermeasure, via caloric restriction (CR), exercise, or precursors. Receipt 1 (10.1089/rej.2015.1767) emphasizes sirtuin/PARP-mediated signaling and treats NAD+ restoration as pro-longevity. Receipt 2 (10.4172/2324-9110.1000165) goes further: NAD+ is protective early in carcinogenesis but "deleterious" during promotion, progression, and treatment, because higher NAD+ gives the malignancy "growth advantage, increased resistance and greater cell survival."</p>
 
-        <p class="score"><strong>Signal score:</strong> <code>76</code> (novelty <code>50</code>, evidence <code>85</code>)</p>
+        <h2>The 2+2=5 angle</h2>
+        <p>The combined narrative asserts that the same intervention, raising NAD+ through CR, exercise, or precursors, is simultaneously (a) anti-aging, (b) cancer-preventive, and (c) cancer-promoting once a tumor exists. The receipts themselves document this tension rather than resolve it: Receipt 1 says NAD+ "negatively influence[s] the life span" when low; Receipt 2 says elevated NAD+ can worsen an existing malignancy. Stated baldly, the longevity protocol and the oncology protocol point in opposite directions once disease is present, a reverse-boundary problem hiding inside a unified "NAD+ is good" story.</p>
 
-        <p><strong>Evidence bridge:</strong> design, imaging, medical, setting.</p>
+        <h2>Why this could matter</h2>
+        <p>For consumer protocols and clinical pipelines that treat NAD+ boosting as universally beneficial, the boundary between prevention and treatment is the load-bearing assumption. The two reviews concur on mechanism (sirtuin/PARP signaling, genomic stability) but disagree on direction across the cancer boundary, suggesting portfolio construction or trial design that ignores tumor status may be mispriced.</p>
 
-        <p><strong>Tension:</strong> negative, null, positive.</p>
-
-        <h2>Why it matters</h2>
-        <p>This is a receipt-bound lead for investigation: two independent search hits share a non-obvious bridge term, so the memo can test whether that bridge explains a boundary condition or a new angle.</p>
-
-        <h2>What would falsify it</h2>
-        <p>A follow-up search fails to find direct receipts where the bridge term and both evidence streams appear in the same source-grounded claim, or the apparent connection collapses to one duplicated source.</p>
+        <h2>What would break the idea</h2>
+        <ul>
+          <li>Evidence that the cancer-promotion concern in Receipt 2 is theoretical only and not observed when NAD+ is raised physiologically (e.g., by exercise).</li>
+          <li>Stage-specific human data showing NAD+ elevation during treatment improves, not worsens, outcomes.</li>
+          <li>Demonstration that the negative effect is limited to supraphysiological precursor dosing absent in CR/exercise.</li>
+        </ul>
 
         <h2>Receipts</h2>
-        <ol>
-          <li><code>10.1001/jama.281.6.524</code> Impaired Chronotropic Response to Exercise Stress Testing as a Predictor of Mortality, 1999, JAMA. Source: openalex:full-corpus. ID: 10.1001/jama.281.6.524</li>
-          <li><code>10.1093/humrep/dead177</code> Human ovarian aging is characterized by oxidative damage and mitochondrial dysfunction, 2023, Human Reproduction. Source: openalex:full-corpus. ID: 10.1093/humrep/dead177</li>
-        </ol>
+        <ul>
+          <li>10.1089/rej.2015.1767 - NAD+ as the Link Between Oxidative Stress, Inflammation, Caloric Restriction, Exercise, DNA Repair, Longevity, and Health Span (Rejuvenation Research, 2016).</li>
+          <li>10.4172/2324-9110.1000165 - NAD+ in Cancer Prevention and Treatment: Pros and Cons (J. Clin. Exp. Oncol., 2016).</li>
+        </ul>
 
-        <p><strong>Safety note:</strong> This memo is an alpha hypothesis. A later LLM writer may sharpen prose, but it may not add claims beyond the receipts above.</p>
+        <h2>Safety note</h2>
+        <p>This memo is hypothesis-generating from two reviews; it is not clinical advice. The cancer-promotion caveat in Receipt 2 is the authors' own hypothesis, and no causal claim about supplementation in patients is supported here.</p>
       </article>
     </main>
   </body>

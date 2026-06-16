@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from v5_memo.binder import bind_receipts
-from v5_memo.miner import mine_insights
+from v5_memo.miner import mine_insights, query_anchor_terms
 from v5_memo.retriever import CorpusSearcher, collect_seed_hits
 from v5_memo.schemas import CorpusHit, InsightCandidate, MemoResult
 from v5_memo.writer import render_memo
@@ -18,6 +18,7 @@ def build_alpha_memo(
     seed_queries: Sequence[str],
     searcher: CorpusSearcher,
     memo_writer: MemoWriter = render_memo,
+    anchor_queries: Sequence[str] | None = None,
     per_query_limit: int = 25,
     max_hits: int = 100,
 ) -> MemoResult:
@@ -28,7 +29,11 @@ def build_alpha_memo(
         per_query_limit=per_query_limit,
         max_hits=max_hits,
     )
-    candidates = mine_insights(hits, topic=topic)
+    candidates = mine_insights(
+        hits,
+        topic=topic,
+        required_anchor_terms=query_anchor_terms(anchor_queries or seed_queries),
+    )
     for candidate in candidates:
         receipts = bind_receipts(candidate, hits)
         if receipts:

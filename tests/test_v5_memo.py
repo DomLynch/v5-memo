@@ -10,6 +10,7 @@ from v5_memo import (
     build_alpha_memo,
     collect_seed_hits,
     mine_insights,
+    query_anchor_terms,
     render_memo,
 )
 from v5_memo.schemas import InsightCandidate
@@ -123,6 +124,50 @@ def test_pipeline_builds_best_memo() -> None:
     assert result.candidate.score >= 60
     assert len(result.receipts) == 2
     assert result.markdown.startswith("# Alpha memo")
+
+
+def test_pipeline_accepts_custom_memo_writer() -> None:
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return _hits()
+
+    result = build_alpha_memo(
+        topic="longevity resilience",
+        seed_queries=["sleep nad", "exercise nad"],
+        searcher=FakeSearch(),
+        memo_writer=lambda candidate, receipts: f"custom: {candidate.topic} / {len(receipts)}",
+    )
+
+    assert result.markdown == "custom: longevity resilience / 2"
+
+
+def test_query_anchor_terms_keep_specific_seed_terms() -> None:
+    assert query_anchor_terms([
+        "NAD salvage mitochondrial stress exercise response",
+        "mitochondrial stress exercise",
+    ]) == ("nad", "salvage")
+
+
+def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
+    hits = [
+        CorpusHit(
+            hit_id="a",
+            title="Shear stress increases endothelial mitochondrial biogenesis",
+            abstract="Exercise wall shear stress changed vascular mitochondria.",
+            source="openalex",
+            doi="10.a",
+        ),
+        CorpusHit(
+            hit_id="b",
+            title="Shear stress mediates endothelial training adaptation",
+            abstract="Handgrip training adaptation depended on shear stress.",
+            source="openalex",
+            doi="10.b",
+        ),
+    ]
+
+    assert mine_insights(hits, topic="NAD salvage exercise", required_anchor_terms=("nad", "salvage")) == []
 
 
 def test_pipeline_raises_when_no_receipt_bound_candidate() -> None:
