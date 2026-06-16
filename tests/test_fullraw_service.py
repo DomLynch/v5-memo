@@ -38,6 +38,30 @@ def test_raw_scanner_reads_local_jsonl_fixture(tmp_path: Path) -> None:
     assert result.hits[0]["abstract"] == "NAD mitochondrial repair"
 
 
+def test_raw_scanner_matches_whole_terms_not_substrings(tmp_path: Path) -> None:
+    source = tmp_path / "openalex.jsonl.gz"
+    _write_gzip(
+        source,
+        json.dumps({
+            "doi": "10.raw/noisy",
+            "display_name": "New candidate rock standard",
+            "abstract": "This record should not match the target token.",
+            "publication_year": 2025,
+        }) + "\n" + json.dumps({
+            "doi": "10.raw/real",
+            "display_name": "NAD repair response",
+            "abstract": "NAD was measured directly.",
+            "publication_year": 2025,
+        }) + "\n",
+    )
+
+    result = RawCorpusScanner([
+        RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")
+    ]).search("NAD", limit=5, timeout_seconds=5)
+
+    assert [hit["doi"] for hit in result.hits] == ["10.raw/real"]
+
+
 def test_raw_scanner_reads_local_pubmed_xml_fixture(tmp_path: Path) -> None:
     source = tmp_path / "pubmed.xml.gz"
     _write_gzip(
