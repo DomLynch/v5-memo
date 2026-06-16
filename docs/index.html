@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>V5 Alpha Memo - Latest Run</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f7f4;
+        --ink: #161616;
+        --muted: #5e625f;
+        --rule: #d7d7d0;
+        --panel: #ffffff;
+        --accent: #126a5b;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.55;
+      }
+
+      main {
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 48px 24px 72px;
+      }
+
+      header {
+        border-bottom: 1px solid var(--rule);
+        margin-bottom: 34px;
+        padding-bottom: 22px;
+      }
+
+      .eyebrow {
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0;
+        margin: 0 0 10px;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        font-size: 38px;
+        line-height: 1.12;
+        margin: 0 0 14px;
+      }
+
+      h2 {
+        font-size: 19px;
+        margin: 28px 0 8px;
+      }
+
+      p {
+        margin: 0 0 16px;
+      }
+
+      code {
+        background: #efefea;
+        border: 1px solid #deded7;
+        border-radius: 5px;
+        padding: 1px 5px;
+      }
+
+      pre {
+        background: #20231f;
+        border-radius: 8px;
+        color: #f4f4ee;
+        overflow: auto;
+        padding: 16px;
+      }
+
+      pre code {
+        background: transparent;
+        border: 0;
+        color: inherit;
+        padding: 0;
+      }
+
+      .meta {
+        color: var(--muted);
+        display: grid;
+        gap: 6px;
+        margin-top: 16px;
+      }
+
+      .memo {
+        background: var(--panel);
+        border: 1px solid var(--rule);
+        border-radius: 8px;
+        padding: 30px;
+      }
+
+      .score {
+        color: var(--muted);
+      }
+
+      ol {
+        padding-left: 24px;
+      }
+
+      li {
+        margin-bottom: 10px;
+      }
+
+      @media (max-width: 640px) {
+        main {
+          padding: 28px 16px 48px;
+        }
+
+        h1 {
+          font-size: 29px;
+        }
+
+        .memo {
+          padding: 22px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">V5 Alpha Memo</p>
+        <h1>Latest Run</h1>
+        <div class="meta">
+          <span>Generated: 2026-06-16</span>
+          <span>Source: OpenAlex full-corpus API</span>
+        </div>
+      </header>
+
+      <section>
+        <h2>Run Command</h2>
+        <pre><code>PYTHONPATH=src python3 -m v5_memo \
+  --topic "NAD salvage, mitochondrial stress, and exercise response" \
+  --query "NAD salvage mitochondrial stress exercise response" \
+  --query "NAD salvage mitochondrial stress" \
+  --query "mitochondrial stress exercise response"</code></pre>
+      </section>
+
+      <article class="memo">
+        <h1>Alpha memo: NAD salvage, mitochondrial stress, and exercise response</h1>
+
+        <p><strong>Alpha hypothesis:</strong> NAD salvage, mitochondrial stress, and exercise response may be hiding a design / imaging / medical boundary condition: impaired chronotropic exercise stress and ovarian aging characterized oxidative point in different directions.</p>
+
+        <p class="score"><strong>Signal score:</strong> <code>76</code> (novelty <code>50</code>, evidence <code>85</code>)</p>
+
+        <p><strong>Evidence bridge:</strong> design, imaging, medical, setting.</p>
+
+        <p><strong>Tension:</strong> negative, null, positive.</p>
+
+        <h2>Why it matters</h2>
+        <p>This is a receipt-bound lead for investigation: two independent search hits share a non-obvious bridge term, so the memo can test whether that bridge explains a boundary condition or a new angle.</p>
+
+        <h2>What would falsify it</h2>
+        <p>A follow-up search fails to find direct receipts where the bridge term and both evidence streams appear in the same source-grounded claim, or the apparent connection collapses to one duplicated source.</p>
+
+        <h2>Receipts</h2>
+        <ol>
+          <li><code>10.1001/jama.281.6.524</code> Impaired Chronotropic Response to Exercise Stress Testing as a Predictor of Mortality, 1999, JAMA. Source: openalex:full-corpus. ID: 10.1001/jama.281.6.524</li>
+          <li><code>10.1093/humrep/dead177</code> Human ovarian aging is characterized by oxidative damage and mitochondrial dysfunction, 2023, Human Reproduction. Source: openalex:full-corpus. ID: 10.1093/humrep/dead177</li>
+        </ol>
+
+        <p><strong>Safety note:</strong> This memo is an alpha hypothesis. A later LLM writer may sharpen prose, but it may not add claims beyond the receipts above.</p>
+      </article>
+    </main>
+  </body>
+</html>
