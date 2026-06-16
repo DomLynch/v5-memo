@@ -1,4 +1,4 @@
-"""Small stdlib Researka DB search client."""
+"""Small stdlib search clients for OpenAlex and Researka."""
 from __future__ import annotations
 
 import json
