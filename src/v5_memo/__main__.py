@@ -72,11 +72,7 @@ def main() -> None:
         print(current_search_coverage().summary)
         return
     if args.require_full_raw_corpus:
-        try:
-            require_full_raw_corpus()
-        except RuntimeError as exc:
-            print(str(exc), file=sys.stderr)
-            raise SystemExit(2) from exc
+        _require_full_raw_or_exit()
 
     searcher_mode = "hybrid" if args.searcher == "smart" else args.searcher
     planner_mode = args.planner or ("minimax" if args.searcher == "smart" else "seed")
@@ -86,7 +82,7 @@ def main() -> None:
     if args.demo:
         searcher = DemoSearch()
     elif searcher_mode == "fullraw":
-        require_full_raw_corpus()
+        _require_full_raw_or_exit()
         searcher = FullRawCorpusSearchClient.from_env()
     elif searcher_mode == "researka":
         searcher = ResearkaSearchClient.from_env()
@@ -124,6 +120,14 @@ def main() -> None:
         anchor_queries=base_queries,
     )
     print(result.markdown)
+
+
+def _require_full_raw_or_exit() -> None:
+    try:
+        require_full_raw_corpus()
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(2) from exc
 
 
 if __name__ == "__main__":

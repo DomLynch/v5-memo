@@ -8,10 +8,12 @@ from urllib.request import Request
 from pytest import MonkeyPatch
 
 from v5_memo.client import (
+    FullRawCorpusSearchClient,
     HybridCorpusSearchClient,
     OpenAlexFullCorpusSearchClient,
     ResearkaSearchClient,
     _parse_corpus_search_response,
+    _parse_full_raw_search_response,
     _parse_openalex_response,
     _query_variants,
 )
@@ -84,6 +86,70 @@ def test_researka_client_loads_first_allowlist_token(monkeypatch: MonkeyPatch) -
     client = ResearkaSearchClient.from_env()
 
     assert client._token == "bot-token"
+
+
+def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        captured["url"] = request.full_url
+        captured["data"] = request.data
+        captured["headers"] = dict(request.header_items())
+        captured["timeout"] = timeout
+        return FakeResponse({
+            "meta": {"count": 492361307},
+            "results": [
+                {
+                    "doi": "https://doi.org/10.123/raw",
+                    "title": "Raw full corpus NAD exercise signal",
+                    "abstract": "NAD salvage and exercise response are linked.",
+                    "year": 2024,
+                    "journal": "Full Corpus Journal",
+                    "source": "semantic_scholar",
+                    "score": 17.2,
+                }
+            ],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="raw-token",
+        timeout=7.0,
+        year_min=1950,
+        year_max=2026,
+    )
+
+    hits = client.search("nad exercise " * 200, limit=250)
+
+    payload = json.loads(cast(bytes, captured["data"]).decode("utf-8"))
+    headers = cast(dict[str, str], captured["headers"])
+    assert captured["url"] == "https://search.example/full-raw"
+    assert captured["timeout"] == 7.0
+    assert headers["Authorization"] == "Bearer raw-token"
+    assert payload == {
+        "query": ("nad exercise " * 200)[:1024],
+        "limit": 200,
+        "top_k": 200,
+        "year_min": 1950,
+        "year_max": 2026,
+        "corpus": "full_raw_450m_plus",
+    }
+    assert hits[0].source == "fullraw:semantic_scholar"
+    assert hits[0].doi == "10.123/raw"
+    assert hits[0].metadata["query_match_count"] == 492361307
+    assert hits[0].metadata["score"] == 17.2
+
+
+def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9901/search")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "secret")
+
+    client = FullRawCorpusSearchClient.from_env()
+
+    assert client.configured is True
+    assert client._search_url == "http://127.0.0.1:9901/search"
+    assert client._token == "secret"
 
 
 def test_hybrid_search_merges_and_dedupes_sources() -> None:
@@ -233,6 +299,32 @@ def test_parse_openalex_response_reconstructs_abstract() -> None:
 def test_parse_corpus_search_rejects_non_list_shape() -> None:
     hits = _parse_corpus_search_response({"results": []})
     assert hits == []
+
+
+def test_parse_full_raw_search_accepts_results_shape_and_openalex_abstract() -> None:
+    hits = _parse_full_raw_search_response({
+        "meta": {"total": "280000000"},
+        "results": [
+            {
+                "id": "https://openalex.org/W1",
+                "doi": "https://doi.org/10.456/full",
+                "display_name": "OpenAlex raw storage item",
+                "abstract_inverted_index": {"NAD": [0], "repair": [1]},
+                "publication_year": 2025,
+                "primary_location": {"source": {"display_name": "Nature Aging"}},
+                "provider": "openalex",
+                "cited_by_count": "42",
+            }
+        ],
+    })
+
+    hit = hits[0]
+    assert hit.source == "fullraw:openalex"
+    assert hit.doi == "10.456/full"
+    assert hit.abstract == "NAD repair"
+    assert hit.venue == "Nature Aging"
+    assert hit.metadata["query_match_count"] == 280000000
+    assert hit.metadata["cited_by_count"] == 42
 
 
 def test_parse_full_corpus_paper_hit() -> None:

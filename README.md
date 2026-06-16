@@ -5,7 +5,7 @@ Independent alpha memo writer for finding short, receipt-bound research insights
 This repo is separate from v3 and v4. First slice:
 
 1. Optionally ask MiniMax-M3 to plan sharper seed queries.
-2. Search OpenAlex, Researka corpus, or both.
+2. Search OpenAlex, Researka corpus, full raw corpus service, or a hybrid of them.
 3. Dedupe hits.
 4. Locally rerank merged hits by term coverage, source rank, and citation signal.
 5. Mine source-diverse bridge candidates.
@@ -50,7 +50,34 @@ PYTHONPATH=src python -m v5_memo \
   --query "NAD salvage mitochondrial stress"
 ```
 
-Hybrid mode searches Researka first and OpenAlex second, then dedupes receipts:
+Full raw corpus mode is the strict 450M+ path. It requires a real indexed search
+service over the cold raw archive:
+
+```bash
+V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL=http://127.0.0.1:9901/search \
+V5_MEMO_FULL_RAW_CORPUS_TOKEN=... \
+MINIMAX_API_KEY=... \
+PYTHONPATH=src python -m v5_memo \
+  --searcher fullraw \
+  --planner minimax \
+  --writer minimax \
+  --topic "longevity resilience" \
+  --query "NAD salvage mitochondrial stress"
+```
+
+The full raw service contract is a `POST` endpoint. V5 sends:
+
+```json
+{"query":"...","limit":25,"top_k":25,"year_min":1900,"year_max":2100,"corpus":"full_raw_450m_plus"}
+```
+
+The endpoint should return either a JSON array of papers or
+`{"meta":{"count":...},"results":[...]}`. Each paper can use standard fields:
+`title`, `abstract`, `doi`, `pmid`, `pmcid`, `openalex_id`, `semantic_scholar_id`,
+`arxiv_id`, `year`, `journal`/`venue`, `source`, `url`, `cited_by_count`, `score`.
+
+Hybrid mode searches the full raw service first when configured, then Researka,
+then OpenAlex, and dedupes receipts:
 
 ```bash
 PYTHONPATH=src python -m v5_memo \
@@ -63,7 +90,8 @@ PYTHONPATH=src python -m v5_memo \
 
 Smart mode is the shortest command for the current best path: MiniMax plans
 queries, V5 searches hybrid corpus surfaces, then MiniMax writes from locked
-receipts.
+receipts. If `V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL` is set, smart mode includes
+the full raw corpus first.
 
 ```bash
 PYTHONPATH=src python -m v5_memo \
@@ -79,8 +107,9 @@ PYTHONPATH=src python -m v5_memo --coverage-report
 PYTHONPATH=src python -m v5_memo --require-full-raw-corpus
 ```
 
-`--require-full-raw-corpus` fails unless a real 450M+ local raw-corpus search
-service/index is configured through `V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL`.
+`--require-full-raw-corpus` and `--searcher fullraw` fail unless a real 450M+
+local raw-corpus search service/index is configured through
+`V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL`.
 
 MiniMax-M3 writer pass:
 

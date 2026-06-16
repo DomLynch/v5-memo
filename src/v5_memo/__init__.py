@@ -1,6 +1,7 @@
 """Independent V5 alpha memo writer."""
 from v5_memo.binder import bind_receipts
 from v5_memo.client import (
+    FullRawCorpusSearchClient,
     HybridCorpusSearchClient,
     OpenAlexFullCorpusSearchClient,
     ResearkaSearchClient,
@@ -15,6 +16,7 @@ from v5_memo.writer import render_memo
 
 __all__ = [
     "CorpusHit",
+    "FullRawCorpusSearchClient",
     "HybridCorpusSearchClient",
     "InsightCandidate",
     "MemoResult",
