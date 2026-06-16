@@ -5,6 +5,7 @@ from v5_memo.client import (
     OpenAlexFullCorpusSearchClient,
     ResearkaSearchClient,
 )
+from v5_memo.coverage import SearchCoverage, current_search_coverage, require_full_raw_corpus
 from v5_memo.miner import mine_insights, query_anchor_terms
 from v5_memo.minimax_writer import MiniMaxM3MemoWriter, MiniMaxM3SearchPlanner
 from v5_memo.pipeline import build_alpha_memo
@@ -21,10 +22,13 @@ __all__ = [
     "MiniMaxM3SearchPlanner",
     "OpenAlexFullCorpusSearchClient",
     "ResearkaSearchClient",
+    "SearchCoverage",
     "bind_receipts",
     "build_alpha_memo",
     "collect_seed_hits",
+    "current_search_coverage",
     "mine_insights",
     "query_anchor_terms",
     "render_memo",
+    "require_full_raw_corpus",
 ]

@@ -61,6 +61,27 @@ PYTHONPATH=src python -m v5_memo \
   --query "NAD salvage mitochondrial stress"
 ```
 
+Smart mode is the shortest command for the current best path: MiniMax plans
+queries, V5 searches hybrid corpus surfaces, then MiniMax writes from locked
+receipts.
+
+```bash
+PYTHONPATH=src python -m v5_memo \
+  --searcher smart \
+  --topic "longevity resilience" \
+  --query "NAD salvage mitochondrial stress"
+```
+
+Coverage truth:
+
+```bash
+PYTHONPATH=src python -m v5_memo --coverage-report
+PYTHONPATH=src python -m v5_memo --require-full-raw-corpus
+```
+
+`--require-full-raw-corpus` fails unless a real 450M+ local raw-corpus search
+service/index is configured through `V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL`.
+
 MiniMax-M3 writer pass:
 
 ```bash

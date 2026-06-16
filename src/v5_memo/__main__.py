@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from collections.abc import Sequence
 
 from v5_memo.client import (
@@ -9,6 +10,7 @@ from v5_memo.client import (
     OpenAlexFullCorpusSearchClient,
     ResearkaSearchClient,
 )
+from v5_memo.coverage import current_search_coverage, require_full_raw_corpus
 from v5_memo.minimax_writer import MiniMaxM3MemoWriter, MiniMaxM3SearchPlanner
 from v5_memo.pipeline import build_alpha_memo
 from v5_memo.retriever import CorpusSearcher
@@ -53,18 +55,34 @@ def main() -> None:
     parser.add_argument("--demo", action="store_true")
     parser.add_argument("--topic", default="longevity resilience")
     parser.add_argument("--query", action="append", default=[])
-    parser.add_argument("--planner", choices=["seed", "minimax"], default="seed")
+    parser.add_argument("--coverage-report", action="store_true")
+    parser.add_argument("--require-full-raw-corpus", action="store_true")
+    parser.add_argument("--planner", choices=["seed", "minimax"])
     parser.add_argument("--planner-limit", type=int, default=8)
-    parser.add_argument("--searcher", choices=["openalex", "researka", "hybrid"], default="openalex")
-    parser.add_argument("--writer", choices=["template", "minimax"], default="template")
+    parser.add_argument("--searcher", choices=["openalex", "researka", "hybrid", "smart"], default="openalex")
+    parser.add_argument("--writer", choices=["template", "minimax"])
     args = parser.parse_args()
+
+    if args.coverage_report:
+        print(current_search_coverage().summary)
+        return
+    if args.require_full_raw_corpus:
+        try:
+            require_full_raw_corpus()
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(2) from exc
+
+    searcher_mode = "hybrid" if args.searcher == "smart" else args.searcher
+    planner_mode = args.planner or ("minimax" if args.searcher == "smart" else "seed")
+    writer_mode = args.writer or ("minimax" if args.searcher == "smart" else "template")
 
     searcher: CorpusSearcher
     if args.demo:
         searcher = DemoSearch()
-    elif args.searcher == "researka":
+    elif searcher_mode == "researka":
         searcher = ResearkaSearchClient.from_env()
-    elif args.searcher == "hybrid":
+    elif searcher_mode == "hybrid":
         searcher = HybridCorpusSearchClient([
             ResearkaSearchClient.from_env(),
             OpenAlexFullCorpusSearchClient.from_env(),
@@ -72,14 +90,14 @@ def main() -> None:
     else:
         searcher = OpenAlexFullCorpusSearchClient.from_env()
     memo_writer = render_memo
-    if args.writer == "minimax":
+    if writer_mode == "minimax":
         memo_writer = MiniMaxM3MemoWriter.from_env().render
     base_queries = args.query or [
         "sleep NAD salvage mitochondrial stress",
         "exercise NAD salvage mitochondrial repair",
     ]
     queries = base_queries
-    if args.planner == "minimax":
+    if planner_mode == "minimax":
         queries = MiniMaxM3SearchPlanner.from_env().plan(
             topic=args.topic,
             seed_queries=base_queries,
