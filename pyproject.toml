@@ -7,9 +7,9 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
-    "ruff>=0.5",
-    "mypy>=1.10",
+    "pytest==9.0.2",
+    "ruff==0.15.12",
+    "mypy==2.0.0",
 ]
 
 [build-system]

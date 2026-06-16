@@ -23,10 +23,17 @@ PYTHONPATH=src python -m v5_memo --demo
 Quality gate:
 
 ```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e ".[dev]"
 python -m pytest -q
 python -m ruff check src tests
 python -m mypy src tests
 ```
+
+The `dev` extra pins the test/lint/type tool versions. Use the project venv
+rather than system-wide tools; the VPS global Python intentionally does not have
+`ruff` or `mypy` installed.
 
 OpenAlex full-corpus use needs no token:
 
