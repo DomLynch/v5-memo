@@ -9,8 +9,8 @@ This repo is separate from v3 and v4. First slice:
 3. Locally rerank merged hits by term coverage, source rank, and citation signal.
 4. Mine source-diverse bridge candidates.
 5. Score novelty/evidence/tension.
-5. Bind receipts.
-6. Render a short memo.
+6. Bind receipts.
+7. Render a short memo.
 
 Offline demo:
 
