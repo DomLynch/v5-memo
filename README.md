@@ -30,6 +30,7 @@ Live DB use needs `RESEARKA_DATABASE_TOKEN`:
 ```bash
 PYTHONPATH=src RESEARKA_DATABASE_TOKEN=... \
 python -m v5_memo \
+  --domain longevity \
   --topic "longevity resilience" \
   --query "NAD salvage mitochondrial stress" \
   --query "exercise response mitochondrial repair"

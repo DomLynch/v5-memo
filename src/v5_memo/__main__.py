@@ -45,10 +45,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--demo", action="store_true")
     parser.add_argument("--topic", default="longevity resilience")
+    parser.add_argument("--domain", default="longevity")
     parser.add_argument("--query", action="append", default=[])
     args = parser.parse_args()
 
-    searcher = DemoSearch() if args.demo else ResearkaSearchClient.from_env()
+    searcher = (
+        DemoSearch()
+        if args.demo
+        else ResearkaSearchClient.from_env(domain=args.domain)
+    )
     queries = args.query or [
         "sleep NAD salvage mitochondrial stress",
         "exercise NAD salvage mitochondrial repair",

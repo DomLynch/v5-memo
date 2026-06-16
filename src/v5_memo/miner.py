@@ -11,12 +11,13 @@ from v5_memo.scorer import score_connection
 
 _WORD = re.compile(r"[a-z][a-z0-9]{2,}")
 _STOP = frozenset({
-    "about", "after", "among", "analysis", "and", "based", "between", "cell",
-    "clinical", "data", "effect", "effects", "evidence", "finding", "findings",
-    "from", "group", "groups", "human", "impact", "links", "marker", "markers",
-    "model", "models", "paper", "patients", "predicts", "reported", "research",
-    "response", "results", "shows", "significant", "study", "studies", "through",
-    "trial", "using", "with",
+    "about", "advances", "after", "agent", "among", "analysis", "and", "based", "beneficial",
+    "between", "can", "cell", "clinical", "comprehensive", "data", "effect",
+    "effects", "evidence", "finding", "findings", "from", "group", "groups",
+    "human", "impact", "isi", "library", "links", "marker", "markers", "meta", "model",
+    "models", "paper", "patients", "predicts", "recent", "reported", "research",
+    "response", "results", "review", "shows", "significant", "study", "studies",
+    "summary", "systematic", "through", "trial", "using", "with",
 })
 _POSITIVE = frozenset({"increase", "increased", "raises", "raised", "improve", "improved"})
 _NEGATIVE = frozenset({"decrease", "decreased", "reduce", "reduced", "lower", "lowered"})
