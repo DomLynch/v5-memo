@@ -173,7 +173,9 @@ def _parse_openalex_response(data: Any) -> list[CorpusHit]:
     results = data.get("results")
     if not isinstance(results, list):
         return []
-    match_count = _int_or_none((data.get("meta") or {}).get("count"))
+    meta_raw = data.get("meta")
+    meta = meta_raw if isinstance(meta_raw, dict) else {}
+    match_count = _int_or_none(meta.get("count"))
     return [
         hit
         for item in results
@@ -310,7 +312,7 @@ def _rerank_score(
     seed_coverage = _coverage(seed_terms, text)
     variant_coverage = _coverage(variant_terms, text)
     cited = hit.metadata.get("cited_by_count")
-    citation_score = math.log10(max(0, cited) + 1) if isinstance(cited, int | float) else 0.0
+    citation_score = math.log10(max(0, cited) + 1) if isinstance(cited, (int, float)) else 0.0
     return (seed_coverage * 70.0) + (variant_coverage * 20.0) + (citation_score * 4.0) - rank
 
 

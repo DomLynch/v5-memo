@@ -1,13 +1,14 @@
 # V5 Memo
 
-Independent alpha memo writer for finding short, receipt-bound research insights from Researka full-paper corpus search.
+Independent alpha memo writer for finding short, receipt-bound research insights from full-corpus OpenAlex search.
 
 This repo is separate from v3 and v4. First slice:
 
-1. Search `/api/v1/corpus/search` full-paper corpus seeds.
+1. Fan out each seed into related OpenAlex full-corpus searches.
 2. Dedupe hits.
-3. Mine source-diverse bridge candidates.
-4. Score novelty/evidence/tension.
+3. Locally rerank merged hits by term coverage, source rank, and citation signal.
+4. Mine source-diverse bridge candidates.
+5. Score novelty/evidence/tension.
 5. Bind receipts.
 6. Render a short memo.
 
@@ -25,11 +26,10 @@ python -m ruff check src tests
 python -m mypy src tests
 ```
 
-Live DB use needs `RESEARKA_DATABASE_TOKEN`:
+Live full-corpus use needs no token:
 
 ```bash
-PYTHONPATH=src RESEARKA_DATABASE_TOKEN=... \
-python -m v5_memo \
+PYTHONPATH=src python -m v5_memo \
   --topic "longevity resilience" \
   --query "NAD salvage mitochondrial stress" \
   --query "exercise response mitochondrial repair"

@@ -1,10 +1,10 @@
-"""CLI for offline demo or live Researka DB memo generation."""
+"""CLI for offline demo or live full-corpus memo generation."""
 from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
 
-from v5_memo.client import ResearkaSearchClient
+from v5_memo.client import OpenAlexFullCorpusSearchClient
 from v5_memo.pipeline import build_alpha_memo
 from v5_memo.schemas import CorpusHit
 
@@ -48,7 +48,7 @@ def main() -> None:
     parser.add_argument("--query", action="append", default=[])
     args = parser.parse_args()
 
-    searcher = DemoSearch() if args.demo else ResearkaSearchClient.from_env()
+    searcher = DemoSearch() if args.demo else OpenAlexFullCorpusSearchClient.from_env()
     queries = args.query or [
         "sleep NAD salvage mitochondrial stress",
         "exercise NAD salvage mitochondrial repair",

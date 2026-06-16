@@ -1,21 +1,22 @@
 from __future__ import annotations
 
 import json
+import urllib.parse
 from typing import cast
 from urllib.request import Request
 
-from v5_memo.client import ResearkaSearchClient, _parse_corpus_search_response
+from v5_memo.client import (
+    OpenAlexFullCorpusSearchClient,
+    ResearkaSearchClient,
+    _parse_corpus_search_response,
+    _parse_openalex_response,
+    _query_variants,
+)
 
 
 class FakeResponse:
-    def __enter__(self) -> FakeResponse:
-        return self
-
-    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
-        return None
-
-    def read(self) -> bytes:
-        return json.dumps([
+    def __init__(self, payload: object | None = None) -> None:
+        self._payload = payload or [
             {
                 "pmid": "19587680",
                 "doi": "10.1038/nature08221",
@@ -27,7 +28,16 @@ class FakeResponse:
                 "cited_by_count": 1000,
                 "similarity_score": 0.91,
             }
-        ]).encode("utf-8")
+        ]
+
+    def __enter__(self) -> FakeResponse:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode("utf-8")
 
 
 def test_client_posts_to_full_corpus_search(monkeypatch: object) -> None:
@@ -60,6 +70,110 @@ def test_client_posts_to_full_corpus_search(monkeypatch: object) -> None:
         "year_max": 2030,
     }
     assert hits[0].source == "researka:corpus"
+
+
+def test_openalex_client_fans_out_dedupes_and_reranks(monkeypatch: object) -> None:
+    captured_queries: list[str] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        assert timeout == 3.0
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(request.full_url).query)
+        query = params["search"][0]
+        captured_queries.append(query)
+        return FakeResponse(
+            {
+                "meta": {
+                    "count": 604
+                    if query == "nad salvage mitochondrial stress exercise response"
+                    else 8274
+                },
+                "results": [
+                    {
+                        "id": f"https://openalex.org/{query}",
+                        "doi": "https://doi.org/10.best",
+                        "display_name": "NAD salvage and mitochondrial stress improve exercise response",
+                        "abstract_inverted_index": {
+                            "NAD": [0],
+                            "salvage": [1],
+                            "mitochondrial": [3],
+                            "stress": [4],
+                            "exercise": [6],
+                            "response": [7],
+                        },
+                        "publication_year": 2024,
+                        "primary_location": {"source": {"display_name": "Aging Cell"}},
+                        "cited_by_count": 100,
+                    },
+                    {
+                        "id": f"https://openalex.org/noisy-{query}",
+                        "doi": f"https://doi.org/10.noisy/{len(captured_queries)}",
+                        "display_name": "Exercise response paper",
+                        "abstract_inverted_index": {"exercise": [0], "response": [1]},
+                        "publication_year": 2022,
+                        "primary_location": {"source": {"display_name": "Journal"}},
+                        "cited_by_count": 10,
+                    },
+                ],
+            }
+        )
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = OpenAlexFullCorpusSearchClient(
+        base_url="https://api.example",
+        timeout=3.0,
+        year_min=2000,
+        year_max=2026,
+        max_variants=3,
+    )
+
+    hits = client.search("NAD salvage mitochondrial stress exercise response", limit=5)
+
+    assert captured_queries == [
+        "nad salvage mitochondrial stress exercise response",
+        "nad salvage mitochondrial stress",
+        "salvage mitochondrial stress exercise",
+    ]
+    assert len([hit for hit in hits if hit.doi == "10.best"]) == 1
+    assert hits[0].doi == "10.best"
+    assert hits[0].source == "openalex:full-corpus"
+    assert hits[0].metadata["search_variant"] == "nad salvage mitochondrial stress exercise response"
+    assert hits[0].metadata["query_match_count"] == 604
+
+
+def test_query_variants_do_not_depend_on_one_long_query() -> None:
+    assert _query_variants("NAD salvage mitochondrial stress exercise response", limit=5) == [
+        "nad salvage mitochondrial stress exercise response",
+        "nad salvage mitochondrial stress",
+        "salvage mitochondrial stress exercise",
+        "mitochondrial stress exercise response",
+        "nad salvage mitochondrial",
+    ]
+
+
+def test_parse_openalex_response_reconstructs_abstract() -> None:
+    hits = _parse_openalex_response(
+        {
+            "meta": {"count": 492361307},
+            "results": [
+                {
+                    "id": "https://openalex.org/W1",
+                    "doi": "https://doi.org/10.123/test",
+                    "display_name": "<i>NAD salvage</i>",
+                    "abstract_inverted_index": {"NAD": [0], "salvage": [1], "works": [2]},
+                    "publication_year": 2026,
+                    "primary_location": {"source": {"display_name": "Nature"}},
+                    "cited_by_count": 12,
+                }
+            ],
+        }
+    )
+
+    hit = hits[0]
+    assert hit.title == "NAD salvage"
+    assert hit.abstract == "NAD salvage works"
+    assert hit.url == "https://doi.org/10.123/test"
+    assert hit.venue == "Nature"
+    assert hit.metadata["query_match_count"] == 492361307
 
 
 def test_parse_corpus_search_rejects_non_list_shape() -> None:
