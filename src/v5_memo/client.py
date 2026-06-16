@@ -185,6 +185,7 @@ class FullRawCorpusSearchClient:
         return cls(
             search_url=os.environ.get("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", ""),
             token=os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", ""),
+            timeout=_float_env("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", 45.0),
         )
 
     @property
@@ -201,6 +202,7 @@ class FullRawCorpusSearchClient:
             "year_min": self._year_min,
             "year_max": self._year_max,
             "corpus": "full_raw_450m_plus",
+            "timeout_seconds": self._timeout,
         }
         headers = {
             "Content-Type": "application/json",
@@ -500,3 +502,8 @@ def _float_or_none(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _float_env(name: str, default: float) -> float:
+    parsed = _float_or_none(os.environ.get(name, ""))
+    return parsed if parsed is not None else default

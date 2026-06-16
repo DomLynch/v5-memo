@@ -83,6 +83,20 @@ The endpoint should return either a JSON array of papers or
 `title`, `abstract`, `doi`, `pmid`, `pmcid`, `openalex_id`, `semantic_scholar_id`,
 `arxiv_id`, `year`, `journal`/`venue`, `source`, `url`, `cited_by_count`, `score`.
 
+V5 includes a localhost cold-scan backend that can expose the rclone raw archive
+without a large local index:
+
+```bash
+PYTHONPATH=src python -m v5_memo.fullraw_service
+```
+
+Default bind: `127.0.0.1:9901`. Default archive roots:
+OpenAlex, Semantic Scholar papers, Semantic Scholar abstracts, PubMed, and
+bioRxiv/medRxiv under `sb:researka-database/raw`. This backend streams gzipped
+raw files and returns the first receipt candidates it finds. It enables the LLM
+layer to use the full raw archive surface now; it is not a fast exhaustive
+Tantivy/DuckDB index.
+
 Hybrid mode searches the full raw service first when configured, then Researka,
 then OpenAlex, and dedupes receipts:
 

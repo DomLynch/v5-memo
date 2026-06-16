@@ -134,6 +134,7 @@ def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object)
         "year_min": 1950,
         "year_max": 2026,
         "corpus": "full_raw_450m_plus",
+        "timeout_seconds": 7.0,
     }
     assert hits[0].source == "fullraw:semantic_scholar"
     assert hits[0].doi == "10.123/raw"
@@ -150,6 +151,15 @@ def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) ->
     assert client.configured is True
     assert client._search_url == "http://127.0.0.1:9901/search"
     assert client._token == "secret"
+
+
+def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9901/search")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", "120")
+
+    client = FullRawCorpusSearchClient.from_env()
+
+    assert client._timeout == 120.0
 
 
 def test_hybrid_search_merges_and_dedupes_sources() -> None:
