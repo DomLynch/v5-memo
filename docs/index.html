@@ -129,13 +129,14 @@
         <h1>Latest Smart Run</h1>
         <div class="meta">
           <span>Generated: 2026-06-16</span>
-          <span>Source: MiniMax-M3 planner + OpenAlex full-corpus API + MiniMax-M3 writer</span>
+          <span>Source: MiniMax-M3 planner + Researka/OpenAlex hybrid retrieval + MiniMax-M3 writer</span>
         </div>
       </header>
 
       <section>
         <h2>Run Command</h2>
         <pre><code>PYTHONPATH=src python3 -m v5_memo \
+  --searcher hybrid \
   --planner minimax \
   --writer minimax \
   --topic "NAD salvage, mitochondrial stress, and exercise response" \

@@ -2,12 +2,13 @@
 
 Generated: 2026-06-16
 
-Source: MiniMax-M3 planner + OpenAlex full-corpus API + MiniMax-M3 writer
+Source: MiniMax-M3 planner + Researka/OpenAlex hybrid retrieval + MiniMax-M3 writer
 
 Command:
 
 ```bash
 PYTHONPATH=src python3 -m v5_memo \
+  --searcher hybrid \
   --planner minimax \
   --writer minimax \
   --topic "NAD salvage, mitochondrial stress, and exercise response" \
