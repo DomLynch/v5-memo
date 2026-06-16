@@ -13,44 +13,44 @@ from v5_memo.schemas import CorpusHit
 
 
 class ResearkaSearchClient:
-    """Synchronous client for Researka corpus search.
-
-    `/api/v1/search` is tried first for paper-level corpus hits. If that surface
-    returns no hits, the client falls back to the live Tier2 facts search, which
-    is the currently verified Researka evidence path.
-    """
+    """Synchronous client for Researka full-paper corpus search."""
 
     def __init__(
-        self, *, base_url: str, token: str, domain: str = "longevity", timeout: float = 20.0,
+        self,
+        *,
+        base_url: str,
+        token: str,
+        timeout: float = 20.0,
+        year_min: int = 1900,
+        year_max: int = 2100,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token = token.strip()
-        self._domain = domain.strip() or "longevity"
         self._timeout = timeout
+        self._year_min = year_min
+        self._year_max = year_max
 
     @classmethod
-    def from_env(cls, *, domain: str | None = None) -> ResearkaSearchClient:
+    def from_env(cls) -> ResearkaSearchClient:
         return cls(
             base_url=os.environ.get("RESEARKA_DATABASE_URL", "https://database.researka.org"),
             token=os.environ.get("RESEARKA_DATABASE_TOKEN", ""),
-            domain=domain or os.environ.get("V5_MEMO_DOMAIN", "longevity"),
         )
 
     def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
         if not self._base_url or not self._token or not query.strip():
             return []
-        hits = self._search_papers(query, limit=limit)
-        return hits or self._search_tier2_facts(query, limit=limit)
+        return self._search_papers(query, limit=limit)
 
     def _search_papers(self, query: str, *, limit: int) -> list[CorpusHit]:
         payload = {
             "query": query[:1024],
-            "established_k": max(1, limit * 4 // 10),
-            "discovery_k": max(1, limit // 10),
-            "semantic_k": max(1, limit * 5 // 10),
+            "top_k": max(1, min(limit, 200)),
+            "year_min": self._year_min,
+            "year_max": self._year_max,
         }
         request = Request(
-            f"{self._base_url}/api/v1/search",
+            f"{self._base_url}/api/v1/corpus/search",
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "X-Researka-Token": self._token,
@@ -63,97 +63,39 @@ class ResearkaSearchClient:
                 data: Any = json.loads(response.read().decode("utf-8"))
         except (HTTPError, URLError, TimeoutError, ValueError):
             return []
-        return _parse_search_response(data)
-
-    def _search_tier2_facts(self, query: str, *, limit: int) -> list[CorpusHit]:
-        payload = {
-            "domain": self._domain,
-            "query": query[:1024],
-            "top_k": limit,
-            "min_confidence": "medium",
-            "numeric_only": False,
-        }
-        request = Request(
-            f"{self._base_url}/api/v1/tier2/facts/search",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "X-Researka-Token": self._token,
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=self._timeout) as response:
-                data: Any = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, ValueError):
-            return []
-        if not isinstance(data, list):
-            return []
-        return [hit for item in data if (hit := _parse_tier2_fact(item))]
+        return _parse_corpus_search_response(data)
 
 
-def _parse_search_response(data: Any) -> list[CorpusHit]:
-    if isinstance(data, list):
-        return [hit for item in data if (hit := _parse_item(item, lane="search"))]
-    if not isinstance(data, dict):
+def _parse_corpus_search_response(data: Any) -> list[CorpusHit]:
+    if not isinstance(data, list):
         return []
-    hits: list[CorpusHit] = []
-    for lane in ("established", "discovery", "semantic", "results"):
-        items = data.get(lane)
-        if not isinstance(items, list):
-            continue
-        hits.extend(hit for item in items if (hit := _parse_item(item, lane=lane)))
-    return hits
+    return [hit for item in data if (hit := _parse_paper_hit(item))]
 
 
-def _parse_item(item: Any, *, lane: str) -> CorpusHit | None:
+def _parse_paper_hit(item: Any) -> CorpusHit | None:
     if not isinstance(item, dict):
         return None
     title = _clean(item.get("title"), limit=500)
     if not title:
         return None
-    doi = _clean(item.get("doi") or item.get("paper_id") or item.get("id"), limit=256) or None
-    hit_id = doi or _clean(item.get("pmid") or item.get("paper_id") or title, limit=256)
+    doi = _clean(item.get("doi"), limit=256) or None
+    pmid = _clean(item.get("pmid"), limit=64)
+    pmcid = _clean(item.get("pmcid"), limit=64)
+    hit_id = doi or pmid or pmcid or title
     return CorpusHit(
         hit_id=hit_id,
         title=title,
-        abstract=_clean(item.get("abstract") or item.get("summary"), limit=4000),
-        source=f"researka:{lane}",
-        year=_int_or_none(item.get("year") or item.get("publication_year")),
-        url=_clean(item.get("url") or item.get("link"), limit=500),
-        doi=doi,
-        venue=_clean(item.get("venue") or item.get("journal") or item.get("journal_name"), limit=200)
-        or None,
-        metadata={"pmid": _clean(item.get("pmid"), limit=64)},
-    )
-
-
-def _parse_tier2_fact(item: Any) -> CorpusHit | None:
-    if not isinstance(item, dict):
-        return None
-    paper_raw = item.get("paper")
-    paper = paper_raw if isinstance(paper_raw, dict) else {}
-    title = _clean(paper.get("title") or item.get("canonical_phrase"), limit=500)
-    if not title:
-        return None
-    fact_id = _clean(item.get("id") or item.get("fact_id"), limit=256)
-    doi = _clean(paper.get("doi") or item.get("paper_id"), limit=256) or None
-    claim = _clean(item.get("canonical_phrase"), limit=800)
-    excerpt = _clean(item.get("source_excerpt"), limit=2000)
-    abstract = " ".join(part for part in (claim, excerpt) if part)
-    return CorpusHit(
-        hit_id=fact_id or doi or title,
-        title=title,
-        abstract=abstract,
-        source="researka:tier2",
-        year=_int_or_none(paper.get("publication_year") or item.get("canonical_year")),
+        abstract=_clean(item.get("abstract"), limit=4000),
+        source="researka:corpus",
+        year=_int_or_none(item.get("year")),
         url=f"https://doi.org/{doi}" if doi else "",
         doi=doi,
-        venue=_clean(paper.get("journal_name"), limit=200) or None,
+        venue=_clean(item.get("journal"), limit=200) or None,
         metadata={
-            "fact_id": fact_id,
-            "paper_id": _clean(item.get("paper_id"), limit=256),
-            "confidence": _clean(item.get("extraction_confidence"), limit=64),
+            "pmid": pmid,
+            "pmcid": pmcid,
+            "cited_by_count": _int_or_none(item.get("cited_by_count")),
+            "similarity_score": _float_or_none(item.get("similarity_score")),
         },
     )
 
@@ -170,5 +112,14 @@ def _int_or_none(value: object) -> int | None:
         return None
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_none(value: object) -> float | None:
+    if not isinstance(value, int | float | str | bytes | bytearray):
+        return None
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return None

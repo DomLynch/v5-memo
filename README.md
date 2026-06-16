@@ -1,10 +1,10 @@
 # V5 Memo
 
-Independent alpha memo writer for finding short, receipt-bound research insights from corpus-scale Researka search.
+Independent alpha memo writer for finding short, receipt-bound research insights from Researka full-paper corpus search.
 
 This repo is separate from v3 and v4. First slice:
 
-1. Search corpus seeds.
+1. Search `/api/v1/corpus/search` full-paper corpus seeds.
 2. Dedupe hits.
 3. Mine source-diverse bridge candidates.
 4. Score novelty/evidence/tension.
@@ -30,7 +30,6 @@ Live DB use needs `RESEARKA_DATABASE_TOKEN`:
 ```bash
 PYTHONPATH=src RESEARKA_DATABASE_TOKEN=... \
 python -m v5_memo \
-  --domain longevity \
   --topic "longevity resilience" \
   --query "NAD salvage mitochondrial stress" \
   --query "exercise response mitochondrial repair"
