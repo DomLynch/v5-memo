@@ -1,0 +1,314 @@
+"""MiniMax-M3 planner and memo writer constrained by corpus receipts."""
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any, Protocol, cast
+from urllib.request import Request, urlopen
+
+from v5_memo.schemas import CorpusHit, InsightCandidate
+
+MINIMAX_BASE_URL = "https://api.minimax.io/anthropic"
+MINIMAX_MODEL = "MiniMax-M3"
+MINIMAX_KEY_ENV = "MINIMAX_API_KEY"
+MINIMAX_KEY_FILE = Path.home() / ".codex" / "secrets" / "minimax_api_key"
+
+
+class HttpResponse(Protocol):
+    def __enter__(self) -> HttpResponse: ...
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None: ...
+
+    def read(self) -> bytes: ...
+
+
+class RequestOpener(Protocol):
+    def __call__(self, request: Request, timeout: float) -> HttpResponse: ...
+
+
+class MiniMaxM3MemoWriter:
+    """Anthropic-compatible MiniMax writer with receipt-preservation checks."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str = MINIMAX_BASE_URL,
+        model: str = MINIMAX_MODEL,
+        timeout: float = 60.0,
+        max_tokens: int = 1200,
+        opener: RequestOpener | None = None,
+    ) -> None:
+        if not api_key.strip():
+            raise ValueError("MINIMAX_API_KEY is required for MiniMax writer")
+        self._api_key = api_key.strip()
+        self._base_url = base_url.rstrip("/")
+        self._model = model
+        self._timeout = timeout
+        self._max_tokens = max_tokens
+        self._opener = opener or cast(RequestOpener, urlopen)
+
+    @classmethod
+    def from_env(cls) -> MiniMaxM3MemoWriter:
+        return cls(api_key=load_minimax_api_key())
+
+    def render(self, candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> str:
+        prompt = build_minimax_prompt(candidate, receipts)
+        markdown = _strip_markdown_fence(
+            call_minimax_m3(
+                api_key=self._api_key,
+                prompt=prompt,
+                system=(
+                    "You write concise research alpha memos. Use only the supplied receipts. "
+                    "Do not add uncited mechanisms, claims, facts, statistics, or references."
+                ),
+                temperature=0.45,
+                max_tokens=self._max_tokens,
+                base_url=self._base_url,
+                model=self._model,
+                timeout=self._timeout,
+                opener=self._opener,
+            )
+        )
+        return validate_minimax_memo(markdown, receipts)
+
+
+class MiniMaxM3SearchPlanner:
+    """Use MiniMax-M3 to propose sharper corpus search angles."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str = MINIMAX_BASE_URL,
+        model: str = MINIMAX_MODEL,
+        timeout: float = 45.0,
+        max_tokens: int = 700,
+        opener: RequestOpener | None = None,
+    ) -> None:
+        if not api_key.strip():
+            raise ValueError("MINIMAX_API_KEY is required for MiniMax planner")
+        self._api_key = api_key.strip()
+        self._base_url = base_url.rstrip("/")
+        self._model = model
+        self._timeout = timeout
+        self._max_tokens = max_tokens
+        self._opener = opener or cast(RequestOpener, urlopen)
+
+    @classmethod
+    def from_env(cls) -> MiniMaxM3SearchPlanner:
+        return cls(api_key=load_minimax_api_key())
+
+    def plan(self, *, topic: str, seed_queries: Sequence[str], limit: int = 8) -> list[str]:
+        prompt = build_minimax_search_prompt(topic=topic, seed_queries=seed_queries, limit=limit)
+        text = call_minimax_m3(
+            api_key=self._api_key,
+            prompt=prompt,
+            system=(
+                "You design high-recall, high-signal academic corpus search queries. "
+                "Return only valid JSON."
+            ),
+            temperature=0.35,
+            max_tokens=self._max_tokens,
+            base_url=self._base_url,
+            model=self._model,
+            timeout=self._timeout,
+            opener=self._opener,
+        )
+        planned = parse_minimax_queries(text, limit=limit)
+        return _dedupe_queries([*planned, *seed_queries])
+
+
+def call_minimax_m3(
+    *,
+    api_key: str,
+    prompt: str,
+    system: str,
+    temperature: float,
+    max_tokens: int,
+    base_url: str = MINIMAX_BASE_URL,
+    model: str = MINIMAX_MODEL,
+    timeout: float = 60.0,
+    opener: RequestOpener | None = None,
+) -> str:
+    body = json.dumps({
+        "model": model,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "system": system,
+        "thinking": {"type": "disabled"},
+        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+    }).encode("utf-8")
+    request = Request(
+        f"{base_url.rstrip('/')}/v1/messages",
+        data=body,
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    request_opener = opener or cast(RequestOpener, urlopen)
+    with request_opener(request, timeout=timeout) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    return _anthropic_text(data)
+
+
+def load_minimax_api_key() -> str:
+    key = os.environ.get(MINIMAX_KEY_ENV, "").strip()
+    if key:
+        return key
+    if MINIMAX_KEY_FILE.exists():
+        return MINIMAX_KEY_FILE.read_text().strip()
+    return ""
+
+
+def build_minimax_prompt(candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> str:
+    if not receipts:
+        raise ValueError("cannot write MiniMax memo without receipts")
+    receipt_block = "\n\n".join(_receipt_block(index, hit) for index, hit in enumerate(receipts, start=1))
+    return f"""Write a sharper alpha memo from the locked evidence below.
+
+Hard rules:
+- Use only the supplied receipts.
+- Keep every receipt ID exactly as written.
+- Do not invent mechanisms, clinical advice, causal certainty, new papers, or new numbers.
+- If a connection is uncertain, say it is a hypothesis.
+- Output Markdown only.
+- Keep it under 450 words.
+
+Required structure:
+# Alpha memo: {candidate.topic}
+## Core signal
+## The 2+2=5 angle
+## Why this could matter
+## What would break the idea
+## Receipts
+## Safety note
+
+Candidate thesis:
+{candidate.thesis}
+
+Bridge terms:
+{", ".join(candidate.bridge_terms) or "none"}
+
+Tension terms:
+{", ".join(candidate.tension_terms) or "none"}
+
+Scores:
+signal={candidate.score}, novelty={candidate.novelty_score}, evidence={candidate.evidence_score}
+
+Locked receipts:
+{receipt_block}
+"""
+
+
+def build_minimax_search_prompt(*, topic: str, seed_queries: Sequence[str], limit: int) -> str:
+    seeds = "\n".join(f"- {query}" for query in seed_queries) or "- none"
+    return f"""Create {limit} search queries for finding non-obvious, receipt-worthy papers.
+
+Goal:
+Find papers that could reveal surprising cross-links, boundary conditions, contradictions,
+mechanisms, or underused proxies for this topic:
+{topic}
+
+Existing seed queries:
+{seeds}
+
+Rules:
+- Search is over a massive academic corpus, so use specific scientific terms.
+- Do not make one huge query; make diverse 3-7 term queries.
+- Include synonym/adjacent-mechanism angles, not just restatements.
+- Prefer queries likely to surface real papers, not essay phrases.
+- Return JSON only: an array of strings.
+"""
+
+
+def parse_minimax_queries(text: str, *, limit: int) -> list[str]:
+    stripped = _strip_markdown_fence(text)
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise ValueError("MiniMax planner did not return valid JSON") from exc
+    if not isinstance(data, list):
+        raise ValueError("MiniMax planner must return a JSON array")
+    queries: list[str] = []
+    for item in data:
+        if not isinstance(item, str):
+            continue
+        query = " ".join(item.split())
+        if 4 <= len(query) <= 160:
+            queries.append(query)
+    queries = _dedupe_queries(queries)
+    if not queries:
+        raise ValueError("MiniMax planner returned no usable queries")
+    return queries[: max(1, limit)]
+
+
+def validate_minimax_memo(markdown: str, receipts: Sequence[CorpusHit]) -> str:
+    text = markdown.strip()
+    if not text:
+        raise ValueError("MiniMax returned an empty memo")
+    if "# Alpha memo:" not in text:
+        raise ValueError("MiniMax memo missing alpha memo heading")
+    missing = [hit.receipt_id for hit in receipts if hit.receipt_id not in text]
+    if missing:
+        raise ValueError(f"MiniMax memo dropped receipt IDs: {', '.join(missing)}")
+    if "Safety note" not in text:
+        raise ValueError("MiniMax memo missing safety note")
+    return text + "\n"
+
+
+def _receipt_block(index: int, hit: CorpusHit) -> str:
+    year = str(hit.year) if hit.year is not None else "unknown"
+    venue = hit.venue or "unknown venue"
+    locator = hit.doi or hit.url or hit.hit_id
+    abstract = hit.abstract.strip() or "No abstract supplied."
+    return (
+        f"Receipt {index}\n"
+        f"ID: {hit.receipt_id}\n"
+        f"Title: {hit.title}\n"
+        f"Year: {year}\n"
+        f"Venue: {venue}\n"
+        f"Source: {hit.source}\n"
+        f"Locator: {locator}\n"
+        f"Abstract: {abstract}"
+    )
+
+
+def _anthropic_text(data: Mapping[str, Any]) -> str:
+    content = data.get("content")
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+            parts.append(item["text"])
+    return "\n".join(parts).strip()
+
+
+def _strip_markdown_fence(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    if len(lines) >= 2 and lines[-1].strip() == "```":
+        first = lines[0].strip().casefold()
+        if first in {"```", "```json", "```markdown", "```md"}:
+            return "\n".join(lines[1:-1]).strip()
+    return stripped
+
+
+def _dedupe_queries(queries: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for query in queries:
+        key = query.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(query)
+    return deduped

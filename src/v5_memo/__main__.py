@@ -5,8 +5,10 @@ import argparse
 from collections.abc import Sequence
 
 from v5_memo.client import OpenAlexFullCorpusSearchClient
+from v5_memo.minimax_writer import MiniMaxM3MemoWriter, MiniMaxM3SearchPlanner
 from v5_memo.pipeline import build_alpha_memo
 from v5_memo.schemas import CorpusHit
+from v5_memo.writer import render_memo
 
 
 class DemoSearch:
@@ -46,14 +48,31 @@ def main() -> None:
     parser.add_argument("--demo", action="store_true")
     parser.add_argument("--topic", default="longevity resilience")
     parser.add_argument("--query", action="append", default=[])
+    parser.add_argument("--planner", choices=["seed", "minimax"], default="seed")
+    parser.add_argument("--planner-limit", type=int, default=8)
+    parser.add_argument("--writer", choices=["template", "minimax"], default="template")
     args = parser.parse_args()
 
     searcher = DemoSearch() if args.demo else OpenAlexFullCorpusSearchClient.from_env()
+    memo_writer = render_memo
+    if args.writer == "minimax":
+        memo_writer = MiniMaxM3MemoWriter.from_env().render
     queries = args.query or [
         "sleep NAD salvage mitochondrial stress",
         "exercise NAD salvage mitochondrial repair",
     ]
-    result = build_alpha_memo(topic=args.topic, seed_queries=queries, searcher=searcher)
+    if args.planner == "minimax":
+        queries = MiniMaxM3SearchPlanner.from_env().plan(
+            topic=args.topic,
+            seed_queries=queries,
+            limit=args.planner_limit,
+        )
+    result = build_alpha_memo(
+        topic=args.topic,
+        seed_queries=queries,
+        searcher=searcher,
+        memo_writer=memo_writer,
+    )
     print(result.markdown)
 
 
