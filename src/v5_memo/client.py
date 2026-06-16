@@ -6,6 +6,7 @@ import math
 import os
 import re
 import urllib.parse
+from collections.abc import Sequence
 from dataclasses import replace
 from html import unescape
 from typing import Any
@@ -129,7 +130,7 @@ class ResearkaSearchClient:
     def from_env(cls) -> ResearkaSearchClient:
         return cls(
             base_url=os.environ.get("RESEARKA_DATABASE_URL", "https://database.researka.org"),
-            token=os.environ.get("RESEARKA_DATABASE_TOKEN", ""),
+            token=_load_researka_token(),
         )
 
     def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
@@ -159,6 +160,37 @@ class ResearkaSearchClient:
         except (HTTPError, URLError, TimeoutError, ValueError):
             return []
         return _parse_corpus_search_response(data)
+
+
+class HybridCorpusSearchClient:
+    """Merge multiple corpus search surfaces behind one searcher contract."""
+
+    def __init__(self, searchers: Sequence[object]) -> None:
+        self._searchers = searchers
+
+    def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
+        best: dict[str, CorpusHit] = {}
+        for searcher in self._searchers:
+            search = getattr(searcher, "search", None)
+            if not callable(search):
+                continue
+            for hit in search(query, limit=limit):
+                best.setdefault(hit.source_key, hit)
+                if len(best) >= limit:
+                    break
+        return list(best.values())[:limit]
+
+
+def _load_researka_token() -> str:
+    direct = os.environ.get("RESEARKA_DATABASE_TOKEN") or os.environ.get("RESEARKA_TOKEN")
+    if direct:
+        return direct.strip()
+    allowlist = os.environ.get("RESEARKA_TOKENS", "")
+    for entry in allowlist.split(","):
+        token = entry.split(":", 1)[0].strip()
+        if token:
+            return token
+    return ""
 
 
 def _parse_corpus_search_response(data: Any) -> list[CorpusHit]:

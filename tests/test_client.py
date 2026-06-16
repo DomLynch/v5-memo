@@ -5,13 +5,17 @@ import urllib.parse
 from typing import cast
 from urllib.request import Request
 
+from pytest import MonkeyPatch
+
 from v5_memo.client import (
+    HybridCorpusSearchClient,
     OpenAlexFullCorpusSearchClient,
     ResearkaSearchClient,
     _parse_corpus_search_response,
     _parse_openalex_response,
     _query_variants,
 )
+from v5_memo.schemas import CorpusHit
 
 
 class FakeResponse:
@@ -69,6 +73,56 @@ def test_client_posts_to_full_corpus_search(monkeypatch: object) -> None:
         "year_min": 1950,
         "year_max": 2030,
     }
+    assert hits[0].source == "researka:corpus"
+
+
+def test_researka_client_loads_first_allowlist_token(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("RESEARKA_DATABASE_TOKEN", raising=False)
+    monkeypatch.delenv("RESEARKA_TOKEN", raising=False)
+    monkeypatch.setenv("RESEARKA_TOKENS", "bot-token:60/m,reader-token:10/m")
+
+    client = ResearkaSearchClient.from_env()
+
+    assert client._token == "bot-token"
+
+
+def test_hybrid_search_merges_and_dedupes_sources() -> None:
+    class StaticSearch:
+        def __init__(self, hits: list[CorpusHit]) -> None:
+            self._hits = hits
+
+        def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
+            del query
+            return self._hits[:limit]
+
+    shared = CorpusHit(
+        hit_id="10.same",
+        title="Shared paper",
+        abstract="NAD salvage",
+        source="researka:corpus",
+        doi="10.same",
+    )
+    openalex_duplicate = CorpusHit(
+        hit_id="10.same",
+        title="Shared paper duplicate",
+        abstract="NAD salvage",
+        source="openalex:full-corpus",
+        doi="10.same",
+    )
+    openalex_only = CorpusHit(
+        hit_id="10.only",
+        title="OpenAlex only",
+        abstract="mitochondrial stress",
+        source="openalex:full-corpus",
+        doi="10.only",
+    )
+
+    hits = HybridCorpusSearchClient([
+        StaticSearch([shared]),
+        StaticSearch([openalex_duplicate, openalex_only]),
+    ]).search("nad", limit=5)
+
+    assert [hit.doi for hit in hits] == ["10.same", "10.only"]
     assert hits[0].source == "researka:corpus"
 
 

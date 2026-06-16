@@ -1,11 +1,11 @@
 # V5 Memo
 
-Independent alpha memo writer for finding short, receipt-bound research insights from full-corpus OpenAlex search.
+Independent alpha memo writer for finding short, receipt-bound research insights from corpus-scale search.
 
 This repo is separate from v3 and v4. First slice:
 
 1. Optionally ask MiniMax-M3 to plan sharper seed queries.
-2. Fan out each seed into related OpenAlex full-corpus searches.
+2. Search OpenAlex, Researka corpus, or both.
 3. Dedupe hits.
 4. Locally rerank merged hits by term coverage, source rank, and citation signal.
 5. Mine source-diverse bridge candidates.
@@ -28,13 +28,37 @@ python -m ruff check src tests
 python -m mypy src tests
 ```
 
-Live full-corpus use needs no token:
+OpenAlex full-corpus use needs no token:
 
 ```bash
 PYTHONPATH=src python -m v5_memo \
   --topic "longevity resilience" \
   --query "NAD salvage mitochondrial stress" \
   --query "exercise response mitochondrial repair"
+```
+
+Researka corpus use searches the live Researka corpus API. Verified on the VPS:
+25,181,785 paper rows, 1,015,859 embedded rows, and a 24,814,247-row Tantivy
+index. This is not yet the full raw 450M+ storage corpus.
+
+```bash
+RESEARKA_DATABASE_URL=http://127.0.0.1:8810 \
+RESEARKA_TOKENS=... \
+PYTHONPATH=src python -m v5_memo \
+  --searcher researka \
+  --topic "longevity resilience" \
+  --query "NAD salvage mitochondrial stress"
+```
+
+Hybrid mode searches Researka first and OpenAlex second, then dedupes receipts:
+
+```bash
+PYTHONPATH=src python -m v5_memo \
+  --searcher hybrid \
+  --planner minimax \
+  --writer minimax \
+  --topic "longevity resilience" \
+  --query "NAD salvage mitochondrial stress"
 ```
 
 MiniMax-M3 writer pass:
@@ -48,6 +72,6 @@ MINIMAX_API_KEY=... PYTHONPATH=src python -m v5_memo \
   --query "exercise response mitochondrial repair"
 ```
 
-The MiniMax planner proposes search angles. OpenAlex retrieval, dedupe, scoring,
-and receipt binding stay deterministic; the writer must preserve every locked
-receipt ID.
+The MiniMax planner proposes search angles. Retrieval, dedupe, scoring, and
+receipt binding stay deterministic; the writer must preserve every locked receipt
+ID.
