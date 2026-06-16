@@ -227,7 +227,7 @@ def _scan_jsonl(
                 break
             line = raw_line.decode("utf-8", errors="replace")
             folded = line.casefold()
-            if terms and not all(term in folded for term in terms):
+            if terms and not _contains_terms(folded, terms):
                 continue
             try:
                 item = json.loads(line)
@@ -259,7 +259,7 @@ def _scan_pubmed_xml(
                 if not hit:
                     continue
                 folded = f"{hit.get('title', '')} {hit.get('abstract', '')}".casefold()
-                if not terms or all(term in folded for term in terms):
+                if not terms or _contains_terms(folded, terms):
                     hits.append(hit)
         except ET.ParseError:
             return hits
@@ -375,6 +375,13 @@ def _query_terms(query: str) -> tuple[str, ...]:
         token
         for token in _WORD.findall(query.casefold())
         if len(token) > 1 and token not in _STOP
+    )
+
+
+def _contains_terms(text: str, terms: tuple[str, ...]) -> bool:
+    return all(
+        re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", text) is not None
+        for term in terms
     )
 
 
