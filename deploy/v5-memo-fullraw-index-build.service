@@ -9,6 +9,9 @@ WorkingDirectory=/opt/v5-memo
 EnvironmentFile=/etc/v5-memo/env
 Environment=PYTHONPATH=/opt/v5-memo/src
 ExecStart=/usr/bin/python3 -m v5_memo.fullraw_index build --commit-interval 5000
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
 Restart=on-failure
 RestartSec=30
 
