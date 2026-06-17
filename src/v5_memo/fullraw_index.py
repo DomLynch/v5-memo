@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import time
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,82 +51,86 @@ class FullRawFtsIndex:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(path), timeout=60.0)
+        self._conn = sqlite3.connect(str(path), timeout=60.0, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._lock = threading.RLock()
 
     def close(self) -> None:
         self._conn.close()
 
     def initialize(self) -> None:
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("PRAGMA temp_store=MEMORY")
-        self._conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS papers (
-              id INTEGER PRIMARY KEY,
-              source_key TEXT NOT NULL UNIQUE,
-              title TEXT NOT NULL,
-              abstract TEXT NOT NULL,
-              doi TEXT,
-              pmid TEXT,
-              pmcid TEXT,
-              openalex_id TEXT,
-              semantic_scholar_id TEXT,
-              year INTEGER,
-              journal TEXT,
-              source TEXT NOT NULL,
-              url TEXT,
-              cited_by_count INTEGER,
-              raw_score REAL
-            );
+        with self._lock:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn.execute("PRAGMA temp_store=MEMORY")
+            self._conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS papers (
+                  id INTEGER PRIMARY KEY,
+                  source_key TEXT NOT NULL UNIQUE,
+                  title TEXT NOT NULL,
+                  abstract TEXT NOT NULL,
+                  doi TEXT,
+                  pmid TEXT,
+                  pmcid TEXT,
+                  openalex_id TEXT,
+                  semantic_scholar_id TEXT,
+                  year INTEGER,
+                  journal TEXT,
+                  source TEXT NOT NULL,
+                  url TEXT,
+                  cited_by_count INTEGER,
+                  raw_score REAL
+                );
 
-            CREATE VIRTUAL TABLE IF NOT EXISTS paper_fts USING fts5(
-              title,
-              abstract,
-              journal,
-              content='papers',
-              content_rowid='id',
-              tokenize='unicode61 remove_diacritics 2'
-            );
+                CREATE VIRTUAL TABLE IF NOT EXISTS paper_fts USING fts5(
+                  title,
+                  abstract,
+                  journal,
+                  content='papers',
+                  content_rowid='id',
+                  tokenize='unicode61 remove_diacritics 2'
+                );
 
-            CREATE TABLE IF NOT EXISTS indexed_files (
-              remote TEXT PRIMARY KEY,
-              source TEXT NOT NULL,
-              format TEXT NOT NULL,
-              status TEXT NOT NULL,
-              docs_seen INTEGER NOT NULL DEFAULT 0,
-              docs_indexed INTEGER NOT NULL DEFAULT 0,
-              error TEXT NOT NULL DEFAULT '',
-              started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              finished_at TEXT
-            );
+                CREATE TABLE IF NOT EXISTS indexed_files (
+                  remote TEXT PRIMARY KEY,
+                  source TEXT NOT NULL,
+                  format TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  docs_seen INTEGER NOT NULL DEFAULT 0,
+                  docs_indexed INTEGER NOT NULL DEFAULT 0,
+                  error TEXT NOT NULL DEFAULT '',
+                  started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  finished_at TEXT
+                );
 
-            CREATE TABLE IF NOT EXISTS index_meta (
-              key TEXT PRIMARY KEY,
-              value TEXT NOT NULL
-            );
+                CREATE TABLE IF NOT EXISTS index_meta (
+                  key TEXT PRIMARY KEY,
+                  value TEXT NOT NULL
+                );
 
-            CREATE INDEX IF NOT EXISTS idx_papers_year ON papers(year);
-            CREATE INDEX IF NOT EXISTS idx_indexed_files_status ON indexed_files(status);
-            """
-        )
-        self._conn.commit()
+                CREATE INDEX IF NOT EXISTS idx_papers_year ON papers(year);
+                CREATE INDEX IF NOT EXISTS idx_indexed_files_status ON indexed_files(status);
+                """
+            )
+            self._conn.commit()
 
     def completed_remotes(self) -> set[str]:
-        rows = self._conn.execute(
-            "SELECT remote FROM indexed_files WHERE status = 'complete'"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT remote FROM indexed_files WHERE status = 'complete'"
+            ).fetchall()
         return {str(row["remote"]) for row in rows}
 
     def stats(self, *, files_total: int = 0) -> IndexStats:
-        papers_indexed = int(self._get_meta("papers_indexed") or "0")
-        files_indexed = int(
-            self._conn.execute(
-                "SELECT COUNT(*) FROM indexed_files WHERE status = 'complete'"
-            ).fetchone()[0]
-        )
-        bytes_used = self.path.stat().st_size if self.path.exists() else 0
+        with self._lock:
+            papers_indexed = int(self._get_meta("papers_indexed") or "0")
+            files_indexed = int(
+                self._conn.execute(
+                    "SELECT COUNT(*) FROM indexed_files WHERE status = 'complete'"
+                ).fetchone()[0]
+            )
+            bytes_used = self.path.stat().st_size if self.path.exists() else 0
         return IndexStats(
             papers_indexed=papers_indexed,
             files_indexed=files_indexed,
@@ -142,44 +147,45 @@ class FullRawFtsIndex:
         time_budget_seconds: float | None = None,
         commit_interval: int = 1000,
     ) -> IndexBuildResult:
-        self.initialize()
-        started = time.monotonic()
-        deadline = started + time_budget_seconds if time_budget_seconds else None
-        completed = self.completed_remotes()
-        files_attempted = 0
-        files_completed = 0
-        papers_inserted = 0
-        stopped_for_budget = False
+        with self._lock:
+            self.initialize()
+            started = time.monotonic()
+            deadline = started + time_budget_seconds if time_budget_seconds else None
+            completed = self.completed_remotes()
+            files_attempted = 0
+            files_completed = 0
+            papers_inserted = 0
+            stopped_for_budget = False
 
-        for raw_file in files:
-            if raw_file.remote in completed:
-                continue
-            if max_files is not None and files_attempted >= max_files:
-                break
-            if deadline is not None and time.monotonic() >= deadline:
-                stopped_for_budget = True
-                break
-            files_attempted += 1
-            result = self._index_one_file(
-                raw_file,
-                rclone_bin=rclone_bin,
-                deadline=deadline,
-                commit_interval=max(1, commit_interval),
+            for raw_file in files:
+                if raw_file.remote in completed:
+                    continue
+                if max_files is not None and files_attempted >= max_files:
+                    break
+                if deadline is not None and time.monotonic() >= deadline:
+                    stopped_for_budget = True
+                    break
+                files_attempted += 1
+                result = self._index_one_file(
+                    raw_file,
+                    rclone_bin=rclone_bin,
+                    deadline=deadline,
+                    commit_interval=max(1, commit_interval),
+                )
+                papers_inserted += result["inserted"]
+                if result["complete"]:
+                    files_completed += 1
+                else:
+                    stopped_for_budget = True
+                    break
+
+            return IndexBuildResult(
+                files_attempted=files_attempted,
+                files_completed=files_completed,
+                papers_inserted=papers_inserted,
+                stopped_for_budget=stopped_for_budget,
+                elapsed_seconds=round(time.monotonic() - started, 3),
             )
-            papers_inserted += result["inserted"]
-            if result["complete"]:
-                files_completed += 1
-            else:
-                stopped_for_budget = True
-                break
-
-        return IndexBuildResult(
-            files_attempted=files_attempted,
-            files_completed=files_completed,
-            papers_inserted=papers_inserted,
-            stopped_for_budget=stopped_for_budget,
-            elapsed_seconds=round(time.monotonic() - started, 3),
-        )
 
     def search(
         self,
@@ -189,36 +195,37 @@ class FullRawFtsIndex:
         year_min: int = 1900,
         year_max: int = 2100,
     ) -> list[dict[str, object]]:
-        self.initialize()
-        terms = _fts_terms(query)
-        if not terms:
-            return []
-        match_query = " AND ".join(f'"{term}"' for term in terms)
-        rows = self._conn.execute(
-            """
-            SELECT
-              p.title,
-              p.abstract,
-              p.doi,
-              p.pmid,
-              p.pmcid,
-              p.openalex_id,
-              p.semantic_scholar_id,
-              p.year,
-              p.journal,
-              p.source,
-              p.url,
-              p.cited_by_count,
-              bm25(paper_fts, 8.0, 3.0, 1.0) AS rank
-            FROM paper_fts
-            JOIN papers p ON p.id = paper_fts.rowid
-            WHERE paper_fts MATCH ?
-              AND (p.year IS NULL OR (p.year >= ? AND p.year <= ?))
-            ORDER BY rank ASC, COALESCE(p.cited_by_count, 0) DESC
-            LIMIT ?
-            """,
-            (match_query, year_min, year_max, max(1, min(limit, 200))),
-        ).fetchall()
+        with self._lock:
+            self.initialize()
+            terms = _fts_terms(query)
+            if not terms:
+                return []
+            match_query = " AND ".join(f'"{term}"' for term in terms)
+            rows = self._conn.execute(
+                """
+                SELECT
+                  p.title,
+                  p.abstract,
+                  p.doi,
+                  p.pmid,
+                  p.pmcid,
+                  p.openalex_id,
+                  p.semantic_scholar_id,
+                  p.year,
+                  p.journal,
+                  p.source,
+                  p.url,
+                  p.cited_by_count,
+                  bm25(paper_fts, 8.0, 3.0, 1.0) AS rank
+                FROM paper_fts
+                JOIN papers p ON p.id = paper_fts.rowid
+                WHERE paper_fts MATCH ?
+                  AND (p.year IS NULL OR (p.year >= ? AND p.year <= ?))
+                ORDER BY rank ASC, COALESCE(p.cited_by_count, 0) DESC
+                LIMIT ?
+                """,
+                (match_query, year_min, year_max, max(1, min(limit, 200))),
+            ).fetchall()
         return [_row_to_hit(row) for row in rows]
 
     def _index_one_file(
