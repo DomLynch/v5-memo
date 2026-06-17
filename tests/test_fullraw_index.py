@@ -12,6 +12,7 @@ from v5_memo.fullraw_index import (
     FullRawFtsIndex,
     aggregate_shard_stats,
     build_shards,
+    build_upload_shard_batches,
     discover_shard_paths,
     search_shards,
 )
@@ -277,3 +278,55 @@ def test_parallel_shard_build_and_search(tmp_path: Path) -> None:
     assert stats.papers_indexed == 4
     assert {hit["doi"] for hit in hits} >= {"10.2308/tar-9603274096", "10.example/analyst"}
     assert len([hit for hit in hits if hit["doi"] == "10.2308/tar-9603274096"]) == 1
+
+
+def test_build_upload_shard_batches_uploads_and_deletes_local_batches(tmp_path: Path) -> None:
+    files: list[RawFile] = []
+    for index in range(4):
+        source = tmp_path / f"openalex_batch_{index}.jsonl.gz"
+        _write_jsonl_gzip(
+            source,
+            [
+                {
+                    "doi": f"https://doi.org/10.example/batch-{index}",
+                    "display_name": f"Management forecast disclosure batch {index}",
+                    "abstract": "Managers disclose forecasts and guidance.",
+                    "publication_year": 2024,
+                }
+            ],
+        )
+        files.append(RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}"))
+
+    local_build = tmp_path / "local-build"
+    remote = tmp_path / "remote"
+    results = build_upload_shard_batches(
+        files,
+        shard_dir=local_build,
+        upload_remote=f"file://{remote}",
+        batch_files=2,
+        shard_count=2,
+        workers=2,
+        commit_interval=1,
+        delete_local=True,
+    )
+    repeated = build_upload_shard_batches(
+        files,
+        shard_dir=local_build,
+        upload_remote=f"file://{remote}",
+        batch_files=2,
+        shard_count=2,
+        workers=2,
+        commit_interval=1,
+        delete_local=True,
+    )
+
+    assert len(results) == 2
+    assert sum(result.files_completed for result in results) == 4
+    assert sum(result.papers_inserted for result in results) == 4
+    assert all(result.uploaded for result in results)
+    assert all(result.deleted_local for result in results)
+    assert not any((local_build / f"batch_{index:05d}").exists() for index in range(2))
+    assert (remote / "batch_00000" / "complete.json").exists()
+    assert (remote / "batch_00001" / "complete.json").exists()
+    assert len(list((remote / "batch_00000").glob("*.sqlite"))) == 2
+    assert all(result.skipped for result in repeated)

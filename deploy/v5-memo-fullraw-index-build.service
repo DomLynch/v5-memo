@@ -11,7 +11,9 @@ Environment=PYTHONPATH=/opt/v5-memo/src
 Environment=V5_MEMO_FULL_RAW_INDEX_MIN_FREE_GB=60
 Environment=V5_MEMO_FULL_RAW_SHARDS=4
 Environment=V5_MEMO_FULL_RAW_SHARD_WORKERS=4
-ExecStart=/usr/bin/python3 -m v5_memo.fullraw_index build-shards --commit-interval 5000
+Environment=V5_MEMO_FULL_RAW_SHARD_BATCH_FILES=16
+Environment=V5_MEMO_FULL_RAW_SHARD_REMOTE=sb:researka-database/index/v5/fullraw-fts
+ExecStart=/usr/bin/python3 -m v5_memo.fullraw_index build-upload-shards --commit-interval 5000
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=6
