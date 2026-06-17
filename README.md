@@ -149,6 +149,11 @@ Coverage note: until `v5-memo.fullraw_index stats` reports all manifest files
 complete, the indexed endpoint is fast and ranked over the indexed subset. Once
 complete, it is the intended full 470M+ raw-corpus retrieval path.
 
+For the full 470M+ build, use Storage Box-backed immutable shards rather than a
+single live SQLite database on a remote mount. See
+`docs/architecture/fullraw-storage-box-shards.md` and
+`deploy/v5-memo-fullraw-shards.env.example`.
+
 Hybrid mode searches the full raw service first when configured, then Researka,
 then OpenAlex, and dedupes receipts:
 
