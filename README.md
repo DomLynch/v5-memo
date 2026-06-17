@@ -203,3 +203,13 @@ MINIMAX_API_KEY=... PYTHONPATH=src python -m v5_memo \
 The MiniMax planner proposes search angles. Retrieval, dedupe, scoring, and
 receipt binding stay deterministic; the writer must preserve every locked receipt
 ID.
+
+Optional MiniMax overrides:
+
+```bash
+V5_MEMO_MINIMAX_API_KEY=...
+V5_MEMO_MINIMAX_BASE_URL=https://api.minimax.io/anthropic
+V5_MEMO_MINIMAX_MODEL=MiniMax-M3
+V5_MEMO_MINIMAX_TIMEOUT_SECONDS=60
+V5_MEMO_MINIMAX_MAX_TOKENS=1200
+```

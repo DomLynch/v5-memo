@@ -8,6 +8,7 @@ import pytest
 from v5_memo.minimax_writer import (
     MiniMaxM3MemoWriter,
     MiniMaxM3SearchPlanner,
+    build_minimax_prompt,
     parse_minimax_queries,
     validate_minimax_memo,
 )
@@ -31,10 +32,11 @@ class FakeResponse:
 class FakeOpener:
     def __init__(self, text: str) -> None:
         self.requests: list[Request] = []
+        self.timeouts: list[float] = []
         self._text = text
 
     def __call__(self, request: Request, timeout: float) -> FakeResponse:
-        del timeout
+        self.timeouts.append(timeout)
         self.requests.append(request)
         return FakeResponse({"content": [{"type": "text", "text": self._text}]})
 
@@ -76,6 +78,12 @@ def test_minimax_writer_calls_anthropic_endpoint_and_preserves_receipts() -> Non
     text = """# Alpha memo: longevity resilience
 ## Core signal
 NAD and mitochondrial repair may connect the receipts.
+## The 2+2=5 angle
+Sleep fragmentation and exercise response share the same receipt-bound bridge.
+## Why this could matter
+The bridge gives a testable resilience hypothesis.
+## What would break the idea
+The idea breaks if follow-up receipts do not connect the bridge terms.
 ## Receipts
 - 10.1/sleep-nad
 - 10.2/exercise-nad
@@ -97,10 +105,94 @@ Hypothesis only."""
     assert body["thinking"] == {"type": "disabled"}
 
 
+def test_minimax_writer_from_env_uses_v5_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    text = """# Alpha memo: longevity resilience
+## Core signal
+Signal.
+## The 2+2=5 angle
+Angle.
+## Why this could matter
+Matter.
+## What would break the idea
+Break.
+## Receipts
+- 10.1/sleep-nad
+- 10.2/exercise-nad
+## Safety note
+Hypothesis only."""
+    opener = FakeOpener(text)
+    monkeypatch.setenv("V5_MEMO_MINIMAX_API_KEY", "v5-key")
+    monkeypatch.setenv("V5_MEMO_MINIMAX_BASE_URL", "https://example.test/minimax")
+    monkeypatch.setenv("V5_MEMO_MINIMAX_MODEL", "MiniMax-M3-Test")
+    monkeypatch.setenv("V5_MEMO_MINIMAX_TIMEOUT_SECONDS", "12.5")
+    monkeypatch.setenv("V5_MEMO_MINIMAX_MAX_TOKENS", "777")
+
+    writer = MiniMaxM3MemoWriter.from_env(opener=opener)
+    writer.render(_candidate(), _receipts())
+
+    request = opener.requests[0]
+    assert request.full_url == "https://example.test/minimax/v1/messages"
+    assert opener.timeouts == [12.5]
+    request_data = request.data
+    assert isinstance(request_data, bytes)
+    body = json.loads(request_data.decode("utf-8"))
+    assert body["model"] == "MiniMax-M3-Test"
+    assert body["max_tokens"] == 777
+
+
+def test_build_minimax_prompt_bounds_long_abstracts() -> None:
+    long_hit = CorpusHit(
+        hit_id="long",
+        title="Very long receipt",
+        abstract=" ".join(["mitochondrial"] * 1000),
+        source="openalex:full-corpus",
+        doi="10.1/long",
+    )
+
+    prompt = build_minimax_prompt(_candidate(), [long_hit, _receipts()[1]])
+
+    assert "... [truncated]" in prompt
+    assert "Make the memo read like an insight" in prompt
+    assert len(prompt) < 5000
+
+
 def test_minimax_memo_validation_rejects_dropped_receipt_ids() -> None:
     with pytest.raises(ValueError, match="dropped receipt IDs"):
         validate_minimax_memo(
-            "# Alpha memo: x\n## Receipts\n- 10.1/sleep-nad\n## Safety note\nx",
+            """# Alpha memo: x
+## Core signal
+x
+## The 2+2=5 angle
+x
+## Why this could matter
+x
+## What would break the idea
+x
+## Receipts
+- 10.1/sleep-nad
+## Safety note
+x""",
+            _receipts(),
+        )
+
+
+def test_minimax_memo_validation_rejects_unreceipted_doi_like_references() -> None:
+    with pytest.raises(ValueError, match="unreceipted DOI-like"):
+        validate_minimax_memo(
+            """# Alpha memo: x
+## Core signal
+x
+## The 2+2=5 angle
+x
+## Why this could matter
+x
+## What would break the idea
+See 10.5555/not-in-receipts.
+## Receipts
+- 10.1/sleep-nad
+- 10.2/exercise-nad
+## Safety note
+x""",
             _receipts(),
         )
 
@@ -131,6 +223,28 @@ def test_minimax_planner_returns_json_queries_plus_original_seeds() -> None:
     body = json.loads(request_data.decode("utf-8"))
     assert body["model"] == "MiniMax-M3"
     assert "academic corpus search queries" in body["system"]
+
+
+def test_minimax_planner_from_env_uses_v5_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    opener = FakeOpener(json.dumps(["mitochondrial hormesis exercise response"]))
+    monkeypatch.setenv("V5_MEMO_MINIMAX_API_KEY", "v5-key")
+    monkeypatch.setenv("V5_MEMO_MINIMAX_BASE_URL", "https://example.test/minimax")
+    monkeypatch.setenv("V5_MEMO_MINIMAX_MODEL", "MiniMax-M3-Planner")
+    monkeypatch.setenv("V5_MEMO_MINIMAX_TIMEOUT_SECONDS", "9.5")
+    monkeypatch.setenv("V5_MEMO_MINIMAX_MAX_TOKENS", "333")
+
+    planner = MiniMaxM3SearchPlanner.from_env(opener=opener)
+    queries = planner.plan(topic="exercise response", seed_queries=["NAD salvage"], limit=1)
+
+    assert queries == ["mitochondrial hormesis exercise response", "NAD salvage"]
+    request = opener.requests[0]
+    assert request.full_url == "https://example.test/minimax/v1/messages"
+    assert opener.timeouts == [9.5]
+    request_data = request.data
+    assert isinstance(request_data, bytes)
+    body = json.loads(request_data.decode("utf-8"))
+    assert body["model"] == "MiniMax-M3-Planner"
+    assert body["max_tokens"] == 333
 
 
 def test_parse_minimax_queries_rejects_invalid_json() -> None:
