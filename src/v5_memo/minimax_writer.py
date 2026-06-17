@@ -210,8 +210,15 @@ Hard rules:
 - Keep every receipt ID exactly as written.
 - Do not invent mechanisms, clinical advice, causal certainty, new papers, or new numbers.
 - If a connection is uncertain, say it is a hypothesis.
+- Scope every implication to the receipts: state the specific population, market,
+  company, channel, model, benchmark, timeframe, geography, or source type only when
+  the receipts provide it.
+- Use source-appropriate descriptors from the receipts, not generic prestige labels:
+  trial/protocol, filing/report, benchmark, case study, market study, campaign, interview,
+  dataset, or model card.
 - Make the memo read like an insight, not a literature summary: surface the non-obvious bridge,
-  boundary condition, contradiction, or underused proxy.
+  contradiction, boundary condition, inversion, neglected proxy, metric mismatch, or
+  cross-domain transfer.
 - Avoid generic phrases such as "more research is needed" unless tied to a receipt-specific test.
 - Output Markdown only.
 - Keep it under 450 words.

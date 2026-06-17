@@ -156,6 +156,20 @@ def test_build_minimax_prompt_bounds_long_abstracts() -> None:
     assert len(prompt) < 5000
 
 
+def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
+    prompt = build_minimax_prompt(_candidate(), _receipts())
+
+    assert "Scope every implication to the receipts" in prompt
+    assert "population, market" in prompt
+    assert "company, channel, model, benchmark" in prompt
+    assert "Use source-appropriate descriptors from the receipts" in prompt
+    assert "filing/report" in prompt
+    assert "case study, market study, campaign" in prompt
+    assert "contradiction, boundary condition, inversion" in prompt
+    assert "metric mismatch" in prompt
+    assert "cross-domain transfer" in prompt
+
+
 def test_minimax_memo_validation_rejects_dropped_receipt_ids() -> None:
     with pytest.raises(ValueError, match="dropped receipt IDs"):
         validate_minimax_memo(
