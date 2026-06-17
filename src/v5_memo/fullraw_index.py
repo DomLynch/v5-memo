@@ -15,6 +15,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Iterable
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -52,6 +53,31 @@ class IndexBuildResult:
     papers_inserted: int
     stopped_for_budget: bool
     elapsed_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class ShardBuildResult:
+    shard_id: int
+    index_path: str
+    files_total: int
+    files_attempted: int
+    files_completed: int
+    papers_inserted: int
+    stopped_for_budget: bool
+    elapsed_seconds: float
+    bytes_used: int
+    error: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ShardBuildJob:
+    shard_id: int
+    index_path: str
+    files: list[RawFile]
+    rclone_bin: str
+    time_budget_seconds: float | None
+    commit_interval: int
+    min_free_bytes: int
 
 
 class FullRawFtsIndex:
@@ -491,6 +517,153 @@ class FullRawFtsIndex:
         return _unique_terms(str(item) for item in data)
 
 
+def build_shards(
+    files: list[RawFile],
+    *,
+    shard_dir: Path,
+    shard_count: int,
+    workers: int,
+    rclone_bin: str = "rclone",
+    max_files: int | None = None,
+    time_budget_seconds: float | None = None,
+    commit_interval: int = 1000,
+    min_free_bytes: int = 0,
+) -> list[ShardBuildResult]:
+    """Build independent SQLite shard indexes in parallel."""
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    selected_files = files[:max_files] if max_files is not None else files
+    chunks = _split_shard_files(selected_files, max(1, shard_count))
+    jobs = [
+        ShardBuildJob(
+            shard_id=shard_id,
+            index_path=str(shard_dir / f"fullraw_shard_{shard_id:04d}.sqlite"),
+            files=chunk,
+            rclone_bin=rclone_bin,
+            time_budget_seconds=time_budget_seconds,
+            commit_interval=max(1, commit_interval),
+            min_free_bytes=min_free_bytes,
+        )
+        for shard_id, chunk in enumerate(chunks)
+        if chunk
+    ]
+    if not jobs:
+        return []
+    max_workers = max(1, min(workers, len(jobs)))
+    results: list[ShardBuildResult] = []
+    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_build_shard_worker, job): job for job in jobs}
+        for future in as_completed(futures):
+            job = futures[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                results.append(
+                    ShardBuildResult(
+                        shard_id=job.shard_id,
+                        index_path=job.index_path,
+                        files_total=len(job.files),
+                        files_attempted=0,
+                        files_completed=0,
+                        papers_inserted=0,
+                        stopped_for_budget=True,
+                        elapsed_seconds=0.0,
+                        bytes_used=0,
+                        error=str(exc)[:500],
+                    )
+                )
+    return sorted(results, key=lambda item: item.shard_id)
+
+
+def search_shards(
+    index_paths: list[Path],
+    query: str,
+    *,
+    limit: int = 25,
+    year_min: int = 1900,
+    year_max: int = 2100,
+) -> list[dict[str, object]]:
+    """Search multiple shard DBs and merge ranked, deduped results."""
+    merged: dict[str, dict[str, object]] = {}
+    for path in index_paths:
+        if not path.exists():
+            continue
+        index = FullRawFtsIndex(path)
+        try:
+            hits = index.search(query, limit=limit, year_min=year_min, year_max=year_max)
+        finally:
+            index.close()
+        for hit in hits:
+            key = _dedupe_key(hit)
+            existing = merged.get(key)
+            if existing is None or _hit_score(hit) > _hit_score(existing):
+                merged[key] = hit
+    return sorted(
+        merged.values(),
+        key=lambda hit: (_hit_score(hit), _int_or_none(hit.get("cited_by_count")) or 0),
+        reverse=True,
+    )[: max(1, min(limit, 200))]
+
+
+def discover_shard_paths(shard_dir: Path) -> list[Path]:
+    return sorted(path for path in shard_dir.glob("*.sqlite") if path.is_file())
+
+
+def aggregate_shard_stats(index_paths: list[Path], *, files_total: int = 0) -> IndexStats:
+    papers_indexed = 0
+    files_indexed = 0
+    bytes_used = 0
+    for path in index_paths:
+        if not path.exists():
+            continue
+        index = FullRawFtsIndex(path)
+        try:
+            stats = index.stats(files_total=0)
+        finally:
+            index.close()
+        papers_indexed += stats.papers_indexed
+        files_indexed += stats.files_indexed
+        bytes_used += stats.bytes_used
+    return IndexStats(
+        papers_indexed=papers_indexed,
+        files_indexed=files_indexed,
+        files_total=files_total,
+        bytes_used=bytes_used,
+    )
+
+
+def _split_shard_files(files: list[RawFile], shard_count: int) -> list[list[RawFile]]:
+    chunks: list[list[RawFile]] = [[] for _ in range(max(1, shard_count))]
+    for index, raw_file in enumerate(files):
+        chunks[index % len(chunks)].append(raw_file)
+    return chunks
+
+
+def _build_shard_worker(job: ShardBuildJob) -> ShardBuildResult:
+    index = FullRawFtsIndex(Path(job.index_path))
+    try:
+        result = index.index_files(
+            job.files,
+            rclone_bin=job.rclone_bin,
+            time_budget_seconds=job.time_budget_seconds,
+            commit_interval=job.commit_interval,
+            min_free_bytes=job.min_free_bytes,
+        )
+        stats = index.stats(files_total=len(job.files))
+    finally:
+        index.close()
+    return ShardBuildResult(
+        shard_id=job.shard_id,
+        index_path=job.index_path,
+        files_total=len(job.files),
+        files_attempted=result.files_attempted,
+        files_completed=result.files_completed,
+        papers_inserted=result.papers_inserted,
+        stopped_for_budget=result.stopped_for_budget,
+        elapsed_seconds=result.elapsed_seconds,
+        bytes_used=stats.bytes_used,
+    )
+
+
 def run_server() -> None:
     host = os.environ.get("V5_MEMO_FULL_RAW_INDEX_HOST", "127.0.0.1")
     port = int(os.environ.get("V5_MEMO_FULL_RAW_INDEX_PORT", "9902"))
@@ -590,10 +763,37 @@ def main() -> None:
         default=float(os.environ.get("V5_MEMO_FULL_RAW_INDEX_MIN_FREE_GB", "40")),
     )
 
+    shard_dir_default = os.environ.get(
+        "V5_MEMO_FULL_RAW_SHARD_DIR",
+        os.environ.get("V5_MEMO_FULL_RAW_SHARD_BUILD_DIR", "/var/lib/v5-memo/fullraw-shards"),
+    )
+    build_shards_parser = subparsers.add_parser("build-shards")
+    build_shards_parser.add_argument("--shard-dir", default=shard_dir_default)
+    build_shards_parser.add_argument("--manifest", default=os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
+    build_shards_parser.add_argument("--refresh-manifest", action="store_true")
+    build_shards_parser.add_argument("--rclone-bin", default=os.environ.get("V5_MEMO_FULL_RAW_RCLONE", "rclone"))
+    build_shards_parser.add_argument("--shards", type=int, default=int(os.environ.get("V5_MEMO_FULL_RAW_SHARDS", "4")))
+    build_shards_parser.add_argument("--workers", type=int, default=int(os.environ.get("V5_MEMO_FULL_RAW_SHARD_WORKERS", "4")))
+    build_shards_parser.add_argument("--max-files", type=int)
+    build_shards_parser.add_argument("--time-budget-seconds", type=float)
+    build_shards_parser.add_argument("--commit-interval", type=int, default=1000)
+    build_shards_parser.add_argument(
+        "--min-free-gb",
+        type=float,
+        default=float(os.environ.get("V5_MEMO_FULL_RAW_INDEX_MIN_FREE_GB", "40")),
+    )
+
     search = subparsers.add_parser("search")
     search.add_argument("query")
     search.add_argument("--index-path", default=os.environ.get("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite"))
     search.add_argument("--limit", type=int, default=10)
+
+    search_shards_parser = subparsers.add_parser("search-shards")
+    search_shards_parser.add_argument("query")
+    search_shards_parser.add_argument("--shard-dir", default=shard_dir_default)
+    search_shards_parser.add_argument("--limit", type=int, default=10)
+    search_shards_parser.add_argument("--year-min", type=int, default=1900)
+    search_shards_parser.add_argument("--year-max", type=int, default=2100)
 
     explain = subparsers.add_parser("explain")
     explain.add_argument("query")
@@ -602,6 +802,10 @@ def main() -> None:
     stats = subparsers.add_parser("stats")
     stats.add_argument("--index-path", default=os.environ.get("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite"))
     stats.add_argument("--manifest", default=os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
+
+    stats_shards = subparsers.add_parser("stats-shards")
+    stats_shards.add_argument("--shard-dir", default=shard_dir_default)
+    stats_shards.add_argument("--manifest", default=os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
 
     subparsers.add_parser("serve")
     args = parser.parse_args()
@@ -632,12 +836,55 @@ def main() -> None:
             index.close()
         return
 
+    if args.command == "build-shards":
+        manifest_path = Path(args.manifest)
+        files = load_or_build_manifest(
+            manifest_path,
+            refresh=bool(args.refresh_manifest),
+            rclone_bin=str(args.rclone_bin),
+        )
+        results = build_shards(
+            files,
+            shard_dir=Path(args.shard_dir),
+            shard_count=max(1, int(args.shards)),
+            workers=max(1, int(args.workers)),
+            rclone_bin=str(args.rclone_bin),
+            max_files=args.max_files,
+            time_budget_seconds=args.time_budget_seconds,
+            commit_interval=args.commit_interval,
+            min_free_bytes=int(max(0.0, args.min_free_gb) * 1024**3),
+        )
+        print(json.dumps({
+            "shards": [asdict(result) for result in results],
+            "totals": {
+                "shards": len(results),
+                "files_attempted": sum(result.files_attempted for result in results),
+                "files_completed": sum(result.files_completed for result in results),
+                "papers_inserted": sum(result.papers_inserted for result in results),
+                "bytes_used": sum(result.bytes_used for result in results),
+                "errors": sum(1 for result in results if result.error),
+                "stopped_for_budget": any(result.stopped_for_budget for result in results),
+            },
+        }, sort_keys=True))
+        return
+
     if args.command == "search":
         index = FullRawFtsIndex(Path(args.index_path))
         try:
             print(json.dumps(index.search(args.query, limit=args.limit), indent=2, sort_keys=True))
         finally:
             index.close()
+        return
+
+    if args.command == "search-shards":
+        hits = search_shards(
+            discover_shard_paths(Path(args.shard_dir)),
+            str(args.query),
+            limit=int(args.limit),
+            year_min=int(args.year_min),
+            year_max=int(args.year_max),
+        )
+        print(json.dumps(hits, indent=2, sort_keys=True))
         return
 
     if args.command == "explain":
@@ -660,6 +907,18 @@ def main() -> None:
         finally:
             index.close()
 
+    if args.command == "stats-shards":
+        files_total = 0
+        manifest_path = Path(args.manifest)
+        if manifest_path.exists():
+            files_total = len(load_or_build_manifest(manifest_path))
+        shard_paths = discover_shard_paths(Path(args.shard_dir))
+        stats_payload = asdict(aggregate_shard_stats(shard_paths, files_total=files_total))
+        stats_payload["shards"] = len(shard_paths)
+        stats_payload["shard_dir"] = str(args.shard_dir)
+        print(json.dumps(stats_payload, sort_keys=True))
+        return
+
 
 def _row_to_hit(row: sqlite3.Row) -> dict[str, object]:
     rank = _float_or_none(row["rank"]) or 0.0
@@ -678,6 +937,10 @@ def _row_to_hit(row: sqlite3.Row) -> dict[str, object]:
         "cited_by_count": _int_or_none(row["cited_by_count"]),
         "score": round(-rank, 6),
     }
+
+
+def _hit_score(hit: dict[str, object]) -> float:
+    return _float_or_none(hit.get("score")) or 0.0
 
 
 def _free_bytes(path: Path) -> int:
