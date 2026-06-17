@@ -13,6 +13,7 @@ import re
 import subprocess
 import time
 import xml.etree.ElementTree as ET
+from collections.abc import Iterator
 from dataclasses import dataclass
 from html import unescape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -96,6 +97,18 @@ class RawCorpusScanner:
         if raw_file.format == "pubmed_xml":
             return list(_scan_pubmed_xml(raw_file, terms, deadline=deadline, rclone_bin=self._rclone_bin))
         return list(_scan_jsonl(raw_file, terms, deadline=deadline, rclone_bin=self._rclone_bin))
+
+
+def iter_raw_file_hits(
+    raw_file: RawFile,
+    *,
+    rclone_bin: str = "rclone",
+) -> Iterator[dict[str, object]]:
+    """Yield normalized records from one raw corpus file without search filtering."""
+    if raw_file.format == "pubmed_xml":
+        yield from _iter_pubmed_xml(raw_file, terms=(), deadline=None, rclone_bin=rclone_bin)
+        return
+    yield from _iter_jsonl(raw_file, terms=(), deadline=None, rclone_bin=rclone_bin)
 
 
 def load_or_build_manifest(path: Path, *, refresh: bool = False, rclone_bin: str = "rclone") -> list[RawFile]:
@@ -220,23 +233,7 @@ def _scan_jsonl(
     deadline: float,
     rclone_bin: str,
 ) -> list[dict[str, object]]:
-    hits: list[dict[str, object]] = []
-    with _open_gzip_stream(raw_file.remote, rclone_bin=rclone_bin) as stream:
-        for raw_line in stream:
-            if time.monotonic() >= deadline:
-                break
-            line = raw_line.decode("utf-8", errors="replace")
-            folded = line.casefold()
-            if terms and not _contains_terms(folded, terms):
-                continue
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            hit = _normalize_json_hit(item, raw_file.source)
-            if hit:
-                hits.append(hit)
-    return hits
+    return list(_iter_jsonl(raw_file, terms=terms, deadline=deadline, rclone_bin=rclone_bin))
 
 
 def _scan_pubmed_xml(
@@ -246,11 +243,43 @@ def _scan_pubmed_xml(
     deadline: float,
     rclone_bin: str,
 ) -> list[dict[str, object]]:
-    hits: list[dict[str, object]] = []
+    return list(_iter_pubmed_xml(raw_file, terms=terms, deadline=deadline, rclone_bin=rclone_bin))
+
+
+def _iter_jsonl(
+    raw_file: RawFile,
+    *,
+    terms: tuple[str, ...],
+    deadline: float | None,
+    rclone_bin: str,
+) -> Iterator[dict[str, object]]:
+    with _open_gzip_stream(raw_file.remote, rclone_bin=rclone_bin) as stream:
+        for raw_line in stream:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            line = raw_line.decode("utf-8", errors="replace")
+            if terms and not _contains_terms(line.casefold(), terms):
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            hit = _normalize_json_hit(item, raw_file.source)
+            if hit:
+                yield hit
+
+
+def _iter_pubmed_xml(
+    raw_file: RawFile,
+    *,
+    terms: tuple[str, ...],
+    deadline: float | None,
+    rclone_bin: str,
+) -> Iterator[dict[str, object]]:
     with _open_gzip_stream(raw_file.remote, rclone_bin=rclone_bin) as stream:
         try:
             for _event, elem in ET.iterparse(stream, events=("end",)):
-                if time.monotonic() >= deadline:
+                if deadline is not None and time.monotonic() >= deadline:
                     break
                 if _strip_ns(elem.tag) != "PubmedArticle":
                     continue
@@ -260,10 +289,9 @@ def _scan_pubmed_xml(
                     continue
                 folded = f"{hit.get('title', '')} {hit.get('abstract', '')}".casefold()
                 if not terms or _contains_terms(folded, terms):
-                    hits.append(hit)
+                    yield hit
         except ET.ParseError:
-            return hits
-    return hits
+            return
 
 
 class _GzipStream:
