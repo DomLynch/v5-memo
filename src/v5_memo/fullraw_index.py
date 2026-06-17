@@ -14,6 +14,7 @@ import shutil
 import sqlite3
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -23,6 +24,13 @@ from v5_memo.fullraw_service import RawFile, iter_raw_file_hits, load_or_build_m
 _WORD = re.compile(r"[A-Za-z0-9]+")
 _STOP = {"and", "or", "the", "with", "for", "from", "into", "this", "that"}
 _BACKEND = "v5-fullraw-indexed-fts5"
+_DEFAULT_TERM_MAP = (
+    ("management", ("management", "manager", "managers", "managerial")),
+    ("forecast", ("forecast", "forecasts", "forecasting", "guidance", "estimate", "estimates")),
+    ("disclosure", ("disclosure", "disclosures", "disclose", "discloses", "disclosed")),
+    ("earnings", ("earnings", "income", "profit", "profits")),
+    ("analyst", ("analyst", "analysts", "analysis")),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,10 +118,18 @@ class FullRawFtsIndex:
                   value TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS term_map (
+                  term TEXT PRIMARY KEY,
+                  expansions_json TEXT NOT NULL,
+                  source TEXT NOT NULL,
+                  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_papers_year ON papers(year);
                 CREATE INDEX IF NOT EXISTS idx_indexed_files_status ON indexed_files(status);
                 """
             )
+            self._seed_default_term_map()
             self._conn.commit()
 
     def completed_remotes(self) -> set[str]:
@@ -138,6 +154,46 @@ class FullRawFtsIndex:
             files_total=files_total,
             bytes_used=bytes_used,
         )
+
+    def upsert_term_map(
+        self,
+        term: str,
+        expansions: tuple[str, ...],
+        *,
+        source: str = "manual",
+    ) -> None:
+        """Persist a search-time expansion map for one canonical term."""
+        clean_term = _first_fts_term(term)
+        clean_expansions = _unique_terms((*expansions, clean_term))
+        if not clean_term or not clean_expansions:
+            raise ValueError("term map requires at least one searchable token")
+        with self._lock:
+            self.initialize()
+            self._conn.execute(
+                """
+                INSERT INTO term_map(term, expansions_json, source, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(term) DO UPDATE SET
+                  expansions_json=excluded.expansions_json,
+                  source=excluded.source,
+                  updated_at=CURRENT_TIMESTAMP
+                """,
+                (clean_term, json.dumps(clean_expansions), source),
+            )
+            self._conn.commit()
+
+    def explain_query(self, query: str) -> dict[str, object]:
+        """Return the persisted term-map expansion used for an FTS query."""
+        with self._lock:
+            self.initialize()
+            terms = _fts_terms(query)
+            groups = self._expanded_term_groups(terms)
+        return {
+            "query": query,
+            "terms": terms,
+            "groups": groups,
+            "fts_match": _fts_match_query(groups),
+        }
 
     def index_files(
         self,
@@ -205,7 +261,7 @@ class FullRawFtsIndex:
             terms = _fts_terms(query)
             if not terms:
                 return []
-            match_query = " AND ".join(f'"{term}"' for term in terms)
+            match_query = _fts_match_query(self._expanded_term_groups(terms))
             rows = self._conn.execute(
                 """
                 SELECT
@@ -232,6 +288,12 @@ class FullRawFtsIndex:
                 (match_query, year_min, year_max, max(1, min(limit, 200))),
             ).fetchall()
         return [_row_to_hit(row) for row in rows]
+
+    def _expanded_term_groups(self, terms: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
+        groups: list[tuple[str, ...]] = []
+        for term in terms:
+            groups.append(self._term_expansions(term) or (term,))
+        return tuple(groups)
 
     def _index_one_file(
         self,
@@ -403,6 +465,31 @@ class FullRawFtsIndex:
             (key, value),
         )
 
+    def _seed_default_term_map(self) -> None:
+        for term, expansions in _DEFAULT_TERM_MAP:
+            self._conn.execute(
+                """
+                INSERT OR IGNORE INTO term_map(term, expansions_json, source)
+                VALUES (?, ?, 'default')
+                """,
+                (term, json.dumps(_unique_terms(expansions))),
+            )
+
+    def _term_expansions(self, term: str) -> tuple[str, ...]:
+        row = self._conn.execute(
+            "SELECT expansions_json FROM term_map WHERE term = ?",
+            (term,),
+        ).fetchone()
+        if row is None:
+            return ()
+        try:
+            data = json.loads(str(row["expansions_json"]))
+        except json.JSONDecodeError:
+            return ()
+        if not isinstance(data, list):
+            return ()
+        return _unique_terms(str(item) for item in data)
+
 
 def run_server() -> None:
     host = os.environ.get("V5_MEMO_FULL_RAW_INDEX_HOST", "127.0.0.1")
@@ -463,6 +550,7 @@ def run_server() -> None:
             started = time.monotonic()
             hits = index.search(query, limit=limit, year_min=year_min, year_max=year_max)
             stats = index.stats(files_total=len(files))
+            explain = index.explain_query(query)
             _write_json(self, 200, {
                 "meta": {
                     "count": len(hits),
@@ -472,6 +560,8 @@ def run_server() -> None:
                     "complete": stats.complete,
                     "elapsed_seconds": round(time.monotonic() - started, 3),
                     "backend": _BACKEND,
+                    "expanded_query": explain["fts_match"],
+                    "term_groups": explain["groups"],
                 },
                 "results": hits,
             })
@@ -504,6 +594,10 @@ def main() -> None:
     search.add_argument("query")
     search.add_argument("--index-path", default=os.environ.get("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite"))
     search.add_argument("--limit", type=int, default=10)
+
+    explain = subparsers.add_parser("explain")
+    explain.add_argument("query")
+    explain.add_argument("--index-path", default=os.environ.get("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite"))
 
     stats = subparsers.add_parser("stats")
     stats.add_argument("--index-path", default=os.environ.get("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite"))
@@ -542,6 +636,14 @@ def main() -> None:
         index = FullRawFtsIndex(Path(args.index_path))
         try:
             print(json.dumps(index.search(args.query, limit=args.limit), indent=2, sort_keys=True))
+        finally:
+            index.close()
+        return
+
+    if args.command == "explain":
+        index = FullRawFtsIndex(Path(args.index_path))
+        try:
+            print(json.dumps(index.explain_query(args.query), indent=2, sort_keys=True))
         finally:
             index.close()
         return
@@ -592,6 +694,36 @@ def _fts_terms(query: str) -> tuple[str, ...]:
         seen.add(token)
         terms.append(token)
     return tuple(terms)
+
+
+def _first_fts_term(value: str) -> str:
+    terms = _fts_terms(value)
+    return terms[0] if terms else ""
+
+
+def _unique_terms(values: Iterable[str]) -> tuple[str, ...]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for term in _fts_terms(value):
+            if term in seen:
+                continue
+            seen.add(term)
+            out.append(term)
+    return tuple(out)
+
+
+def _fts_match_query(groups: tuple[tuple[str, ...], ...]) -> str:
+    clauses: list[str] = []
+    for group in groups:
+        clean_group = _unique_terms(group)
+        if not clean_group:
+            continue
+        if len(clean_group) == 1:
+            clauses.append(f'"{clean_group[0]}"')
+            continue
+        clauses.append("(" + " OR ".join(f'"{term}"' for term in clean_group) + ")")
+    return " AND ".join(clauses)
 
 
 def _dedupe_key(hit: dict[str, object]) -> str:

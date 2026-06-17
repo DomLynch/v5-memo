@@ -112,6 +112,24 @@ answers the same `POST /search` contract as the cold scanner, but returns BM25
 ranked hits from the persistent inverted index instead of first matches in file
 order.
 
+The indexed backend also stores a persistent `term_map` table for query
+expansion. Defaults cover high-value memo language such as
+`management -> manager/managers/managerial`, `forecast -> forecasts/guidance`,
+and `disclosure -> disclosures/disclose/disclosed`. This is why a query like
+`management forecast disclosure` can match a paper titled
+`Factors Associated with the Disclosure of Managers' Forecasts` even though the
+exact word `management` is absent.
+
+Inspect the actual expansion used for a query:
+
+```bash
+PYTHONPATH=src python -m v5_memo.fullraw_index explain \
+  "management forecast disclosure"
+```
+
+The HTTP `/search` response also includes `meta.expanded_query` and
+`meta.term_groups` for auditability.
+
 On the VPS, install and start the systemd units in `deploy/`:
 
 ```bash

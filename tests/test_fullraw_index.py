@@ -58,7 +58,8 @@ def test_fullraw_index_builds_ranked_queryable_index(tmp_path: Path) -> None:
         result = index.index_files([
             RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")
         ])
-        hits = index.search("forecast disclosure", limit=5)
+        hits = index.search("management forecast disclosure", limit=5)
+        explain = index.explain_query("management forecast disclosure")
         stats = index.stats(files_total=1)
     finally:
         index.close()
@@ -69,6 +70,43 @@ def test_fullraw_index_builds_ranked_queryable_index(tmp_path: Path) -> None:
     assert stats.files_indexed == 1
     assert hits[0]["doi"] == "10.2308/tar-9603274096"
     assert hits[0]["source"] == "openalex"
+    fts_match = explain["fts_match"]
+    assert isinstance(fts_match, str)
+    assert "managers" in fts_match
+    assert "forecasts" in fts_match
+    assert "discloses" in fts_match
+
+
+def test_fullraw_index_uses_persisted_custom_term_map(tmp_path: Path) -> None:
+    source = tmp_path / "openalex.jsonl.gz"
+    _write_jsonl_gzip(
+        source,
+        [
+            {
+                "doi": "https://doi.org/10.example/guidance",
+                "display_name": "Management guidance and earnings surprises",
+                "abstract": "Managers issue guidance before earnings surprises.",
+                "publication_year": 2024,
+            }
+        ],
+    )
+    index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
+    try:
+        index.index_files([
+            RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")
+        ])
+        assert index.search("projection", limit=5) == []
+
+        index.upsert_term_map("projection", ("guidance",), source="test")
+        hits = index.search("projection", limit=5)
+        explain = index.explain_query("projection")
+    finally:
+        index.close()
+
+    assert hits[0]["doi"] == "10.example/guidance"
+    fts_match = explain["fts_match"]
+    assert isinstance(fts_match, str)
+    assert "guidance" in fts_match
 
 
 def test_fullraw_index_is_resumable_and_dedupes_completed_files(tmp_path: Path) -> None:
