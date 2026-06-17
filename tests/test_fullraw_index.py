@@ -8,7 +8,13 @@ from types import SimpleNamespace
 
 from pytest import MonkeyPatch
 
-from v5_memo.fullraw_index import FullRawFtsIndex
+from v5_memo.fullraw_index import (
+    FullRawFtsIndex,
+    aggregate_shard_stats,
+    build_shards,
+    discover_shard_paths,
+    search_shards,
+)
 from v5_memo.fullraw_service import RawFile
 
 
@@ -215,3 +221,59 @@ def test_disk_guard_checks_index_filesystem(tmp_path: Path, monkeypatch: MonkeyP
         index.close()
 
     assert checked_paths == [index_path.parent]
+
+
+def test_parallel_shard_build_and_search(tmp_path: Path) -> None:
+    files: list[RawFile] = []
+    rows = [
+        {
+            "doi": "https://doi.org/10.2308/tar-9603274096",
+            "display_name": "Factors Associated with the Disclosure of Managers' Forecasts",
+            "abstract": "Managers disclose forecasts of future earnings.",
+            "publication_year": 1990,
+            "cited_by_count": 110,
+        },
+        {
+            "doi": "https://doi.org/10.example/analyst",
+            "display_name": "Analyst forecast disclosure and management guidance",
+            "abstract": "Analysts use management guidance for forecast disclosure.",
+            "publication_year": 2020,
+            "cited_by_count": 10,
+        },
+        {
+            "doi": "https://doi.org/10.example/noise",
+            "display_name": "Island species forecast ecology",
+            "abstract": "Forecasts for climate space under grazing pressure.",
+            "publication_year": 2021,
+        },
+        {
+            "doi": "https://doi.org/10.2308/tar-9603274096",
+            "display_name": "Duplicate management forecast disclosure",
+            "abstract": "Duplicate receipt should be deduped across shards.",
+            "publication_year": 1990,
+        },
+    ]
+    for index, row in enumerate(rows):
+        source = tmp_path / f"openalex_{index}.jsonl.gz"
+        _write_jsonl_gzip(source, [row])
+        files.append(RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}"))
+
+    results = build_shards(
+        files,
+        shard_dir=tmp_path / "shards",
+        shard_count=2,
+        workers=2,
+        commit_interval=1,
+    )
+    shard_paths = discover_shard_paths(tmp_path / "shards")
+    stats = aggregate_shard_stats(shard_paths, files_total=len(files))
+    hits = search_shards(shard_paths, "management forecast disclosure", limit=5)
+
+    assert len(results) == 2
+    assert sum(result.files_completed for result in results) == 4
+    assert sum(result.papers_inserted for result in results) == 4
+    assert len(shard_paths) == 2
+    assert stats.files_indexed == 4
+    assert stats.papers_indexed == 4
+    assert {hit["doi"] for hit in hits} >= {"10.2308/tar-9603274096", "10.example/analyst"}
+    assert len([hit for hit in hits if hit["doi"] == "10.2308/tar-9603274096"]) == 1
