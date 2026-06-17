@@ -33,7 +33,7 @@ _REQUIRED_MEMO_SECTIONS = (
     "## Safety note",
 )
 _DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s<>()\[\]{}\"']+", re.IGNORECASE)
-_DOI_TRAILING_PUNCTUATION = ".,;:"
+_DOI_TRAILING_PUNCTUATION = ".,;:*_"
 
 
 class HttpResponse(Protocol):

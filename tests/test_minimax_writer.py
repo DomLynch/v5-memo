@@ -220,6 +220,28 @@ x""",
         )
 
 
+def test_minimax_memo_validation_allows_markdown_emphasized_receipt_dois() -> None:
+    memo = validate_minimax_memo(
+        """# Alpha memo: x
+## Core signal
+x
+## The 2+2=5 angle
+x
+## Why this could matter
+x
+## What would break the idea
+x
+## Receipts
+- **10.1/sleep-nad**
+- **10.2/exercise-nad**
+## Safety note
+x""",
+        _receipts(),
+    )
+
+    assert "**10.1/sleep-nad**" in memo
+
+
 def test_minimax_planner_returns_json_queries_plus_original_seeds() -> None:
     opener = FakeOpener(
         json.dumps([
