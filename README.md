@@ -97,6 +97,40 @@ raw files and returns the first receipt candidates it finds. It enables the LLM
 layer to use the full raw archive surface now; it is not a fast exhaustive
 Tantivy/DuckDB index.
 
+Production fullraw search should use the indexed FTS backend:
+
+```bash
+PYTHONPATH=src python -m v5_memo.fullraw_index build
+PYTHONPATH=src python -m v5_memo.fullraw_index serve
+```
+
+Default bind: `127.0.0.1:9902`. Default index path:
+`/var/lib/v5-memo/fullraw_index.sqlite`. The builder reads the same raw manifest
+as the cold scanner, normalizes title/abstract/DOI/source fields, writes a
+resumable SQLite FTS5 index, and dedupes completed files. The search service
+answers the same `POST /search` contract as the cold scanner, but returns BM25
+ranked hits from the persistent inverted index instead of first matches in file
+order.
+
+On the VPS, install and start the systemd units in `deploy/`:
+
+```bash
+cp deploy/v5-memo-fullraw-index*.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now v5-memo-fullraw-index.service
+systemctl enable --now v5-memo-fullraw-index-build.service
+```
+
+Then point V5 at the indexed endpoint:
+
+```bash
+V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL=http://127.0.0.1:9902/search
+```
+
+Coverage note: until `v5-memo.fullraw_index stats` reports all manifest files
+complete, the indexed endpoint is fast and ranked over the indexed subset. Once
+complete, it is the intended full 470M+ raw-corpus retrieval path.
+
 Hybrid mode searches the full raw service first when configured, then Researka,
 then OpenAlex, and dedupes receipts:
 

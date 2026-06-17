@@ -12,7 +12,7 @@ import os
 import re
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -515,7 +515,7 @@ def main() -> None:
                 time_budget_seconds=args.time_budget_seconds,
                 commit_interval=args.commit_interval,
             )
-            print(json.dumps(result.__dict__, sort_keys=True))
+            print(json.dumps(asdict(result), sort_keys=True))
         finally:
             index.close()
         return
@@ -536,7 +536,7 @@ def main() -> None:
         index = FullRawFtsIndex(Path(args.index_path))
         try:
             index.initialize()
-            print(json.dumps(index.stats(files_total=files_total).__dict__, sort_keys=True))
+            print(json.dumps(asdict(index.stats(files_total=files_total)), sort_keys=True))
         finally:
             index.close()
 

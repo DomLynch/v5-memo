@@ -1,0 +1,16 @@
+[Unit]
+Description=V5 Memo fullraw indexed search service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/v5-memo
+EnvironmentFile=/etc/v5-memo/env
+Environment=PYTHONPATH=/opt/v5-memo/src
+ExecStart=/usr/bin/python3 -m v5_memo.fullraw_index serve
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
