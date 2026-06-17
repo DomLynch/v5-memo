@@ -8,6 +8,7 @@ Type=simple
 WorkingDirectory=/opt/v5-memo
 EnvironmentFile=/etc/v5-memo/env
 Environment=PYTHONPATH=/opt/v5-memo/src
+Environment=V5_MEMO_FULL_RAW_INDEX_MIN_FREE_GB=60
 ExecStart=/usr/bin/python3 -m v5_memo.fullraw_index build --commit-interval 5000
 Nice=10
 IOSchedulingClass=best-effort

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import gzip
 import json
+from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
+
+from pytest import MonkeyPatch
 
 from v5_memo.fullraw_index import FullRawFtsIndex
 from v5_memo.fullraw_service import RawFile
@@ -92,3 +96,84 @@ def test_fullraw_index_is_resumable_and_dedupes_completed_files(tmp_path: Path) 
     assert second.files_attempted == 0
     assert second.papers_inserted == 0
     assert stats.papers_indexed == 1
+
+
+def test_fullraw_index_stops_when_disk_guard_is_hit(tmp_path: Path) -> None:
+    source = tmp_path / "openalex.jsonl.gz"
+    _write_jsonl_gzip(
+        source,
+        [
+            {
+                "doi": "https://doi.org/10.example/one",
+                "display_name": "Management forecast disclosure",
+                "abstract": "Forecast disclosure and earnings forecast error.",
+            }
+        ],
+    )
+    index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
+    try:
+        result = index.index_files(
+            [RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")],
+            min_free_bytes=10**18,
+        )
+        stats = index.stats(files_total=1)
+    finally:
+        index.close()
+
+    assert result.stopped_for_budget is True
+    assert result.files_attempted == 0
+    assert result.papers_inserted == 0
+    assert stats.papers_indexed == 0
+
+
+def test_fullraw_index_proceeds_when_disk_guard_allows(tmp_path: Path) -> None:
+    source = tmp_path / "openalex.jsonl.gz"
+    _write_jsonl_gzip(
+        source,
+        [
+            {
+                "doi": "https://doi.org/10.example/one",
+                "display_name": "Management forecast disclosure",
+                "abstract": "Forecast disclosure and earnings forecast error.",
+            }
+        ],
+    )
+    index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
+    try:
+        result = index.index_files(
+            [RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")],
+            min_free_bytes=0,
+        )
+    finally:
+        index.close()
+
+    assert result.stopped_for_budget is False
+    assert result.files_completed == 1
+    assert result.papers_inserted == 1
+
+
+def test_disk_guard_checks_index_filesystem(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    checked_paths: list[Path] = []
+
+    def fake_disk_usage(path: Path) -> SimpleNamespace:
+        checked_paths.append(path)
+        return SimpleNamespace(total=100, used=40, free=60)
+
+    def no_records(_raw_file: RawFile, *, rclone_bin: str = "rclone") -> Iterator[dict[str, object]]:
+        del rclone_bin
+        yield from ()
+
+    monkeypatch.setattr("v5_memo.fullraw_index.shutil.disk_usage", fake_disk_usage)
+    monkeypatch.setattr("v5_memo.fullraw_index.iter_raw_file_hits", no_records)
+
+    index_path = tmp_path / "nested" / "fullraw.sqlite"
+    index = FullRawFtsIndex(index_path)
+    try:
+        index.index_files(
+            [RawFile(source="openalex", format="openalex_jsonl", remote="file:///unused.gz")],
+            min_free_bytes=1,
+        )
+    finally:
+        index.close()
+
+    assert checked_paths == [index_path.parent]

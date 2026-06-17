@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -146,6 +147,7 @@ class FullRawFtsIndex:
         max_files: int | None = None,
         time_budget_seconds: float | None = None,
         commit_interval: int = 1000,
+        min_free_bytes: int = 0,
     ) -> IndexBuildResult:
         with self._lock:
             self.initialize()
@@ -158,6 +160,9 @@ class FullRawFtsIndex:
             stopped_for_budget = False
 
             for raw_file in files:
+                if min_free_bytes > 0 and _free_bytes(self.path.parent) < min_free_bytes:
+                    stopped_for_budget = True
+                    break
                 if raw_file.remote in completed:
                     continue
                 if max_files is not None and files_attempted >= max_files:
@@ -489,6 +494,11 @@ def main() -> None:
     build.add_argument("--max-files", type=int)
     build.add_argument("--time-budget-seconds", type=float)
     build.add_argument("--commit-interval", type=int, default=1000)
+    build.add_argument(
+        "--min-free-gb",
+        type=float,
+        default=float(os.environ.get("V5_MEMO_FULL_RAW_INDEX_MIN_FREE_GB", "40")),
+    )
 
     search = subparsers.add_parser("search")
     search.add_argument("query")
@@ -521,6 +531,7 @@ def main() -> None:
                 max_files=args.max_files,
                 time_budget_seconds=args.time_budget_seconds,
                 commit_interval=args.commit_interval,
+                min_free_bytes=int(max(0.0, args.min_free_gb) * 1024**3),
             )
             print(json.dumps(asdict(result), sort_keys=True))
         finally:
@@ -565,6 +576,11 @@ def _row_to_hit(row: sqlite3.Row) -> dict[str, object]:
         "cited_by_count": _int_or_none(row["cited_by_count"]),
         "score": round(-rank, 6),
     }
+
+
+def _free_bytes(path: Path) -> int:
+    usage = shutil.disk_usage(path)
+    return int(usage.free)
 
 
 def _fts_terms(query: str) -> tuple[str, ...]:
