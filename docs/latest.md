@@ -11,8 +11,9 @@ PYTHONPATH=src python3 -m v5_memo \
   --searcher fullraw \
   --writer minimax \
   --topic "management forecast disclosure" \
-  --query "forecast" \
-  --query "management"
+  --query "forecast disclosure" \
+  --query "earnings forecast" \
+  --query "management earnings forecast"
 ```
 
 ---
@@ -20,20 +21,29 @@ PYTHONPATH=src python3 -m v5_memo \
 # Alpha memo: management forecast disclosure
 
 ## Core signal
-Two receipts converge on a stability question but from opposite directions. Receipt 1 (10.5287/ora-kzajeobxo) projects species' climate space to "decrease or disappear" across Trinidad under a future climate scenario, signaling community- and regional-level contraction. Receipt 2 (10.25675/3.026449) reports that within a montane riparian system, long-term grazing shifted soil and vegetation traits such that community-level soil shear strength ranked sedge/grass > grass/forb/shrub > grass/rush, with the grass/rush community roughly 50% weaker. Receipt 1 emphasizes loss; Receipt 2 emphasizes differentiation among community types.
+Two complementary receipt-level findings converge on earnings expectations as a friction point.
+- Receipt 1 (10.2308/tar-9603274096) examines what is **associated** with managers' decision to disclose forecasts of future earnings, including ownership structure and analysts' forecast errors (the latter framed as an indication of good news).
+- Receipt 2 (10.2308/tar-4483133) documents **earnings** announcement drift and shows the sign and magnitude of the earnings forecast error, together with firm size, explain most cross-sectional variation in post-announcement drifts.
+
+Read together: the same "forecast error" construct appears both as a candidate driver of disclosure choice (Receipt 1) and as a dominant explanator of post-earnings drift (Receipt 2).
 
 ## The 2+2=5 angle
-Both receipts invoke the same bridge terms (individual, species, stability, vegetation) yet stress different layers of resolution. Receipt 1 frames persistence at the level of species ranges and protected-area networks; Receipt 2 frames persistence at the level of plant-community root and soil traits on streambanks. The combined reading is a hypothesis: stability is a function of which unit of vegetation is being measured. Individual root traits in Receipt 2 did not, on their own, explain community-level soil shear strength; community composition did. Receipt 1 likewise recommends a regional rather than individual-island lens for species persistence. Tensions between negative (range loss, weakened grass/rush soils) and positive (sedge/grass soils resisting shear, some range expansion possible) outcomes may therefore collapse if "individual" is silently substituted for "community."
+- **Piece 1** (Receipt 1): forecast error is a motivator for managers to release forecasts.
+- **Piece 2** (Receipt 2): forecast error + firm size explain 85% of drift variation jointly, but 81% and 61% individually — Receipt 2 flags high collinearity.
+- **Sum**: if disclosure is itself a function of forecast error, then the variable Receipt 2 credits with explaining drift may be partly endogenous to management's choice to disclose. Receipt 2's documented collinearity between forecast error and firm size is the structural gap that opens room for a disclosure-choice confound. (Hypothesis, not proven here.)
 
 ## Why this could matter
-A forecast framed at the wrong organizational level can miss the actual boundary of collapse. Receipt 1's collective change map shows expansion, contraction, and stability as separate futures for the same species pool, and Receipt 2 shows that within a single ecosystem, stability rankings flip between root-level and community-level views.
+If forecast-error-driven disclosure is bundled into Receipt 2's drift regressions, a portion of "anomaly alpha" attributed to forecast error may be a disclosure-selection artifact. Receipt 1's abstract framing — analysts' forecast errors as indications of good news — is consistent with managers using error magnitude/sign to time disclosure, which Receipt 2 does not explicitly control for.
 
 ## What would break the idea
-Receipt 2 is a single montane site; Receipt 1 is a single Caribbean island case study. Receipt 2 reports non-significant soil shear strength differences despite directional trends. No direct causal link between grazing-driven community shifts and climate-driven range shifts is established by the supplied receipts.
+- Receipt 1's four motivating factors are not enumerated as causal; association only.
+- Receipt 2's collinearity note says the two variables are jointly powerful, not that forecast error is spurious.
+- Receipt 1 is from 1990; Receipt 2 covers 1974-1981. Generalizability to later regimes is unknown from these receipts.
+- No direct test linking disclosure timing to drift is provided in either receipt.
 
 ## Receipts
-- 10.5287/ora-kzajeobxo
-- 10.25675/3.026449
+- 10.2308/tar-9603274096 — Factors Associated with the Disclosure of Managers' Forecasts (1990).
+- 10.2308/tar-4483133 — Earnings Releases, Anomalies, and the Behavior of Security Returns (1984).
 
 ## Safety note
-This memo is descriptive, not prescriptive. No management action is recommended on the basis of these receipts alone.
+This memo is a synthesis of abstracts only. Any trading or causal claim is a hypothesis pending direct re-reading of full texts and replication. No clinical, legal, or investment advice.
