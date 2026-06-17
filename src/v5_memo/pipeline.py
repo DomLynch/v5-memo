@@ -10,6 +10,10 @@ from v5_memo.schemas import CorpusHit, InsightCandidate, MemoResult
 from v5_memo.writer import render_memo
 
 MemoWriter = Callable[[InsightCandidate, Sequence[CorpusHit]], str]
+CandidateSelector = Callable[
+    [Sequence[InsightCandidate], Sequence[CorpusHit]],
+    Sequence[InsightCandidate],
+]
 
 
 def build_alpha_memo(
@@ -18,6 +22,7 @@ def build_alpha_memo(
     seed_queries: Sequence[str],
     searcher: CorpusSearcher,
     memo_writer: MemoWriter = render_memo,
+    candidate_selector: CandidateSelector | None = None,
     anchor_queries: Sequence[str] | None = None,
     per_query_limit: int = 25,
     max_hits: int = 100,
@@ -34,6 +39,8 @@ def build_alpha_memo(
         topic=topic,
         required_anchor_terms=query_anchor_terms(anchor_queries or seed_queries),
     )
+    if candidate_selector is not None:
+        candidates = list(candidate_selector(candidates, hits))
     for candidate in candidates:
         receipts = bind_receipts(candidate, hits)
         if receipts:

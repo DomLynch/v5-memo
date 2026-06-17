@@ -142,6 +142,34 @@ def test_pipeline_accepts_custom_memo_writer() -> None:
     assert result.markdown == "custom: longevity resilience / 2"
 
 
+def test_pipeline_calls_candidate_selector_before_receipt_binding() -> None:
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return _hits()
+
+    seen: dict[str, int] = {}
+
+    def selector(
+        candidates: Sequence[InsightCandidate],
+        hits: Sequence[CorpusHit],
+    ) -> Sequence[InsightCandidate]:
+        seen["candidates"] = len(candidates)
+        seen["hits"] = len(hits)
+        return candidates
+
+    result = build_alpha_memo(
+        topic="longevity resilience",
+        seed_queries=["sleep nad", "exercise nad"],
+        searcher=FakeSearch(),
+        candidate_selector=selector,
+    )
+
+    assert seen["candidates"] >= 1
+    assert seen["hits"] == 3
+    assert result.markdown.startswith("# Alpha memo")
+
+
 def test_query_anchor_terms_keep_specific_seed_terms() -> None:
     assert query_anchor_terms([
         "NAD salvage mitochondrial stress exercise response",

@@ -6,9 +6,12 @@ from urllib.request import Request
 import pytest
 
 from v5_memo.minimax_writer import (
+    MiniMaxM3CandidateJudge,
     MiniMaxM3MemoWriter,
     MiniMaxM3SearchPlanner,
+    build_minimax_candidate_judge_prompt,
     build_minimax_prompt,
+    parse_minimax_candidate_ranking,
     parse_minimax_queries,
     validate_minimax_memo,
 )
@@ -41,16 +44,22 @@ class FakeOpener:
         return FakeResponse({"content": [{"type": "text", "text": self._text}]})
 
 
-def _candidate() -> InsightCandidate:
+def _candidate(
+    *,
+    thesis: str = "longevity resilience may have a mitochondrial NAD bridge.",
+    score: int = 80,
+    novelty_score: int = 70,
+    evidence_score: int = 90,
+) -> InsightCandidate:
     return InsightCandidate(
         topic="longevity resilience",
-        thesis="longevity resilience may have a mitochondrial NAD bridge.",
+        thesis=thesis,
         bridge_terms=("nad", "mitochondrial"),
         tension_terms=("positive", "negative"),
         receipt_ids=("h1", "h2"),
-        score=80,
-        novelty_score=70,
-        evidence_score=90,
+        score=score,
+        novelty_score=novelty_score,
+        evidence_score=evidence_score,
         reasons=("source_diverse",),
     )
 
@@ -264,3 +273,46 @@ def test_minimax_planner_from_env_uses_v5_overrides(monkeypatch: pytest.MonkeyPa
 def test_parse_minimax_queries_rejects_invalid_json() -> None:
     with pytest.raises(ValueError, match="valid JSON"):
         parse_minimax_queries("not json", limit=4)
+
+
+def test_candidate_judge_reorders_receipt_bound_candidates() -> None:
+    opener = FakeOpener(json.dumps({"ranking": [2, 1]}))
+    judge = MiniMaxM3CandidateJudge(api_key="test-key", opener=opener)
+    weaker = _candidate(thesis="A broad bridge with weaker actionability.", score=95)
+    sharper = _candidate(thesis="A sharper boundary condition between the receipts.", score=70)
+
+    ranked = judge.rank([weaker, sharper], _receipts())
+
+    assert ranked == [sharper, weaker]
+    request = opener.requests[0]
+    request_data = request.data
+    assert isinstance(request_data, bytes)
+    body = json.loads(request_data.decode("utf-8"))
+    assert "rank receipt-bound alpha memo candidates" in body["system"]
+    prompt = body["messages"][0]["content"][0]["text"]
+    assert "Candidate 2" in prompt
+    assert "A sharper boundary condition" in prompt
+
+
+def test_candidate_judge_prompt_contains_universal_ranking_criteria() -> None:
+    prompt = build_minimax_candidate_judge_prompt([(_candidate(), _receipts())])
+
+    assert "receipt fit" in prompt
+    assert "population, market" in prompt
+    assert "company, channel, model, benchmark" in prompt
+    assert "metric mismatch" in prompt
+    assert "cross-domain transfer" in prompt
+
+
+def test_parse_minimax_candidate_ranking_accepts_object_and_dedupes() -> None:
+    assert parse_minimax_candidate_ranking(
+        """```json
+{"ranking":["2", 1, 2, 99]}
+```""",
+        candidate_count=2,
+    ) == [1, 0]
+
+
+def test_parse_minimax_candidate_ranking_rejects_invalid_json() -> None:
+    with pytest.raises(ValueError, match="valid JSON"):
+        parse_minimax_candidate_ranking("not json", candidate_count=2)

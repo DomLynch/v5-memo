@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 from urllib.request import Request, urlopen
 
+from v5_memo.binder import bind_receipts
 from v5_memo.schemas import CorpusHit, InsightCandidate
 
 MINIMAX_BASE_URL = "https://api.minimax.io/anthropic"
@@ -21,6 +22,7 @@ MINIMAX_TIMEOUT_ENV = "V5_MEMO_MINIMAX_TIMEOUT_SECONDS"
 MINIMAX_MAX_TOKENS_ENV = "V5_MEMO_MINIMAX_MAX_TOKENS"
 MINIMAX_KEY_FILE = Path.home() / ".codex" / "secrets" / "minimax_api_key"
 RECEIPT_ABSTRACT_CHAR_LIMIT = 1400
+JUDGE_RECEIPT_ABSTRACT_CHAR_LIMIT = 700
 _REQUIRED_MEMO_SECTIONS = (
     "# Alpha memo:",
     "## Core signal",
@@ -153,6 +155,82 @@ class MiniMaxM3SearchPlanner:
         return _dedupe_queries([*planned, *seed_queries])
 
 
+class MiniMaxM3CandidateJudge:
+    """Use MiniMax-M3 to re-rank receipt-bound candidate memos."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str = MINIMAX_BASE_URL,
+        model: str = MINIMAX_MODEL,
+        timeout: float = 45.0,
+        max_tokens: int = 700,
+        opener: RequestOpener | None = None,
+    ) -> None:
+        if not api_key.strip():
+            raise ValueError("MINIMAX_API_KEY is required for MiniMax judge")
+        self._api_key = api_key.strip()
+        self._base_url = base_url.rstrip("/")
+        self._model = model
+        self._timeout = timeout
+        self._max_tokens = max_tokens
+        self._opener = opener or cast(RequestOpener, urlopen)
+
+    @classmethod
+    def from_env(cls, *, opener: RequestOpener | None = None) -> MiniMaxM3CandidateJudge:
+        return cls(
+            api_key=load_minimax_api_key(),
+            base_url=_env_string([MINIMAX_BASE_URL_ENV, "MINIMAX_BASE_URL"], MINIMAX_BASE_URL),
+            model=_env_string([MINIMAX_MODEL_ENV, "MINIMAX_MODEL"], MINIMAX_MODEL),
+            timeout=_env_float([MINIMAX_TIMEOUT_ENV], 45.0),
+            max_tokens=_env_int([MINIMAX_MAX_TOKENS_ENV], 700),
+            opener=opener,
+        )
+
+    def rank(
+        self,
+        candidates: Sequence[InsightCandidate],
+        hits: Sequence[CorpusHit],
+        *,
+        limit: int = 5,
+    ) -> list[InsightCandidate]:
+        bindable: list[tuple[InsightCandidate, tuple[CorpusHit, ...]]] = []
+        for candidate in candidates:
+            receipts = bind_receipts(candidate, hits)
+            if receipts:
+                bindable.append((candidate, receipts))
+        if len(bindable) <= 1:
+            return [candidate for candidate, _ in bindable]
+
+        shortlist = bindable[: max(1, limit)]
+        prompt = build_minimax_candidate_judge_prompt(shortlist)
+        text = call_minimax_m3(
+            api_key=self._api_key,
+            prompt=prompt,
+            system=(
+                "You rank receipt-bound alpha memo candidates. "
+                "Use only the supplied candidates and receipts. Return only valid JSON."
+            ),
+            temperature=0.15,
+            max_tokens=self._max_tokens,
+            base_url=self._base_url,
+            model=self._model,
+            timeout=self._timeout,
+            opener=self._opener,
+        )
+        ranking = parse_minimax_candidate_ranking(text, candidate_count=len(shortlist))
+        ranked = [shortlist[index][0] for index in ranking]
+        ranked_indexes = set(ranking)
+        ranked.extend(
+            candidate
+            for index, (candidate, _) in enumerate(shortlist)
+            if index not in ranked_indexes
+        )
+        ranked.extend(candidate for candidate, _ in bindable[len(shortlist):])
+        return ranked
+
+
 def call_minimax_m3(
     *,
     api_key: str,
@@ -270,6 +348,41 @@ Rules:
 """
 
 
+def build_minimax_candidate_judge_prompt(
+    candidates: Sequence[tuple[InsightCandidate, Sequence[CorpusHit]]],
+) -> str:
+    if not candidates:
+        raise ValueError("cannot judge MiniMax candidates without receipt-bound candidates")
+    topic = candidates[0][0].topic
+    blocks = "\n\n".join(
+        _candidate_judge_block(index, candidate, receipts)
+        for index, (candidate, receipts) in enumerate(candidates, start=1)
+    )
+    return f"""Rank the candidate alpha memos for this topic:
+{topic}
+
+Choose the order that would produce the strongest short memo.
+
+Judge for:
+- receipt fit: the thesis must be directly supported by the supplied receipts
+- non-obviousness: contradiction, boundary condition, inversion, neglected proxy,
+  metric mismatch, or cross-domain transfer beats a plain literature summary
+- specificity: prefer scope-safe claims tied to the actual population, market,
+  company, channel, model, benchmark, timeframe, geography, or source type in receipts
+- usefulness: prefer memos that create a testable next question or decision
+- source quality: prefer cleaner receipt pairings over loosely adjacent hits
+
+Do not add facts. Do not invent new candidates. Do not reward broad claims that outrun
+the receipts.
+
+Return JSON only:
+{{"ranking":[2,1,3]}}
+
+Candidates:
+{blocks}
+"""
+
+
 def parse_minimax_queries(text: str, *, limit: int) -> list[str]:
     stripped = _strip_markdown_fence(text)
     try:
@@ -291,6 +404,36 @@ def parse_minimax_queries(text: str, *, limit: int) -> list[str]:
     return queries[: max(1, limit)]
 
 
+def parse_minimax_candidate_ranking(text: str, *, candidate_count: int) -> list[int]:
+    stripped = _strip_markdown_fence(text)
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise ValueError("MiniMax judge did not return valid JSON") from exc
+    if isinstance(data, dict):
+        data = data.get("ranking")
+    if not isinstance(data, list):
+        raise ValueError("MiniMax judge must return a JSON array or ranking object")
+
+    ranking: list[int] = []
+    seen: set[int] = set()
+    for item in data:
+        raw_index: int | None = None
+        if isinstance(item, int) and not isinstance(item, bool):
+            raw_index = item
+        elif isinstance(item, str) and item.strip().isdigit():
+            raw_index = int(item.strip())
+        if raw_index is None:
+            continue
+        index = raw_index - 1
+        if 0 <= index < candidate_count and index not in seen:
+            seen.add(index)
+            ranking.append(index)
+    if not ranking:
+        raise ValueError("MiniMax judge returned no usable ranking")
+    return ranking
+
+
 def validate_minimax_memo(markdown: str, receipts: Sequence[CorpusHit]) -> str:
     text = markdown.strip()
     if not text:
@@ -306,6 +449,36 @@ def validate_minimax_memo(markdown: str, receipts: Sequence[CorpusHit]) -> str:
     if extra_dois:
         raise ValueError(f"MiniMax memo included unreceipted DOI-like references: {', '.join(extra_dois)}")
     return text + "\n"
+
+
+def _candidate_judge_block(
+    index: int,
+    candidate: InsightCandidate,
+    receipts: Sequence[CorpusHit],
+) -> str:
+    receipt_lines = "\n".join(
+        _candidate_judge_receipt_block(receipt_index, hit)
+        for receipt_index, hit in enumerate(receipts, start=1)
+    )
+    return (
+        f"Candidate {index}\n"
+        f"Thesis: {candidate.thesis}\n"
+        f"Bridge terms: {', '.join(candidate.bridge_terms) or 'none'}\n"
+        f"Tension terms: {', '.join(candidate.tension_terms) or 'none'}\n"
+        f"Scores: signal={candidate.score}, novelty={candidate.novelty_score}, "
+        f"evidence={candidate.evidence_score}\n"
+        f"Receipts:\n{receipt_lines}"
+    )
+
+
+def _candidate_judge_receipt_block(index: int, hit: CorpusHit) -> str:
+    year = str(hit.year) if hit.year is not None else "unknown"
+    venue = hit.venue or "unknown venue"
+    abstract = _truncate_receipt_text(hit.abstract, JUDGE_RECEIPT_ABSTRACT_CHAR_LIMIT)
+    return (
+        f"- Receipt {index}: {hit.receipt_id}; {hit.title}; {year}; {venue}; "
+        f"{hit.source}; {abstract}"
+    )
 
 
 def _receipt_block(index: int, hit: CorpusHit) -> str:
