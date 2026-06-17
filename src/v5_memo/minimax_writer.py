@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -13,7 +14,24 @@ from v5_memo.schemas import CorpusHit, InsightCandidate
 MINIMAX_BASE_URL = "https://api.minimax.io/anthropic"
 MINIMAX_MODEL = "MiniMax-M3"
 MINIMAX_KEY_ENV = "MINIMAX_API_KEY"
+MINIMAX_V5_KEY_ENV = "V5_MEMO_MINIMAX_API_KEY"
+MINIMAX_BASE_URL_ENV = "V5_MEMO_MINIMAX_BASE_URL"
+MINIMAX_MODEL_ENV = "V5_MEMO_MINIMAX_MODEL"
+MINIMAX_TIMEOUT_ENV = "V5_MEMO_MINIMAX_TIMEOUT_SECONDS"
+MINIMAX_MAX_TOKENS_ENV = "V5_MEMO_MINIMAX_MAX_TOKENS"
 MINIMAX_KEY_FILE = Path.home() / ".codex" / "secrets" / "minimax_api_key"
+RECEIPT_ABSTRACT_CHAR_LIMIT = 1400
+_REQUIRED_MEMO_SECTIONS = (
+    "# Alpha memo:",
+    "## Core signal",
+    "## The 2+2=5 angle",
+    "## Why this could matter",
+    "## What would break the idea",
+    "## Receipts",
+    "## Safety note",
+)
+_DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s<>()\[\]{}\"']+", re.IGNORECASE)
+_DOI_TRAILING_PUNCTUATION = ".,;:"
 
 
 class HttpResponse(Protocol):
@@ -51,8 +69,15 @@ class MiniMaxM3MemoWriter:
         self._opener = opener or cast(RequestOpener, urlopen)
 
     @classmethod
-    def from_env(cls) -> MiniMaxM3MemoWriter:
-        return cls(api_key=load_minimax_api_key())
+    def from_env(cls, *, opener: RequestOpener | None = None) -> MiniMaxM3MemoWriter:
+        return cls(
+            api_key=load_minimax_api_key(),
+            base_url=_env_string([MINIMAX_BASE_URL_ENV, "MINIMAX_BASE_URL"], MINIMAX_BASE_URL),
+            model=_env_string([MINIMAX_MODEL_ENV, "MINIMAX_MODEL"], MINIMAX_MODEL),
+            timeout=_env_float([MINIMAX_TIMEOUT_ENV], 60.0),
+            max_tokens=_env_int([MINIMAX_MAX_TOKENS_ENV], 1200),
+            opener=opener,
+        )
 
     def render(self, candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> str:
         prompt = build_minimax_prompt(candidate, receipts)
@@ -98,8 +123,15 @@ class MiniMaxM3SearchPlanner:
         self._opener = opener or cast(RequestOpener, urlopen)
 
     @classmethod
-    def from_env(cls) -> MiniMaxM3SearchPlanner:
-        return cls(api_key=load_minimax_api_key())
+    def from_env(cls, *, opener: RequestOpener | None = None) -> MiniMaxM3SearchPlanner:
+        return cls(
+            api_key=load_minimax_api_key(),
+            base_url=_env_string([MINIMAX_BASE_URL_ENV, "MINIMAX_BASE_URL"], MINIMAX_BASE_URL),
+            model=_env_string([MINIMAX_MODEL_ENV, "MINIMAX_MODEL"], MINIMAX_MODEL),
+            timeout=_env_float([MINIMAX_TIMEOUT_ENV], 45.0),
+            max_tokens=_env_int([MINIMAX_MAX_TOKENS_ENV], 700),
+            opener=opener,
+        )
 
     def plan(self, *, topic: str, seed_queries: Sequence[str], limit: int = 8) -> list[str]:
         prompt = build_minimax_search_prompt(topic=topic, seed_queries=seed_queries, limit=limit)
@@ -158,9 +190,10 @@ def call_minimax_m3(
 
 
 def load_minimax_api_key() -> str:
-    key = os.environ.get(MINIMAX_KEY_ENV, "").strip()
-    if key:
-        return key
+    for env_name in (MINIMAX_V5_KEY_ENV, MINIMAX_KEY_ENV):
+        key = os.environ.get(env_name, "").strip()
+        if key:
+            return key
     if MINIMAX_KEY_FILE.exists():
         return MINIMAX_KEY_FILE.read_text().strip()
     return ""
@@ -177,6 +210,9 @@ Hard rules:
 - Keep every receipt ID exactly as written.
 - Do not invent mechanisms, clinical advice, causal certainty, new papers, or new numbers.
 - If a connection is uncertain, say it is a hypothesis.
+- Make the memo read like an insight, not a literature summary: surface the non-obvious bridge,
+  boundary condition, contradiction, or underused proxy.
+- Avoid generic phrases such as "more research is needed" unless tied to a receipt-specific test.
 - Output Markdown only.
 - Keep it under 450 words.
 
@@ -252,13 +288,16 @@ def validate_minimax_memo(markdown: str, receipts: Sequence[CorpusHit]) -> str:
     text = markdown.strip()
     if not text:
         raise ValueError("MiniMax returned an empty memo")
-    if "# Alpha memo:" not in text:
-        raise ValueError("MiniMax memo missing alpha memo heading")
+    missing_sections = [section for section in _REQUIRED_MEMO_SECTIONS if section not in text]
+    if missing_sections:
+        raise ValueError(f"MiniMax memo missing required sections: {', '.join(missing_sections)}")
     missing = [hit.receipt_id for hit in receipts if hit.receipt_id not in text]
     if missing:
         raise ValueError(f"MiniMax memo dropped receipt IDs: {', '.join(missing)}")
-    if "Safety note" not in text:
-        raise ValueError("MiniMax memo missing safety note")
+    allowed_dois = _receipt_dois(receipts)
+    extra_dois = sorted(_extract_dois(text) - allowed_dois)
+    if extra_dois:
+        raise ValueError(f"MiniMax memo included unreceipted DOI-like references: {', '.join(extra_dois)}")
     return text + "\n"
 
 
@@ -266,7 +305,7 @@ def _receipt_block(index: int, hit: CorpusHit) -> str:
     year = str(hit.year) if hit.year is not None else "unknown"
     venue = hit.venue or "unknown venue"
     locator = hit.doi or hit.url or hit.hit_id
-    abstract = hit.abstract.strip() or "No abstract supplied."
+    abstract = _truncate_receipt_text(hit.abstract, RECEIPT_ABSTRACT_CHAR_LIMIT)
     return (
         f"Receipt {index}\n"
         f"ID: {hit.receipt_id}\n"
@@ -312,3 +351,60 @@ def _dedupe_queries(queries: Sequence[str]) -> list[str]:
         seen.add(key)
         deduped.append(query)
     return deduped
+
+
+def _env_string(names: Sequence[str], default: str) -> str:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return default
+
+
+def _env_float(names: Sequence[str], default: float) -> float:
+    value = _env_string(names, "")
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(f"{names[0]} must be a number") from exc
+
+
+def _env_int(names: Sequence[str], default: int) -> int:
+    value = _env_string(names, "")
+    if not value:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError(f"{names[0]} must be an integer") from exc
+    if parsed <= 0:
+        raise ValueError(f"{names[0]} must be positive")
+    return parsed
+
+
+def _truncate_receipt_text(text: str, limit: int) -> str:
+    normalized = " ".join(text.split())
+    if not normalized:
+        return "No abstract supplied."
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: max(0, limit - 16)].rstrip() + " ... [truncated]"
+
+
+def _receipt_dois(receipts: Sequence[CorpusHit]) -> set[str]:
+    allowed: set[str] = set()
+    for hit in receipts:
+        for value in (hit.doi, hit.receipt_id):
+            if value:
+                allowed.update(_extract_dois(value))
+    return allowed
+
+
+def _extract_dois(text: str) -> set[str]:
+    return {_normalize_doi(match.group(0)) for match in _DOI_RE.finditer(text)}
+
+
+def _normalize_doi(value: str) -> str:
+    return value.strip().rstrip(_DOI_TRAILING_PUNCTUATION).casefold()
