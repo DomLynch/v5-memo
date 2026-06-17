@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import threading
 import time
 from collections.abc import Iterable
@@ -78,6 +79,22 @@ class ShardBuildJob:
     time_budget_seconds: float | None
     commit_interval: int
     min_free_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class ShardBatchResult:
+    batch_id: int
+    batch_dir: str
+    remote_dir: str
+    files_total: int
+    files_completed: int
+    papers_inserted: int
+    bytes_used: int
+    uploaded: bool
+    deleted_local: bool
+    skipped: bool
+    elapsed_seconds: float
+    error: str = ""
 
 
 class FullRawFtsIndex:
@@ -574,6 +591,106 @@ def build_shards(
     return sorted(results, key=lambda item: item.shard_id)
 
 
+def build_upload_shard_batches(
+    files: list[RawFile],
+    *,
+    shard_dir: Path,
+    upload_remote: str,
+    batch_files: int,
+    shard_count: int,
+    workers: int,
+    rclone_bin: str = "rclone",
+    max_files: int | None = None,
+    commit_interval: int = 1000,
+    min_free_bytes: int = 0,
+    delete_local: bool = True,
+) -> list[ShardBatchResult]:
+    """Build local shard batches, upload completed batches, then free local disk."""
+    if not upload_remote.strip():
+        raise ValueError("upload remote is required for build-upload-shards")
+    selected_files = files[:max_files] if max_files is not None else files
+    results: list[ShardBatchResult] = []
+    for batch_id, start in enumerate(range(0, len(selected_files), max(1, batch_files))):
+        batch_started = time.monotonic()
+        batch = selected_files[start:start + max(1, batch_files)]
+        batch_name = f"batch_{batch_id:05d}"
+        local_batch_dir = shard_dir / batch_name
+        remote_batch_dir = f"{upload_remote.rstrip('/')}/{batch_name}"
+        if _remote_complete_exists(remote_batch_dir, rclone_bin=rclone_bin):
+            results.append(
+                ShardBatchResult(
+                    batch_id=batch_id,
+                    batch_dir=str(local_batch_dir),
+                    remote_dir=remote_batch_dir,
+                    files_total=len(batch),
+                    files_completed=len(batch),
+                    papers_inserted=0,
+                    bytes_used=0,
+                    uploaded=True,
+                    deleted_local=not local_batch_dir.exists(),
+                    skipped=True,
+                    elapsed_seconds=round(time.monotonic() - batch_started, 3),
+                )
+            )
+            continue
+        if local_batch_dir.exists():
+            shutil.rmtree(local_batch_dir)
+        shard_results = build_shards(
+            batch,
+            shard_dir=local_batch_dir,
+            shard_count=shard_count,
+            workers=workers,
+            rclone_bin=rclone_bin,
+            commit_interval=commit_interval,
+            min_free_bytes=min_free_bytes,
+        )
+        files_completed = sum(result.files_completed for result in shard_results)
+        papers_inserted = sum(result.papers_inserted for result in shard_results)
+        bytes_used = sum(result.bytes_used for result in shard_results)
+        error = "; ".join(result.error for result in shard_results if result.error)
+        stopped = any(result.stopped_for_budget for result in shard_results)
+        if error or stopped or files_completed < len(batch):
+            results.append(
+                ShardBatchResult(
+                    batch_id=batch_id,
+                    batch_dir=str(local_batch_dir),
+                    remote_dir=remote_batch_dir,
+                    files_total=len(batch),
+                    files_completed=files_completed,
+                    papers_inserted=papers_inserted,
+                    bytes_used=bytes_used,
+                    uploaded=False,
+                    deleted_local=False,
+                    skipped=False,
+                    elapsed_seconds=round(time.monotonic() - batch_started, 3),
+                    error=error or "batch did not complete",
+                )
+            )
+            break
+        _write_batch_manifest(local_batch_dir, batch_id=batch_id, files=batch, shard_results=shard_results)
+        _copy_batch_to_remote(local_batch_dir, remote_batch_dir, rclone_bin=rclone_bin)
+        deleted = False
+        if delete_local:
+            shutil.rmtree(local_batch_dir)
+            deleted = True
+        result = ShardBatchResult(
+            batch_id=batch_id,
+            batch_dir=str(local_batch_dir),
+            remote_dir=remote_batch_dir,
+            files_total=len(batch),
+            files_completed=files_completed,
+            papers_inserted=papers_inserted,
+            bytes_used=bytes_used,
+            uploaded=True,
+            deleted_local=deleted,
+            skipped=False,
+            elapsed_seconds=round(time.monotonic() - batch_started, 3),
+        )
+        print(json.dumps(asdict(result), sort_keys=True), flush=True)
+        results.append(result)
+    return results
+
+
 def search_shards(
     index_paths: list[Path],
     query: str,
@@ -636,6 +753,60 @@ def _split_shard_files(files: list[RawFile], shard_count: int) -> list[list[RawF
     for index, raw_file in enumerate(files):
         chunks[index % len(chunks)].append(raw_file)
     return chunks
+
+
+def _remote_complete_exists(remote_dir: str, *, rclone_bin: str) -> bool:
+    if remote_dir.startswith("file://"):
+        return (Path(remote_dir.removeprefix("file://")) / "complete.json").exists()
+    checked = subprocess.run(
+        [rclone_bin, "lsf", f"{remote_dir.rstrip('/')}/complete.json"],
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    return checked.returncode == 0 and "complete.json" in checked.stdout
+
+
+def _write_batch_manifest(
+    batch_dir: Path,
+    *,
+    batch_id: int,
+    files: list[RawFile],
+    shard_results: list[ShardBuildResult],
+) -> None:
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "batch_id": batch_id,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "files": [asdict(raw_file) for raw_file in files],
+        "shards": [asdict(result) for result in shard_results],
+        "totals": {
+            "files_total": len(files),
+            "files_completed": sum(result.files_completed for result in shard_results),
+            "papers_inserted": sum(result.papers_inserted for result in shard_results),
+            "bytes_used": sum(result.bytes_used for result in shard_results),
+        },
+    }
+    (batch_dir / "complete.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _copy_batch_to_remote(batch_dir: Path, remote_dir: str, *, rclone_bin: str) -> None:
+    if remote_dir.startswith("file://"):
+        destination = Path(remote_dir.removeprefix("file://"))
+        if destination.exists():
+            shutil.rmtree(destination)
+        shutil.copytree(batch_dir, destination)
+        return
+    copied = subprocess.run(
+        [rclone_bin, "copy", str(batch_dir), remote_dir],
+        text=True,
+        capture_output=True,
+        timeout=None,
+        check=False,
+    )
+    if copied.returncode != 0:
+        raise RuntimeError((copied.stderr or copied.stdout or "rclone copy failed").strip()[:500])
 
 
 def _build_shard_worker(job: ShardBuildJob) -> ShardBuildResult:
@@ -783,6 +954,24 @@ def main() -> None:
         default=float(os.environ.get("V5_MEMO_FULL_RAW_INDEX_MIN_FREE_GB", "40")),
     )
 
+    build_upload_parser = subparsers.add_parser("build-upload-shards")
+    build_upload_parser.add_argument("--shard-dir", default=shard_dir_default)
+    build_upload_parser.add_argument("--upload-remote", default=os.environ.get("V5_MEMO_FULL_RAW_SHARD_REMOTE", ""))
+    build_upload_parser.add_argument("--manifest", default=os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
+    build_upload_parser.add_argument("--refresh-manifest", action="store_true")
+    build_upload_parser.add_argument("--rclone-bin", default=os.environ.get("V5_MEMO_FULL_RAW_RCLONE", "rclone"))
+    build_upload_parser.add_argument("--batch-files", type=int, default=int(os.environ.get("V5_MEMO_FULL_RAW_SHARD_BATCH_FILES", "16")))
+    build_upload_parser.add_argument("--shards", type=int, default=int(os.environ.get("V5_MEMO_FULL_RAW_SHARDS", "4")))
+    build_upload_parser.add_argument("--workers", type=int, default=int(os.environ.get("V5_MEMO_FULL_RAW_SHARD_WORKERS", "4")))
+    build_upload_parser.add_argument("--max-files", type=int)
+    build_upload_parser.add_argument("--commit-interval", type=int, default=1000)
+    build_upload_parser.add_argument(
+        "--min-free-gb",
+        type=float,
+        default=float(os.environ.get("V5_MEMO_FULL_RAW_INDEX_MIN_FREE_GB", "40")),
+    )
+    build_upload_parser.add_argument("--keep-local", action="store_true")
+
     search = subparsers.add_parser("search")
     search.add_argument("query")
     search.add_argument("--index-path", default=os.environ.get("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite"))
@@ -864,6 +1053,40 @@ def main() -> None:
                 "bytes_used": sum(result.bytes_used for result in results),
                 "errors": sum(1 for result in results if result.error),
                 "stopped_for_budget": any(result.stopped_for_budget for result in results),
+            },
+        }, sort_keys=True))
+        return
+
+    if args.command == "build-upload-shards":
+        manifest_path = Path(args.manifest)
+        files = load_or_build_manifest(
+            manifest_path,
+            refresh=bool(args.refresh_manifest),
+            rclone_bin=str(args.rclone_bin),
+        )
+        batch_results = build_upload_shard_batches(
+            files,
+            shard_dir=Path(args.shard_dir),
+            upload_remote=str(args.upload_remote),
+            batch_files=max(1, int(args.batch_files)),
+            shard_count=max(1, int(args.shards)),
+            workers=max(1, int(args.workers)),
+            rclone_bin=str(args.rclone_bin),
+            max_files=args.max_files,
+            commit_interval=args.commit_interval,
+            min_free_bytes=int(max(0.0, args.min_free_gb) * 1024**3),
+            delete_local=not bool(args.keep_local),
+        )
+        print(json.dumps({
+            "batches": [asdict(result) for result in batch_results],
+            "totals": {
+                "batches": len(batch_results),
+                "files_completed": sum(result.files_completed for result in batch_results),
+                "papers_inserted": sum(result.papers_inserted for result in batch_results),
+                "bytes_used": sum(result.bytes_used for result in batch_results),
+                "uploaded": sum(1 for result in batch_results if result.uploaded),
+                "skipped": sum(1 for result in batch_results if result.skipped),
+                "errors": sum(1 for result in batch_results if result.error),
             },
         }, sort_keys=True))
         return
