@@ -9,3 +9,4 @@ dist/
 .env.*
 .DS_Store
 ~$*
+docs/review-memos/
