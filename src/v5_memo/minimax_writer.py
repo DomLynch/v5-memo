@@ -1,4 +1,5 @@
 """MiniMax-M3 planner and memo writer constrained by corpus receipts."""
+
 from __future__ import annotations
 
 import json
@@ -34,6 +35,39 @@ _REQUIRED_MEMO_SECTIONS = (
 )
 _DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s<>()\[\]{}\"']+", re.IGNORECASE)
 _DOI_TRAILING_PUNCTUATION = ".,;:*_`"
+_ALPHA_SHAPE_SIGNALS: tuple[tuple[str, int], ...] = (
+    ("opposite direction", 7),
+    ("opposite directions", 7),
+    ("different direction", 6),
+    ("different directions", 6),
+    ("contradict", 6),
+    ("contradiction", 6),
+    ("reversal", 6),
+    ("reverses", 6),
+    ("boundary condition", 5),
+    ("tradeoff", 5),
+    ("trade-off", 5),
+    ("inversion", 5),
+    ("intent", 4),
+    ("protocol", 4),
+    ("observed result", 4),
+    ("benefit", 3),
+    ("cost", 3),
+    ("worsen", 3),
+    ("worsens", 3),
+    ("blunt", 3),
+    ("blunted", 3),
+)
+_WEAK_ALPHA_SHAPE_SIGNALS: tuple[tuple[str, int], ...] = (
+    ("evidence is mixed", 5),
+    ("mixed evidence", 5),
+    ("more research is needed", 5),
+    ("systematic review", 3),
+    ("literature review", 3),
+    ("case study", 3),
+    ("heterogeneous", 2),
+    ("scattered", 2),
+)
 
 
 class HttpResponse(Protocol):
@@ -203,6 +237,7 @@ class MiniMaxM3CandidateJudge:
         if len(bindable) <= 1:
             return [candidate for candidate, _ in bindable]
 
+        bindable.sort(key=_candidate_alpha_sort_key, reverse=True)
         shortlist = bindable[: max(1, limit)]
         prompt = build_minimax_candidate_judge_prompt(shortlist)
         text = call_minimax_m3(
@@ -227,8 +262,35 @@ class MiniMaxM3CandidateJudge:
             for index, (candidate, _) in enumerate(shortlist)
             if index not in ranked_indexes
         )
-        ranked.extend(candidate for candidate, _ in bindable[len(shortlist):])
+        ranked.extend(candidate for candidate, _ in bindable[len(shortlist) :])
         return ranked
+
+
+def alpha_shape_score(candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> int:
+    """Score candidate shape strength without domain-specific topic rules."""
+    text = " ".join(
+        (
+            candidate.thesis,
+            " ".join(candidate.bridge_terms),
+            " ".join(candidate.tension_terms),
+            *(hit.text for hit in receipts),
+        )
+    ).casefold()
+    score = 0
+    if candidate.tension_terms:
+        score += 8
+    score += min(len(candidate.bridge_terms), 4)
+    if len({hit.source_key for hit in receipts}) >= 2:
+        score += 2
+    if _all_receipts_touch_bridge(candidate.bridge_terms, receipts):
+        score += 3
+    score += min(18, sum(weight for signal, weight in _ALPHA_SHAPE_SIGNALS if signal in text))
+    weak_penalty = sum(weight for signal, weight in _WEAK_ALPHA_SHAPE_SIGNALS if signal in text)
+    if not candidate.tension_terms:
+        score -= min(10, weak_penalty)
+    else:
+        score -= min(4, weak_penalty)
+    return score
 
 
 def call_minimax_m3(
@@ -243,14 +305,16 @@ def call_minimax_m3(
     timeout: float = 60.0,
     opener: RequestOpener | None = None,
 ) -> str:
-    body = json.dumps({
-        "model": model,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "system": system,
-        "thinking": {"type": "disabled"},
-        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-    }).encode("utf-8")
+    body = json.dumps(
+        {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "system": system,
+            "thinking": {"type": "disabled"},
+            "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+        }
+    ).encode("utf-8")
     request = Request(
         f"{base_url.rstrip('/')}/v1/messages",
         data=body,
@@ -280,7 +344,9 @@ def load_minimax_api_key() -> str:
 def build_minimax_prompt(candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> str:
     if not receipts:
         raise ValueError("cannot write MiniMax memo without receipts")
-    receipt_block = "\n\n".join(_receipt_block(index, hit) for index, hit in enumerate(receipts, start=1))
+    receipt_block = "\n\n".join(
+        _receipt_block(index, hit) for index, hit in enumerate(receipts, start=1)
+    )
     return f"""Write a sharper alpha memo from the locked evidence below.
 
 Hard rules:
@@ -365,8 +431,11 @@ Choose the order that would produce the strongest short memo.
 
 Judge for:
 - receipt fit: the thesis must be directly supported by the supplied receipts
+- alpha shape: same construct in opposite directions, same intervention/tool/policy
+  with different endpoints, intent/theory/protocol versus observed result, or benefit
+  at one layer with cost at another beats a plain literature summary
 - non-obviousness: contradiction, boundary condition, inversion, neglected proxy,
-  metric mismatch, or cross-domain transfer beats a plain literature summary
+  metric mismatch, or cross-domain transfer beats generic evidence heterogeneity
 - specificity: prefer scope-safe claims tied to the actual population, market,
   company, channel, model, benchmark, timeframe, geography, or source type in receipts
 - usefulness: prefer memos that create a testable next question or decision
@@ -447,7 +516,9 @@ def validate_minimax_memo(markdown: str, receipts: Sequence[CorpusHit]) -> str:
     allowed_dois = _receipt_dois(receipts)
     extra_dois = sorted(_extract_dois(text) - allowed_dois)
     if extra_dois:
-        raise ValueError(f"MiniMax memo included unreceipted DOI-like references: {', '.join(extra_dois)}")
+        raise ValueError(
+            f"MiniMax memo included unreceipted DOI-like references: {', '.join(extra_dois)}"
+        )
     return text + "\n"
 
 
@@ -504,7 +575,11 @@ def _anthropic_text(data: Mapping[str, Any]) -> str:
         return ""
     parts: list[str] = []
     for item in content:
-        if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+        if (
+            isinstance(item, dict)
+            and item.get("type") == "text"
+            and isinstance(item.get("text"), str)
+        ):
             parts.append(item["text"])
     return "\n".join(parts).strip()
 
@@ -531,6 +606,28 @@ def _dedupe_queries(queries: Sequence[str]) -> list[str]:
         seen.add(key)
         deduped.append(query)
     return deduped
+
+
+def _candidate_alpha_sort_key(
+    item: tuple[InsightCandidate, tuple[CorpusHit, ...]],
+) -> tuple[int, int, int, int]:
+    candidate, receipts = item
+    return (
+        alpha_shape_score(candidate, receipts),
+        candidate.score,
+        candidate.novelty_score,
+        candidate.evidence_score,
+    )
+
+
+def _all_receipts_touch_bridge(
+    bridge_terms: Sequence[str],
+    receipts: Sequence[CorpusHit],
+) -> bool:
+    terms = tuple(term.casefold() for term in bridge_terms if term.strip())
+    if not terms or not receipts:
+        return False
+    return all(any(term in hit.text.casefold() for term in terms) for hit in receipts)
 
 
 def _env_string(names: Sequence[str], default: str) -> str:

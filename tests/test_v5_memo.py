@@ -83,6 +83,38 @@ def test_binder_rejects_single_source_candidates() -> None:
     assert bind_receipts(candidate, hits) == ()
 
 
+def test_binder_rejects_duplicate_titles_with_different_ids() -> None:
+    hits = [
+        CorpusHit(
+            hit_id="a",
+            title="Review Bot: Automatic Code Review Tool",
+            abstract="Developers accepted automated review comments.",
+            source="openalex",
+            doi="10.1109/icse.2013.6606642",
+        ),
+        CorpusHit(
+            hit_id="b",
+            title="Review Bot Automatic Code Review Tool",
+            abstract="ACM index for the same automatic review comments paper.",
+            source="acm",
+            doi="10.5555/2486788.2486915",
+        ),
+    ]
+    candidate = InsightCandidate(
+        topic="AI review",
+        thesis="AI review may have a trust bridge.",
+        bridge_terms=("review", "comments"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("a", "b"),
+        score=80,
+        novelty_score=80,
+        evidence_score=80,
+        reasons=("source_diverse",),
+    )
+
+    assert bind_receipts(candidate, hits) == ()
+
+
 def test_collect_seed_hits_dedupes_across_seed_queries() -> None:
     class FakeSearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:

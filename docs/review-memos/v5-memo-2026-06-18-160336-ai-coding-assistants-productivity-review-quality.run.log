@@ -1,0 +1,5 @@
+started_utc=2026-06-18T16:03:36Z
+cwd=/Users/domininclynch/Desktop/Business/V5 Memo
+git_head=fd0d787
+output_path=docs/review-memos/v5-memo-2026-06-18-160336-ai-coding-assistants-productivity-review-quality.md
+command=PYTHONPATH=src python3 -m v5_memo --searcher smart --topic AI\ coding\ assistants,\ productivity,\ and\ review\ quality --query AI\ coding\ assistant\ developer\ productivity\ code\ quality\ empirical\ study --query GitHub\ Copilot\ productivity\ code\ review\ quality\ security\ experiment --query large\ language\ model\ programming\ assistance\ productivity\ error\ detection\ review\ quality --query automation\ bias\ AI\ assistance\ software\ development\ code\ review

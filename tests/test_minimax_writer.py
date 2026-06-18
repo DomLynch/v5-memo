@@ -9,6 +9,7 @@ from v5_memo.minimax_writer import (
     MiniMaxM3CandidateJudge,
     MiniMaxM3MemoWriter,
     MiniMaxM3SearchPlanner,
+    alpha_shape_score,
     build_minimax_candidate_judge_prompt,
     build_minimax_prompt,
     parse_minimax_candidate_ranking,
@@ -266,10 +267,12 @@ x""",
 
 def test_minimax_planner_returns_json_queries_plus_original_seeds() -> None:
     opener = FakeOpener(
-        json.dumps([
-            "NAD salvage mitochondrial redox exercise",
-            "chronotropic response oxidative stress mitochondria",
-        ])
+        json.dumps(
+            [
+                "NAD salvage mitochondrial redox exercise",
+                "chronotropic response oxidative stress mitochondria",
+            ]
+        )
     )
     planner = MiniMaxM3SearchPlanner(api_key="test-key", opener=opener)
 
@@ -322,12 +325,12 @@ def test_parse_minimax_queries_rejects_invalid_json() -> None:
 def test_candidate_judge_reorders_receipt_bound_candidates() -> None:
     opener = FakeOpener(json.dumps({"ranking": [2, 1]}))
     judge = MiniMaxM3CandidateJudge(api_key="test-key", opener=opener)
-    weaker = _candidate(thesis="A broad bridge with weaker actionability.", score=95)
-    sharper = _candidate(thesis="A sharper boundary condition between the receipts.", score=70)
+    first = _candidate(thesis="A first receipt-bound bridge.", score=95)
+    second = _candidate(thesis="A second receipt-bound bridge.", score=70)
 
-    ranked = judge.rank([weaker, sharper], _receipts())
+    ranked = judge.rank([first, second], _receipts())
 
-    assert ranked == [sharper, weaker]
+    assert ranked == [second, first]
     request = opener.requests[0]
     request_data = request.data
     assert isinstance(request_data, bytes)
@@ -335,7 +338,79 @@ def test_candidate_judge_reorders_receipt_bound_candidates() -> None:
     assert "rank receipt-bound alpha memo candidates" in body["system"]
     prompt = body["messages"][0]["content"][0]["text"]
     assert "Candidate 2" in prompt
-    assert "A sharper boundary condition" in prompt
+    assert "A second receipt-bound bridge" in prompt
+
+
+def test_candidate_judge_shortlist_prefers_universal_alpha_shape() -> None:
+    weak = InsightCandidate(
+        topic="AI reliability",
+        thesis="A local case study reports success, while a literature review says evidence is mixed.",
+        bridge_terms=("rag", "evidence"),
+        tension_terms=(),
+        receipt_ids=("weak1", "weak2"),
+        score=99,
+        novelty_score=99,
+        evidence_score=90,
+        reasons=("high_raw_score",),
+    )
+    strong = InsightCandidate(
+        topic="AI reliability",
+        thesis=(
+            "The same tool points in opposite directions: benchmark performance improves "
+            "while reliability worsens under a boundary condition."
+        ),
+        bridge_terms=("benchmark", "reliability"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("strong1", "strong2"),
+        score=60,
+        novelty_score=60,
+        evidence_score=80,
+        reasons=("shape_strong",),
+    )
+    hits = [
+        CorpusHit(
+            hit_id="weak1",
+            title="RAG case study reports local evidence gains",
+            abstract="A case study says RAG evidence improved in one deployment.",
+            source="openalex:full-corpus",
+            doi="10.1/weak-case",
+        ),
+        CorpusHit(
+            hit_id="weak2",
+            title="RAG literature review finds mixed evidence",
+            abstract="A literature review says RAG evidence is mixed and heterogeneous.",
+            source="openalex:full-corpus",
+            doi="10.2/weak-review",
+        ),
+        CorpusHit(
+            hit_id="strong1",
+            title="Benchmark score improves for the same reliability tool",
+            abstract="The benchmark improved, suggesting a positive reliability result.",
+            source="openalex:full-corpus",
+            doi="10.3/strong-positive",
+        ),
+        CorpusHit(
+            hit_id="strong2",
+            title="Reliability worsens outside the benchmark boundary",
+            abstract="The same benchmark reliability tool worsens in a different endpoint.",
+            source="openalex:full-corpus",
+            doi="10.4/strong-negative",
+        ),
+    ]
+    weak_receipts = tuple(hit for hit in hits if hit.hit_id in weak.receipt_ids)
+    strong_receipts = tuple(hit for hit in hits if hit.hit_id in strong.receipt_ids)
+    opener = FakeOpener(json.dumps({"ranking": [1]}))
+    judge = MiniMaxM3CandidateJudge(api_key="test-key", opener=opener)
+
+    ranked = judge.rank([weak, strong], hits, limit=1)
+
+    assert alpha_shape_score(strong, strong_receipts) > alpha_shape_score(weak, weak_receipts)
+    assert ranked == [strong, weak]
+    request_data = opener.requests[0].data
+    assert isinstance(request_data, bytes)
+    prompt = json.loads(request_data.decode("utf-8"))["messages"][0]["content"][0]["text"]
+    assert "opposite directions" in prompt
+    assert "local case study" not in prompt
 
 
 def test_candidate_judge_prompt_contains_universal_ranking_criteria() -> None:
@@ -344,6 +419,8 @@ def test_candidate_judge_prompt_contains_universal_ranking_criteria() -> None:
     assert "receipt fit" in prompt
     assert "population, market" in prompt
     assert "company, channel, model, benchmark" in prompt
+    assert "same construct in opposite directions" in prompt
+    assert "intent/theory/protocol versus observed result" in prompt
     assert "metric mismatch" in prompt
     assert "cross-domain transfer" in prompt
 

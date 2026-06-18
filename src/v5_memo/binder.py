@@ -1,9 +1,12 @@
 """Bind alpha candidates to receipts before prose is rendered."""
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 from v5_memo.schemas import CorpusHit, InsightCandidate
+
+_TITLE_TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
 def bind_receipts(
@@ -21,4 +24,20 @@ def bind_receipts(
         return ()
     if len({hit.source_key for hit in receipts}) < min_unique_sources:
         return ()
+    if len({_evidence_unit_key(hit) for hit in receipts}) < min_unique_sources:
+        return ()
     return receipts
+
+
+def _evidence_unit_key(hit: CorpusHit) -> str:
+    title_key = _normalized_title(hit.title)
+    if title_key:
+        return f"title:{title_key}"
+    return hit.source_key
+
+
+def _normalized_title(title: str) -> str:
+    tokens = _TITLE_TOKEN_RE.findall(title.casefold())
+    if len(tokens) < 4:
+        return ""
+    return " ".join(tokens)
