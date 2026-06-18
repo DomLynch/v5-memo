@@ -1,0 +1,5 @@
+started_utc=2026-06-18T07:19:24Z
+cwd=/Users/domininclynch/Desktop/Business/V5 Memo
+git_head=a276619
+output_path=docs/review-memos/v5-memo-2026-06-18-071924-longevity-senescence-repair.md
+command=PYTHONPATH=src python3 -m v5_memo --searcher smart --topic 'senescent cell clearance and tissue repair tradeoffs in longevity interventions' --query 'senescent cells promote wound healing tissue repair p16INK4a' --query 'senolytic clearance senescent cells improves physical function aging mice' --query 'cellular senescence beneficial wound healing tissue regeneration senolytics'
