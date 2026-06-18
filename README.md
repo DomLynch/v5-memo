@@ -32,17 +32,16 @@ python3 -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
-Reproduce the latest PR #2 memo command recorded in
-[`docs/review-memos/v5-memo-2026-06-18-161133-ai-agents-tool-use-verification-reliability.run.log`](docs/review-memos/v5-memo-2026-06-18-161133-ai-agents-tool-use-verification-reliability.run.log):
+Reproduce the curated AI benchmark-contamination memo in
+[`docs/review-memos/v5-memo-2026-06-18-063530-ai-benchmark-contamination-code-text.md`](docs/review-memos/v5-memo-2026-06-18-063530-ai-benchmark-contamination-code-text.md):
 
 ```bash
 PYTHONPATH=src python3 -m v5_memo \
   --searcher smart \
-  --topic "AI agents, tool use, verification, and reliability" \
-  --query "large language model agents tool use verification reliability benchmark" \
-  --query "LLM agent tool use benchmark failure modes empirical study" \
-  --query "tool augmented language models hallucination verification factuality" \
-  --query "AI agents planning tool use real world reliability evaluation"
+  --topic "LLM benchmark contamination across text and code evaluation" \
+  --query "Generalization or Memorization Data Contamination Trustworthy Evaluation Large Language Models" \
+  --query "Quantifying Contamination Evaluating Code Generation Capabilities Language Models" \
+  --query "benchmark contamination code generation language models evaluation"
 ```
 
 To save over the committed memo artifact:
@@ -50,12 +49,11 @@ To save over the committed memo artifact:
 ```bash
 PYTHONPATH=src python3 -m v5_memo \
   --searcher smart \
-  --topic "AI agents, tool use, verification, and reliability" \
-  --query "large language model agents tool use verification reliability benchmark" \
-  --query "LLM agent tool use benchmark failure modes empirical study" \
-  --query "tool augmented language models hallucination verification factuality" \
-  --query "AI agents planning tool use real world reliability evaluation" \
-  > docs/review-memos/v5-memo-2026-06-18-161133-ai-agents-tool-use-verification-reliability.md
+  --topic "LLM benchmark contamination across text and code evaluation" \
+  --query "Generalization or Memorization Data Contamination Trustworthy Evaluation Large Language Models" \
+  --query "Quantifying Contamination Evaluating Code Generation Capabilities Language Models" \
+  --query "benchmark contamination code generation language models evaluation" \
+  > docs/review-memos/v5-memo-2026-06-18-063530-ai-benchmark-contamination-code-text.md
 ```
 
 Offline demo:

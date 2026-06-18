@@ -9,3 +9,7 @@ dist/
 .env.*
 .DS_Store
 ~$*
+docs/review-memos/*.run.log
+docs/review-memos/*.run.log.stderr
+docs/review-memos/*.draft.md
+docs/review-memos/*.local.md
