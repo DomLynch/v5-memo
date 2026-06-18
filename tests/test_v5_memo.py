@@ -21,7 +21,7 @@ def _hits() -> list[CorpusHit]:
         CorpusHit(
             hit_id="h1",
             title="NAD salvage links sleep fragmentation to mitochondrial stress",
-            abstract="Sleep fragmentation increased inflammatory tone through NAD salvage and mitochondrial stress.",
+            abstract="Sleep fragmentation reduced resilience through NAD salvage and mitochondrial stress.",
             source="researka:semantic",
             year=2025,
             doi="10.1/sleep-nad",
@@ -47,6 +47,10 @@ def _hits() -> list[CorpusHit]:
     ]
 
 
+def _hit(hit_id: str, title: str, abstract: str) -> CorpusHit:
+    return CorpusHit(hit_id=hit_id, title=title, abstract=abstract, source="openalex", doi=f"10.{hit_id}")
+
+
 def test_mines_bridge_and_renders_receipt_bound_memo() -> None:
     hits = _hits()
     candidate = mine_insights(hits, topic="longevity resilience")[0]
@@ -56,8 +60,9 @@ def test_mines_bridge_and_renders_receipt_bound_memo() -> None:
     assert "mitochondrial" in candidate.bridge_terms
     assert "nad" in candidate.bridge_terms
     assert candidate.score >= 60
+    assert "shape:directional_reversal" in candidate.reasons
     assert "Alpha hypothesis" in memo
-    assert "longevity resilience may have" in memo
+    assert "longevity resilience may be hiding" in memo
     assert "10.1/sleep-nad" in memo
     assert "10.2/exercise-nad" in memo
     assert "Safety note" in memo
@@ -200,6 +205,48 @@ def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
     ]
 
     assert mine_insights(hits, topic="NAD salvage exercise", required_anchor_terms=("nad", "salvage")) == []
+
+
+def test_miner_rejects_adjacent_papers_without_alpha_shape() -> None:
+    hits = [
+        _hit("a", "Retrieval augmented generation evidence pipeline", "Local evidence pipeline reports results."),
+        _hit("b", "Retrieval augmented generation evidence review", "Broad evidence review summarizes methods."),
+    ]
+
+    assert mine_insights(hits, topic="AI reliability") == []
+
+
+def test_miner_accepts_non_reversal_alpha_shapes() -> None:
+    hits = [
+        _hit(
+            "a",
+            "Sauna bathing and incident hypertension in a prospective cohort",
+            "Habitual sauna exposure reduced aggregate hypertension risk in a cohort population.",
+        ),
+        _hit(
+            "b",
+            "Sauna alcohol fatality cases in acute hypertension sessions",
+            "Rare acute sauna death cases concentrated around alcohol and hypertension risk.",
+        ),
+    ]
+
+    candidate = mine_insights(hits, topic="longevity sauna cardiovascular risk")[0]
+
+    assert "shape:denominator_split" in candidate.reasons
+
+
+def test_miner_ranks_shaped_candidates_above_rare_keyword_bridges() -> None:
+    hits = [
+        _hit("weak-a", "Zorblax workflow evidence summary", "Zorblax workflow evidence appears in one summary."),
+        _hit("weak-b", "Zorblax workflow evidence methods", "Zorblax workflow evidence appears in methods."),
+        _hit("strong-a", "Tool improves benchmark accuracy", "The tool improved benchmark accuracy score."),
+        _hit("strong-b", "Tool increases deployment error outcomes", "The tool increased error outcome rates."),
+    ]
+
+    candidate = mine_insights(hits, topic="AI tool reliability")[0]
+
+    assert candidate.receipt_ids == ("strong-a", "strong-b")
+    assert "shape:measurement_mismatch" in candidate.reasons
 
 
 def test_pipeline_raises_when_no_receipt_bound_candidate() -> None:

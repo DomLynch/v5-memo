@@ -30,6 +30,7 @@ _ROLE_B = frozenset({"confound", "confounds", "selection", "mediates", "moderate
 _METRIC = frozenset({"metric", "score", "benchmark", "accuracy", "performance", "clicks"})
 _OUTCOME = frozenset({"outcome", "mortality", "injury", "error", "errors", "dispersion", "quality"})
 _EXPERTISE = frozenset({"expert", "experts", "novice", "novices", "nonexpert", "nonexperts"})
+_BOUNDARY = frozenset({"boundary", "context", "dose", "endpoint", "modality", "population", "setting"})
 
 
 def mine_insights(
@@ -185,7 +186,11 @@ def _shape_reasons(
     reasons: list[str] = []
     if tension_terms:
         reasons.append("shape:directional_reversal")
-    if len(bridge_terms) >= 2 and _axis(left, bridge_terms) != _axis(right, bridge_terms):
+    if (
+        len(bridge_terms) >= 2
+        and _axis(left, bridge_terms) != _axis(right, bridge_terms)
+        and (tension_terms or all_tokens & _BOUNDARY)
+    ):
         reasons.append("shape:boundary_condition")
     if all_tokens & _DENOMINATOR and all_tokens & _TAIL:
         reasons.append("shape:denominator_split")

@@ -30,7 +30,7 @@ class DemoSearch:
                 hit_id="demo-sleep",
                 title="NAD salvage links sleep fragmentation to mitochondrial stress",
                 abstract=(
-                    "Sleep fragmentation increased inflammatory tone through NAD salvage "
+                    "Sleep fragmentation reduced resilience through NAD salvage "
                     "and mitochondrial stress."
                 ),
                 source="demo",

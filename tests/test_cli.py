@@ -8,6 +8,19 @@ from pytest import MonkeyPatch
 from v5_memo.__main__ import main
 
 
+def test_demo_cli_renders_alpha_shape(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["v5_memo", "--demo"])
+
+    main()
+
+    captured = capsys.readouterr()
+    assert "Alpha memo" in captured.out
+    assert "point in different directions" in captured.out
+
+
 def test_fullraw_searcher_fails_closed_without_endpoint(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
