@@ -14,6 +14,50 @@ This repo is separate from v3 and v4. First slice:
 8. Render a short memo with the deterministic template, or optionally ask MiniMax-M3
    to rewrite the memo inside the locked receipts.
 
+## How to run
+
+Prerequisites:
+
+- Python 3.11 or newer.
+- `MINIMAX_API_KEY` or `V5_MEMO_MINIMAX_API_KEY` for `--searcher smart`.
+- Optional: `V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL` if a local full-raw index is
+  available; otherwise smart mode falls back to the configured hybrid surfaces.
+
+Install and run the package entry point in
+[`src/v5_memo/__main__.py`](src/v5_memo/__main__.py):
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e ".[dev]"
+```
+
+Reproduce the latest PR #2 memo command recorded in
+[`docs/review-memos/v5-memo-2026-06-18-161133-ai-agents-tool-use-verification-reliability.run.log`](docs/review-memos/v5-memo-2026-06-18-161133-ai-agents-tool-use-verification-reliability.run.log):
+
+```bash
+PYTHONPATH=src python3 -m v5_memo \
+  --searcher smart \
+  --topic "AI agents, tool use, verification, and reliability" \
+  --query "large language model agents tool use verification reliability benchmark" \
+  --query "LLM agent tool use benchmark failure modes empirical study" \
+  --query "tool augmented language models hallucination verification factuality" \
+  --query "AI agents planning tool use real world reliability evaluation"
+```
+
+To save over the committed memo artifact:
+
+```bash
+PYTHONPATH=src python3 -m v5_memo \
+  --searcher smart \
+  --topic "AI agents, tool use, verification, and reliability" \
+  --query "large language model agents tool use verification reliability benchmark" \
+  --query "LLM agent tool use benchmark failure modes empirical study" \
+  --query "tool augmented language models hallucination verification factuality" \
+  --query "AI agents planning tool use real world reliability evaluation" \
+  > docs/review-memos/v5-memo-2026-06-18-161133-ai-agents-tool-use-verification-reliability.md
+```
+
 Offline demo:
 
 ```bash
