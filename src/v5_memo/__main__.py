@@ -13,11 +13,10 @@ from v5_memo.client import (
 )
 from v5_memo.coverage import current_search_coverage, require_full_raw_corpus
 from v5_memo.minimax_writer import (
-    MiniMaxM3CandidateJudge,
     MiniMaxM3MemoWriter,
     MiniMaxM3SearchPlanner,
 )
-from v5_memo.pipeline import CandidateSelector, build_alpha_memo
+from v5_memo.pipeline import build_alpha_memo
 from v5_memo.retriever import CorpusSearcher
 from v5_memo.schemas import CorpusHit
 from v5_memo.writer import render_memo
@@ -70,7 +69,6 @@ def main() -> None:
         default="openalex",
     )
     parser.add_argument("--writer", choices=["template", "minimax"])
-    parser.add_argument("--judge", choices=["deterministic", "minimax"])
     args = parser.parse_args()
 
     if args.coverage_report:
@@ -82,7 +80,6 @@ def main() -> None:
     searcher_mode = "hybrid" if args.searcher == "smart" else args.searcher
     planner_mode = args.planner or ("minimax" if args.searcher == "smart" else "seed")
     writer_mode = args.writer or ("minimax" if args.searcher == "smart" else "template")
-    judge_mode = args.judge or ("minimax" if args.searcher == "smart" else "deterministic")
 
     searcher: CorpusSearcher
     if args.demo:
@@ -107,9 +104,6 @@ def main() -> None:
     memo_writer = render_memo
     if writer_mode == "minimax":
         memo_writer = MiniMaxM3MemoWriter.from_env().render
-    candidate_selector: CandidateSelector | None = None
-    if judge_mode == "minimax":
-        candidate_selector = MiniMaxM3CandidateJudge.from_env().rank
     base_queries = args.query or [
         "sleep NAD salvage mitochondrial stress",
         "exercise NAD salvage mitochondrial repair",
@@ -126,7 +120,6 @@ def main() -> None:
         seed_queries=queries,
         searcher=searcher,
         memo_writer=memo_writer,
-        candidate_selector=candidate_selector,
         anchor_queries=base_queries,
     )
     print(result.markdown)
