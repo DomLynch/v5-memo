@@ -22,6 +22,14 @@ _STOP = frozenset({
 _POSITIVE = frozenset({"increase", "increased", "raises", "raised", "improve", "improved"})
 _NEGATIVE = frozenset({"decrease", "decreased", "reduce", "reduced", "lower", "lowered"})
 _NULL = frozenset({"null", "neutral", "unchanged", "failed", "nonsignificant"})
+_DENOMINATOR = frozenset({"cohort", "population", "aggregate", "prospective", "longitudinal"})
+_TAIL = frozenset({"case", "cases", "fatal", "fatality", "death", "deaths", "risk", "rare"})
+_TIMING = frozenset({"acute", "chronic", "short", "long", "early", "late", "immediate", "delayed"})
+_ROLE_A = frozenset({"cause", "causes", "driver", "drives", "predict", "predicts", "associated"})
+_ROLE_B = frozenset({"confound", "confounds", "selection", "mediates", "moderates", "substitution"})
+_METRIC = frozenset({"metric", "score", "benchmark", "accuracy", "performance", "clicks"})
+_OUTCOME = frozenset({"outcome", "mortality", "injury", "error", "errors", "dispersion", "quality"})
+_EXPERTISE = frozenset({"expert", "experts", "novice", "novices", "nonexpert", "nonexperts"})
 
 
 def mine_insights(
@@ -57,12 +65,22 @@ def mine_insights(
         if len(source_keys) < 2:
             continue
         tension_terms = _tension_terms(left.text, right.text)
+        shape_reasons = _shape_reasons(
+            left,
+            right,
+            bridge_terms=bridge,
+            tension_terms=tension_terms,
+        )
+        if not shape_reasons:
+            continue
         score = score_connection(
             bridge_terms=bridge,
             bridge_doc_counts=doc_counts,
             unique_source_count=len(source_keys),
             receipt_count=2,
             has_tension=bool(tension_terms),
+            shape_score=len(shape_reasons),
+            shape_reasons=shape_reasons,
         )
         candidates.append(InsightCandidate(
             topic=topic,
@@ -152,6 +170,34 @@ def _tension_terms(left: str, right: str) -> tuple[str, ...]:
     if not a or not b or a == b:
         return ()
     return tuple(sorted(a | b))
+
+
+def _shape_reasons(
+    left: CorpusHit,
+    right: CorpusHit,
+    *,
+    bridge_terms: tuple[str, ...],
+    tension_terms: tuple[str, ...],
+) -> tuple[str, ...]:
+    left_tokens = _tokens(left.text)
+    right_tokens = _tokens(right.text)
+    all_tokens = left_tokens | right_tokens
+    reasons: list[str] = []
+    if tension_terms:
+        reasons.append("shape:directional_reversal")
+    if len(bridge_terms) >= 2 and _axis(left, bridge_terms) != _axis(right, bridge_terms):
+        reasons.append("shape:boundary_condition")
+    if all_tokens & _DENOMINATOR and all_tokens & _TAIL:
+        reasons.append("shape:denominator_split")
+    if left_tokens & _TIMING and right_tokens & _TIMING and left_tokens != right_tokens:
+        reasons.append("shape:timing_split")
+    if all_tokens & _ROLE_A and all_tokens & _ROLE_B:
+        reasons.append("shape:role_inversion")
+    if all_tokens & _METRIC and all_tokens & _OUTCOME:
+        reasons.append("shape:measurement_mismatch")
+    if all_tokens & _EXPERTISE:
+        reasons.append("shape:expertise_split")
+    return tuple(dict.fromkeys(reasons))
 
 
 def _axis(hit: CorpusHit, excluded: tuple[str, ...]) -> str:
