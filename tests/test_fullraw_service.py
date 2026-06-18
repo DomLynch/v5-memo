@@ -5,7 +5,7 @@ import json
 import textwrap
 from pathlib import Path
 
-from v5_memo.fullraw_service import RawCorpusScanner, RawFile
+from v5_memo.fullraw_service import RawFile, iter_raw_file_hits
 
 
 def _write_gzip(path: Path, text: str) -> None:
@@ -13,7 +13,7 @@ def _write_gzip(path: Path, text: str) -> None:
         fh.write(text.encode("utf-8"))
 
 
-def test_raw_scanner_reads_local_jsonl_fixture(tmp_path: Path) -> None:
+def test_iter_raw_file_hits_reads_local_jsonl_fixture(tmp_path: Path) -> None:
     source = tmp_path / "openalex.jsonl.gz"
     _write_gzip(
         source,
@@ -27,27 +27,18 @@ def test_raw_scanner_reads_local_jsonl_fixture(tmp_path: Path) -> None:
         }) + "\n",
     )
 
-    result = RawCorpusScanner([
-        RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")
-    ]).search("NAD mitochondrial", limit=5, timeout_seconds=5)
+    hits = list(iter_raw_file_hits(RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")))
 
-    assert result.complete is True
-    assert result.files_scanned == 1
-    assert result.hits[0]["doi"] == "10.raw/one"
-    assert result.hits[0]["source"] == "openalex"
-    assert result.hits[0]["abstract"] == "NAD mitochondrial repair"
+    assert hits[0]["doi"] == "10.raw/one"
+    assert hits[0]["source"] == "openalex"
+    assert hits[0]["abstract"] == "NAD mitochondrial repair"
 
 
-def test_raw_scanner_matches_whole_terms_not_substrings(tmp_path: Path) -> None:
+def test_iter_raw_file_hits_skips_invalid_jsonl_rows(tmp_path: Path) -> None:
     source = tmp_path / "openalex.jsonl.gz"
     _write_gzip(
         source,
-        json.dumps({
-            "doi": "10.raw/noisy",
-            "display_name": "New candidate rock standard",
-            "abstract": "This record should not match the target token.",
-            "publication_year": 2025,
-        }) + "\n" + json.dumps({
+        "{bad json}\n" + json.dumps({
             "doi": "10.raw/real",
             "display_name": "NAD repair response",
             "abstract": "NAD was measured directly.",
@@ -55,14 +46,12 @@ def test_raw_scanner_matches_whole_terms_not_substrings(tmp_path: Path) -> None:
         }) + "\n",
     )
 
-    result = RawCorpusScanner([
-        RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")
-    ]).search("NAD", limit=5, timeout_seconds=5)
+    hits = list(iter_raw_file_hits(RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")))
 
-    assert [hit["doi"] for hit in result.hits] == ["10.raw/real"]
+    assert [hit["doi"] for hit in hits] == ["10.raw/real"]
 
 
-def test_raw_scanner_reads_local_pubmed_xml_fixture(tmp_path: Path) -> None:
+def test_iter_raw_file_hits_reads_local_pubmed_xml_fixture(tmp_path: Path) -> None:
     source = tmp_path / "pubmed.xml.gz"
     _write_gzip(
         source,
@@ -87,11 +76,8 @@ def test_raw_scanner_reads_local_pubmed_xml_fixture(tmp_path: Path) -> None:
         ),
     )
 
-    result = RawCorpusScanner([
-        RawFile(source="pubmed", format="pubmed_xml", remote=f"file://{source}")
-    ]).search("NAD mitochondrial", limit=5, timeout_seconds=5)
+    hits = list(iter_raw_file_hits(RawFile(source="pubmed", format="pubmed_xml", remote=f"file://{source}")))
 
-    assert result.complete is True
-    assert result.hits[0]["pmid"] == "123"
-    assert result.hits[0]["doi"] == "10.raw/pubmed"
-    assert result.hits[0]["source"] == "pubmed"
+    assert hits[0]["pmid"] == "123"
+    assert hits[0]["doi"] == "10.raw/pubmed"
+    assert hits[0]["source"] == "pubmed"

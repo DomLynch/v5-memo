@@ -143,18 +143,18 @@ def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object)
 
 
 def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9901/search")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "secret")
 
     client = FullRawCorpusSearchClient.from_env()
 
     assert client.configured is True
-    assert client._search_url == "http://127.0.0.1:9901/search"
+    assert client._search_url == "http://127.0.0.1:9902/search"
     assert client._token == "secret"
 
 
 def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9901/search")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", "120")
 
     client = FullRawCorpusSearchClient.from_env()

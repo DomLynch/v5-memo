@@ -1,9 +1,4 @@
-"""Local HTTP service for cold raw-corpus search.
-
-This is a low-footprint bridge over the rclone raw archive. It is not a fast
-Tantivy/DuckDB index; it streams compressed source files and returns the first
-matching receipt candidates.
-"""
+"""Raw corpus manifest and record-normalization helpers for the fullraw index."""
 from __future__ import annotations
 
 import gzip
@@ -16,12 +11,8 @@ import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from dataclasses import dataclass
 from html import unescape
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-
-_WORD = re.compile(r"[A-Za-z0-9+]+")
-_STOP = {"and", "or", "the", "with", "for", "from", "into", "this", "that"}
 
 DEFAULT_SOURCE_SPECS = (
     ("openalex", "openalex_jsonl", "sb:researka-database/raw/openalex/works"),
@@ -42,63 +33,6 @@ class RawFile:
     format: str
     remote: str
 
-
-@dataclass(frozen=True, slots=True)
-class SearchResult:
-    hits: list[dict[str, object]]
-    files_scanned: int
-    files_total: int
-    complete: bool
-    elapsed_seconds: float
-
-
-class RawCorpusScanner:
-    def __init__(self, files: list[RawFile], *, rclone_bin: str = "rclone") -> None:
-        self._files = files
-        self._rclone_bin = rclone_bin
-
-    def search(self, query: str, *, limit: int, timeout_seconds: float) -> SearchResult:
-        started = time.monotonic()
-        terms = _query_terms(query)
-        hits: list[dict[str, object]] = []
-        seen: set[str] = set()
-        files_scanned = 0
-        complete = True
-        deadline = started + max(1.0, timeout_seconds)
-        for raw_file in self._files:
-            if time.monotonic() >= deadline:
-                complete = False
-                break
-            files_scanned += 1
-            for hit in self._scan_file(raw_file, terms, deadline=deadline):
-                key = _dedupe_key(hit)
-                if key in seen:
-                    continue
-                seen.add(key)
-                hits.append(hit)
-                if len(hits) >= limit:
-                    complete = False
-                    return SearchResult(
-                        hits=hits,
-                        files_scanned=files_scanned,
-                        files_total=len(self._files),
-                        complete=complete,
-                        elapsed_seconds=round(time.monotonic() - started, 3),
-                    )
-        return SearchResult(
-            hits=hits,
-            files_scanned=files_scanned,
-            files_total=len(self._files),
-            complete=complete,
-            elapsed_seconds=round(time.monotonic() - started, 3),
-        )
-
-    def _scan_file(self, raw_file: RawFile, terms: tuple[str, ...], *, deadline: float) -> list[dict[str, object]]:
-        if raw_file.format == "pubmed_xml":
-            return list(_scan_pubmed_xml(raw_file, terms, deadline=deadline, rclone_bin=self._rclone_bin))
-        return list(_scan_jsonl(raw_file, terms, deadline=deadline, rclone_bin=self._rclone_bin))
-
-
 def iter_raw_file_hits(
     raw_file: RawFile,
     *,
@@ -106,9 +40,9 @@ def iter_raw_file_hits(
 ) -> Iterator[dict[str, object]]:
     """Yield normalized records from one raw corpus file without search filtering."""
     if raw_file.format == "pubmed_xml":
-        yield from _iter_pubmed_xml(raw_file, terms=(), deadline=None, rclone_bin=rclone_bin)
+        yield from _iter_pubmed_xml(raw_file, rclone_bin=rclone_bin)
         return
-    yield from _iter_jsonl(raw_file, terms=(), deadline=None, rclone_bin=rclone_bin)
+    yield from _iter_jsonl(raw_file, rclone_bin=rclone_bin)
 
 
 def load_or_build_manifest(path: Path, *, refresh: bool = False, rclone_bin: str = "rclone") -> list[RawFile]:
@@ -151,69 +85,6 @@ def build_manifest(*, rclone_bin: str = "rclone") -> list[RawFile]:
     return files
 
 
-def run_server() -> None:
-    host = os.environ.get("V5_MEMO_FULL_RAW_HOST", "127.0.0.1")
-    port = int(os.environ.get("V5_MEMO_FULL_RAW_PORT", "9901"))
-    manifest_path = Path(
-        os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/opt/v5-memo/state/fullraw_manifest.json")
-    )
-    rclone_bin = os.environ.get("V5_MEMO_FULL_RAW_RCLONE", "rclone")
-    refresh = os.environ.get("V5_MEMO_FULL_RAW_REFRESH_MANIFEST", "").casefold() in {"1", "true", "yes"}
-    files = load_or_build_manifest(manifest_path, refresh=refresh, rclone_bin=rclone_bin)
-    scanner = RawCorpusScanner(files, rclone_bin=rclone_bin)
-    token = os.environ.get("V5_MEMO_FULL_RAW_TOKEN", "").strip()
-    default_timeout = float(os.environ.get("V5_MEMO_FULL_RAW_TIMEOUT_SECONDS", "45"))
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:
-            if self.path != "/health":
-                self.send_error(404)
-                return
-            _write_json(self, 200, {
-                "ok": True,
-                "backend": "v5-fullraw-cold-scan",
-                "files_total": len(files),
-                "manifest": str(manifest_path),
-            })
-
-        def do_POST(self) -> None:
-            if self.path != "/search":
-                self.send_error(404)
-                return
-            if token and self.headers.get("Authorization", "") != f"Bearer {token}":
-                _write_json(self, 401, {"error": "unauthorized"})
-                return
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                query = str(payload.get("query", "")).strip()
-                limit = max(1, min(int(payload.get("limit") or payload.get("top_k") or 25), 200))
-                timeout_seconds = float(payload.get("timeout_seconds") or default_timeout)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                _write_json(self, 400, {"error": "bad request"})
-                return
-            if not query:
-                _write_json(self, 400, {"error": "query is required"})
-                return
-            result = scanner.search(query, limit=limit, timeout_seconds=timeout_seconds)
-            _write_json(self, 200, {
-                "meta": {
-                    "count": len(result.hits),
-                    "files_scanned": result.files_scanned,
-                    "files_total": result.files_total,
-                    "complete": result.complete,
-                    "elapsed_seconds": result.elapsed_seconds,
-                    "backend": "v5-fullraw-cold-scan",
-                },
-                "results": result.hits,
-            })
-
-        def log_message(self, fmt: str, *args: object) -> None:
-            return
-
-    ThreadingHTTPServer((host, port), Handler).serve_forever()
-
-
 def _source_specs() -> tuple[tuple[str, str, str], ...]:
     configured = os.environ.get("V5_MEMO_FULL_RAW_SOURCES", "").strip()
     if not configured:
@@ -226,40 +97,14 @@ def _source_specs() -> tuple[tuple[str, str, str], ...]:
     return tuple(specs) or DEFAULT_SOURCE_SPECS
 
 
-def _scan_jsonl(
-    raw_file: RawFile,
-    terms: tuple[str, ...],
-    *,
-    deadline: float,
-    rclone_bin: str,
-) -> list[dict[str, object]]:
-    return list(_iter_jsonl(raw_file, terms=terms, deadline=deadline, rclone_bin=rclone_bin))
-
-
-def _scan_pubmed_xml(
-    raw_file: RawFile,
-    terms: tuple[str, ...],
-    *,
-    deadline: float,
-    rclone_bin: str,
-) -> list[dict[str, object]]:
-    return list(_iter_pubmed_xml(raw_file, terms=terms, deadline=deadline, rclone_bin=rclone_bin))
-
-
 def _iter_jsonl(
     raw_file: RawFile,
     *,
-    terms: tuple[str, ...],
-    deadline: float | None,
     rclone_bin: str,
 ) -> Iterator[dict[str, object]]:
     with _open_gzip_stream(raw_file.remote, rclone_bin=rclone_bin) as stream:
         for raw_line in stream:
-            if deadline is not None and time.monotonic() >= deadline:
-                break
             line = raw_line.decode("utf-8", errors="replace")
-            if terms and not _contains_terms(line.casefold(), terms):
-                continue
             try:
                 item = json.loads(line)
             except json.JSONDecodeError:
@@ -272,23 +117,16 @@ def _iter_jsonl(
 def _iter_pubmed_xml(
     raw_file: RawFile,
     *,
-    terms: tuple[str, ...],
-    deadline: float | None,
     rclone_bin: str,
 ) -> Iterator[dict[str, object]]:
     with _open_gzip_stream(raw_file.remote, rclone_bin=rclone_bin) as stream:
         try:
             for _event, elem in ET.iterparse(stream, events=("end",)):
-                if deadline is not None and time.monotonic() >= deadline:
-                    break
                 if _strip_ns(elem.tag) != "PubmedArticle":
                     continue
                 hit = _normalize_pubmed_hit(elem)
                 elem.clear()
-                if not hit:
-                    continue
-                folded = f"{hit.get('title', '')} {hit.get('abstract', '')}".casefold()
-                if not terms or _contains_terms(folded, terms):
+                if hit:
                     yield hit
         except ET.ParseError:
             return
@@ -398,21 +236,6 @@ def _find_text(elem: ET.Element, path: str) -> str:
     return "" if node is None or node.text is None else node.text
 
 
-def _query_terms(query: str) -> tuple[str, ...]:
-    return tuple(
-        token
-        for token in _WORD.findall(query.casefold())
-        if len(token) > 1 and token not in _STOP
-    )
-
-
-def _contains_terms(text: str, terms: tuple[str, ...]) -> bool:
-    return all(
-        re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", text) is not None
-        for term in terms
-    )
-
-
 def _clean(value: object) -> str:
     if value is None:
         return ""
@@ -457,16 +280,3 @@ def _dedupe_key(hit: dict[str, object]) -> str:
 
 def _strip_ns(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
-
-
-def _write_json(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, object]) -> None:
-    data = json.dumps(payload).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json")
-    handler.send_header("Content-Length", str(len(data)))
-    handler.end_headers()
-    handler.wfile.write(data)
-
-
-if __name__ == "__main__":
-    run_server()

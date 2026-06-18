@@ -2,7 +2,7 @@
 
 Generated: 2026-06-17
 
-Source: Fullraw cold-scan retrieval over raw archive + MiniMax-M3 writer
+Source: Fullraw retrieval over raw archive + MiniMax-M3 writer
 
 Command:
 
