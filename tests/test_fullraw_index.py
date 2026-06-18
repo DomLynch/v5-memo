@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from pytest import MonkeyPatch
 
 from v5_memo.fullraw_index import (
@@ -25,46 +26,43 @@ def _write_jsonl_gzip(path: Path, rows: list[dict[str, object]]) -> None:
             fh.write((json.dumps(row) + "\n").encode("utf-8"))
 
 
+def _raw_file(tmp_path: Path, name: str, rows: list[dict[str, object]]) -> RawFile:
+    source = tmp_path / f"{name}.jsonl.gz"
+    _write_jsonl_gzip(source, rows)
+    return RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")
+
+
 def test_fullraw_index_builds_ranked_queryable_index(tmp_path: Path) -> None:
-    source = tmp_path / "openalex.jsonl.gz"
-    _write_jsonl_gzip(
-        source,
-        [
-            {
-                "doi": "https://doi.org/10.2308/tar-9603274096",
-                "display_name": "Factors Associated with the Disclosure of Managers' Forecasts",
-                "abstract": (
-                    "Managers disclose forecasts of future earnings when analyst forecast "
-                    "errors and ownership structure make disclosure useful."
-                ),
-                "publication_year": 1990,
-                "venue": "The Accounting Review",
-                "cited_by_count": 110,
-            },
-            {
-                "doi": "https://doi.org/10.2308/tar-4483133",
-                "display_name": "Earnings Releases, Anomalies, and the Behavior of Security Returns",
-                "abstract": (
-                    "Earnings forecast error and firm size explain most post-announcement "
-                    "drift variation."
-                ),
-                "publication_year": 1984,
-                "venue": "The Accounting Review",
-                "cited_by_count": 200,
-            },
-            {
-                "doi": "https://doi.org/10.noise/ecology",
-                "display_name": "Climate space forecasts for island species",
-                "abstract": "Vegetation and soil stability forecasts under grazing pressure.",
-                "publication_year": 2020,
-            },
-        ],
-    )
+    raw_file = _raw_file(tmp_path, "openalex", [
+        {
+            "doi": "https://doi.org/10.2308/tar-9603274096",
+            "display_name": "Factors Associated with the Disclosure of Managers' Forecasts",
+            "abstract": (
+                "Managers disclose forecasts of future earnings when analyst forecast "
+                "errors and ownership structure make disclosure useful."
+            ),
+            "publication_year": 1990,
+            "venue": "The Accounting Review",
+            "cited_by_count": 110,
+        },
+        {
+            "doi": "https://doi.org/10.2308/tar-4483133",
+            "display_name": "Earnings Releases, Anomalies, and the Behavior of Security Returns",
+            "abstract": "Earnings forecast error and firm size explain drift variation.",
+            "publication_year": 1984,
+            "venue": "The Accounting Review",
+            "cited_by_count": 200,
+        },
+        {
+            "doi": "https://doi.org/10.noise/ecology",
+            "display_name": "Climate space forecasts for island species",
+            "abstract": "Vegetation and soil stability forecasts under grazing pressure.",
+            "publication_year": 2020,
+        },
+    ])
     index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
     try:
-        result = index.index_files([
-            RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")
-        ])
+        result = index.index_files([raw_file])
         hits = index.search("management forecast disclosure", limit=5)
         explain = index.explain_query("management forecast disclosure")
         stats = index.stats(files_total=1)
@@ -85,23 +83,15 @@ def test_fullraw_index_builds_ranked_queryable_index(tmp_path: Path) -> None:
 
 
 def test_fullraw_index_uses_persisted_custom_term_map(tmp_path: Path) -> None:
-    source = tmp_path / "openalex.jsonl.gz"
-    _write_jsonl_gzip(
-        source,
-        [
-            {
-                "doi": "https://doi.org/10.example/guidance",
-                "display_name": "Management guidance and earnings surprises",
-                "abstract": "Managers issue guidance before earnings surprises.",
-                "publication_year": 2024,
-            }
-        ],
-    )
+    raw_file = _raw_file(tmp_path, "openalex", [{
+        "doi": "https://doi.org/10.example/guidance",
+        "display_name": "Management guidance and earnings surprises",
+        "abstract": "Managers issue guidance before earnings surprises.",
+        "publication_year": 2024,
+    }])
     index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
     try:
-        index.index_files([
-            RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")
-        ])
+        index.index_files([raw_file])
         assert index.search("projection", limit=5) == []
 
         index.upsert_term_map("projection", ("guidance",), source="test")
@@ -117,22 +107,15 @@ def test_fullraw_index_uses_persisted_custom_term_map(tmp_path: Path) -> None:
 
 
 def test_fullraw_index_is_resumable_and_dedupes_completed_files(tmp_path: Path) -> None:
-    source = tmp_path / "openalex.jsonl.gz"
-    _write_jsonl_gzip(
-        source,
-        [
-            {
-                "doi": "https://doi.org/10.example/one",
-                "display_name": "Management forecast disclosure",
-                "abstract": "Forecast disclosure and earnings forecast error.",
-            }
-        ],
-    )
+    raw_file = _raw_file(tmp_path, "openalex", [{
+        "doi": "https://doi.org/10.example/one",
+        "display_name": "Management forecast disclosure",
+        "abstract": "Forecast disclosure and earnings forecast error.",
+    }])
     index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
-    files = [RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")]
     try:
-        first = index.index_files(files)
-        second = index.index_files(files)
+        first = index.index_files([raw_file])
+        second = index.index_files([raw_file])
         stats = index.stats(files_total=1)
     finally:
         index.close()
@@ -143,58 +126,33 @@ def test_fullraw_index_is_resumable_and_dedupes_completed_files(tmp_path: Path) 
     assert stats.papers_indexed == 1
 
 
-def test_fullraw_index_stops_when_disk_guard_is_hit(tmp_path: Path) -> None:
-    source = tmp_path / "openalex.jsonl.gz"
-    _write_jsonl_gzip(
-        source,
-        [
-            {
-                "doi": "https://doi.org/10.example/one",
-                "display_name": "Management forecast disclosure",
-                "abstract": "Forecast disclosure and earnings forecast error.",
-            }
-        ],
-    )
+@pytest.mark.parametrize(
+    ("min_free_bytes", "stopped", "attempted", "inserted"),
+    [(10**18, True, 0, 0), (0, False, 1, 1)],
+)
+def test_fullraw_index_disk_guard(
+    tmp_path: Path,
+    min_free_bytes: int,
+    stopped: bool,
+    attempted: int,
+    inserted: int,
+) -> None:
+    raw_file = _raw_file(tmp_path, "openalex", [{
+        "doi": "https://doi.org/10.example/one",
+        "display_name": "Management forecast disclosure",
+        "abstract": "Forecast disclosure and earnings forecast error.",
+    }])
     index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
     try:
-        result = index.index_files(
-            [RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")],
-            min_free_bytes=10**18,
-        )
+        result = index.index_files([raw_file], min_free_bytes=min_free_bytes)
         stats = index.stats(files_total=1)
     finally:
         index.close()
 
-    assert result.stopped_for_budget is True
-    assert result.files_attempted == 0
-    assert result.papers_inserted == 0
-    assert stats.papers_indexed == 0
-
-
-def test_fullraw_index_proceeds_when_disk_guard_allows(tmp_path: Path) -> None:
-    source = tmp_path / "openalex.jsonl.gz"
-    _write_jsonl_gzip(
-        source,
-        [
-            {
-                "doi": "https://doi.org/10.example/one",
-                "display_name": "Management forecast disclosure",
-                "abstract": "Forecast disclosure and earnings forecast error.",
-            }
-        ],
-    )
-    index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
-    try:
-        result = index.index_files(
-            [RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")],
-            min_free_bytes=0,
-        )
-    finally:
-        index.close()
-
-    assert result.stopped_for_budget is False
-    assert result.files_completed == 1
-    assert result.papers_inserted == 1
+    assert result.stopped_for_budget is stopped
+    assert result.files_attempted == attempted
+    assert result.papers_inserted == inserted
+    assert stats.papers_indexed == inserted
 
 
 def test_disk_guard_checks_index_filesystem(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -214,10 +172,7 @@ def test_disk_guard_checks_index_filesystem(tmp_path: Path, monkeypatch: MonkeyP
     index_path = tmp_path / "nested" / "fullraw.sqlite"
     index = FullRawFtsIndex(index_path)
     try:
-        index.index_files(
-            [RawFile(source="openalex", format="openalex_jsonl", remote="file:///unused.gz")],
-            min_free_bytes=1,
-        )
+        index.index_files([RawFile(source="openalex", format="openalex_jsonl", remote="file:///unused.gz")], min_free_bytes=1)
     finally:
         index.close()
 
@@ -255,9 +210,7 @@ def test_parallel_shard_build_and_search(tmp_path: Path) -> None:
         },
     ]
     for index, row in enumerate(rows):
-        source = tmp_path / f"openalex_{index}.jsonl.gz"
-        _write_jsonl_gzip(source, [row])
-        files.append(RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}"))
+        files.append(_raw_file(tmp_path, f"openalex_{index}", [row]))
 
     results = build_shards(
         files,
@@ -283,19 +236,12 @@ def test_parallel_shard_build_and_search(tmp_path: Path) -> None:
 def test_build_upload_shard_batches_uploads_and_deletes_local_batches(tmp_path: Path) -> None:
     files: list[RawFile] = []
     for index in range(4):
-        source = tmp_path / f"openalex_batch_{index}.jsonl.gz"
-        _write_jsonl_gzip(
-            source,
-            [
-                {
-                    "doi": f"https://doi.org/10.example/batch-{index}",
-                    "display_name": f"Management forecast disclosure batch {index}",
-                    "abstract": "Managers disclose forecasts and guidance.",
-                    "publication_year": 2024,
-                }
-            ],
-        )
-        files.append(RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}"))
+        files.append(_raw_file(tmp_path, f"openalex_batch_{index}", [{
+            "doi": f"https://doi.org/10.example/batch-{index}",
+            "display_name": f"Management forecast disclosure batch {index}",
+            "abstract": "Managers disclose forecasts and guidance.",
+            "publication_year": 2024,
+        }]))
 
     local_build = tmp_path / "local-build"
     remote = tmp_path / "remote"
