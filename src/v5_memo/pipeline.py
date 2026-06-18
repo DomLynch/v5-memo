@@ -10,6 +10,9 @@ from v5_memo.schemas import CorpusHit, InsightCandidate, MemoResult
 from v5_memo.writer import render_memo
 
 MemoWriter = Callable[[InsightCandidate, Sequence[CorpusHit]], str]
+MemoSelector = Callable[
+    [Sequence[InsightCandidate], Sequence[CorpusHit]], Sequence[InsightCandidate]
+]
 
 
 def build_alpha_memo(
@@ -18,6 +21,7 @@ def build_alpha_memo(
     seed_queries: Sequence[str],
     searcher: CorpusSearcher,
     memo_writer: MemoWriter = render_memo,
+    memo_selector: MemoSelector | None = None,
     anchor_queries: Sequence[str] | None = None,
     per_query_limit: int = 25,
     max_hits: int = 100,
@@ -29,11 +33,12 @@ def build_alpha_memo(
         per_query_limit=per_query_limit,
         max_hits=max_hits,
     )
-    candidates = mine_insights(
+    candidates: Sequence[InsightCandidate] = mine_insights(
         hits,
         topic=topic,
         required_anchor_terms=query_anchor_terms(anchor_queries or seed_queries),
     )
+    candidates = _apply_selector(candidates, hits, memo_selector)
     for candidate in candidates:
         receipts = bind_receipts(candidate, hits)
         if receipts:
@@ -43,3 +48,19 @@ def build_alpha_memo(
                 markdown=memo_writer(candidate, receipts),
             )
     raise ValueError("no receipt-bound alpha memo candidate found")
+
+
+def _apply_selector(
+    candidates: Sequence[InsightCandidate],
+    hits: Sequence[CorpusHit],
+    selector: MemoSelector | None,
+) -> Sequence[InsightCandidate]:
+    if selector is None:
+        return candidates
+    by_receipts = {candidate.receipt_ids: candidate for candidate in candidates}
+    selected: list[InsightCandidate] = []
+    for candidate in selector(candidates, hits):
+        original = by_receipts.get(candidate.receipt_ids)
+        if original is not None and original not in selected:
+            selected.append(original)
+    return selected

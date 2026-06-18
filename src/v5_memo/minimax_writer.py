@@ -154,6 +154,64 @@ class MiniMaxM3SearchPlanner:
         return _dedupe_queries([*planned, *seed_queries])
 
 
+class MiniMaxM3CandidateSelector:
+    """Use MiniMax-M3 as a taste judge over deterministic candidate bridges."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str = MINIMAX_BASE_URL,
+        model: str = MINIMAX_MODEL,
+        timeout: float = 45.0,
+        max_tokens: int = 700,
+        opener: RequestOpener | None = None,
+    ) -> None:
+        if not api_key.strip():
+            raise ValueError("MINIMAX_API_KEY is required for MiniMax selector")
+        self._api_key = api_key.strip()
+        self._base_url = base_url.rstrip("/")
+        self._model = model
+        self._timeout = timeout
+        self._max_tokens = max_tokens
+        self._opener = opener or cast(RequestOpener, urlopen)
+
+    @classmethod
+    def from_env(cls, *, opener: RequestOpener | None = None) -> MiniMaxM3CandidateSelector:
+        return cls(
+            api_key=load_minimax_api_key(),
+            base_url=_env_string([MINIMAX_BASE_URL_ENV, "MINIMAX_BASE_URL"], MINIMAX_BASE_URL),
+            model=_env_string([MINIMAX_MODEL_ENV, "MINIMAX_MODEL"], MINIMAX_MODEL),
+            timeout=_env_float([MINIMAX_TIMEOUT_ENV], 45.0),
+            max_tokens=_env_int([MINIMAX_MAX_TOKENS_ENV], 700),
+            opener=opener,
+        )
+
+    def select(
+        self,
+        candidates: Sequence[InsightCandidate],
+        hits: Sequence[CorpusHit],
+    ) -> list[InsightCandidate]:
+        if not candidates:
+            return []
+        prompt = build_minimax_selection_prompt(candidates, hits)
+        text = call_minimax_m3(
+            api_key=self._api_key,
+            prompt=prompt,
+            system=(
+                "You are a strict research alpha selector. Pick only tight, receipt-bound "
+                "bridges. Return only valid JSON."
+            ),
+            temperature=0.2,
+            max_tokens=self._max_tokens,
+            base_url=self._base_url,
+            model=self._model,
+            timeout=self._timeout,
+            opener=self._opener,
+        )
+        return parse_minimax_selection(text, candidates)
+
+
 def call_minimax_m3(
     *,
     api_key: str,
@@ -275,6 +333,51 @@ Rules:
 """
 
 
+def build_minimax_selection_prompt(
+    candidates: Sequence[InsightCandidate],
+    hits: Sequence[CorpusHit],
+) -> str:
+    by_id = {hit.hit_id: hit for hit in hits}
+    blocks = "\n\n".join(
+        _candidate_block(index, candidate, by_id)
+        for index, candidate in enumerate(candidates, start=1)
+    )
+    return f"""Select the strongest alpha memo bridge from these deterministic candidates.
+
+Rules:
+- Prefer one bounded surprise that appears only when the receipts are read together.
+- Strong: same intervention/construct/program, direct reversal, endpoint split, or negative/null boundary.
+- Weak: adjacent papers, broad survey plus case study, unsupported domain jump, or generic "evidence is mixed".
+- If no candidate is tight enough, classify as "discovery_seed".
+- Do not invent candidates or receipt IDs.
+- Return JSON only:
+  {{"classification":"alpha_memo|discovery_seed|reject","candidate":1,"reason":"short reason"}}
+
+Candidates:
+{blocks}
+"""
+
+
+def parse_minimax_selection(
+    text: str,
+    candidates: Sequence[InsightCandidate],
+) -> list[InsightCandidate]:
+    stripped = _strip_markdown_fence(text)
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise ValueError("MiniMax selector did not return valid JSON") from exc
+    if not isinstance(data, dict):
+        raise ValueError("MiniMax selector must return a JSON object")
+    classification = str(data.get("classification", "")).casefold()
+    if classification != "alpha_memo":
+        return []
+    index = data.get("candidate")
+    if not isinstance(index, int) or not 1 <= index <= len(candidates):
+        raise ValueError("MiniMax selector returned an invalid candidate index")
+    return [candidates[index - 1]]
+
+
 def parse_minimax_queries(text: str, *, limit: int) -> list[str]:
     stripped = _strip_markdown_fence(text)
     try:
@@ -330,6 +433,33 @@ def _receipt_block(index: int, hit: CorpusHit) -> str:
         f"Locator: {locator}\n"
         f"Abstract: {abstract}"
     )
+
+
+def _candidate_block(
+    index: int,
+    candidate: InsightCandidate,
+    hits_by_id: Mapping[str, CorpusHit],
+) -> str:
+    receipts = "\n".join(
+        _selection_receipt(hit)
+        for receipt_id in candidate.receipt_ids
+        if (hit := hits_by_id.get(receipt_id)) is not None
+    )
+    return (
+        f"Candidate {index}\n"
+        f"Thesis: {candidate.thesis}\n"
+        f"Bridge terms: {', '.join(candidate.bridge_terms) or 'none'}\n"
+        f"Tension terms: {', '.join(candidate.tension_terms) or 'none'}\n"
+        f"Reasons: {', '.join(candidate.reasons) or 'none'}\n"
+        f"Score: {candidate.score}\n"
+        f"Receipts:\n{receipts}"
+    )
+
+
+def _selection_receipt(hit: CorpusHit) -> str:
+    abstract = _truncate_receipt_text(hit.abstract, 500)
+    year = f" ({hit.year})" if hit.year is not None else ""
+    return f"- {hit.hit_id}: {hit.title}{year}; {abstract}"
 
 
 def _anthropic_text(data: Mapping[str, Any]) -> str:
