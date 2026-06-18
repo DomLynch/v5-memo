@@ -1,0 +1,39 @@
+started_utc=2026-06-18T16:11:33Z
+cwd=/Users/domininclynch/Desktop/Business/V5 Memo
+git_head=eac4bb8
+output_path=docs/review-memos/v5-memo-2026-06-18-161133-ai-agents-tool-use-verification-reliability.md
+command=PYTHONPATH=src python3 -m v5_memo --searcher smart --topic AI\ agents,\ tool\ use,\ verification,\ and\ reliability --query large\ language\ model\ agents\ tool\ use\ verification\ reliability\ benchmark --query LLM\ agent\ tool\ use\ benchmark\ failure\ modes\ empirical\ study --query tool\ augmented\ language\ models\ hallucination\ verification\ factuality --query AI\ agents\ planning\ tool\ use\ real\ world\ reliability\ evaluation
+ended_utc=2026-06-18T16:12:46Z
+status=0
+elapsed_seconds=73
+stdout_bytes=2865
+stdout_sha256=ad07628b61d5e5ad55587f7a3af6a7ea9dbe243ee854662c9fac933f8e0d2b62
+stderr_bytes=0
+stderr_begin
+
+stderr_end
+stdout_preview_begin
+# Alpha memo: AI agents, tool use, verification, and reliability
+
+## Core signal
+Two 2025 RAG studies in the *medical* domain independently target the same bottleneck — *retrieval result quality* (rank, density, context length) — as the lever for trustworthiness. Receipt 1 proposes BriefContext, a map-reduce workflow to combat "lost-in-the-middle" without weight changes, promising reduced misinformation and safer LLM deployment in medical QA/clinical decision support. Receipt 2 builds multiple RAG variants (naïve, LOTR-RAG, CRAG, SRAG) on top of GPT-4 over a ~130,000-paper COVID-19 corpus to fact-check claims and address hallucination and context inaccuracy.
+
+## The 2+2=5 angle
+Both receipts equate *more retrieval* with *more reliability*, yet they share an unstated tension: Receipt 1 admits relevance/rank of retrieved evidence drives RAG quality, while Receipt 2's reliance on ~130,000 peer-reviewed papers means a relevant-but-contradictory or stale study can be "relevantly retrieved" and still yield a confidently wrong answer. The bridge term "relevance" is doing two different jobs — top-k similarity to the prompt (Receipt 2) vs. preservation of critical snippets across long context (Receipt 1). If you naively combine map-reduce (Receipt 1) with a 130k-paper vector store (Receipt 2), you may optimize *internal* snippet retention while *worsening* the external evidence pool's failure modes (citation rot, retracted COVID-19 papers, paywalled corrections). The negative/positive flip: a "more reliable" pipeline can quietly become a higher-confidence misinformation amplifier in fast-moving clinical domains.
+
+## Why this could matter
+For investors and builders, the RAG reliability narrative is anchored to a metric mismatch — chunk-level retrieval scores ≠ claim-level fact accuracy. The COVID-19 fact-checking framing in Receipt 2 also shows the *tool-use* layer (vector store, CRAG, self-RAG) is now the verification primitive, not a downstream filter. A hypothesis: tooling that exposes retrieval provenance + recency + retraction status will be the binding constraint, not model quality.
+
+## What would break the idea
+- If BriefContext-style workflows fail to outperform weighted fine-tuning on clinical QA benchmarks.
+- If COVID-19-style fact-checking RAG systems show positive accuracy deltas only on retrospective, not real-time, claim streams.
+- Any generalisation beyond medical QA/fact-checking remains a hypothesis.
+
+## Receipts
+- 10.1038/s41746-025-01651-w — trial/protocol: BriefContext map-reduce RAG for medical QA.
+- 10.2196/66098 — case study: GPT-4 RAG variants for COVID-19 fact-checking over ~130k-paper corpus.
+
+## Safety note
+Receipts are medical-domain studies; relevance signals are not validated for combat, political, or general misinformation settings. Treat cross-domain transfer as a hypothesis.
+
+stdout_preview_end
