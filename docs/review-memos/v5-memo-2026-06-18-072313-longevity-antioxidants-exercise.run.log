@@ -1,0 +1,49 @@
+started_utc=2026-06-18T07:23:13Z
+cwd=/Users/domininclynch/Desktop/Business/V5 Memo
+git_head=b229607
+output_path=docs/review-memos/v5-memo-2026-06-18-072313-longevity-antioxidants-exercise.md
+command=PYTHONPATH=src python3 -m v5_memo --searcher smart --topic 'antioxidant supplementation and exercise adaptation tradeoffs in longevity interventions' --query 'antioxidant vitamin C E exercise training mitochondrial biogenesis adaptation' --query 'reactive oxygen species required exercise training adaptation antioxidants' --query 'antioxidant supplementation blunts exercise induced insulin sensitivity mitochondrial biogenesis'
+ended_utc=2026-06-18T07:24:29Z
+status=0
+elapsed_seconds=76
+stdout_bytes=    3218
+stdout_sha256=71f635249ee26549b28b0158e1680e5db6039b752d6447445e7848e6679451bd
+stderr_bytes=       0
+stderr_begin
+stderr_end
+stdout_preview_begin
+# Alpha memo: antioxidant supplementation and exercise adaptation tradeoffs in longevity interventions
+
+## Core signal
+Two human trials, both giving vitamin C + E versus placebo around supervised training, point in opposite directions on the same supplement stack:
+
+- **Endurance, 12 weeks (Receipt 10.1249/mss.0b013e3181cd76be, 2010).** In moderately trained young men, vitamin C + E versus placebo "did not" blunt gains in VO₂max, maximal power, lactate threshold workload, muscle glycogen, citrate synthase, or β-HAD activity. The authors explicitly frame the commercial antioxidant-in-sports market as the backdrop.
+- **Strength, 10 weeks (Receipt 10.1113/jphysiol.2014.279950, 2014).** In recreationally strength-trained men and women, high-dose vitamin C + E reduced p70S6K, p38, and ERK1/2 phosphorylation after a session. Hypertrophy was not significantly blunted, but some strength measures rose less than in placebo.
+
+The bridge is non-obvious because both studies use the same ingredients, same placebo design, and same population segment (healthy young individuals) — only the training mode differs.
+
+## The 2+2=5 angle
+A simple read of the longevity stack — "vitamins, exercise, adaptation" — assumes the supplement either helps or hurts. The receipts together imply the answer is mode-dependent: the same antioxidant regimen that leaves endurance biomarkers and VO₂max untouched can shift acute strength-training protein signaling in a negative direction. The hidden boundary condition is **training modality (endurance vs strength)**, not dose, population, or duration (those are roughly matched between trials). Longevity protocols that lump "exercise" together may mis-attribute adaptation outcomes to supplements that are actually modality-specific.
+
+## Why this could matter
+For longevity interventions bundling antioxidant stacks with mixed training, the receipts suggest:
+- The supplement is unlikely to blunt endurance biomarkers in a 12-week window.
+- It may blunt strength adaptation via redox-sensitive MAPK/mTOR signaling, even if hypertrophy looks intact in the same trial.
+- The commercial "need for antioxidant supplementation" claim (Receipt 10.1249/mss.0b013e3181cd76be) is uncorroborated in both modalities, and partially contradicted in strength.
+
+## What would break the idea
+- A replication of the strength trial showing no phosphorylation or strength decrement — then the signaling hit is noise.
+- A trial in older or clinical populations, where antioxidant effects could diverge from the young healthy cohort both studies use.
+- A direct head-to-head endurance-vs-strength design with shared lab, dose, and subjects.
+
+## Receipts
+- 10.1249/mss.0b013e3181cd76be — endurance trial, 2010, *Medicine & Science in Sports & Exercise*.
+- 10.1113/jphysiol.2014.279950 — strength trial, 2014, *The Journal of Physiology*.
+
+## Safety note
+Both receipts describe vitamin C + E in research settings around supervised training in healthy young individuals. This memo is not clinical advice. Any supplementation decision belongs to a qualified clinician, and the "high dosages" flagged in 10.1113/jphysiol.2014.279950 should not be self-administered on the basis of this memo.
+
+stdout_preview_end
+post_edit_utc=2026-06-18T12:03:48Z
+post_edit_reason=manual cleanup from review feedback: sharper title and narrower endurance claim
+post_edit_stdout_sha256=96db131d27057fb40e71b9b4b8b0a20fa5615f1c1e5fe7686fcfd925f3ad0e41
