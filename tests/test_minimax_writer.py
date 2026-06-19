@@ -11,9 +11,11 @@ from v5_memo.minimax_writer import (
     MiniMaxM3SearchPlanner,
     build_minimax_prompt,
     build_minimax_selection_prompt,
+    parse_minimax_fact_verdict,
     parse_minimax_queries,
     parse_minimax_selection,
     validate_minimax_memo,
+    verify_minimax_memo_claims,
 )
 from v5_memo.schemas import CorpusHit, InsightCandidate
 
@@ -33,15 +35,16 @@ class FakeResponse:
 
 
 class FakeOpener:
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str | list[str]) -> None:
         self.requests: list[Request] = []
         self.timeouts: list[float] = []
-        self._text = text
+        self._texts = [text] if isinstance(text, str) else text
 
     def __call__(self, request: Request, timeout: float) -> FakeResponse:
         self.timeouts.append(timeout)
         self.requests.append(request)
-        return FakeResponse({"content": [{"type": "text", "text": self._text}]})
+        text = self._texts[min(len(self.requests) - 1, len(self._texts) - 1)]
+        return FakeResponse({"content": [{"type": "text", "text": text}]})
 
 
 def _candidate(
@@ -98,7 +101,7 @@ The idea breaks if follow-up receipts do not connect the bridge terms.
 - 10.2/exercise-nad
 ## Safety note
 Hypothesis only."""
-    opener = FakeOpener(text)
+    opener = FakeOpener([text, json.dumps({"pass": True, "reason": "supported"})])
     writer = MiniMaxM3MemoWriter(api_key="test-key", opener=opener)
 
     memo = writer.render(_candidate(), _receipts())
@@ -107,6 +110,7 @@ Hypothesis only."""
     assert "10.2/exercise-nad" in memo
     request = opener.requests[0]
     assert request.full_url == "https://api.minimax.io/anthropic/v1/messages"
+    assert len(opener.requests) == 2
     request_data = request.data
     assert isinstance(request_data, bytes)
     body = json.loads(request_data.decode("utf-8"))
@@ -129,7 +133,7 @@ Break.
 - 10.2/exercise-nad
 ## Safety note
 Hypothesis only."""
-    opener = FakeOpener(text)
+    opener = FakeOpener([text, json.dumps({"pass": True, "reason": "supported"})])
     monkeypatch.setenv("V5_MEMO_MINIMAX_API_KEY", "v5-key")
     monkeypatch.setenv("V5_MEMO_MINIMAX_BASE_URL", "https://example.test/minimax")
     monkeypatch.setenv("V5_MEMO_MINIMAX_MODEL", "MiniMax-M3-Test")
@@ -141,12 +145,90 @@ Hypothesis only."""
 
     request = opener.requests[0]
     assert request.full_url == "https://example.test/minimax/v1/messages"
-    assert opener.timeouts == [12.5]
+    assert opener.timeouts == [12.5, 12.5]
     request_data = request.data
     assert isinstance(request_data, bytes)
     body = json.loads(request_data.decode("utf-8"))
     assert body["model"] == "MiniMax-M3-Test"
     assert body["max_tokens"] == 777
+
+
+def test_minimax_writer_rejects_unsupported_endpoint_claim() -> None:
+    memo = """# Alpha memo: omega 3 resistance training
+## Core signal
+Fish oil improved chair-rise time in older women.
+## The 2+2=5 angle
+The endpoint translation is sex-specific.
+## Why this could matter
+It changes supplement positioning.
+## What would break the idea
+A replication would break it.
+## Receipts
+- 10.3945/ajcn.116.140780
+## Safety note
+Research only."""
+    receipt = CorpusHit(
+        hit_id="omega",
+        title="Sex differences in fish-oil supplementation and resistance exercise",
+        abstract=(
+            "Chair-rise time did not differ between groups. Maximal isometric torque "
+            "and muscle quality improved in older women."
+        ),
+        source="openalex",
+        doi="10.3945/ajcn.116.140780",
+    )
+    opener = FakeOpener([
+        memo,
+        json.dumps({
+            "pass": False,
+            "claim": "Fish oil improved chair-rise time in older women.",
+            "receipt_id": "10.3945/ajcn.116.140780",
+            "reason": "chair-rise time did not differ; torque and muscle quality improved",
+        }),
+    ])
+    writer = MiniMaxM3MemoWriter(api_key="test-key", opener=opener)
+
+    with pytest.raises(ValueError, match="chair-rise time did not differ"):
+        writer.render(_candidate(), [receipt])
+
+
+def test_minimax_fact_verifier_rejects_unsupported_business_metric() -> None:
+    memo = """# Alpha memo: ad testing
+## Core signal
+The campaign increased click-through rate.
+## The 2+2=5 angle
+The market signal moved before conversion.
+## Why this could matter
+It affects channel allocation.
+## What would break the idea
+A holdout would break it.
+## Receipts
+- 10.biz/test
+## Safety note
+Research only."""
+    receipt = CorpusHit(
+        hit_id="biz",
+        title="Ad campaign experiment",
+        abstract="Conversion did not differ between treatment and control; click-through was not reported.",
+        source="openalex",
+        doi="10.biz/test",
+    )
+    opener = FakeOpener(json.dumps({
+        "pass": False,
+        "claim": "The campaign increased click-through rate.",
+        "receipt_id": "10.biz/test",
+        "reason": "click-through was not reported",
+    }))
+
+    with pytest.raises(ValueError, match="click-through was not reported"):
+        verify_minimax_memo_claims(memo, [receipt], api_key="test-key", opener=opener)
+
+
+def test_parse_minimax_fact_verdict_accepts_true_and_rejects_fail() -> None:
+    parse_minimax_fact_verdict(json.dumps({"pass": True, "reason": "supported"}))
+
+    with pytest.raises(ValueError, match="unsupported claim"):
+        parse_minimax_fact_verdict(json.dumps({"pass": False}))
 
 
 def test_build_minimax_prompt_bounds_long_abstracts() -> None:
