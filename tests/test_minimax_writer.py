@@ -190,7 +190,7 @@ Hypothesis only."""
 
 
 def test_minimax_writer_rejects_unsupported_endpoint_claim() -> None:
-    memo = """# Alpha memo: omega 3 resistance training
+    memo = """# Alpha memo: fish oil resistance exercise
 ## Core signal
 Fish oil improved chair-rise time in older women.
 ## The 2+2=5 angle
@@ -227,7 +227,7 @@ Research only."""
 
 
 def test_minimax_writer_repairs_then_accepts_failed_fact_check() -> None:
-    bad_memo = """# Alpha memo: omega 3 resistance training
+    bad_memo = """# Alpha memo: fish oil resistance exercise
 ## Core signal
 Fish oil improved chair-rise time in older women.
 ## The 2+2=5 angle
@@ -308,7 +308,7 @@ Preclinical only."""
     assert isinstance(repair_body, bytes)
     repair_prompt = json.loads(repair_body.decode("utf-8"))["messages"][0]["content"][0]["text"]
     assert "title/framing" in repair_prompt
-    assert "seed-topic terms" in repair_prompt
+    assert "not supported by receipts" in repair_prompt
 
 
 def test_build_minimax_repair_prompt_preserves_required_context() -> None:
@@ -336,7 +336,7 @@ def test_build_minimax_scope_repair_prompt_forces_receipt_owned_title() -> None:
     prompt = build_minimax_scope_repair_prompt(
         "# Alpha memo: longevity protein restriction\n## Receipts\n- 10.x",
         _receipts(),
-        "MiniMax memo title used seed-topic terms not supported by receipts: longevity",
+        "MiniMax memo title used terms not supported by receipts: longevity",
     )
 
     assert "Retitle around concepts present in the locked receipt" in prompt
@@ -519,6 +519,40 @@ A direct low-protein receipt would break it.
 Preclinical only.""",
             _muscle_receipts(),
             candidate=_muscle_candidate(),
+        )
+
+
+def test_minimax_memo_validation_rejects_invented_non_seed_title_terms() -> None:
+    candidate = InsightCandidate(
+        topic="muscle translation",
+        thesis="Receipt bridge should be narrowed to muscle biology.",
+        bridge_terms=("soleus", "protein"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("soleus", "hindlimb"),
+        score=80,
+        novelty_score=80,
+        evidence_score=80,
+        reasons=("source_diverse",),
+    )
+
+    with pytest.raises(ValueError, match="clinical"):
+        validate_minimax_memo(
+            """# Alpha memo: clinical mortality soleus protein split
+## Core signal
+Soleus differs from faster muscles.
+## The 2+2=5 angle
+The receipts split by muscle type.
+## Why this could matter
+It is a hypothesis.
+## What would break the idea
+A direct clinical receipt would break it.
+## Receipts
+- 10.1016/j.molmet.2022.101615
+- 10.1152/ajpendo.1984.246.4.e297
+## Safety note
+Preclinical only.""",
+            _muscle_receipts(),
+            candidate=candidate,
         )
 
 

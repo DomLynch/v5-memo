@@ -40,6 +40,7 @@ _TITLE_STOPWORDS = frozenset({
     "signal", "signals", "effect", "effects", "tradeoff", "tradeoffs",
     "boundary", "condition", "conditions", "hypothesis", "discovery", "seed",
     "split", "splits", "diverge", "diverges", "divergence", "outlier",
+    "bridge", "bridges", "receipt", "receipts",
 })
 MEMO_REPAIR_ATTEMPTS = 2
 

@@ -57,6 +57,7 @@ def test_mines_bridge_and_renders_receipt_bound_memo() -> None:
     receipts = bind_receipts(candidate, hits)
     memo = render_memo(candidate, receipts)
 
+    assert memo.startswith("# Alpha memo: mitochondrial / nad")
     assert "mitochondrial" in candidate.bridge_terms
     assert "nad" in candidate.bridge_terms
     assert candidate.score >= 60

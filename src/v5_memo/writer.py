@@ -13,7 +13,7 @@ def render_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> s
     bridge = ", ".join(candidate.bridge_terms) or "unspecified bridge"
     tension = ", ".join(candidate.tension_terms) or "not detected"
     lines = [
-        f"# Alpha memo: {candidate.topic}",
+        f"# Alpha memo: {_memo_title(candidate)}",
         "",
         f"**Alpha hypothesis:** {candidate.thesis}",
         "",
@@ -54,3 +54,9 @@ def _receipt_line(index: int, hit: CorpusHit) -> str:
     venue = f", {hit.venue}" if hit.venue else ""
     locator = hit.doi or hit.url or hit.hit_id
     return f"{index}. `{hit.hit_id}` {hit.title}{year}{venue}. Source: {hit.source}. ID: {locator}"
+
+
+def _memo_title(candidate: InsightCandidate) -> str:
+    if candidate.bridge_terms:
+        return " / ".join(candidate.bridge_terms[:3])
+    return candidate.topic
