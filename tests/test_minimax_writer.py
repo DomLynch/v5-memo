@@ -6,10 +6,13 @@ from urllib.request import Request
 import pytest
 
 from v5_memo.minimax_writer import (
+    MiniMaxM3CandidateSelector,
     MiniMaxM3MemoWriter,
     MiniMaxM3SearchPlanner,
     build_minimax_prompt,
+    build_minimax_selection_prompt,
     parse_minimax_queries,
+    parse_minimax_selection,
     validate_minimax_memo,
 )
 from v5_memo.schemas import CorpusHit, InsightCandidate
@@ -311,6 +314,60 @@ def test_minimax_planner_from_env_uses_v5_overrides(monkeypatch: pytest.MonkeyPa
     body = json.loads(request_data.decode("utf-8"))
     assert body["model"] == "MiniMax-M3-Planner"
     assert body["max_tokens"] == 333
+
+
+def test_minimax_selector_picks_existing_alpha_candidate() -> None:
+    opener = FakeOpener(
+        json.dumps({
+            "classification": "alpha_memo",
+            "candidate": 2,
+            "reason": "second candidate has tighter receipt coupling",
+        })
+    )
+    candidates = [
+        _candidate(thesis="adjacent bridge", score=61),
+        _candidate(thesis="bounded surprise", score=90),
+    ]
+    selector = MiniMaxM3CandidateSelector(api_key="test-key", opener=opener)
+
+    selected = selector.select(candidates, _receipts())
+
+    assert selected == [candidates[1]]
+    request = opener.requests[0]
+    request_data = request.data
+    assert isinstance(request_data, bytes)
+    body = json.loads(request_data.decode("utf-8"))
+    assert "strict research alpha selector" in body["system"]
+    assert "Select the strongest alpha memo bridge" in body["messages"][0]["content"][0]["text"]
+
+
+def test_minimax_selector_downgrades_weak_bridge_to_no_selection() -> None:
+    opener = FakeOpener(
+        json.dumps({
+            "classification": "discovery_seed",
+            "candidate": 1,
+            "reason": "interesting but indirect",
+        })
+    )
+    selector = MiniMaxM3CandidateSelector(api_key="test-key", opener=opener)
+
+    assert selector.select([_candidate()], _receipts()) == []
+
+
+def test_minimax_selection_prompt_names_weak_bridge_failures() -> None:
+    prompt = build_minimax_selection_prompt([_candidate()], _receipts())
+
+    assert "unsupported domain jump" in prompt
+    assert "generic \"evidence is mixed\"" in prompt
+    assert "Do not invent candidates or receipt IDs" in prompt
+
+
+def test_parse_minimax_selection_rejects_invalid_alpha_index() -> None:
+    with pytest.raises(ValueError, match="invalid candidate index"):
+        parse_minimax_selection(
+            json.dumps({"classification": "alpha_memo", "candidate": 99}),
+            [_candidate()],
+        )
 
 
 def test_parse_minimax_queries_rejects_invalid_json() -> None:

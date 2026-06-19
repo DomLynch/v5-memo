@@ -9,6 +9,7 @@ from v5_memo.client import (
 from v5_memo.coverage import SearchCoverage, current_search_coverage, require_full_raw_corpus
 from v5_memo.miner import mine_insights, query_anchor_terms
 from v5_memo.minimax_writer import (
+    MiniMaxM3CandidateSelector,
     MiniMaxM3MemoWriter,
     MiniMaxM3SearchPlanner,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "HybridCorpusSearchClient",
     "InsightCandidate",
     "MemoResult",
+    "MiniMaxM3CandidateSelector",
     "MiniMaxM3MemoWriter",
     "MiniMaxM3SearchPlanner",
     "OpenAlexFullCorpusSearchClient",

@@ -13,6 +13,7 @@ from v5_memo.client import (
 )
 from v5_memo.coverage import current_search_coverage, require_full_raw_corpus
 from v5_memo.minimax_writer import (
+    MiniMaxM3CandidateSelector,
     MiniMaxM3MemoWriter,
     MiniMaxM3SearchPlanner,
 )
@@ -69,6 +70,7 @@ def main() -> None:
         default="openalex",
     )
     parser.add_argument("--writer", choices=["template", "minimax"])
+    parser.add_argument("--selector", choices=["deterministic", "minimax"])
     args = parser.parse_args()
 
     if args.coverage_report:
@@ -80,6 +82,7 @@ def main() -> None:
     searcher_mode = "hybrid" if args.searcher == "smart" else args.searcher
     planner_mode = args.planner or ("minimax" if args.searcher == "smart" else "seed")
     writer_mode = args.writer or ("minimax" if args.searcher == "smart" else "template")
+    selector_mode = args.selector or ("minimax" if writer_mode == "minimax" else "deterministic")
 
     searcher: CorpusSearcher
     if args.demo:
@@ -104,6 +107,9 @@ def main() -> None:
     memo_writer = render_memo
     if writer_mode == "minimax":
         memo_writer = MiniMaxM3MemoWriter.from_env().render
+    memo_selector = None
+    if selector_mode == "minimax":
+        memo_selector = MiniMaxM3CandidateSelector.from_env().select
     base_queries = args.query or [
         "sleep NAD salvage mitochondrial stress",
         "exercise NAD salvage mitochondrial repair",
@@ -120,6 +126,7 @@ def main() -> None:
         seed_queries=queries,
         searcher=searcher,
         memo_writer=memo_writer,
+        memo_selector=memo_selector,
         anchor_queries=base_queries,
     )
     print(result.markdown)

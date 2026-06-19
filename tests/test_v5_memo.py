@@ -179,6 +179,80 @@ def test_pipeline_accepts_custom_memo_writer() -> None:
     assert result.markdown == "custom: longevity resilience / 2"
 
 
+def test_pipeline_applies_selector_to_existing_candidates() -> None:
+    hits = [
+        _hit(
+            "tail-a",
+            "Tool cohort benefit in aggregate outcomes",
+            "Tool reduced aggregate outcome risk in a cohort population.",
+        ),
+        _hit(
+            "tail-b",
+            "Tool fatality cases in acute sessions",
+            "Rare acute tool death cases concentrated in case reports.",
+        ),
+        _hit(
+            "metric-a",
+            "Tool improves benchmark accuracy",
+            "The tool improved benchmark accuracy score.",
+        ),
+        _hit(
+            "metric-b",
+            "Tool increases deployment error outcomes",
+            "The tool increased error outcome rates.",
+        ),
+    ]
+
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return hits
+
+    deterministic = mine_insights(
+        hits,
+        topic="AI tool reliability",
+        required_anchor_terms=query_anchor_terms(["tool"]),
+    )
+    chosen = deterministic[-1].receipt_ids
+
+    result = build_alpha_memo(
+        topic="AI tool reliability",
+        seed_queries=["tool"],
+        searcher=FakeSearch(),
+        memo_selector=lambda candidates, _hits: [candidates[-1]],
+    )
+
+    assert len(deterministic) >= 2
+    assert result.candidate.receipt_ids == chosen
+
+
+def test_pipeline_selector_cannot_invent_receipt_pair() -> None:
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return _hits()
+
+    invented = InsightCandidate(
+        topic="longevity resilience",
+        thesis="Invented candidate.",
+        bridge_terms=("nad",),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("h1", "missing"),
+        score=99,
+        novelty_score=99,
+        evidence_score=99,
+        reasons=("source_diverse",),
+    )
+
+    with pytest.raises(ValueError, match="no receipt-bound"):
+        build_alpha_memo(
+            topic="longevity resilience",
+            seed_queries=["sleep nad", "exercise nad"],
+            searcher=FakeSearch(),
+            memo_selector=lambda _candidates, _hits: [invented],
+        )
+
+
 def test_query_anchor_terms_keep_specific_seed_terms() -> None:
     assert query_anchor_terms([
         "NAD salvage mitochondrial stress exercise response",

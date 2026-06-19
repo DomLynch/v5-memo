@@ -98,7 +98,18 @@ class MiniMaxM3MemoWriter:
                 opener=self._opener,
             )
         )
-        return validate_minimax_memo(markdown, receipts)
+        memo = validate_minimax_memo(markdown, receipts)
+        verify_minimax_memo_claims(
+            memo,
+            receipts,
+            api_key=self._api_key,
+            base_url=self._base_url,
+            model=self._model,
+            timeout=self._timeout,
+            max_tokens=min(self._max_tokens, 700),
+            opener=self._opener,
+        )
+        return memo
 
 
 class MiniMaxM3SearchPlanner:
@@ -356,6 +367,75 @@ Rules:
 Candidates:
 {blocks}
 """
+
+
+def verify_minimax_memo_claims(
+    markdown: str,
+    receipts: Sequence[CorpusHit],
+    *,
+    api_key: str,
+    base_url: str = MINIMAX_BASE_URL,
+    model: str = MINIMAX_MODEL,
+    timeout: float = 60.0,
+    max_tokens: int = 700,
+    opener: RequestOpener | None = None,
+) -> None:
+    receipt_block = "\n\n".join(
+        _receipt_block(index, hit) for index, hit in enumerate(receipts, start=1)
+    )
+    prompt = f"""Verify this memo against its locked receipts.
+
+Check only concrete factual claims: endpoint, subgroup, comparator, metric, market,
+channel, benchmark, date, dose, duration, sample, source type, and effect direction.
+Ignore prose quality and broad interpretation. If a concrete claim is not directly
+supported by the receipt text, fail.
+
+Return JSON only:
+{{"pass":true,"reason":"supported"}}
+or
+{{"pass":false,"claim":"unsupported claim","receipt_id":"receipt id","reason":"short correction"}}
+
+Memo:
+{markdown}
+
+Receipts:
+{receipt_block}
+"""
+    verdict = call_minimax_m3(
+        api_key=api_key,
+        prompt=prompt,
+        system=(
+            "You are a strict receipt fact verifier. Return only valid JSON. "
+            "Do not repair prose; only pass or fail unsupported factual claims."
+        ),
+        temperature=0.0,
+        max_tokens=max_tokens,
+        base_url=base_url,
+        model=model,
+        timeout=timeout,
+        opener=opener,
+    )
+    parse_minimax_fact_verdict(verdict)
+
+
+def parse_minimax_fact_verdict(text: str) -> None:
+    stripped = _strip_markdown_fence(text)
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise ValueError("MiniMax verifier did not return valid JSON") from exc
+    if not isinstance(data, dict):
+        raise ValueError("MiniMax verifier must return a JSON object")
+    passed = data.get("pass", data.get("passed"))
+    if passed is True:
+        return
+    claim = str(data.get("claim") or "unsupported claim")
+    receipt_id = str(data.get("receipt_id") or "unknown receipt")
+    reason = str(data.get("reason") or "not supported by receipt text")
+    raise ValueError(
+        f"MiniMax memo failed receipt fact verification: {claim} "
+        f"({receipt_id}; {reason})"
+    )
 
 
 def parse_minimax_selection(
