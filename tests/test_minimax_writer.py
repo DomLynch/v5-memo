@@ -311,6 +311,57 @@ Preclinical only."""
     assert "not supported by receipts" in repair_prompt
 
 
+def test_minimax_writer_repairs_missing_required_sections() -> None:
+    bad_memo = """# Alpha memo: NAD mitochondrial split
+## Core signal
+The receipts move in different directions.
+## Why this could matter
+It is a receipt-bound signal.
+## What would break the idea
+A direct receipt could resolve the split.
+## Receipts
+- 10.1/sleep-nad
+- 10.2/exercise-nad
+## Safety note
+Research only."""
+    repaired_memo = bad_memo.replace(
+        "## Why this could matter",
+        "## The 2+2=5 angle\nThe point is the bridge, not a broad claim.\n## Why this could matter",
+    )
+    opener = FakeOpener([bad_memo, repaired_memo, json.dumps({"pass": True, "reason": "supported"})])
+    writer = MiniMaxM3MemoWriter(api_key="test-key", opener=opener)
+
+    memo = writer.render(_candidate(), _receipts())
+
+    assert "## The 2+2=5 angle" in memo
+    assert len(opener.requests) == 3
+    repair_body = opener.requests[1].data
+    assert isinstance(repair_body, bytes)
+    repair_prompt = json.loads(repair_body.decode("utf-8"))["messages"][0]["content"][0]["text"]
+    assert "missing required sections" in repair_prompt
+
+
+def test_minimax_title_guard_ignores_generic_report_terms() -> None:
+    memo = """# Alpha memo: two-report NAD mitochondrial split
+## Core signal
+The receipts move in different directions.
+## The 2+2=5 angle
+The point is the bridge, not a broad claim.
+## Why this could matter
+It is a receipt-bound signal.
+## What would break the idea
+A direct receipt could resolve the split.
+## Receipts
+- 10.1/sleep-nad
+- 10.2/exercise-nad
+## Safety note
+Research only."""
+
+    assert validate_minimax_memo(memo, _receipts(), candidate=_candidate()).startswith(
+        "# Alpha memo: two-report"
+    )
+
+
 def test_build_minimax_repair_prompt_preserves_required_context() -> None:
     error = FactVerificationError(
         claim="The campaign increased click-through rate.",

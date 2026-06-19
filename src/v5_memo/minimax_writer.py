@@ -37,6 +37,7 @@ _TITLE_WORD_RE = re.compile(r"[a-z][a-z0-9]{2,}")
 _TITLE_STOPWORDS = frozenset({
     "alpha", "memo", "and", "for", "from", "into", "may", "not", "the", "with",
     "without", "between", "versus", "under", "over", "through", "across",
+    "one", "two", "three", "both", "same", "abstract", "readout", "readouts", "report", "reports",
     "signal", "signals", "effect", "effects", "tradeoff", "tradeoffs",
     "boundary", "condition", "conditions", "hypothesis", "discovery", "seed",
     "split", "splits", "diverge", "diverges", "divergence", "outlier",
@@ -72,6 +73,10 @@ class FactVerificationError(ValueError):
 
 class MemoScopeError(ValueError):
     """A memo title/framing used concepts outside the supplied receipts."""
+
+
+class MemoFormatError(ValueError):
+    """A memo omitted the required Markdown contract."""
 
 
 class MiniMaxM3MemoWriter:
@@ -114,7 +119,7 @@ class MiniMaxM3MemoWriter:
             markdown = self._write(prompt, temperature=0.45 if attempt == 0 else 0.2)
             try:
                 memo = validate_minimax_memo(markdown, receipts, candidate=candidate)
-            except MemoScopeError as exc:
+            except (MemoScopeError, MemoFormatError) as exc:
                 if attempt >= MEMO_REPAIR_ATTEMPTS:
                     raise
                 prompt = build_minimax_scope_repair_prompt(markdown, receipts, str(exc))
@@ -458,7 +463,7 @@ def build_minimax_scope_repair_prompt(
     receipt_block = "\n\n".join(
         _receipt_block(index, hit) for index, hit in enumerate(receipts, start=1)
     )
-    return f"""Repair this alpha memo title/framing so it is owned by the receipts.
+    return f"""Repair this alpha memo title/framing/format so it is owned by the receipts.
 
 Validator failure:
 - {reason}
@@ -594,10 +599,12 @@ def validate_minimax_memo(
 ) -> str:
     text = markdown.strip()
     if not text:
-        raise ValueError("MiniMax returned an empty memo")
+        raise MemoFormatError("MiniMax returned an empty memo")
     missing_sections = [section for section in _REQUIRED_MEMO_SECTIONS if section not in text]
     if missing_sections:
-        raise ValueError(f"MiniMax memo missing required sections: {', '.join(missing_sections)}")
+        raise MemoFormatError(
+            f"MiniMax memo missing required sections: {', '.join(missing_sections)}"
+        )
     missing = [hit.receipt_id for hit in receipts if hit.receipt_id not in text]
     if missing:
         raise ValueError(f"MiniMax memo dropped receipt IDs: {', '.join(missing)}")
