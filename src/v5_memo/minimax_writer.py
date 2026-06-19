@@ -33,6 +33,7 @@ _REQUIRED_MEMO_SECTIONS = (
 )
 _DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s<>()\[\]{}\"']+", re.IGNORECASE)
 _DOI_TRAILING_PUNCTUATION = ".,;:*_`"
+MEMO_REPAIR_ATTEMPTS = 2
 
 
 class HttpResponse(Protocol):
@@ -45,6 +46,19 @@ class HttpResponse(Protocol):
 
 class RequestOpener(Protocol):
     def __call__(self, request: Request, timeout: float) -> HttpResponse: ...
+
+
+class FactVerificationError(ValueError):
+    """A memo claim was not supported by the supplied receipts."""
+
+    def __init__(self, *, claim: str, receipt_id: str, reason: str) -> None:
+        self.claim = claim
+        self.receipt_id = receipt_id
+        self.reason = reason
+        super().__init__(
+            f"MiniMax memo failed receipt fact verification: {claim} "
+            f"({receipt_id}; {reason})"
+        )
 
 
 class MiniMaxM3MemoWriter:
@@ -82,7 +96,32 @@ class MiniMaxM3MemoWriter:
 
     def render(self, candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> str:
         prompt = build_minimax_prompt(candidate, receipts)
-        markdown = _strip_markdown_fence(
+        fact_error: FactVerificationError | None = None
+        for attempt in range(MEMO_REPAIR_ATTEMPTS + 1):
+            markdown = self._write(prompt, temperature=0.45 if attempt == 0 else 0.2)
+            memo = validate_minimax_memo(markdown, receipts)
+            try:
+                verify_minimax_memo_claims(
+                    memo,
+                    receipts,
+                    api_key=self._api_key,
+                    base_url=self._base_url,
+                    model=self._model,
+                    timeout=self._timeout,
+                    max_tokens=min(self._max_tokens, 700),
+                    opener=self._opener,
+                )
+            except FactVerificationError as exc:
+                fact_error = exc
+                if attempt >= MEMO_REPAIR_ATTEMPTS:
+                    raise
+                prompt = build_minimax_repair_prompt(memo, receipts, exc)
+                continue
+            return memo
+        raise fact_error or RuntimeError("MiniMax memo repair failed")
+
+    def _write(self, prompt: str, *, temperature: float) -> str:
+        return _strip_markdown_fence(
             call_minimax_m3(
                 api_key=self._api_key,
                 prompt=prompt,
@@ -90,7 +129,7 @@ class MiniMaxM3MemoWriter:
                     "You write concise research alpha memos. Use only the supplied receipts. "
                     "Do not add uncited mechanisms, claims, facts, statistics, or references."
                 ),
-                temperature=0.45,
+                temperature=temperature,
                 max_tokens=self._max_tokens,
                 base_url=self._base_url,
                 model=self._model,
@@ -98,18 +137,6 @@ class MiniMaxM3MemoWriter:
                 opener=self._opener,
             )
         )
-        memo = validate_minimax_memo(markdown, receipts)
-        verify_minimax_memo_claims(
-            memo,
-            receipts,
-            api_key=self._api_key,
-            base_url=self._base_url,
-            model=self._model,
-            timeout=self._timeout,
-            max_tokens=min(self._max_tokens, 700),
-            opener=self._opener,
-        )
-        return memo
 
 
 class MiniMaxM3SearchPlanner:
@@ -369,6 +396,37 @@ Candidates:
 """
 
 
+def build_minimax_repair_prompt(
+    markdown: str,
+    receipts: Sequence[CorpusHit],
+    error: FactVerificationError,
+) -> str:
+    receipt_block = "\n\n".join(
+        _receipt_block(index, hit) for index, hit in enumerate(receipts, start=1)
+    )
+    return f"""Repair this alpha memo so every concrete claim is supported by the receipts.
+
+Verifier failure:
+- Unsupported claim: {error.claim}
+- Receipt: {error.receipt_id}
+- Correction: {error.reason}
+
+Rules:
+- Keep the required Markdown sections.
+- Keep every receipt ID exactly as written.
+- Remove or narrow unsupported endpoint, subgroup, comparator, metric, date, dose,
+  duration, market, channel, benchmark, and effect-direction claims.
+- Do not add new receipts, facts, numbers, or mechanisms.
+- Output Markdown only.
+
+Memo to repair:
+{markdown}
+
+Locked receipts:
+{receipt_block}
+"""
+
+
 def verify_minimax_memo_claims(
     markdown: str,
     receipts: Sequence[CorpusHit],
@@ -432,10 +490,7 @@ def parse_minimax_fact_verdict(text: str) -> None:
     claim = str(data.get("claim") or "unsupported claim")
     receipt_id = str(data.get("receipt_id") or "unknown receipt")
     reason = str(data.get("reason") or "not supported by receipt text")
-    raise ValueError(
-        f"MiniMax memo failed receipt fact verification: {claim} "
-        f"({receipt_id}; {reason})"
-    )
+    raise FactVerificationError(claim=claim, receipt_id=receipt_id, reason=reason)
 
 
 def parse_minimax_selection(

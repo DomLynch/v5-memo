@@ -6,10 +6,12 @@ from urllib.request import Request
 import pytest
 
 from v5_memo.minimax_writer import (
+    FactVerificationError,
     MiniMaxM3CandidateSelector,
     MiniMaxM3MemoWriter,
     MiniMaxM3SearchPlanner,
     build_minimax_prompt,
+    build_minimax_repair_prompt,
     build_minimax_selection_prompt,
     parse_minimax_fact_verdict,
     parse_minimax_queries,
@@ -177,19 +179,90 @@ Research only."""
         source="openalex",
         doi="10.3945/ajcn.116.140780",
     )
+    failed = json.dumps({
+        "pass": False,
+        "claim": "Fish oil improved chair-rise time in older women.",
+        "receipt_id": "10.3945/ajcn.116.140780",
+        "reason": "chair-rise time did not differ; torque and muscle quality improved",
+    })
+    opener = FakeOpener([memo, failed, memo, failed, memo, failed])
+    writer = MiniMaxM3MemoWriter(api_key="test-key", opener=opener)
+
+    with pytest.raises(ValueError, match="chair-rise time did not differ"):
+        writer.render(_candidate(), [receipt])
+
+
+def test_minimax_writer_repairs_then_accepts_failed_fact_check() -> None:
+    bad_memo = """# Alpha memo: omega 3 resistance training
+## Core signal
+Fish oil improved chair-rise time in older women.
+## The 2+2=5 angle
+The endpoint translation is sex-specific.
+## Why this could matter
+It changes supplement positioning.
+## What would break the idea
+A replication would break it.
+## Receipts
+- 10.3945/ajcn.116.140780
+## Safety note
+Research only."""
+    repaired_memo = bad_memo.replace(
+        "Fish oil improved chair-rise time in older women.",
+        "Fish oil improved maximal isometric torque and muscle quality in older women; chair-rise time did not differ.",
+    )
+    receipt = CorpusHit(
+        hit_id="omega",
+        title="Sex differences in fish-oil supplementation and resistance exercise",
+        abstract=(
+            "Chair-rise time did not differ between groups. Maximal isometric torque "
+            "and muscle quality improved in older women."
+        ),
+        source="openalex",
+        doi="10.3945/ajcn.116.140780",
+    )
     opener = FakeOpener([
-        memo,
+        bad_memo,
         json.dumps({
             "pass": False,
             "claim": "Fish oil improved chair-rise time in older women.",
             "receipt_id": "10.3945/ajcn.116.140780",
             "reason": "chair-rise time did not differ; torque and muscle quality improved",
         }),
+        repaired_memo,
+        json.dumps({"pass": True, "reason": "supported"}),
     ])
     writer = MiniMaxM3MemoWriter(api_key="test-key", opener=opener)
 
-    with pytest.raises(ValueError, match="chair-rise time did not differ"):
-        writer.render(_candidate(), [receipt])
+    memo = writer.render(_candidate(), [receipt])
+
+    assert "maximal isometric torque and muscle quality" in memo
+    assert len(opener.requests) == 4
+    repair_body = opener.requests[2].data
+    assert isinstance(repair_body, bytes)
+    repair_prompt = json.loads(repair_body.decode("utf-8"))["messages"][0]["content"][0]["text"]
+    assert "Repair this alpha memo" in repair_prompt
+    assert "chair-rise time did not differ" in repair_prompt
+
+
+def test_build_minimax_repair_prompt_preserves_required_context() -> None:
+    error = FactVerificationError(
+        claim="The campaign increased click-through rate.",
+        receipt_id="10.biz/test",
+        reason="click-through was not reported",
+    )
+    prompt = build_minimax_repair_prompt("## Receipts\n- 10.biz/test", [
+        CorpusHit(
+            hit_id="biz",
+            title="Ad campaign experiment",
+            abstract="Conversion did not differ; click-through was not reported.",
+            source="openalex",
+            doi="10.biz/test",
+        )
+    ], error)
+
+    assert "click-through was not reported" in prompt
+    assert "Keep every receipt ID exactly as written" in prompt
+    assert "Do not add new receipts" in prompt
 
 
 def test_minimax_fact_verifier_rejects_unsupported_business_metric() -> None:
