@@ -522,6 +522,40 @@ Preclinical only.""",
         )
 
 
+def test_minimax_memo_validation_rejects_other_unsupported_seed_terms() -> None:
+    candidate = InsightCandidate(
+        topic="senescence inflammation healthspan muscle translation",
+        thesis="Receipt bridge should be narrowed to muscle biology.",
+        bridge_terms=("soleus", "protein"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("soleus", "hindlimb"),
+        score=80,
+        novelty_score=80,
+        evidence_score=80,
+        reasons=("source_diverse",),
+    )
+
+    with pytest.raises(ValueError, match="senescence"):
+        validate_minimax_memo(
+            """# Alpha memo: senescence inflammation healthspan muscle translation
+## Core signal
+Soleus differs from faster muscles.
+## The 2+2=5 angle
+The receipts split by muscle type.
+## Why this could matter
+It is a hypothesis.
+## What would break the idea
+A direct senescence receipt would break it.
+## Receipts
+- 10.1016/j.molmet.2022.101615
+- 10.1152/ajpendo.1984.246.4.e297
+## Safety note
+Preclinical only.""",
+            _muscle_receipts(),
+            candidate=candidate,
+        )
+
+
 def test_minimax_memo_validation_allows_receipt_owned_retitle() -> None:
     memo = validate_minimax_memo(
         """# Alpha memo: soleus leucine mTORC1 protein synthesis split
