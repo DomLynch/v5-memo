@@ -5,13 +5,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 _SHAPE_WEIGHTS = {
-    "shape:expectation_reversal": 5,
-    "shape:directional_reversal": 4,
+    "shape:expectation_reversal": 6,
+    "shape:directional_reversal": 5,
     "shape:boundary_condition": 3,
     "shape:denominator_split": 3,
     "shape:role_inversion": 3,
     "shape:timing_split": 2,
-    "shape:measurement_mismatch": 2,
+    "shape:measurement_mismatch": 1,
     "shape:expertise_split": 1,
 }
 

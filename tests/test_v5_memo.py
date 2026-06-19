@@ -14,6 +14,7 @@ from v5_memo import (
     render_memo,
 )
 from v5_memo.schemas import InsightCandidate
+from v5_memo.scorer import score_connection
 
 
 def _hits() -> list[CorpusHit]:
@@ -322,6 +323,62 @@ def test_miner_ranks_shaped_candidates_above_rare_keyword_bridges() -> None:
 
     assert candidate.receipt_ids == ("strong-a", "strong-b")
     assert "shape:measurement_mismatch" in candidate.reasons
+
+
+def test_scorer_prefers_asymmetric_alpha_shapes_without_rejecting_seed_shapes() -> None:
+    counts = {"bridge": 2}
+
+    seed = score_connection(
+        bridge_terms=("bridge",),
+        bridge_doc_counts=counts,
+        unique_source_count=2,
+        receipt_count=2,
+        has_tension=False,
+        shape_score=1,
+        shape_reasons=("shape:measurement_mismatch",),
+    )
+    alpha = score_connection(
+        bridge_terms=("bridge",),
+        bridge_doc_counts=counts,
+        unique_source_count=2,
+        receipt_count=2,
+        has_tension=True,
+        shape_score=2,
+        shape_reasons=("shape:expectation_reversal", "shape:directional_reversal"),
+    )
+
+    assert seed.score > 0
+    assert alpha.score > seed.score
+
+
+def test_miner_ranks_expectation_reversal_above_construct_split() -> None:
+    hits = [
+        _hit(
+            "alpha-a",
+            "Protocol expected metformin training augmentation",
+            "Protocol hypothesis expected metformin would improve strength training response.",
+        ),
+        _hit(
+            "alpha-b",
+            "Trial observed metformin training blunting",
+            "Outcome trial observed metformin reduced strength training response.",
+        ),
+        _hit(
+            "seed-a",
+            "Protein timing chronic hypertrophy endpoint",
+            "Protein timing chronic endpoint studied strength hypertrophy outcomes.",
+        ),
+        _hit(
+            "seed-b",
+            "Protein distribution acute synthesis endpoint",
+            "Protein timing acute endpoint measured muscle protein synthesis outcomes.",
+        ),
+    ]
+
+    candidate = mine_insights(hits, topic="training adaptation")[0]
+
+    assert candidate.receipt_ids == ("alpha-a", "alpha-b")
+    assert "shape:expectation_reversal" in candidate.reasons
 
 
 def test_pipeline_raises_when_no_receipt_bound_candidate() -> None:
