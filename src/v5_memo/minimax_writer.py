@@ -106,7 +106,13 @@ class MiniMaxM3MemoWriter:
         fact_error: FactVerificationError | None = None
         for attempt in range(MEMO_REPAIR_ATTEMPTS + 1):
             markdown = self._write(prompt, temperature=0.45 if attempt == 0 else 0.2)
-            memo = validate_minimax_memo(markdown, receipts, candidate=candidate)
+            try:
+                memo = validate_minimax_memo(markdown, receipts, candidate=candidate)
+            except ValueError as exc:
+                if "seed-topic terms" not in str(exc) or attempt >= MEMO_REPAIR_ATTEMPTS:
+                    raise
+                prompt = build_minimax_scope_repair_prompt(markdown, receipts, str(exc))
+                continue
             try:
                 verify_minimax_memo_claims(
                     memo,
@@ -438,6 +444,35 @@ Locked receipts:
 """
 
 
+def build_minimax_scope_repair_prompt(
+    markdown: str,
+    receipts: Sequence[CorpusHit],
+    reason: str,
+) -> str:
+    receipt_block = "\n\n".join(
+        _receipt_block(index, hit) for index, hit in enumerate(receipts, start=1)
+    )
+    return f"""Repair this alpha memo title/framing so it is owned by the receipts.
+
+Validator failure:
+- {reason}
+
+Rules:
+- Keep the required Markdown sections.
+- Keep every receipt ID exactly as written.
+- Retitle around concepts present in the locked receipt titles/abstracts.
+- Treat the original seed topic as search context only.
+- Do not add new receipts, facts, numbers, mechanisms, or broad domain claims.
+- Output Markdown only.
+
+Memo to repair:
+{markdown}
+
+Locked receipts:
+{receipt_block}
+"""
+
+
 def verify_minimax_memo_claims(
     markdown: str,
     receipts: Sequence[CorpusHit],
@@ -720,10 +755,10 @@ def _validate_receipt_owned_title(
     if not first_line.casefold().startswith("# alpha memo:"):
         return
     title_terms = _title_terms(first_line)
-    receipt_terms = _receipt_terms(receipts)
+    supported_terms = _receipt_terms(receipts) | _title_terms(" ".join(candidate.bridge_terms))
     seed_terms = _title_terms(candidate.topic)
     unsupported_seed_terms = sorted(
-        term for term in title_terms & seed_terms if term not in receipt_terms
+        term for term in title_terms & seed_terms if term not in supported_terms
     )
     if unsupported_seed_terms:
         raise ValueError(
@@ -734,7 +769,7 @@ def _validate_receipt_owned_title(
 
 def _title_terms(text: str) -> set[str]:
     return {
-        term
+        _normalize_title_term(term)
         for term in _TITLE_WORD_RE.findall(text.casefold())
         if term not in _TITLE_STOPWORDS
     }
@@ -745,3 +780,9 @@ def _receipt_terms(receipts: Sequence[CorpusHit]) -> set[str]:
     for hit in receipts:
         terms.update(_title_terms(hit.text))
     return terms
+
+
+def _normalize_title_term(term: str) -> str:
+    if len(term) > 4 and term.endswith("s") and not term.endswith(("ss", "sis")):
+        return term[:-1]
+    return term

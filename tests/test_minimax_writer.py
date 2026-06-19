@@ -12,6 +12,7 @@ from v5_memo.minimax_writer import (
     MiniMaxM3SearchPlanner,
     build_minimax_prompt,
     build_minimax_repair_prompt,
+    build_minimax_scope_repair_prompt,
     build_minimax_selection_prompt,
     parse_minimax_fact_verdict,
     parse_minimax_queries,
@@ -89,7 +90,7 @@ def _receipts() -> list[CorpusHit]:
 
 
 def test_minimax_writer_calls_anthropic_endpoint_and_preserves_receipts() -> None:
-    text = """# Alpha memo: longevity resilience
+    text = """# Alpha memo: NAD mitochondrial sleep exercise bridge
 ## Core signal
 NAD and mitochondrial repair may connect the receipts.
 ## The 2+2=5 angle
@@ -121,7 +122,7 @@ Hypothesis only."""
 
 
 def test_minimax_writer_from_env_uses_v5_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
-    text = """# Alpha memo: longevity resilience
+    text = """# Alpha memo: NAD mitochondrial receipt bridge
 ## Core signal
 Signal.
 ## The 2+2=5 angle
@@ -244,6 +245,66 @@ Research only."""
     assert "chair-rise time did not differ" in repair_prompt
 
 
+def test_minimax_writer_repairs_seed_topic_overtitle() -> None:
+    bad_memo = """# Alpha memo: longevity protein restriction muscle aging tradeoff
+## Core signal
+Soleus differs from faster muscles.
+## The 2+2=5 angle
+The receipts split by muscle type.
+## Why this could matter
+It is a hypothesis.
+## What would break the idea
+A direct low-protein receipt would break it.
+## Receipts
+- 10.1016/j.molmet.2022.101615
+- 10.1152/ajpendo.1984.246.4.e297
+## Safety note
+Preclinical only."""
+    repaired_memo = bad_memo.replace(
+        "# Alpha memo: longevity protein restriction muscle aging tradeoff",
+        "# Alpha memo: soleus leucine mTORC1 protein synthesis split",
+    )
+    candidate = InsightCandidate(
+        topic="longevity protein restriction muscle aging tradeoff",
+        thesis="Receipt bridge should be narrowed to muscle biology.",
+        bridge_terms=("soleus", "protein"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("soleus", "hindlimb"),
+        score=80,
+        novelty_score=80,
+        evidence_score=80,
+        reasons=("source_diverse",),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="soleus",
+            title="Resistance exercise enhances mTORC1 sensitivity to leucine in soleus",
+            abstract="The effect was observed in soleus but not tibialis anterior or plantaris.",
+            source="openalex",
+            doi="10.1016/j.molmet.2022.101615",
+        ),
+        CorpusHit(
+            hit_id="hindlimb",
+            title="Protein synthesis versus energy state in contracting muscles",
+            abstract="Contractions inhibited protein synthesis in tibialis anterior, gastrocnemius, and plantaris but not soleus.",
+            source="openalex",
+            doi="10.1152/ajpendo.1984.246.4.e297",
+        ),
+    ]
+    opener = FakeOpener([bad_memo, repaired_memo, json.dumps({"pass": True, "reason": "supported"})])
+    writer = MiniMaxM3MemoWriter(api_key="test-key", opener=opener)
+
+    memo = writer.render(candidate, receipts)
+
+    assert memo.startswith("# Alpha memo: soleus leucine")
+    assert len(opener.requests) == 3
+    repair_body = opener.requests[1].data
+    assert isinstance(repair_body, bytes)
+    repair_prompt = json.loads(repair_body.decode("utf-8"))["messages"][0]["content"][0]["text"]
+    assert "title/framing" in repair_prompt
+    assert "seed-topic terms" in repair_prompt
+
+
 def test_build_minimax_repair_prompt_preserves_required_context() -> None:
     error = FactVerificationError(
         claim="The campaign increased click-through rate.",
@@ -262,6 +323,18 @@ def test_build_minimax_repair_prompt_preserves_required_context() -> None:
 
     assert "click-through was not reported" in prompt
     assert "Keep every receipt ID exactly as written" in prompt
+    assert "Do not add new receipts" in prompt
+
+
+def test_build_minimax_scope_repair_prompt_forces_receipt_owned_title() -> None:
+    prompt = build_minimax_scope_repair_prompt(
+        "# Alpha memo: longevity protein restriction\n## Receipts\n- 10.x",
+        _receipts(),
+        "MiniMax memo title used seed-topic terms not supported by receipts: longevity",
+    )
+
+    assert "Retitle around concepts present in the locked receipt" in prompt
+    assert "seed topic as search context only" in prompt
     assert "Do not add new receipts" in prompt
 
 
@@ -323,6 +396,8 @@ def test_build_minimax_prompt_bounds_long_abstracts() -> None:
 def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
     prompt = build_minimax_prompt(_candidate(), _receipts())
 
+    assert "seed topic as search context only" in prompt
+    assert "receipt-owned title" in prompt
     assert "Scope every implication to the receipts" in prompt
     assert "population, market" in prompt
     assert "company, channel, model, benchmark" in prompt
@@ -417,6 +492,107 @@ x""",
     )
 
     assert "`10.1/sleep-nad`" in memo
+
+
+def test_minimax_memo_validation_rejects_seed_topic_overtitle() -> None:
+    candidate = InsightCandidate(
+        topic="longevity protein restriction muscle aging tradeoff",
+        thesis="Receipt bridge should be narrowed to muscle biology.",
+        bridge_terms=("soleus", "protein"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("soleus", "hindlimb"),
+        score=80,
+        novelty_score=80,
+        evidence_score=80,
+        reasons=("source_diverse",),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="soleus",
+            title="Resistance exercise enhances mTORC1 sensitivity to leucine in soleus",
+            abstract="The effect was observed in soleus but not tibialis anterior or plantaris.",
+            source="openalex",
+            doi="10.1016/j.molmet.2022.101615",
+        ),
+        CorpusHit(
+            hit_id="hindlimb",
+            title="Protein synthesis versus energy state in contracting muscles",
+            abstract="Contractions inhibited protein synthesis in tibialis anterior, gastrocnemius, and plantaris but not soleus.",
+            source="openalex",
+            doi="10.1152/ajpendo.1984.246.4.e297",
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="longevity"):
+        validate_minimax_memo(
+            """# Alpha memo: longevity protein restriction muscle aging tradeoff
+## Core signal
+Soleus differs from faster muscles.
+## The 2+2=5 angle
+The receipts split by muscle type.
+## Why this could matter
+It is a hypothesis.
+## What would break the idea
+A direct low-protein receipt would break it.
+## Receipts
+- 10.1016/j.molmet.2022.101615
+- 10.1152/ajpendo.1984.246.4.e297
+## Safety note
+Preclinical only.""",
+            receipts,
+            candidate=candidate,
+        )
+
+
+def test_minimax_memo_validation_allows_receipt_owned_retitle() -> None:
+    candidate = InsightCandidate(
+        topic="longevity protein restriction muscle aging tradeoff",
+        thesis="Receipt bridge should be narrowed to muscle biology.",
+        bridge_terms=("soleus", "protein"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("soleus", "hindlimb"),
+        score=80,
+        novelty_score=80,
+        evidence_score=80,
+        reasons=("source_diverse",),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="soleus",
+            title="Resistance exercise enhances mTORC1 sensitivity to leucine in soleus",
+            abstract="The effect was observed in soleus but not tibialis anterior or plantaris.",
+            source="openalex",
+            doi="10.1016/j.molmet.2022.101615",
+        ),
+        CorpusHit(
+            hit_id="hindlimb",
+            title="Protein synthesis versus energy state in contracting muscles",
+            abstract="Contractions inhibited protein synthesis in tibialis anterior, gastrocnemius, and plantaris but not soleus.",
+            source="openalex",
+            doi="10.1152/ajpendo.1984.246.4.e297",
+        ),
+    ]
+
+    memo = validate_minimax_memo(
+        """# Alpha memo: soleus leucine mTORC1 protein synthesis split
+## Core signal
+Soleus differs from faster muscles.
+## The 2+2=5 angle
+The receipts split by muscle type.
+## Why this could matter
+It is a hypothesis.
+## What would break the idea
+A direct low-protein receipt would break it.
+## Receipts
+- 10.1016/j.molmet.2022.101615
+- 10.1152/ajpendo.1984.246.4.e297
+## Safety note
+Preclinical only.""",
+        receipts,
+        candidate=candidate,
+    )
+
+    assert memo.startswith("# Alpha memo: soleus leucine")
 
 
 def test_minimax_planner_returns_json_queries_plus_original_seeds() -> None:
