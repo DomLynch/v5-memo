@@ -4,6 +4,17 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+_SHAPE_WEIGHTS = {
+    "shape:expectation_reversal": 5,
+    "shape:directional_reversal": 4,
+    "shape:boundary_condition": 3,
+    "shape:denominator_split": 3,
+    "shape:role_inversion": 3,
+    "shape:timing_split": 2,
+    "shape:measurement_mismatch": 2,
+    "shape:expertise_split": 1,
+}
+
 
 @dataclass(frozen=True, slots=True)
 class ScoreParts:
@@ -32,7 +43,8 @@ def score_connection(
     evidence = min(100, 35 + 20 * min(unique_source_count, 3) + 5 * min(receipt_count, 3))
     source_bonus = 10 if unique_source_count >= 2 else 0
     tension_bonus = 10 if has_tension else 0
-    shape_bonus = min(20, 5 * max(0, shape_score))
+    shape_strength = sum(_SHAPE_WEIGHTS.get(reason, 1) for reason in shape_reasons)
+    shape_bonus = min(30, 4 * max(shape_strength, shape_score, 0))
     score = min(
         100,
         round(0.40 * novelty + 0.35 * evidence + source_bonus + tension_bonus + shape_bonus),

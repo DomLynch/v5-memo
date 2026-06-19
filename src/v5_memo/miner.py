@@ -31,6 +31,8 @@ _METRIC = frozenset({"metric", "score", "benchmark", "accuracy", "performance", 
 _OUTCOME = frozenset({"outcome", "mortality", "injury", "error", "errors", "dispersion", "quality"})
 _EXPERTISE = frozenset({"expert", "experts", "novice", "novices", "nonexpert", "nonexperts"})
 _BOUNDARY = frozenset({"boundary", "context", "dose", "endpoint", "modality", "population", "setting"})
+_INTENT = frozenset({"aim", "aimed", "designed", "expect", "expected", "hypothesis", "intended", "protocol", "theory"})
+_OBSERVED = frozenset({"found", "observed", "outcome", "outcomes", "reported", "result", "results", "showed"})
 
 
 def mine_insights(
@@ -183,7 +185,10 @@ def _shape_reasons(
     left_tokens = _tokens(left.text)
     right_tokens = _tokens(right.text)
     all_tokens = left_tokens | right_tokens
+    all_words = _words(left.text) | _words(right.text)
     reasons: list[str] = []
+    if tension_terms and all_words & _INTENT and all_words & _OBSERVED:
+        reasons.append("shape:expectation_reversal")
     if tension_terms:
         reasons.append("shape:directional_reversal")
     if (
@@ -210,6 +215,10 @@ def _axis(hit: CorpusHit, excluded: tuple[str, ...]) -> str:
     title_terms = [t for t in _WORD.findall(hit.title.casefold()) if t not in _STOP]
     axis = [t for t in title_terms if t not in excluded_set][:4]
     return " ".join(axis) or (hit.venue or hit.source)
+
+
+def _words(text: str) -> frozenset[str]:
+    return frozenset(_WORD.findall(text.casefold()))
 
 
 def _thesis(
