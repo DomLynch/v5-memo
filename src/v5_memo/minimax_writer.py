@@ -33,6 +33,13 @@ _REQUIRED_MEMO_SECTIONS = (
 )
 _DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s<>()\[\]{}\"']+", re.IGNORECASE)
 _DOI_TRAILING_PUNCTUATION = ".,;:*_`"
+_TITLE_WORD_RE = re.compile(r"[a-z][a-z0-9]{2,}")
+_TITLE_STOPWORDS = frozenset({
+    "alpha", "memo", "and", "for", "from", "into", "may", "not", "the", "with",
+    "without", "between", "versus", "under", "over", "through", "across",
+    "signal", "signals", "effect", "effects", "tradeoff", "tradeoffs",
+    "boundary", "condition", "conditions", "hypothesis", "discovery", "seed",
+})
 MEMO_REPAIR_ATTEMPTS = 2
 
 
@@ -99,7 +106,7 @@ class MiniMaxM3MemoWriter:
         fact_error: FactVerificationError | None = None
         for attempt in range(MEMO_REPAIR_ATTEMPTS + 1):
             markdown = self._write(prompt, temperature=0.45 if attempt == 0 else 0.2)
-            memo = validate_minimax_memo(markdown, receipts)
+            memo = validate_minimax_memo(markdown, receipts, candidate=candidate)
             try:
                 verify_minimax_memo_claims(
                     memo,
@@ -311,6 +318,9 @@ Hard rules:
 - Keep every receipt ID exactly as written.
 - Do not invent mechanisms, clinical advice, causal certainty, new papers, or new numbers.
 - If a connection is uncertain, say it is a hypothesis.
+- Treat the seed topic as search context only; do not use broad seed-topic words in
+  the title unless those words appear in the locked receipt titles/abstracts.
+- Title the memo around receipt-owned concepts, not around the user's seed query.
 - Scope every implication to the receipts: state the specific population, market,
   company, channel, model, benchmark, timeframe, geography, or source type only when
   the receipts provide it.
@@ -325,7 +335,7 @@ Hard rules:
 - Keep it under 450 words.
 
 Required structure:
-# Alpha memo: {candidate.topic}
+# Alpha memo: <receipt-owned title>
 ## Core signal
 ## The 2+2=5 angle
 ## Why this could matter
@@ -414,6 +424,7 @@ Verifier failure:
 Rules:
 - Keep the required Markdown sections.
 - Keep every receipt ID exactly as written.
+- If the title overreaches beyond the receipts, retitle around receipt-owned terms.
 - Remove or narrow unsupported endpoint, subgroup, comparator, metric, date, dose,
   duration, market, channel, benchmark, and effect-direction claims.
 - Do not add new receipts, facts, numbers, or mechanisms.
@@ -534,7 +545,12 @@ def parse_minimax_queries(text: str, *, limit: int) -> list[str]:
     return queries[: max(1, limit)]
 
 
-def validate_minimax_memo(markdown: str, receipts: Sequence[CorpusHit]) -> str:
+def validate_minimax_memo(
+    markdown: str,
+    receipts: Sequence[CorpusHit],
+    *,
+    candidate: InsightCandidate | None = None,
+) -> str:
     text = markdown.strip()
     if not text:
         raise ValueError("MiniMax returned an empty memo")
@@ -550,6 +566,8 @@ def validate_minimax_memo(markdown: str, receipts: Sequence[CorpusHit]) -> str:
         raise ValueError(
             f"MiniMax memo included unreceipted DOI-like references: {', '.join(extra_dois)}"
         )
+    if candidate is not None:
+        _validate_receipt_owned_title(text, receipts, candidate)
     return text + "\n"
 
 
@@ -691,3 +709,39 @@ def _extract_dois(text: str) -> set[str]:
 
 def _normalize_doi(value: str) -> str:
     return value.strip().rstrip(_DOI_TRAILING_PUNCTUATION).casefold()
+
+
+def _validate_receipt_owned_title(
+    markdown: str,
+    receipts: Sequence[CorpusHit],
+    candidate: InsightCandidate,
+) -> None:
+    first_line = markdown.splitlines()[0] if markdown.splitlines() else ""
+    if not first_line.casefold().startswith("# alpha memo:"):
+        return
+    title_terms = _title_terms(first_line)
+    receipt_terms = _receipt_terms(receipts)
+    seed_terms = _title_terms(candidate.topic)
+    unsupported_seed_terms = sorted(
+        term for term in title_terms & seed_terms if term not in receipt_terms
+    )
+    if unsupported_seed_terms:
+        raise ValueError(
+            "MiniMax memo title used seed-topic terms not supported by receipts: "
+            + ", ".join(unsupported_seed_terms)
+        )
+
+
+def _title_terms(text: str) -> set[str]:
+    return {
+        term
+        for term in _TITLE_WORD_RE.findall(text.casefold())
+        if term not in _TITLE_STOPWORDS
+    }
+
+
+def _receipt_terms(receipts: Sequence[CorpusHit]) -> set[str]:
+    terms: set[str] = set()
+    for hit in receipts:
+        terms.update(_title_terms(hit.text))
+    return terms
