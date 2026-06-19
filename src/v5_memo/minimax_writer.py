@@ -39,6 +39,7 @@ _TITLE_STOPWORDS = frozenset({
     "without", "between", "versus", "under", "over", "through", "across",
     "signal", "signals", "effect", "effects", "tradeoff", "tradeoffs",
     "boundary", "condition", "conditions", "hypothesis", "discovery", "seed",
+    "split", "splits", "diverge", "diverges", "divergence", "outlier",
 })
 MEMO_REPAIR_ATTEMPTS = 2
 
@@ -66,6 +67,10 @@ class FactVerificationError(ValueError):
             f"MiniMax memo failed receipt fact verification: {claim} "
             f"({receipt_id}; {reason})"
         )
+
+
+class MemoScopeError(ValueError):
+    """A memo title/framing used concepts outside the supplied receipts."""
 
 
 class MiniMaxM3MemoWriter:
@@ -108,8 +113,8 @@ class MiniMaxM3MemoWriter:
             markdown = self._write(prompt, temperature=0.45 if attempt == 0 else 0.2)
             try:
                 memo = validate_minimax_memo(markdown, receipts, candidate=candidate)
-            except ValueError as exc:
-                if "seed-topic terms" not in str(exc) or attempt >= MEMO_REPAIR_ATTEMPTS:
+            except MemoScopeError as exc:
+                if attempt >= MEMO_REPAIR_ATTEMPTS:
                     raise
                 prompt = build_minimax_scope_repair_prompt(markdown, receipts, str(exc))
                 continue
@@ -756,14 +761,11 @@ def _validate_receipt_owned_title(
         return
     title_terms = _title_terms(first_line)
     supported_terms = _receipt_terms(receipts) | _title_terms(" ".join(candidate.bridge_terms))
-    seed_terms = _title_terms(candidate.topic)
-    unsupported_seed_terms = sorted(
-        term for term in title_terms & seed_terms if term not in supported_terms
-    )
-    if unsupported_seed_terms:
-        raise ValueError(
-            "MiniMax memo title used seed-topic terms not supported by receipts: "
-            + ", ".join(unsupported_seed_terms)
+    unsupported_terms = sorted(title_terms - supported_terms)
+    if unsupported_terms:
+        raise MemoScopeError(
+            "MiniMax memo title used terms not supported by receipts: "
+            + ", ".join(unsupported_terms)
         )
 
 
