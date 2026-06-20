@@ -20,7 +20,8 @@ _STOP = frozenset({
     "summary", "systematic", "through", "trial", "using", "with",
 })
 _BRIDGE_STOP = _STOP | frozenset({
-    "case", "cases", "individual", "individuals", "patient", "people", "person", "persons",
+    "case", "cases", "individual", "individuals", "patient", "people", "per", "person",
+    "persons", "such", "thus", "when",
 })
 _POSITIVE = frozenset({
     "augment", "augmented", "enhance", "enhanced", "increase", "increased",
