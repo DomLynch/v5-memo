@@ -412,6 +412,7 @@ def build_minimax_selection_prompt(
 Rules:
 - Prefer one bounded surprise that appears only when the receipts are read together.
 - Strong: same intervention/construct/program, direct reversal, endpoint split, or negative/null boundary.
+- Strongest: one promise/mechanism receipt plus one observed outcome receipt sharing the same core construct.
 - Weak: adjacent papers, broad survey plus case study, unsupported domain jump, or generic "evidence is mixed".
 - If no candidate is tight enough, classify as "discovery_seed".
 - Do not invent candidates or receipt IDs.

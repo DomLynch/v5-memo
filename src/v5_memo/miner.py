@@ -81,6 +81,8 @@ def mine_insights(
         bridge = _bridge_terms(token_sets[left.hit_id], token_sets[right.hit_id], doc_counts)
         if not bridge:
             continue
+        if len(anchor_terms) > 1 and not set(bridge) & anchor_terms:
+            continue
         source_keys = {left.source_key, right.source_key}
         if len(source_keys) < 2:
             continue
@@ -161,8 +163,7 @@ def _pair_has_anchor(
     right_tokens: frozenset[str],
     anchor_terms: frozenset[str],
 ) -> bool:
-    shared = left_tokens & right_tokens & anchor_terms
-    return len(shared) >= min(2, len(anchor_terms))
+    return bool(left_tokens & right_tokens & anchor_terms)
 
 
 def _bridge_terms(
@@ -206,7 +207,6 @@ def _shape_reasons(
     left_words = _words(left.text)
     right_words = _words(right.text)
     all_words = left_words | right_words
-    all_words = _words(left.text) | _words(right.text)
     reasons: list[str] = []
     if tension_terms and _has_role_split(left_words, right_words):
         reasons.append("shape:promise_outcome_reversal")

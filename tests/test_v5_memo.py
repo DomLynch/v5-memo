@@ -328,6 +328,36 @@ def test_miner_accepts_seed_owned_statin_training_bridge() -> None:
     assert "shape:directional_reversal" in candidate.reasons
 
 
+def test_miner_ranks_promise_outcome_reversal_like_manual_curator() -> None:
+    hits = [
+        _hit(
+            "promise",
+            "Compound activates mitochondrial mechanism and improves aerobic capacity",
+            "Compound mechanism activated mitochondrial function and improved running performance.",
+        ),
+        _hit(
+            "outcome",
+            "Compound exercise training trial blunted cardiovascular adaptation",
+            "Randomized trial observed compound exercise training blunted maximal oxygen uptake adaptation.",
+        ),
+        _hit(
+            "adjacent",
+            "Compound tolerability review in patients",
+            "Review reported compound patient cases and general safety evidence.",
+        ),
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic="longevity exercise adaptation",
+        required_anchor_terms=("compound", "training"),
+    )[0]
+
+    assert candidate.receipt_ids == ("promise", "outcome")
+    assert "shape:promise_outcome_reversal" in candidate.reasons
+    assert "shape:directional_reversal" in candidate.reasons
+
+
 def test_miner_rejects_adjacent_papers_without_alpha_shape() -> None:
     hits = [
         _hit("a", "Retrieval augmented generation evidence pipeline", "Local evidence pipeline reports results."),

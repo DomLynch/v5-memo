@@ -759,6 +759,7 @@ def test_minimax_selection_prompt_names_weak_bridge_failures() -> None:
 
     assert "unsupported domain jump" in prompt
     assert "generic \"evidence is mixed\"" in prompt
+    assert "promise/mechanism receipt plus one observed outcome receipt" in prompt
     assert "Do not invent candidates or receipt IDs" in prompt
 
 
