@@ -283,6 +283,51 @@ def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
     assert mine_insights(hits, topic="NAD salvage exercise", required_anchor_terms=("nad", "salvage")) == []
 
 
+def test_miner_rejects_generic_bridge_when_seed_anchor_is_not_the_bridge() -> None:
+    hits = [
+        _hit(
+            "statin-review",
+            "Molecular mechanisms of statin intolerance",
+            "Statin intolerance reduced tolerability in patient rhabdomyolysis cases and persons.",
+        ),
+        _hit(
+            "lipid-hiv",
+            "Response to newly prescribed statin lipid-lowering therapy",
+            "Statin lipid-lowering therapy improved LDL response in patients and persons; training was not evaluated.",
+        ),
+    ]
+
+    assert mine_insights(
+        hits,
+        topic="longevity statin exercise adaptation",
+        required_anchor_terms=("statin", "training"),
+    ) == []
+
+
+def test_miner_accepts_seed_owned_statin_training_bridge() -> None:
+    hits = [
+        _hit(
+            "statin-training-a",
+            "Simvastatin impairs exercise training adaptations",
+            "Statin exercise training reduced cardiorespiratory fitness and mitochondrial content.",
+        ),
+        _hit(
+            "statin-training-b",
+            "Statin exercise training mitochondrial response",
+            "Statin exercise training improved lipid markers while mitochondrial muscle adaptation changed.",
+        ),
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic="longevity statin exercise adaptation",
+        required_anchor_terms=("statin", "training"),
+    )[0]
+
+    assert "training" in candidate.bridge_terms
+    assert "shape:directional_reversal" in candidate.reasons
+
+
 def test_miner_rejects_adjacent_papers_without_alpha_shape() -> None:
     hits = [
         _hit("a", "Retrieval augmented generation evidence pipeline", "Local evidence pipeline reports results."),

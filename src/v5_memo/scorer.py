@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 _SHAPE_WEIGHTS = {
+    "shape:promise_outcome_reversal": 7,
     "shape:expectation_reversal": 6,
     "shape:directional_reversal": 5,
     "shape:boundary_condition": 3,

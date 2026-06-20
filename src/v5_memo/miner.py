@@ -19,8 +19,17 @@ _STOP = frozenset({
     "response", "results", "review", "shows", "significant", "study", "studies",
     "summary", "systematic", "through", "trial", "using", "with",
 })
-_POSITIVE = frozenset({"increase", "increased", "raises", "raised", "improve", "improved"})
-_NEGATIVE = frozenset({"decrease", "decreased", "reduce", "reduced", "lower", "lowered"})
+_BRIDGE_STOP = _STOP | frozenset({
+    "case", "cases", "individual", "individuals", "patient", "people", "person", "persons",
+})
+_POSITIVE = frozenset({
+    "augment", "augmented", "enhance", "enhanced", "increase", "increased",
+    "improve", "improved", "raises", "raised",
+})
+_NEGATIVE = frozenset({
+    "attenuate", "attenuated", "blunt", "blunted", "decrease", "decreased",
+    "impair", "impaired", "lower", "lowered", "reduce", "reduced",
+})
 _NULL = frozenset({"null", "neutral", "unchanged", "failed", "nonsignificant"})
 _DENOMINATOR = frozenset({"cohort", "population", "aggregate", "prospective", "longitudinal"})
 _TAIL = frozenset({"case", "cases", "fatal", "fatality", "death", "deaths", "risk", "rare"})
@@ -33,6 +42,14 @@ _EXPERTISE = frozenset({"expert", "experts", "novice", "novices", "nonexpert", "
 _BOUNDARY = frozenset({"boundary", "context", "dose", "endpoint", "modality", "population", "setting"})
 _INTENT = frozenset({"aim", "aimed", "designed", "expect", "expected", "hypothesis", "intended", "protocol", "theory"})
 _OBSERVED = frozenset({"found", "observed", "outcome", "outcomes", "reported", "result", "results", "showed"})
+_PROMISE = _INTENT | _ROLE_A | frozenset({
+    "activate", "activated", "activates", "activating", "activation", "mechanism",
+    "mechanisms", "mimic", "mimics",
+})
+_OUTCOME_ROLE = _OBSERVED | frozenset({
+    "cohort", "endpoint", "endpoints", "experiment", "intervention", "randomized",
+    "trial", "trials",
+})
 
 
 def mine_insights(
@@ -144,13 +161,14 @@ def _pair_has_anchor(
     right_tokens: frozenset[str],
     anchor_terms: frozenset[str],
 ) -> bool:
-    return bool(left_tokens & anchor_terms) and bool(right_tokens & anchor_terms)
+    shared = left_tokens & right_tokens & anchor_terms
+    return len(shared) >= min(2, len(anchor_terms))
 
 
 def _bridge_terms(
     left: frozenset[str], right: frozenset[str], doc_counts: Counter[str],
 ) -> tuple[str, ...]:
-    shared = left & right
+    shared = (left & right) - _BRIDGE_STOP
     ranked = sorted(shared, key=lambda term: (doc_counts[term], term))
     return tuple(ranked[:4])
 
@@ -185,8 +203,13 @@ def _shape_reasons(
     left_tokens = _tokens(left.text)
     right_tokens = _tokens(right.text)
     all_tokens = left_tokens | right_tokens
+    left_words = _words(left.text)
+    right_words = _words(right.text)
+    all_words = left_words | right_words
     all_words = _words(left.text) | _words(right.text)
     reasons: list[str] = []
+    if tension_terms and _has_role_split(left_words, right_words):
+        reasons.append("shape:promise_outcome_reversal")
     if tension_terms and all_words & _INTENT and all_words & _OBSERVED:
         reasons.append("shape:expectation_reversal")
     if tension_terms:
@@ -219,6 +242,13 @@ def _axis(hit: CorpusHit, excluded: tuple[str, ...]) -> str:
 
 def _words(text: str) -> frozenset[str]:
     return frozenset(_WORD.findall(text.casefold()))
+
+
+def _has_role_split(left_words: frozenset[str], right_words: frozenset[str]) -> bool:
+    return (
+        bool(left_words & _PROMISE and right_words & _OUTCOME_ROLE)
+        or bool(right_words & _PROMISE and left_words & _OUTCOME_ROLE)
+    )
 
 
 def _thesis(
