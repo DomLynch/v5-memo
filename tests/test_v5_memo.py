@@ -353,6 +353,44 @@ def test_miner_requires_cross_receipt_shape_ownership() -> None:
     assert mine_insights(hits, topic="tool safety") == []
 
 
+def test_anchor_only_bridge_requires_elite_shape() -> None:
+    hits = [
+        _hit(
+            "statin-review",
+            "Molecular mechanisms of statin intolerance",
+            "Statin intolerance reduced tolerability in patient rhabdomyolysis cases.",
+        ),
+        _hit(
+            "lipid-hiv",
+            "Response to newly prescribed statin lipid-lowering therapy",
+            "Statin lipid-lowering therapy improved LDL response in patients.",
+        ),
+    ]
+
+    assert mine_insights(
+        hits,
+        topic="longevity statin exercise adaptation",
+        required_anchor_terms=("statin",),
+    ) == []
+
+
+def test_anchor_only_bridge_can_support_elite_reversal() -> None:
+    case = next(item for item in _golden_cases() if item["name"] == "resveratrol-real-snippet")
+    hits = [
+        _hit(str(hit["id"]), str(hit["title"]), str(hit["abstract"]))
+        for hit in case["hits"]
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic=str(case["topic"]),
+        required_anchor_terms=tuple(str(anchor) for anchor in case["anchors"]),
+    )[0]
+
+    assert candidate.bridge_terms == ("resveratrol",)
+    assert "shape:promise_outcome_reversal" in candidate.reasons
+
+
 @pytest.mark.parametrize("case", _golden_cases(), ids=lambda case: case["name"])
 def test_miner_golden_alpha_quality_cases(
     case: dict[str, Any],
@@ -425,6 +463,31 @@ def test_render_discovery_seed_downgrades_label() -> None:
 
     assert memo.startswith("# Discovery seed:")
     assert "# Alpha memo:" not in memo
+
+
+def test_pipeline_supports_explicit_discovery_seed_lane() -> None:
+    hits = [
+        _hit("a", "Audit benchmark metric score", "Audit benchmark metric score compared systems."),
+        _hit("b", "Audit deployment outcome errors", "Audit deployment outcome errors compared systems."),
+    ]
+
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return hits
+
+    with pytest.raises(MemoBuildError):
+        build_alpha_memo(topic="tool reliability", seed_queries=["audit systems"], searcher=FakeSearch())
+
+    result = build_alpha_memo(
+        topic="tool reliability",
+        seed_queries=["audit systems"],
+        searcher=FakeSearch(),
+        min_alpha_tier="discovery_seed",
+    )
+
+    assert candidate_alpha_tier(result.candidate) == "discovery_seed"
+    assert result.markdown.startswith("# Discovery seed:")
 
 
 def test_miner_accepts_non_reversal_alpha_shapes() -> None:

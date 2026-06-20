@@ -94,6 +94,7 @@ def mine_insights(
             anchor_terms,
         ):
             continue
+        bridge_from_anchor = False
         bridge = _bridge_terms(token_sets[left.hit_id], token_sets[right.hit_id], doc_counts)
         if not bridge:
             bridge = _anchor_bridge_terms(
@@ -101,6 +102,7 @@ def mine_insights(
                 full_token_sets[right.hit_id],
                 anchor_terms,
             )
+            bridge_from_anchor = bool(bridge)
         if not bridge:
             continue
         source_keys = {left.source_key, right.source_key}
@@ -114,6 +116,8 @@ def mine_insights(
             tension_terms=tension_terms,
         )
         if not shape_reasons:
+            continue
+        if bridge_from_anchor and not set(shape_reasons) & _ELITE_SHAPES:
             continue
         tier = _alpha_tier(shape_reasons, tension_terms)
         if tier == "discovery_seed" and not include_discovery:
