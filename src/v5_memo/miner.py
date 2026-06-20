@@ -170,7 +170,7 @@ def _polarity(text: str) -> frozenset[str]:
 def _tension_terms(left: str, right: str) -> tuple[str, ...]:
     a = _polarity(left)
     b = _polarity(right)
-    if not a or not b or a == b:
+    if len(a) != 1 or len(b) != 1 or a == b:
         return ()
     return tuple(sorted(a | b))
 

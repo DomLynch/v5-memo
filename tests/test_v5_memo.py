@@ -381,6 +381,25 @@ def test_miner_ranks_expectation_reversal_above_construct_split() -> None:
     assert "shape:expectation_reversal" in candidate.reasons
 
 
+def test_miner_does_not_turn_mixed_endpoint_packaging_into_reversal() -> None:
+    hits = [
+        _hit(
+            "package-a",
+            "Supplement trial reports muscle and mobility endpoints",
+            "The supplement improved chair stand but handgrip and SPPB did not differ.",
+        ),
+        _hit(
+            "package-b",
+            "Supplement trial reports bone biomarker endpoints",
+            "The same supplement improved vitamin D and BMD while lowering CTX.",
+        ),
+    ]
+
+    candidates = mine_insights(hits, topic="longevity supplement")
+
+    assert all("shape:directional_reversal" not in c.reasons for c in candidates)
+
+
 def test_pipeline_raises_when_no_receipt_bound_candidate() -> None:
     class EmptySearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:

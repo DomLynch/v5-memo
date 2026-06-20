@@ -342,7 +342,7 @@ Research only."""
 
 
 def test_minimax_title_guard_ignores_generic_report_terms() -> None:
-    memo = """# Alpha memo: two-report NAD mitochondrial split
+    memo = """# Alpha memo: two-report abstract readout NAD mitochondrial split
 ## Core signal
 The receipts move in different directions.
 ## The 2+2=5 angle
