@@ -1089,6 +1089,8 @@ def main() -> None:
                 "errors": sum(1 for result in batch_results if result.error),
             },
         }, sort_keys=True))
+        if any(result.error for result in batch_results):
+            raise SystemExit(2)
         return
 
     if args.command == "search":
