@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import urllib.parse
 from typing import cast
+from urllib.error import URLError
 from urllib.request import Request
 
+import pytest
 from pytest import MonkeyPatch
 
 from v5_memo.client import (
@@ -12,6 +14,7 @@ from v5_memo.client import (
     HybridCorpusSearchClient,
     OpenAlexFullCorpusSearchClient,
     ResearkaSearchClient,
+    SearchBackendError,
     _parse_corpus_search_response,
     _parse_full_raw_search_response,
     _parse_openalex_response,
@@ -88,6 +91,13 @@ def test_researka_client_loads_first_allowlist_token(monkeypatch: MonkeyPatch) -
     assert client._token == "bot-token"
 
 
+def test_researka_strict_mode_rejects_missing_configuration() -> None:
+    client = ResearkaSearchClient(base_url="https://database.example", token="", strict=True)
+
+    with pytest.raises(SearchBackendError, match="not configured"):
+        client.search("rapamycin", limit=1)
+
+
 def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object) -> None:
     captured: dict[str, object] = {}
 
@@ -160,6 +170,29 @@ def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> Non
     client = FullRawCorpusSearchClient.from_env()
 
     assert client._timeout == 120.0
+
+
+def test_openalex_strict_mode_raises_backend_errors(monkeypatch: MonkeyPatch) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del request, timeout
+        raise URLError("offline")
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    client = OpenAlexFullCorpusSearchClient(base_url="https://api.example", strict=True)
+
+    with pytest.raises(SearchBackendError, match="OpenAlex search failed"):
+        client.search("nad salvage", limit=1)
+
+
+def test_openalex_lenient_mode_keeps_empty_result_on_backend_errors(monkeypatch: MonkeyPatch) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del request, timeout
+        raise URLError("offline")
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    client = OpenAlexFullCorpusSearchClient(base_url="https://api.example")
+
+    assert client.search("nad salvage", limit=1) == []
 
 
 def test_hybrid_search_merges_and_dedupes_sources() -> None:

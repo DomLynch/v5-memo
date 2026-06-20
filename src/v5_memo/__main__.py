@@ -71,7 +71,7 @@ def main() -> None:
     )
     parser.add_argument("--writer", choices=["template", "minimax"])
     parser.add_argument("--selector", choices=["deterministic", "minimax"])
-    parser.add_argument("--min-alpha-tier", choices=["publishable", "elite"])
+    parser.add_argument("--min-alpha-tier", choices=["discovery", "publishable", "elite"])
     args = parser.parse_args()
 
     if args.coverage_report:
@@ -85,27 +85,28 @@ def main() -> None:
     writer_mode = args.writer or ("minimax" if args.searcher == "smart" else "template")
     selector_mode = args.selector or ("minimax" if writer_mode == "minimax" else "deterministic")
     alpha_tier = args.min_alpha_tier or ("elite" if args.searcher == "smart" else "publishable")
+    min_alpha_tier = "discovery_seed" if alpha_tier == "discovery" else f"{alpha_tier}_alpha"
 
     searcher: CorpusSearcher
     if args.demo:
         searcher = DemoSearch()
     elif searcher_mode == "fullraw":
         _require_full_raw_or_exit()
-        searcher = FullRawCorpusSearchClient.from_env()
+        searcher = FullRawCorpusSearchClient.from_env(strict=args.searcher == "smart")
     elif searcher_mode == "researka":
         searcher = ResearkaSearchClient.from_env()
     elif searcher_mode == "hybrid":
         searchers: list[CorpusSearcher] = []
-        full_raw = FullRawCorpusSearchClient.from_env()
+        full_raw = FullRawCorpusSearchClient.from_env(strict=args.searcher == "smart")
         if full_raw.configured:
             searchers.append(full_raw)
         searchers.extend([
-            ResearkaSearchClient.from_env(),
-            OpenAlexFullCorpusSearchClient.from_env(),
+            ResearkaSearchClient.from_env(strict=args.searcher == "smart"),
+            OpenAlexFullCorpusSearchClient.from_env(strict=args.searcher == "smart"),
         ])
         searcher = HybridCorpusSearchClient(searchers)
     else:
-        searcher = OpenAlexFullCorpusSearchClient.from_env()
+        searcher = OpenAlexFullCorpusSearchClient.from_env(strict=args.searcher == "smart")
     memo_writer = render_memo
     if writer_mode == "minimax":
         memo_writer = MiniMaxM3MemoWriter.from_env().render
@@ -130,7 +131,7 @@ def main() -> None:
         memo_writer=memo_writer,
         memo_selector=memo_selector,
         anchor_queries=base_queries,
-        min_alpha_tier=f"{alpha_tier}_alpha",
+        min_alpha_tier=min_alpha_tier,
     )
     print(result.markdown)
 

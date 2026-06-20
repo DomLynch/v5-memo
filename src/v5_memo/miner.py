@@ -84,7 +84,7 @@ def mine_insights(
     full_token_sets = {hit.hit_id: _tokens(hit.text) for hit in clean_hits}
     token_sets = {hit.hit_id: full_token_sets[hit.hit_id] - topic_tokens for hit in clean_hits}
     anchor_terms = frozenset(required_anchor_terms)
-    doc_counts = Counter(term for terms in token_sets.values() for term in terms)
+    doc_counts = Counter(term for terms in full_token_sets.values() for term in terms)
 
     candidates: list[InsightCandidate] = []
     for left, right in combinations(clean_hits, 2):
@@ -95,6 +95,12 @@ def mine_insights(
         ):
             continue
         bridge = _bridge_terms(token_sets[left.hit_id], token_sets[right.hit_id], doc_counts)
+        if not bridge:
+            bridge = _anchor_bridge_terms(
+                full_token_sets[left.hit_id],
+                full_token_sets[right.hit_id],
+                anchor_terms,
+            )
         if not bridge:
             continue
         source_keys = {left.source_key, right.source_key}
@@ -168,9 +174,10 @@ def _tokens(text: str) -> frozenset[str]:
     )
 
 
-def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 2) -> tuple[str, ...]:
+def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 3) -> tuple[str, ...]:
     """Return ordered anchor terms that chosen receipt pairs must preserve."""
     generic = {
+        "adapt",
         "adaptation",
         "aging",
         "angle",
@@ -212,6 +219,15 @@ def _bridge_terms(
     shared = (left & right) - _BRIDGE_STOP
     ranked = sorted(shared, key=lambda term: (doc_counts[term], term))
     return tuple(ranked[:4])
+
+
+def _anchor_bridge_terms(
+    left: frozenset[str],
+    right: frozenset[str],
+    anchor_terms: frozenset[str],
+) -> tuple[str, ...]:
+    shared = (left & right & anchor_terms) - _BRIDGE_STOP
+    return tuple(sorted(shared)[:2])
 
 
 def _polarity(text: str) -> frozenset[str]:

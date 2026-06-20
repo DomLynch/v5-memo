@@ -14,6 +14,7 @@ from v5_memo import (
     build_alpha_memo,
     candidate_alpha_tier,
     collect_seed_hits,
+    meets_publish_bar,
     mine_insights,
     query_anchor_terms,
     render_discovery_seed,
@@ -201,13 +202,13 @@ def test_pipeline_applies_selector_to_existing_candidates() -> None:
     hits = [
         _hit(
             "tail-a",
-            "Tool cohort benefit in aggregate outcomes",
-            "Tool reduced aggregate outcome risk in a cohort population.",
+            "Tool safety cohort benefit in aggregate outcomes",
+            "Tool safety reduced aggregate outcome risk in a cohort population.",
         ),
         _hit(
             "tail-b",
-            "Tool fatality cases in acute sessions",
-            "Rare acute tool death cases concentrated in case reports.",
+            "Tool safety fatality cases in acute sessions",
+            "Rare acute tool safety death cases concentrated in case reports.",
         ),
         _hit(
             "metric-a",
@@ -275,7 +276,7 @@ def test_query_anchor_terms_keep_specific_seed_terms() -> None:
     assert query_anchor_terms([
         "NAD salvage mitochondrial stress exercise response",
         "mitochondrial stress exercise",
-    ]) == ("nad", "salvage")
+    ]) == ("nad", "salvage", "mitochondrial")
 
 
 def test_query_anchor_terms_normalize_light_morphology() -> None:
@@ -283,6 +284,13 @@ def test_query_anchor_terms_normalize_light_morphology() -> None:
         "forecast",
         "manager",
         "supplement",
+    )
+
+
+def test_query_anchor_terms_drop_broad_topic_words() -> None:
+    assert query_anchor_terms(["longevity aging adaptation healthspan resveratrol training"]) == (
+        "resveratrol",
+        "training",
     )
 
 
@@ -328,6 +336,23 @@ def test_miner_rejects_asymmetric_anchor_pairs() -> None:
     ) == []
 
 
+def test_miner_requires_cross_receipt_shape_ownership() -> None:
+    hits = [
+        _hit(
+            "same-side",
+            "Tool cohort fatality case report",
+            "One receipt mentions cohort population and rare fatal death cases.",
+        ),
+        _hit(
+            "other-side",
+            "Tool safety summary",
+            "Second receipt only repeats the tool safety bridge.",
+        ),
+    ]
+
+    assert mine_insights(hits, topic="tool safety") == []
+
+
 @pytest.mark.parametrize("case", _golden_cases(), ids=lambda case: case["name"])
 def test_miner_golden_alpha_quality_cases(
     case: dict[str, Any],
@@ -369,6 +394,18 @@ def test_miner_assigns_selector_receipt_roles() -> None:
         ("protocol", "promise"),
         ("outcome", "outcome"),
     ]
+
+
+def test_miner_does_not_invent_timing_split_from_same_timing_word() -> None:
+    hits = [
+        _hit("positive", "Acute tool marker improves outcome", "Acute tool marker improved outcome quality."),
+        _hit("negative", "Acute tool marker reduces reliability", "Acute tool marker reduced reliability quality."),
+    ]
+
+    candidate = mine_insights(hits, topic="tool marker")[0]
+
+    assert "shape:directional_reversal" in candidate.reasons
+    assert "shape:timing_split" not in candidate.reasons
 
 
 def test_render_discovery_seed_downgrades_label() -> None:
@@ -437,6 +474,22 @@ def test_pipeline_filters_publishable_seed_when_elite_required() -> None:
             min_alpha_tier="elite_alpha",
         )
     assert exc.value.failure.details["min_alpha_tier"] == "elite_alpha"
+
+
+def test_publish_bar_blocks_low_score_publishable_shape() -> None:
+    candidate = InsightCandidate(
+        topic="topic",
+        thesis="Weak but shaped.",
+        bridge_terms=("common",),
+        tension_terms=(),
+        receipt_ids=("a", "b"),
+        score=55,
+        novelty_score=10,
+        evidence_score=80,
+        reasons=("shape:denominator_split", "tier:publishable_alpha"),
+    )
+
+    assert not meets_publish_bar(candidate, "publishable_alpha")
 
 
 def test_miner_ranks_shaped_candidates_above_rare_keyword_bridges() -> None:

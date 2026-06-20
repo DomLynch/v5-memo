@@ -5,6 +5,7 @@ from v5_memo.client import (
     HybridCorpusSearchClient,
     OpenAlexFullCorpusSearchClient,
     ResearkaSearchClient,
+    SearchBackendError,
 )
 from v5_memo.coverage import SearchCoverage, current_search_coverage, require_full_raw_corpus
 from v5_memo.gate import candidate_alpha_tier, meets_min_alpha_tier, meets_publish_bar
@@ -39,6 +40,7 @@ __all__ = [
     "OpenAlexFullCorpusSearchClient",
     "ReceiptRole",
     "ResearkaSearchClient",
+    "SearchBackendError",
     "SearchCoverage",
     "SearchFailure",
     "bind_receipts",

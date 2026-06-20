@@ -16,6 +16,10 @@ from urllib.request import Request, urlopen
 from v5_memo.schemas import CorpusHit
 
 
+class SearchBackendError(RuntimeError):
+    """Raised when strict search mode cannot reach or parse a backend."""
+
+
 class OpenAlexFullCorpusSearchClient:
     """Synchronous client for OpenAlex works search over the full corpus."""
 
@@ -28,6 +32,7 @@ class OpenAlexFullCorpusSearchClient:
         year_min: int = 1900,
         year_max: int = 2100,
         max_variants: int = 8,
+        strict: bool = False,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._mailto = mailto.strip()
@@ -35,12 +40,14 @@ class OpenAlexFullCorpusSearchClient:
         self._year_min = year_min
         self._year_max = year_max
         self._max_variants = max(1, max_variants)
+        self._strict = strict
 
     @classmethod
-    def from_env(cls) -> OpenAlexFullCorpusSearchClient:
+    def from_env(cls, *, strict: bool = False) -> OpenAlexFullCorpusSearchClient:
         return cls(
             base_url=os.environ.get("V5_MEMO_OPENALEX_URL", "https://api.openalex.org"),
             mailto=os.environ.get("V5_MEMO_OPENALEX_MAILTO", os.environ.get("OPENALEX_MAILTO", "")),
+            strict=strict,
         )
 
     def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
@@ -103,7 +110,9 @@ class OpenAlexFullCorpusSearchClient:
         try:
             with urlopen(request, timeout=self._timeout) as response:
                 data: Any = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, ValueError):
+        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+            if self._strict:
+                raise SearchBackendError(f"OpenAlex search failed: {exc}") from exc
             return []
         return _parse_openalex_response(data)
 
@@ -119,22 +128,27 @@ class ResearkaSearchClient:
         timeout: float = 20.0,
         year_min: int = 1900,
         year_max: int = 2100,
+        strict: bool = False,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token = token.strip()
         self._timeout = timeout
         self._year_min = year_min
         self._year_max = year_max
+        self._strict = strict
 
     @classmethod
-    def from_env(cls) -> ResearkaSearchClient:
+    def from_env(cls, *, strict: bool = False) -> ResearkaSearchClient:
         return cls(
             base_url=os.environ.get("RESEARKA_DATABASE_URL", "https://database.researka.org"),
             token=_load_researka_token(),
+            strict=strict,
         )
 
     def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
         if not self._base_url or not self._token or not query.strip():
+            if self._strict and query.strip():
+                raise SearchBackendError("Researka search is not configured")
             return []
         return self._search_papers(query, limit=limit)
 
@@ -157,7 +171,9 @@ class ResearkaSearchClient:
         try:
             with urlopen(request, timeout=self._timeout) as response:
                 data: Any = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, ValueError):
+        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+            if self._strict:
+                raise SearchBackendError(f"Researka search failed: {exc}") from exc
             return []
         return _parse_corpus_search_response(data)
 
@@ -173,19 +189,22 @@ class FullRawCorpusSearchClient:
         timeout: float = 45.0,
         year_min: int = 1900,
         year_max: int = 2100,
+        strict: bool = False,
     ) -> None:
         self._search_url = search_url.strip()
         self._token = token.strip()
         self._timeout = timeout
         self._year_min = year_min
         self._year_max = year_max
+        self._strict = strict
 
     @classmethod
-    def from_env(cls) -> FullRawCorpusSearchClient:
+    def from_env(cls, *, strict: bool = False) -> FullRawCorpusSearchClient:
         return cls(
             search_url=os.environ.get("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", ""),
             token=os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", ""),
             timeout=_float_env("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", 45.0),
+            strict=strict,
         )
 
     @property
@@ -219,7 +238,9 @@ class FullRawCorpusSearchClient:
         try:
             with urlopen(request, timeout=self._timeout) as response:
                 data: Any = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, ValueError):
+        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+            if self._strict:
+                raise SearchBackendError(f"Full raw corpus search failed: {exc}") from exc
             return []
         return _parse_full_raw_search_response(data)
 
