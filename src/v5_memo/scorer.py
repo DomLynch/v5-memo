@@ -46,10 +46,16 @@ def score_connection(
     tension_bonus = 10 if has_tension else 0
     shape_strength = sum(_SHAPE_WEIGHTS.get(reason, 1) for reason in shape_reasons)
     shape_bonus = min(30, 4 * max(shape_strength, shape_score, 0))
-    score = min(
-        100,
-        round(0.40 * novelty + 0.35 * evidence + source_bonus + tension_bonus + shape_bonus),
-    )
+    raw_score = round(0.40 * novelty + 0.35 * evidence + source_bonus + tension_bonus + shape_bonus)
+    bridge_cap = 100
+    if novelty < 20 and not has_tension:
+        bridge_cap = 55
+    elif novelty < 20 and not (
+        "shape:promise_outcome_reversal" in shape_reasons
+        or "shape:expectation_reversal" in shape_reasons
+    ):
+        bridge_cap = 70
+    score = min(100, raw_score, bridge_cap)
 
     reasons: list[str] = [
         "rare_bridge_terms" if novelty >= 60 else "common_bridge_terms",

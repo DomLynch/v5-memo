@@ -61,6 +61,10 @@ _PUBLISHABLE_SHAPES = frozenset({
     "shape:role_inversion",
     "shape:timing_split",
 })
+_ELITE_SHAPES = frozenset({
+    "shape:promise_outcome_reversal",
+    "shape:expectation_reversal",
+})
 
 
 def mine_insights(
@@ -104,7 +108,8 @@ def mine_insights(
         )
         if not shape_reasons:
             continue
-        if not _is_publishable_alpha_shape(shape_reasons):
+        tier = _alpha_tier(shape_reasons, tension_terms)
+        if tier == "discovery_seed":
             continue
         score = score_connection(
             bridge_terms=bridge,
@@ -124,7 +129,7 @@ def mine_insights(
             score=score.score,
             novelty_score=score.novelty_score,
             evidence_score=score.evidence_score,
-            reasons=score.reasons,
+            reasons=(*score.reasons, f"tier:{tier}"),
         ))
     return sorted(candidates, key=lambda c: (c.score, c.novelty_score), reverse=True)[
         :max(0, max_candidates)
@@ -142,8 +147,23 @@ def _dedupe_hits(hits: Sequence[CorpusHit]) -> list[CorpusHit]:
     return out
 
 
+def _norm_token(token: str) -> str:
+    token = token.casefold()
+    if len(token) > 5 and token.endswith("ies"):
+        return token[:-3] + "y"
+    if len(token) > 7 and token.endswith("ation"):
+        return token[:-5]
+    if len(token) > 4 and token.endswith("s") and not token.endswith("ss"):
+        return token[:-1]
+    return token
+
+
 def _tokens(text: str) -> frozenset[str]:
-    return frozenset(t for t in _WORD.findall(text.casefold()) if t not in _STOP)
+    return frozenset(
+        token
+        for raw in _WORD.findall(text.casefold())
+        if (token := _norm_token(raw)) not in _STOP
+    )
 
 
 def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 2) -> tuple[str, ...]:
@@ -159,7 +179,8 @@ def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 2) -> tuple[
     out: list[str] = []
     seen: set[str] = set()
     for query in seed_queries:
-        for token in _WORD.findall(query.casefold()):
+        for raw in _WORD.findall(query.casefold()):
+            token = _norm_token(raw)
             if token in _STOP or token in generic or token in seen:
                 continue
             seen.add(token)
@@ -246,13 +267,17 @@ def _shape_reasons(
 
 def _axis(hit: CorpusHit, excluded: tuple[str, ...]) -> str:
     excluded_set = set(excluded)
-    title_terms = [t for t in _WORD.findall(hit.title.casefold()) if t not in _STOP]
+    title_terms = [
+        token
+        for raw in _WORD.findall(hit.title.casefold())
+        if (token := _norm_token(raw)) not in _STOP
+    ]
     axis = [t for t in title_terms if t not in excluded_set][:4]
     return " ".join(axis) or (hit.venue or hit.source)
 
 
 def _words(text: str) -> frozenset[str]:
-    return frozenset(_WORD.findall(text.casefold()))
+    return _tokens(text)
 
 
 def _has_role_split(left_words: frozenset[str], right_words: frozenset[str]) -> bool:
@@ -262,9 +287,22 @@ def _has_role_split(left_words: frozenset[str], right_words: frozenset[str]) -> 
     )
 
 
-def _is_publishable_alpha_shape(shape_reasons: tuple[str, ...]) -> bool:
-    """Keep generic method/survey caveats out of the alpha path."""
-    return bool(set(shape_reasons) & _PUBLISHABLE_SHAPES)
+def candidate_alpha_tier(candidate: InsightCandidate) -> str:
+    for reason in candidate.reasons:
+        if reason.startswith("tier:"):
+            return reason.removeprefix("tier:")
+    return "discovery_seed"
+
+
+def _alpha_tier(shape_reasons: tuple[str, ...], tension_terms: tuple[str, ...]) -> str:
+    reasons = set(shape_reasons)
+    if reasons & _ELITE_SHAPES:
+        return "elite_alpha"
+    if "shape:directional_reversal" in reasons and set(tension_terms) == {"negative", "null"}:
+        return "elite_alpha"
+    if reasons & _PUBLISHABLE_SHAPES:
+        return "publishable_alpha"
+    return "discovery_seed"
 
 
 def _thesis(
