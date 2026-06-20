@@ -51,9 +51,11 @@ class IndexStats:
 class IndexBuildResult:
     files_attempted: int
     files_completed: int
+    files_failed: int
     papers_inserted: int
     stopped_for_budget: bool
     elapsed_seconds: float
+    file_errors: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,10 +65,12 @@ class ShardBuildResult:
     files_total: int
     files_attempted: int
     files_completed: int
+    files_failed: int
     papers_inserted: int
     stopped_for_budget: bool
     elapsed_seconds: float
     bytes_used: int
+    file_errors: str = ""
     error: str = ""
 
 
@@ -88,12 +92,14 @@ class ShardBatchResult:
     remote_dir: str
     files_total: int
     files_completed: int
+    files_failed: int
     papers_inserted: int
     bytes_used: int
     uploaded: bool
     deleted_local: bool
     skipped: bool
     elapsed_seconds: float
+    file_errors: str = ""
     error: str = ""
 
 
@@ -130,6 +136,7 @@ class FullRawFtsIndex:
                   year INTEGER,
                   journal TEXT,
                   source TEXT NOT NULL,
+                  source_remote TEXT NOT NULL DEFAULT '',
                   url TEXT,
                   cited_by_count INTEGER,
                   raw_score REAL
@@ -172,6 +179,7 @@ class FullRawFtsIndex:
                 CREATE INDEX IF NOT EXISTS idx_indexed_files_status ON indexed_files(status);
                 """
             )
+            self._ensure_source_remote_column()
             self._seed_default_term_map()
             self._conn.commit()
 
@@ -255,6 +263,8 @@ class FullRawFtsIndex:
             completed = self.completed_remotes()
             files_attempted = 0
             files_completed = 0
+            files_failed = 0
+            file_errors: list[str] = []
             papers_inserted = 0
             stopped_for_budget = False
 
@@ -270,12 +280,17 @@ class FullRawFtsIndex:
                     stopped_for_budget = True
                     break
                 files_attempted += 1
-                result = self._index_one_file(
-                    raw_file,
-                    rclone_bin=rclone_bin,
-                    deadline=deadline,
-                    commit_interval=max(1, commit_interval),
-                )
+                try:
+                    result = self._index_one_file(
+                        raw_file,
+                        rclone_bin=rclone_bin,
+                        deadline=deadline,
+                        commit_interval=max(1, commit_interval),
+                    )
+                except Exception as exc:
+                    files_failed += 1
+                    file_errors.append(f"{raw_file.remote}: {str(exc)[:240]}")
+                    continue
                 papers_inserted += result["inserted"]
                 if result["complete"]:
                     files_completed += 1
@@ -286,9 +301,11 @@ class FullRawFtsIndex:
             return IndexBuildResult(
                 files_attempted=files_attempted,
                 files_completed=files_completed,
+                files_failed=files_failed,
                 papers_inserted=papers_inserted,
                 stopped_for_budget=stopped_for_budget,
                 elapsed_seconds=round(time.monotonic() - started, 3),
+                file_errors="; ".join(file_errors)[:1000],
             )
 
     def search(
@@ -355,7 +372,7 @@ class FullRawFtsIndex:
             self._mark_file(raw_file, status="running", docs_seen=0, docs_indexed=0)
             for hit in iter_raw_file_hits(raw_file, rclone_bin=rclone_bin):
                 docs_seen += 1
-                if self._insert_hit(hit):
+                if self._insert_hit(hit, source_remote=raw_file.remote):
                     inserted_total += 1
                     inserted_since_commit += 1
                 if docs_seen % commit_interval == 0:
@@ -379,6 +396,7 @@ class FullRawFtsIndex:
         except Exception as exc:
             self._conn.rollback()
             self._conn.execute("BEGIN")
+            self._remove_file_papers(raw_file.remote)
             self._mark_file(
                 raw_file,
                 status="error",
@@ -390,7 +408,7 @@ class FullRawFtsIndex:
             raise
         return {"inserted": inserted_total, "complete": complete}
 
-    def _insert_hit(self, hit: dict[str, object]) -> bool:
+    def _insert_hit(self, hit: dict[str, object], *, source_remote: str) -> bool:
         title = _clean(hit.get("title"))
         if not title:
             return False
@@ -411,11 +429,12 @@ class FullRawFtsIndex:
               year,
               journal,
               source,
+              source_remote,
               url,
               cited_by_count,
               raw_score
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_key,
@@ -429,6 +448,7 @@ class FullRawFtsIndex:
                 _int_or_none(hit.get("year")),
                 journal,
                 _clean(hit.get("source")) or "unknown",
+                source_remote,
                 _clean(hit.get("url")),
                 _int_or_none(hit.get("cited_by_count")),
                 _float_or_none(hit.get("score")),
@@ -488,10 +508,35 @@ class FullRawFtsIndex:
         )
 
     def _bump_papers(self, delta: int) -> None:
-        if delta <= 0:
+        if delta == 0:
             return
         current = int(self._get_meta("papers_indexed") or "0")
-        self._set_meta("papers_indexed", str(current + delta))
+        self._set_meta("papers_indexed", str(max(0, current + delta)))
+
+    def _remove_file_papers(self, remote: str) -> None:
+        deleted = int(
+            self._conn.execute(
+                "SELECT COUNT(*) FROM papers WHERE source_remote = ?",
+                (remote,),
+            ).fetchone()[0]
+        )
+        if deleted <= 0:
+            return
+        self._conn.execute(
+            "DELETE FROM paper_fts WHERE rowid IN (SELECT id FROM papers WHERE source_remote = ?)",
+            (remote,),
+        )
+        self._conn.execute("DELETE FROM papers WHERE source_remote = ?", (remote,))
+        self._bump_papers(-deleted)
+
+    def _ensure_source_remote_column(self) -> None:
+        columns = {
+            str(row["name"])
+            for row in self._conn.execute("PRAGMA table_info(papers)").fetchall()
+        }
+        if "source_remote" not in columns:
+            self._conn.execute("ALTER TABLE papers ADD COLUMN source_remote TEXT NOT NULL DEFAULT ''")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_papers_source_remote ON papers(source_remote)")
 
     def _get_meta(self, key: str) -> str | None:
         row = self._conn.execute("SELECT value FROM index_meta WHERE key = ?", (key,)).fetchone()
@@ -581,6 +626,7 @@ def build_shards(
                         files_total=len(job.files),
                         files_attempted=0,
                         files_completed=0,
+                        files_failed=0,
                         papers_inserted=0,
                         stopped_for_budget=True,
                         elapsed_seconds=0.0,
@@ -624,6 +670,7 @@ def build_upload_shard_batches(
                     remote_dir=remote_batch_dir,
                     files_total=len(batch),
                     files_completed=len(batch),
+                    files_failed=0,
                     papers_inserted=0,
                     bytes_used=0,
                     uploaded=True,
@@ -645,11 +692,15 @@ def build_upload_shard_batches(
             min_free_bytes=min_free_bytes,
         )
         files_completed = sum(result.files_completed for result in shard_results)
+        files_failed = sum(result.files_failed for result in shard_results)
         papers_inserted = sum(result.papers_inserted for result in shard_results)
         bytes_used = sum(result.bytes_used for result in shard_results)
         error = "; ".join(result.error for result in shard_results if result.error)
+        file_errors = "; ".join(result.file_errors for result in shard_results if result.file_errors)
         stopped = any(result.stopped_for_budget for result in shard_results)
-        if error or stopped or files_completed < len(batch):
+        if not error and files_failed and files_completed == 0:
+            error = "all files failed; treating as fatal source or transport failure"
+        if error or stopped or files_completed + files_failed < len(batch):
             results.append(
                 ShardBatchResult(
                     batch_id=batch_id,
@@ -657,12 +708,14 @@ def build_upload_shard_batches(
                     remote_dir=remote_batch_dir,
                     files_total=len(batch),
                     files_completed=files_completed,
+                    files_failed=files_failed,
                     papers_inserted=papers_inserted,
                     bytes_used=bytes_used,
                     uploaded=False,
                     deleted_local=False,
                     skipped=False,
                     elapsed_seconds=round(time.monotonic() - batch_started, 3),
+                    file_errors=file_errors,
                     error=error or "batch did not complete",
                 )
             )
@@ -679,12 +732,14 @@ def build_upload_shard_batches(
             remote_dir=remote_batch_dir,
             files_total=len(batch),
             files_completed=files_completed,
+            files_failed=files_failed,
             papers_inserted=papers_inserted,
             bytes_used=bytes_used,
             uploaded=True,
             deleted_local=deleted,
             skipped=False,
             elapsed_seconds=round(time.monotonic() - batch_started, 3),
+            file_errors=file_errors,
         )
         print(json.dumps(asdict(result), sort_keys=True), flush=True)
         results.append(result)
@@ -784,8 +839,12 @@ def _write_batch_manifest(
         "totals": {
             "files_total": len(files),
             "files_completed": sum(result.files_completed for result in shard_results),
+            "files_failed": sum(result.files_failed for result in shard_results),
             "papers_inserted": sum(result.papers_inserted for result in shard_results),
             "bytes_used": sum(result.bytes_used for result in shard_results),
+            "file_errors": [
+                result.file_errors for result in shard_results if result.file_errors
+            ],
         },
     }
     (batch_dir / "complete.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
@@ -828,10 +887,12 @@ def _build_shard_worker(job: ShardBuildJob) -> ShardBuildResult:
         files_total=len(job.files),
         files_attempted=result.files_attempted,
         files_completed=result.files_completed,
+        files_failed=result.files_failed,
         papers_inserted=result.papers_inserted,
         stopped_for_budget=result.stopped_for_budget,
         elapsed_seconds=result.elapsed_seconds,
         bytes_used=stats.bytes_used,
+        file_errors=result.file_errors,
     )
 
 
@@ -1049,8 +1110,10 @@ def main() -> None:
                 "shards": len(results),
                 "files_attempted": sum(result.files_attempted for result in results),
                 "files_completed": sum(result.files_completed for result in results),
+                "files_failed": sum(result.files_failed for result in results),
                 "papers_inserted": sum(result.papers_inserted for result in results),
                 "bytes_used": sum(result.bytes_used for result in results),
+                "file_error_shards": sum(1 for result in results if result.file_errors),
                 "errors": sum(1 for result in results if result.error),
                 "stopped_for_budget": any(result.stopped_for_budget for result in results),
             },
@@ -1082,10 +1145,12 @@ def main() -> None:
             "totals": {
                 "batches": len(batch_results),
                 "files_completed": sum(result.files_completed for result in batch_results),
+                "files_failed": sum(result.files_failed for result in batch_results),
                 "papers_inserted": sum(result.papers_inserted for result in batch_results),
                 "bytes_used": sum(result.bytes_used for result in batch_results),
                 "uploaded": sum(1 for result in batch_results if result.uploaded),
                 "skipped": sum(1 for result in batch_results if result.skipped),
+                "file_error_batches": sum(1 for result in batch_results if result.file_errors),
                 "errors": sum(1 for result in batch_results if result.error),
             },
         }, sort_keys=True))

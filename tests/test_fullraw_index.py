@@ -35,6 +35,12 @@ def _raw_file(tmp_path: Path, name: str, rows: list[dict[str, object]]) -> RawFi
     return RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")
 
 
+def _corrupt_raw_file(tmp_path: Path, name: str) -> RawFile:
+    source = tmp_path / f"{name}.jsonl.gz"
+    source.write_bytes(gzip.compress(b'{"display_name":"truncated gzip"}\n')[:-8])
+    return RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")
+
+
 def test_fullraw_index_builds_ranked_queryable_index(tmp_path: Path) -> None:
     raw_file = _raw_file(tmp_path, "openalex", [
         {
@@ -156,6 +162,30 @@ def test_fullraw_index_disk_guard(
     assert result.files_attempted == attempted
     assert result.papers_inserted == inserted
     assert stats.papers_indexed == inserted
+
+
+def test_fullraw_index_quarantines_corrupt_source_file(tmp_path: Path) -> None:
+    good = _raw_file(tmp_path, "good", [{
+        "doi": "https://doi.org/10.example/good",
+        "display_name": "Management forecast disclosure",
+        "abstract": "Managers disclose forecasts and guidance.",
+    }])
+    bad = _corrupt_raw_file(tmp_path, "bad")
+    index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
+    try:
+        result = index.index_files([bad, good], commit_interval=1)
+        stats = index.stats(files_total=2)
+    finally:
+        index.close()
+
+    assert result.files_attempted == 2
+    assert result.files_completed == 1
+    assert result.files_failed == 1
+    assert result.papers_inserted == 1
+    assert result.stopped_for_budget is False
+    assert "bad.jsonl.gz" in result.file_errors
+    assert stats.files_indexed == 1
+    assert stats.papers_indexed == 1
 
 
 def test_disk_guard_checks_index_filesystem(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -281,6 +311,62 @@ def test_build_upload_shard_batches_uploads_and_deletes_local_batches(tmp_path: 
     assert all(result.skipped for result in repeated)
 
 
+def test_build_upload_shard_batches_uploads_with_corrupt_file_quarantined(tmp_path: Path) -> None:
+    good = _raw_file(tmp_path, "good_batch", [{
+        "doi": "https://doi.org/10.example/good-batch",
+        "display_name": "Management forecast disclosure batch",
+        "abstract": "Managers disclose forecasts and guidance.",
+    }])
+    bad = _corrupt_raw_file(tmp_path, "bad_batch")
+    local_build = tmp_path / "local-build"
+    remote = tmp_path / "remote"
+
+    results = build_upload_shard_batches(
+        [bad, good],
+        shard_dir=local_build,
+        upload_remote=f"file://{remote}",
+        batch_files=2,
+        shard_count=1,
+        workers=1,
+        commit_interval=1,
+        delete_local=False,
+    )
+
+    manifest = json.loads((remote / "batch_00000" / "complete.json").read_text())
+    assert len(results) == 1
+    assert results[0].uploaded is True
+    assert results[0].error == ""
+    assert results[0].files_completed == 1
+    assert results[0].files_failed == 1
+    assert results[0].papers_inserted == 1
+    assert "bad_batch.jsonl.gz" in results[0].file_errors
+    assert manifest["totals"]["files_completed"] == 1
+    assert manifest["totals"]["files_failed"] == 1
+    assert manifest["totals"]["file_errors"]
+
+
+def test_build_upload_shard_batches_keeps_all_failed_batch_fatal(tmp_path: Path) -> None:
+    bad = _corrupt_raw_file(tmp_path, "all_bad")
+
+    results = build_upload_shard_batches(
+        [bad],
+        shard_dir=tmp_path / "local-build",
+        upload_remote=f"file://{tmp_path / 'remote'}",
+        batch_files=1,
+        shard_count=1,
+        workers=1,
+        commit_interval=1,
+        delete_local=False,
+    )
+
+    assert len(results) == 1
+    assert results[0].uploaded is False
+    assert results[0].files_completed == 0
+    assert results[0].files_failed == 1
+    assert "all files failed" in results[0].error
+    assert not (tmp_path / "remote" / "batch_00000" / "complete.json").exists()
+
+
 def test_build_upload_shards_cli_exits_nonzero_on_failed_batch(
     monkeypatch: MonkeyPatch,
     tmp_path: Path,
@@ -297,6 +383,7 @@ def test_build_upload_shards_cli_exits_nonzero_on_failed_batch(
                 remote_dir="sb:test/batch_00137",
                 files_total=16,
                 files_completed=10,
+                files_failed=0,
                 papers_inserted=37_841_334,
                 bytes_used=17_475_444_736,
                 uploaded=False,
