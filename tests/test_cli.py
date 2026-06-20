@@ -117,3 +117,85 @@ def test_smart_cli_skips_unconfigured_researka_when_openalex_available(
     captured = capsys.readouterr()
     assert "Alpha memo" in captured.out
     assert "Resveratrol" in captured.out
+
+
+def test_smart_cli_planner_surfaces_elite_pair_from_broad_seed(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class EmptyFullRaw:
+        configured = False
+
+    class FakePlanner:
+        def plan(
+            self,
+            *,
+            topic: str,
+            seed_queries: Sequence[str],
+            limit: int = 8,
+        ) -> list[str]:
+            del topic, limit
+            return ["resveratrol exercise training adaptation", *seed_queries]
+
+    class PlannedOpenAlex:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del limit
+            if "resveratrol" not in query:
+                return []
+            return [
+                CorpusHit(
+                    hit_id="promise",
+                    title="Resveratrol mimics exercise mitochondrial biology",
+                    abstract="Mechanism paper reported resveratrol improved mitochondrial function.",
+                    source="openalex",
+                    doi="10.promise",
+                ),
+                CorpusHit(
+                    hit_id="outcome",
+                    title="Resveratrol blunts exercise training adaptation",
+                    abstract="Human outcome trial observed resveratrol reduced exercise training benefits.",
+                    source="openalex",
+                    doi="10.outcome",
+                ),
+            ]
+
+    monkeypatch.setattr(
+        "v5_memo.__main__.FullRawCorpusSearchClient.from_env",
+        lambda strict=False: EmptyFullRaw(),
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.ResearkaSearchClient.from_env",
+        lambda strict=False: ResearkaSearchClient(base_url="https://database.example", token="", strict=strict),
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.OpenAlexFullCorpusSearchClient.from_env",
+        lambda strict=False: PlannedOpenAlex(),
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.MiniMaxM3SearchPlanner.from_env",
+        lambda: FakePlanner(),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "smart",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+            "--topic",
+            "longevity exercise adaptation",
+            "--query",
+            "longevity exercise adaptation pharmacology",
+        ],
+    )
+
+    main()
+
+    captured = capsys.readouterr()
+    assert "Alpha memo" in captured.out
+    assert "resveratrol" in captured.out.casefold()
+    assert "different directions" in captured.out
