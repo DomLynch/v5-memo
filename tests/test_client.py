@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import urllib.parse
+from email.message import Message
 from typing import cast
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 import pytest
@@ -199,6 +200,49 @@ def test_openalex_lenient_mode_keeps_empty_result_on_backend_errors(monkeypatch:
     client = OpenAlexFullCorpusSearchClient(base_url="https://api.example")
 
     assert client.search("nad salvage", limit=1) == []
+
+
+def test_openalex_strict_from_env_uses_bounded_fanout(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("V5_MEMO_OPENALEX_MAX_VARIANTS", raising=False)
+
+    client = OpenAlexFullCorpusSearchClient.from_env(strict=True)
+
+    assert client._max_variants == 1
+
+
+def test_openalex_retries_once_after_rate_limit(monkeypatch: MonkeyPatch) -> None:
+    calls = 0
+    sleeps: list[float] = []
+    headers = Message()
+    headers["Retry-After"] = "0.01"
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        nonlocal calls
+        del request, timeout
+        calls += 1
+        if calls == 1:
+            raise HTTPError("https://api.example", 429, "Too Many Requests", headers, None)
+        return FakeResponse({
+            "results": [
+                {
+                    "id": "https://openalex.org/W1",
+                    "display_name": "Resveratrol exercise adaptation",
+                    "abstract_inverted_index": {"Resveratrol": [0], "adaptation": [2]},
+                }
+            ]
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    monkeypatch.setattr("v5_memo.client.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    hits = OpenAlexFullCorpusSearchClient(base_url="https://api.example", strict=True).search(
+        "resveratrol adaptation",
+        limit=1,
+    )
+
+    assert calls == 2
+    assert sleeps == [0.01]
+    assert hits[0].title == "Resveratrol exercise adaptation"
 
 
 def test_hybrid_search_merges_and_dedupes_sources() -> None:

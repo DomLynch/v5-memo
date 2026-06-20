@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import time
 import urllib.parse
 from collections.abc import Sequence
 from dataclasses import replace
@@ -47,7 +48,7 @@ class OpenAlexFullCorpusSearchClient:
         return cls(
             base_url=os.environ.get("V5_MEMO_OPENALEX_URL", "https://api.openalex.org"),
             mailto=os.environ.get("V5_MEMO_OPENALEX_MAILTO", os.environ.get("OPENALEX_MAILTO", "")),
-            max_variants=_int_env("V5_MEMO_OPENALEX_MAX_VARIANTS", 2 if strict else 8),
+            max_variants=_int_env("V5_MEMO_OPENALEX_MAX_VARIANTS", 1 if strict else 8),
             strict=strict,
         )
 
@@ -108,14 +109,23 @@ class OpenAlexFullCorpusSearchClient:
             headers={"User-Agent": "v5-memo/0.1"},
             method="GET",
         )
-        try:
-            with urlopen(request, timeout=self._timeout) as response:
-                data: Any = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
-            if self._strict:
-                raise SearchBackendError(f"OpenAlex search failed: {exc}") from exc
-            return []
-        return _parse_openalex_response(data)
+        for attempt in range(2):
+            try:
+                with urlopen(request, timeout=self._timeout) as response:
+                    data: Any = json.loads(response.read().decode("utf-8"))
+                return _parse_openalex_response(data)
+            except HTTPError as exc:
+                if exc.code == 429 and attempt == 0:
+                    time.sleep(_retry_after_seconds(exc))
+                    continue
+                if self._strict:
+                    raise SearchBackendError(f"OpenAlex search failed: {exc}") from exc
+                return []
+            except (URLError, TimeoutError, ValueError) as exc:
+                if self._strict:
+                    raise SearchBackendError(f"OpenAlex search failed: {exc}") from exc
+                return []
+        return []
 
 
 class ResearkaSearchClient:
@@ -538,3 +548,9 @@ def _float_env(name: str, default: float) -> float:
 def _int_env(name: str, default: int) -> int:
     parsed = _int_or_none(os.environ.get(name, ""))
     return parsed if parsed is not None else default
+
+
+def _retry_after_seconds(exc: HTTPError) -> float:
+    header = exc.headers.get("Retry-After", "") if exc.headers is not None else ""
+    parsed = _float_or_none(header)
+    return max(0.0, min(parsed if parsed is not None else 1.0, 5.0))

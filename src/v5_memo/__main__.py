@@ -63,7 +63,7 @@ def main() -> None:
     parser.add_argument("--coverage-report", action="store_true")
     parser.add_argument("--require-full-raw-corpus", action="store_true")
     parser.add_argument("--planner", choices=["seed", "minimax"])
-    parser.add_argument("--planner-limit", type=int, default=8)
+    parser.add_argument("--planner-limit", type=int, default=4)
     parser.add_argument(
         "--searcher",
         choices=["openalex", "researka", "fullraw", "hybrid", "smart"],
