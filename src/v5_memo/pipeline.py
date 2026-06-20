@@ -36,7 +36,7 @@ def build_alpha_memo(
     candidates: Sequence[InsightCandidate] = mine_insights(
         hits,
         topic=topic,
-        required_anchor_terms=query_anchor_terms(anchor_queries or seed_queries),
+        required_anchor_terms=query_anchor_terms([*seed_queries, *(anchor_queries or ())]),
         include_discovery=min_alpha_tier == "discovery_seed",
     )
     candidates = _apply_selector(candidates, hits, memo_selector)

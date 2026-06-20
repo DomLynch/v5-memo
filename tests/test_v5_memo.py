@@ -182,6 +182,36 @@ def test_pipeline_builds_best_memo() -> None:
     assert result.markdown.startswith("# Alpha memo")
 
 
+def test_pipeline_anchors_to_planned_queries_before_broad_seed() -> None:
+    hits = [
+        _hit(
+            "promise",
+            "Resveratrol mimics exercise mitochondrial biology",
+            "Mechanism paper reported resveratrol improved mitochondrial function.",
+        ),
+        _hit(
+            "outcome",
+            "Resveratrol blunts exercise training adaptation",
+            "Human outcome trial observed resveratrol reduced exercise training benefits.",
+        ),
+    ]
+
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return hits
+
+    result = build_alpha_memo(
+        topic="resveratrol exercise adaptation",
+        seed_queries=["resveratrol exercise adaptation"],
+        anchor_queries=["longevity exercise adaptation pharmacology"],
+        searcher=FakeSearch(),
+    )
+
+    assert result.candidate.receipt_ids == ("promise", "outcome")
+    assert "shape:promise_outcome_reversal" in result.candidate.reasons
+
+
 def test_pipeline_accepts_custom_memo_writer() -> None:
     class FakeSearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:

@@ -98,6 +98,12 @@ def test_researka_strict_mode_rejects_missing_configuration() -> None:
         client.search("rapamycin", limit=1)
 
 
+def test_researka_client_reports_missing_token_as_unconfigured() -> None:
+    client = ResearkaSearchClient(base_url="https://database.example", token="")
+
+    assert client.configured is False
+
+
 def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object) -> None:
     captured: dict[str, object] = {}
 

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 
 import pytest
 from pytest import MonkeyPatch
 
+from v5_memo import CorpusHit
 from v5_memo.__main__ import main
+from v5_memo.client import ResearkaSearchClient
 
 
 def test_demo_cli_renders_alpha_shape(
@@ -48,3 +51,69 @@ def test_fullraw_searcher_fails_closed_without_endpoint(
     assert captured.out == ""
     assert "Full local raw 450M+ corpus search is not configured" in captured.err
     assert "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL" in captured.err
+
+
+def test_smart_cli_skips_unconfigured_researka_when_openalex_available(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class EmptyFullRaw:
+        configured = False
+
+    class StaticOpenAlex:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return [
+                CorpusHit(
+                    hit_id="promise",
+                    title="Resveratrol mimics exercise mitochondrial biology",
+                    abstract="Mechanism paper reported resveratrol improved mitochondrial function.",
+                    source="openalex",
+                    doi="10.promise",
+                ),
+                CorpusHit(
+                    hit_id="outcome",
+                    title="Resveratrol blunts exercise training adaptation",
+                    abstract="Human outcome trial observed resveratrol reduced exercise training benefits.",
+                    source="openalex",
+                    doi="10.outcome",
+                ),
+            ]
+
+    monkeypatch.setattr(
+        "v5_memo.__main__.FullRawCorpusSearchClient.from_env",
+        lambda strict=False: EmptyFullRaw(),
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.ResearkaSearchClient.from_env",
+        lambda strict=False: ResearkaSearchClient(base_url="https://database.example", token="", strict=strict),
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.OpenAlexFullCorpusSearchClient.from_env",
+        lambda strict=False: StaticOpenAlex(),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "smart",
+            "--planner",
+            "seed",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+            "--topic",
+            "resveratrol exercise adaptation",
+            "--query",
+            "resveratrol exercise adaptation",
+        ],
+    )
+
+    main()
+
+    captured = capsys.readouterr()
+    assert "Alpha memo" in captured.out
+    assert "Resveratrol" in captured.out

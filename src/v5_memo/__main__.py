@@ -100,8 +100,10 @@ def main() -> None:
         full_raw = FullRawCorpusSearchClient.from_env(strict=args.searcher == "smart")
         if full_raw.configured:
             searchers.append(full_raw)
+        researka = ResearkaSearchClient.from_env(strict=args.searcher == "smart")
+        if researka.configured:
+            searchers.append(researka)
         searchers.extend([
-            ResearkaSearchClient.from_env(strict=args.searcher == "smart"),
             OpenAlexFullCorpusSearchClient.from_env(strict=args.searcher == "smart"),
         ])
         searcher = HybridCorpusSearchClient(searchers)
@@ -124,6 +126,7 @@ def main() -> None:
             seed_queries=base_queries,
             limit=args.planner_limit,
         )
+    wider_recall = planner_mode == "minimax" or selector_mode == "minimax"
     result = build_alpha_memo(
         topic=args.topic,
         seed_queries=queries,
@@ -132,6 +135,8 @@ def main() -> None:
         memo_selector=memo_selector,
         anchor_queries=base_queries,
         min_alpha_tier=min_alpha_tier,
+        per_query_limit=50 if wider_recall else 25,
+        max_hits=250 if wider_recall else 100,
     )
     print(result.markdown)
 

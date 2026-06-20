@@ -47,6 +47,7 @@ class OpenAlexFullCorpusSearchClient:
         return cls(
             base_url=os.environ.get("V5_MEMO_OPENALEX_URL", "https://api.openalex.org"),
             mailto=os.environ.get("V5_MEMO_OPENALEX_MAILTO", os.environ.get("OPENALEX_MAILTO", "")),
+            max_variants=_int_env("V5_MEMO_OPENALEX_MAX_VARIANTS", 2 if strict else 8),
             strict=strict,
         )
 
@@ -144,6 +145,10 @@ class ResearkaSearchClient:
             token=_load_researka_token(),
             strict=strict,
         )
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._base_url and self._token)
 
     def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
         if not self._base_url or not self._token or not query.strip():
@@ -527,4 +532,9 @@ def _float_or_none(value: object) -> float | None:
 
 def _float_env(name: str, default: float) -> float:
     parsed = _float_or_none(os.environ.get(name, ""))
+    return parsed if parsed is not None else default
+
+
+def _int_env(name: str, default: int) -> int:
+    parsed = _int_or_none(os.environ.get(name, ""))
     return parsed if parsed is not None else default
