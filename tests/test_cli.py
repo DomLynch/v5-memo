@@ -11,6 +11,51 @@ from v5_memo.__main__ import main
 from v5_memo.client import ResearkaSearchClient
 
 
+class EmptyFullRaw:
+    configured = False
+
+
+class ResveratrolOpenAlex:
+    def __init__(self, *, require_resveratrol_query: bool = False) -> None:
+        self._require_resveratrol_query = require_resveratrol_query
+
+    def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+        del limit
+        if self._require_resveratrol_query and "resveratrol" not in query:
+            return []
+        return [
+            CorpusHit(
+                hit_id="promise",
+                title="Resveratrol mimics exercise mitochondrial biology",
+                abstract="Mechanism paper reported resveratrol improved mitochondrial function.",
+                source="openalex",
+                doi="10.promise",
+            ),
+            CorpusHit(
+                hit_id="outcome",
+                title="Resveratrol blunts exercise training adaptation",
+                abstract="Human outcome trial observed resveratrol reduced exercise training benefits.",
+                source="openalex",
+                doi="10.outcome",
+            ),
+        ]
+
+
+def _patch_smart_sources(monkeypatch: MonkeyPatch, openalex: ResveratrolOpenAlex) -> None:
+    monkeypatch.setattr(
+        "v5_memo.__main__.FullRawCorpusSearchClient.from_env",
+        lambda strict=False: EmptyFullRaw(),
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.ResearkaSearchClient.from_env",
+        lambda strict=False: ResearkaSearchClient(base_url="https://database.example", token="", strict=strict),
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.OpenAlexFullCorpusSearchClient.from_env",
+        lambda strict=False: openalex,
+    )
+
+
 def test_demo_cli_renders_alpha_shape(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -57,41 +102,7 @@ def test_smart_cli_skips_unconfigured_researka_when_openalex_available(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    class EmptyFullRaw:
-        configured = False
-
-    class StaticOpenAlex:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return [
-                CorpusHit(
-                    hit_id="promise",
-                    title="Resveratrol mimics exercise mitochondrial biology",
-                    abstract="Mechanism paper reported resveratrol improved mitochondrial function.",
-                    source="openalex",
-                    doi="10.promise",
-                ),
-                CorpusHit(
-                    hit_id="outcome",
-                    title="Resveratrol blunts exercise training adaptation",
-                    abstract="Human outcome trial observed resveratrol reduced exercise training benefits.",
-                    source="openalex",
-                    doi="10.outcome",
-                ),
-            ]
-
-    monkeypatch.setattr(
-        "v5_memo.__main__.FullRawCorpusSearchClient.from_env",
-        lambda strict=False: EmptyFullRaw(),
-    )
-    monkeypatch.setattr(
-        "v5_memo.__main__.ResearkaSearchClient.from_env",
-        lambda strict=False: ResearkaSearchClient(base_url="https://database.example", token="", strict=strict),
-    )
-    monkeypatch.setattr(
-        "v5_memo.__main__.OpenAlexFullCorpusSearchClient.from_env",
-        lambda strict=False: StaticOpenAlex(),
-    )
+    _patch_smart_sources(monkeypatch, ResveratrolOpenAlex())
     monkeypatch.setattr(
         sys,
         "argv",
@@ -137,40 +148,7 @@ def test_smart_cli_planner_surfaces_elite_pair_from_broad_seed(
             del topic, limit
             return ["resveratrol exercise training adaptation", *seed_queries]
 
-    class PlannedOpenAlex:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del limit
-            if "resveratrol" not in query:
-                return []
-            return [
-                CorpusHit(
-                    hit_id="promise",
-                    title="Resveratrol mimics exercise mitochondrial biology",
-                    abstract="Mechanism paper reported resveratrol improved mitochondrial function.",
-                    source="openalex",
-                    doi="10.promise",
-                ),
-                CorpusHit(
-                    hit_id="outcome",
-                    title="Resveratrol blunts exercise training adaptation",
-                    abstract="Human outcome trial observed resveratrol reduced exercise training benefits.",
-                    source="openalex",
-                    doi="10.outcome",
-                ),
-            ]
-
-    monkeypatch.setattr(
-        "v5_memo.__main__.FullRawCorpusSearchClient.from_env",
-        lambda strict=False: EmptyFullRaw(),
-    )
-    monkeypatch.setattr(
-        "v5_memo.__main__.ResearkaSearchClient.from_env",
-        lambda strict=False: ResearkaSearchClient(base_url="https://database.example", token="", strict=strict),
-    )
-    monkeypatch.setattr(
-        "v5_memo.__main__.OpenAlexFullCorpusSearchClient.from_env",
-        lambda strict=False: PlannedOpenAlex(),
-    )
+    _patch_smart_sources(monkeypatch, ResveratrolOpenAlex(require_resveratrol_query=True))
     monkeypatch.setattr(
         "v5_memo.__main__.MiniMaxM3SearchPlanner.from_env",
         lambda: FakePlanner(),
