@@ -51,6 +51,15 @@ _OUTCOME_ROLE = _OBSERVED | frozenset({
     "cohort", "endpoint", "endpoints", "experiment", "intervention", "randomized",
     "trial", "trials",
 })
+_PUBLISHABLE_SHAPES = frozenset({
+    "shape:promise_outcome_reversal",
+    "shape:expectation_reversal",
+    "shape:directional_reversal",
+    "shape:boundary_condition",
+    "shape:denominator_split",
+    "shape:role_inversion",
+    "shape:timing_split",
+})
 
 
 def mine_insights(
@@ -95,6 +104,8 @@ def mine_insights(
             tension_terms=tension_terms,
         )
         if not shape_reasons:
+            continue
+        if not _is_publishable_alpha_shape(shape_reasons):
             continue
         score = score_connection(
             bridge_terms=bridge,
@@ -250,6 +261,11 @@ def _has_role_split(left_words: frozenset[str], right_words: frozenset[str]) -> 
         bool(left_words & _PROMISE and right_words & _OUTCOME_ROLE)
         or bool(right_words & _PROMISE and left_words & _OUTCOME_ROLE)
     )
+
+
+def _is_publishable_alpha_shape(shape_reasons: tuple[str, ...]) -> bool:
+    """Keep generic method/survey caveats out of the alpha path."""
+    return bool(set(shape_reasons) & _PUBLISHABLE_SHAPES)
 
 
 def _thesis(
