@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 from urllib.request import Request, urlopen
 
+from v5_memo.gate import candidate_alpha_tier
 from v5_memo.schemas import CorpusHit, InsightCandidate
 
 MINIMAX_BASE_URL = "https://api.minimax.io/anthropic"
@@ -331,6 +332,12 @@ Tension terms:
 Scores:
 signal={candidate.score}, novelty={candidate.novelty_score}, evidence={candidate.evidence_score}
 
+Selector tier:
+{candidate_alpha_tier(candidate)}
+
+Receipt roles:
+{_role_block(candidate)}
+
 Locked receipts:
 {receipt_block}
 """
@@ -485,6 +492,8 @@ def _candidate_block(
         f"Bridge terms: {', '.join(candidate.bridge_terms) or 'none'}\n"
         f"Tension terms: {', '.join(candidate.tension_terms) or 'none'}\n"
         f"Reasons: {', '.join(candidate.reasons) or 'none'}\n"
+        f"Tier: {candidate_alpha_tier(candidate)}\n"
+        f"Receipt roles: {_inline_roles(candidate)}\n"
         f"Score: {candidate.score}\n"
         f"Receipts:\n{receipts}"
     )
@@ -494,6 +503,21 @@ def _selection_receipt(hit: CorpusHit) -> str:
     abstract = _truncate_receipt_text(hit.abstract, 500)
     year = f" ({hit.year})" if hit.year is not None else ""
     return f"- {hit.hit_id}: {hit.title}{year}; {abstract}"
+
+
+def _role_block(candidate: InsightCandidate) -> str:
+    if not candidate.receipt_roles:
+        return "- none assigned"
+    return "\n".join(
+        f"- {role.receipt_id}: {role.role} ({role.reason})"
+        for role in candidate.receipt_roles
+    )
+
+
+def _inline_roles(candidate: InsightCandidate) -> str:
+    if not candidate.receipt_roles:
+        return "none assigned"
+    return "; ".join(f"{role.receipt_id}={role.role}" for role in candidate.receipt_roles)
 
 
 def _anthropic_text(data: Mapping[str, Any]) -> str:

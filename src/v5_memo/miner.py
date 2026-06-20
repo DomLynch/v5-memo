@@ -6,7 +6,7 @@ from collections import Counter
 from collections.abc import Sequence
 from itertools import combinations
 
-from v5_memo.schemas import CorpusHit, InsightCandidate
+from v5_memo.schemas import CorpusHit, InsightCandidate, ReceiptRole
 from v5_memo.scorer import score_connection
 
 _WORD = re.compile(r"[a-z][a-z0-9]{2,}")
@@ -130,6 +130,7 @@ def mine_insights(
             novelty_score=score.novelty_score,
             evidence_score=score.evidence_score,
             reasons=(*score.reasons, f"tier:{tier}"),
+            receipt_roles=_receipt_roles(left, right, shape_reasons),
         ))
     return sorted(candidates, key=lambda c: (c.score, c.novelty_score), reverse=True)[
         :max(0, max_candidates)
@@ -287,13 +288,6 @@ def _has_role_split(left_words: frozenset[str], right_words: frozenset[str]) -> 
     )
 
 
-def candidate_alpha_tier(candidate: InsightCandidate) -> str:
-    for reason in candidate.reasons:
-        if reason.startswith("tier:"):
-            return reason.removeprefix("tier:")
-    return "discovery_seed"
-
-
 def _alpha_tier(shape_reasons: tuple[str, ...], tension_terms: tuple[str, ...]) -> str:
     reasons = set(shape_reasons)
     if reasons & _ELITE_SHAPES:
@@ -303,6 +297,60 @@ def _alpha_tier(shape_reasons: tuple[str, ...], tension_terms: tuple[str, ...]) 
     if reasons & _PUBLISHABLE_SHAPES:
         return "publishable_alpha"
     return "discovery_seed"
+
+
+def _receipt_roles(
+    left: CorpusHit,
+    right: CorpusHit,
+    shape_reasons: tuple[str, ...],
+) -> tuple[ReceiptRole, ...]:
+    left_words = _words(left.text)
+    right_words = _words(right.text)
+    if (
+        "shape:promise_outcome_reversal" in shape_reasons
+        or "shape:expectation_reversal" in shape_reasons
+    ):
+        left_role = _promise_outcome_role(left_words)
+        right_role = _promise_outcome_role(right_words)
+        if left_role != right_role:
+            return (
+                ReceiptRole(left.hit_id, left_role, "promise/outcome split"),
+                ReceiptRole(right.hit_id, right_role, "promise/outcome split"),
+            )
+    if "shape:denominator_split" in shape_reasons:
+        return (
+            ReceiptRole(left.hit_id, _denominator_role(left_words), "benefit/risk denominator split"),
+            ReceiptRole(right.hit_id, _denominator_role(right_words), "benefit/risk denominator split"),
+        )
+    return (
+        ReceiptRole(left.hit_id, _signal_role(left.text), "candidate evidence stream"),
+        ReceiptRole(right.hit_id, _signal_role(right.text), "candidate evidence stream"),
+    )
+
+
+def _promise_outcome_role(words: frozenset[str]) -> str:
+    if words & _PROMISE and not words & _OUTCOME_ROLE:
+        return "promise"
+    if words & _OUTCOME_ROLE and not words & _PROMISE:
+        return "outcome"
+    if words & _PROMISE:
+        return "promise"
+    return "outcome"
+
+
+def _denominator_role(words: frozenset[str]) -> str:
+    if words & _TAIL:
+        return "tail_risk"
+    if words & _DENOMINATOR:
+        return "aggregate_signal"
+    return "evidence"
+
+
+def _signal_role(text: str) -> str:
+    polarity = _polarity(text)
+    if len(polarity) == 1:
+        return f"{next(iter(polarity))}_signal"
+    return "evidence"
 
 
 def _thesis(

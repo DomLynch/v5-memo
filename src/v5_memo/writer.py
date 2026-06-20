@@ -3,10 +3,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from v5_memo.gate import candidate_alpha_tier
 from v5_memo.schemas import CorpusHit, InsightCandidate
 
 
 def render_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> str:
+    if candidate_alpha_tier(candidate) == "discovery_seed":
+        return render_discovery_seed(candidate, receipts)
+    return render_alpha_memo(candidate, receipts)
+
+
+def render_alpha_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> str:
     """Render a short memo without adding claims outside the candidate receipts."""
     if not receipts:
         raise ValueError("cannot render memo without receipts")
@@ -23,6 +30,9 @@ def render_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> s
         f"**Evidence bridge:** {bridge}.",
         "",
         f"**Tension:** {tension}.",
+        "",
+        "**Receipt roles:**",
+        *_receipt_role_lines(candidate),
         "",
         "**Why it matters:**",
         (
@@ -49,6 +59,26 @@ def render_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> s
     return "\n".join(lines).strip() + "\n"
 
 
+def render_discovery_seed(candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> str:
+    """Render a lower-confidence seed without presenting it as publishable alpha."""
+    if not receipts:
+        raise ValueError("cannot render memo without receipts")
+    lines = [
+        f"# Discovery seed: {_memo_title(candidate)}",
+        "",
+        f"**Seed hypothesis:** {candidate.thesis}",
+        "",
+        "**Status:** Not publishable alpha until selector evidence reaches publishable tier.",
+        "",
+        "**Receipt roles:**",
+        *_receipt_role_lines(candidate),
+        "",
+        "**Receipts:**",
+    ]
+    lines.extend(_receipt_line(index, hit) for index, hit in enumerate(receipts, start=1))
+    return "\n".join(lines).strip() + "\n"
+
+
 def _receipt_line(index: int, hit: CorpusHit) -> str:
     year = f", {hit.year}" if hit.year else ""
     venue = f", {hit.venue}" if hit.venue else ""
@@ -60,3 +90,12 @@ def _memo_title(candidate: InsightCandidate) -> str:
     if candidate.bridge_terms:
         return " / ".join(candidate.bridge_terms[:3])
     return candidate.topic
+
+
+def _receipt_role_lines(candidate: InsightCandidate) -> list[str]:
+    if not candidate.receipt_roles:
+        return ["- evidence: no selector role assigned"]
+    return [
+        f"- `{role.receipt_id}`: {role.role} ({role.reason})"
+        for role in candidate.receipt_roles
+    ]

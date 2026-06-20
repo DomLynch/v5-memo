@@ -50,6 +50,16 @@ class InsightCandidate:
     novelty_score: int
     evidence_score: int
     reasons: tuple[str, ...]
+    receipt_roles: tuple[ReceiptRole, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiptRole:
+    """Selector-owned receipt role used by writers and judges."""
+
+    receipt_id: str
+    role: str
+    reason: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,3 +69,20 @@ class MemoResult:
     candidate: InsightCandidate
     receipts: Sequence[CorpusHit]
     markdown: str
+
+
+@dataclass(frozen=True, slots=True)
+class SearchFailure:
+    """Structured reason an alpha memo could not be built."""
+
+    code: str
+    message: str
+    details: Mapping[str, object] = field(default_factory=dict)
+
+
+class MemoBuildError(ValueError):
+    """Raised when the pipeline cannot build a receipt-bound memo."""
+
+    def __init__(self, failure: SearchFailure) -> None:
+        self.failure = failure
+        super().__init__(failure.message)
