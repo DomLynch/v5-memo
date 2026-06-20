@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,8 +10,10 @@ from types import SimpleNamespace
 import pytest
 from pytest import MonkeyPatch
 
+from v5_memo import fullraw_index
 from v5_memo.fullraw_index import (
     FullRawFtsIndex,
+    ShardBatchResult,
     aggregate_shard_stats,
     build_shards,
     build_upload_shard_batches,
@@ -276,3 +279,36 @@ def test_build_upload_shard_batches_uploads_and_deletes_local_batches(tmp_path: 
     assert (remote / "batch_00001" / "complete.json").exists()
     assert len(list((remote / "batch_00000").glob("*.sqlite"))) == 2
     assert all(result.skipped for result in repeated)
+
+
+def test_build_upload_shards_cli_exits_nonzero_on_failed_batch(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["fullraw_index.py", "build-upload-shards"])
+    monkeypatch.setattr(fullraw_index, "load_or_build_manifest", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        fullraw_index,
+        "build_upload_shard_batches",
+        lambda *_args, **_kwargs: [
+            ShardBatchResult(
+                batch_id=137,
+                batch_dir=str(tmp_path / "batch_00137"),
+                remote_dir="sb:test/batch_00137",
+                files_total=16,
+                files_completed=10,
+                papers_inserted=37_841_334,
+                bytes_used=17_475_444_736,
+                uploaded=False,
+                deleted_local=False,
+                skipped=False,
+                elapsed_seconds=9027.973,
+                error="Compressed file ended before the end-of-stream marker was reached",
+            )
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        fullraw_index.main()
+
+    assert exc.value.code == 2
