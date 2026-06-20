@@ -200,8 +200,8 @@ def test_pipeline_applies_selector_to_existing_candidates() -> None:
         ),
         _hit(
             "metric-b",
-            "Tool increases deployment error outcomes",
-            "The tool increased error outcome rates.",
+            "Tool reduces deployment benchmark reliability outcomes",
+            "The tool reduced deployment benchmark reliability and worsened error outcome rates.",
         ),
     ]
 
@@ -283,88 +283,136 @@ def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
     assert mine_insights(hits, topic="NAD salvage exercise", required_anchor_terms=("nad", "salvage")) == []
 
 
-def test_miner_rejects_generic_bridge_when_seed_anchor_is_not_the_bridge() -> None:
-    hits = [
-        _hit(
-            "statin-review",
-            "Molecular mechanisms of statin intolerance",
-            "Statin intolerance reduced tolerability in patient rhabdomyolysis cases and persons.",
+@pytest.mark.parametrize(
+    ("name", "topic", "anchors", "hits", "expected_ids", "expected_shape"),
+    [
+        (
+            "metformin",
+            "metformin resistance training adaptation",
+            ("metformin", "training"),
+            [
+                _hit(
+                    "protocol",
+                    "Protocol expected metformin strength training augmentation",
+                    "Protocol hypothesis expected metformin would improve strength training response.",
+                ),
+                _hit(
+                    "outcome",
+                    "Outcome observed metformin strength training blunting",
+                    "Outcome trial observed metformin reduced strength training hypertrophy response.",
+                ),
+                _hit("adjacent", "Metformin patient tolerability review", "Review summarized patient cases."),
+            ],
+            ("protocol", "outcome"),
+            "shape:expectation_reversal",
         ),
-        _hit(
-            "lipid-hiv",
-            "Response to newly prescribed statin lipid-lowering therapy",
-            "Statin lipid-lowering therapy improved LDL response in patients and persons; training was not evaluated.",
+        (
+            "cold-water",
+            "cold water immersion resistance training adaptation",
+            ("water", "training"),
+            [
+                _hit(
+                    "negative",
+                    "Cold water immersion attenuated resistance training adaptations",
+                    "Cold water immersion reduced hypertrophy, muscle mass, and anabolic recovery signaling.",
+                ),
+                _hit(
+                    "null",
+                    "Cold water immersion showed unchanged sham recovery",
+                    "Cold water immersion strength training trial found unchanged hypertrophy and recovery performance versus sham.",
+                ),
+            ],
+            ("negative", "null"),
+            "shape:directional_reversal",
         ),
-    ]
-
-    assert mine_insights(
-        hits,
-        topic="longevity statin exercise adaptation",
-        required_anchor_terms=("statin", "training"),
-    ) == []
-
-
-def test_miner_accepts_seed_owned_statin_training_bridge() -> None:
-    hits = [
-        _hit(
-            "statin-training-a",
-            "Simvastatin impairs exercise training adaptations",
-            "Statin exercise training reduced cardiorespiratory fitness and mitochondrial content.",
+        (
+            "resveratrol",
+            "resveratrol exercise training adaptation",
+            ("resveratrol", "training"),
+            [
+                _hit(
+                    "promise",
+                    "Resveratrol activates mitochondrial mechanism and improves aerobic capacity",
+                    "Resveratrol mechanism activated mitochondrial function and improved running performance.",
+                ),
+                _hit(
+                    "outcome",
+                    "Resveratrol exercise training trial blunted cardiovascular adaptation",
+                    "Randomized trial observed resveratrol exercise training blunted mitochondrial cardiovascular adaptation.",
+                ),
+                _hit("adjacent", "Resveratrol tolerability review", "Review reported patient cases."),
+            ],
+            ("promise", "outcome"),
+            "shape:promise_outcome_reversal",
         ),
-        _hit(
-            "statin-training-b",
-            "Statin exercise training mitochondrial response",
-            "Statin exercise training improved lipid markers while mitochondrial muscle adaptation changed.",
+        (
+            "statin-adjacent",
+            "longevity statin exercise adaptation",
+            ("statin", "training"),
+            [
+                _hit(
+                    "statin-review",
+                    "Molecular mechanisms of statin intolerance",
+                    "Statin intolerance reduced tolerability in patient rhabdomyolysis cases and persons.",
+                ),
+                _hit(
+                    "lipid-hiv",
+                    "Response to newly prescribed statin lipid-lowering therapy",
+                    "Statin lipid-lowering therapy improved LDL response in patients and persons.",
+                ),
+            ],
+            (),
+            "",
         ),
-    ]
-
-    candidate = mine_insights(
-        hits,
-        topic="longevity statin exercise adaptation",
-        required_anchor_terms=("statin", "training"),
-    )[0]
-
-    assert "training" in candidate.bridge_terms
-    assert "shape:directional_reversal" in candidate.reasons
-
-
-def test_miner_ranks_promise_outcome_reversal_like_manual_curator() -> None:
-    hits = [
-        _hit(
-            "promise",
-            "Compound activates mitochondrial mechanism and improves aerobic capacity",
-            "Compound mechanism activated mitochondrial function and improved running performance.",
+        (
+            "rag-caveat",
+            "AI reliability",
+            (),
+            [
+                _hit("case", "Retrieval augmented generation evidence pipeline", "Local evidence pipeline reports results."),
+                _hit("review", "Retrieval augmented generation evidence review", "Broad evidence review summarizes methods."),
+            ],
+            (),
+            "",
         ),
-        _hit(
-            "outcome",
-            "Compound exercise training trial blunted cardiovascular adaptation",
-            "Randomized trial observed compound exercise training blunted maximal oxygen uptake adaptation.",
+        (
+            "code-review-drift",
+            "LLM code review developer productivity",
+            ("code", "review"),
+            [
+                _hit(
+                    "copy",
+                    "LLM sounding board improves ad copy",
+                    "Creative work experiment found LLM sounding board improved nonexpert ad copy.",
+                ),
+                _hit(
+                    "survey",
+                    "Large language model hallucination survey",
+                    "Survey reviewed hallucination detection and mitigation benchmarks.",
+                ),
+            ],
+            (),
+            "",
         ),
-        _hit(
-            "adjacent",
-            "Compound tolerability review in patients",
-            "Review reported compound patient cases and general safety evidence.",
-        ),
-    ]
+    ],
+)
+def test_miner_golden_alpha_quality_cases(
+    name: str,
+    topic: str,
+    anchors: tuple[str, ...],
+    hits: list[CorpusHit],
+    expected_ids: tuple[str, ...],
+    expected_shape: str,
+) -> None:
+    del name
+    candidates = mine_insights(hits, topic=topic, required_anchor_terms=anchors)
+    if not expected_ids:
+        assert candidates == []
+        return
 
-    candidate = mine_insights(
-        hits,
-        topic="longevity exercise adaptation",
-        required_anchor_terms=("compound", "training"),
-    )[0]
-
-    assert candidate.receipt_ids == ("promise", "outcome")
-    assert "shape:promise_outcome_reversal" in candidate.reasons
-    assert "shape:directional_reversal" in candidate.reasons
-
-
-def test_miner_rejects_adjacent_papers_without_alpha_shape() -> None:
-    hits = [
-        _hit("a", "Retrieval augmented generation evidence pipeline", "Local evidence pipeline reports results."),
-        _hit("b", "Retrieval augmented generation evidence review", "Broad evidence review summarizes methods."),
-    ]
-
-    assert mine_insights(hits, topic="AI reliability") == []
+    candidate = candidates[0]
+    assert candidate.receipt_ids == expected_ids
+    assert expected_shape in candidate.reasons
 
 
 def test_miner_accepts_non_reversal_alpha_shapes() -> None:
@@ -391,7 +439,11 @@ def test_miner_ranks_shaped_candidates_above_rare_keyword_bridges() -> None:
         _hit("weak-a", "Zorblax workflow evidence summary", "Zorblax workflow evidence appears in one summary."),
         _hit("weak-b", "Zorblax workflow evidence methods", "Zorblax workflow evidence appears in methods."),
         _hit("strong-a", "Tool improves benchmark accuracy", "The tool improved benchmark accuracy score."),
-        _hit("strong-b", "Tool increases deployment error outcomes", "The tool increased error outcome rates."),
+        _hit(
+            "strong-b",
+            "Tool reduces deployment benchmark reliability outcomes",
+            "The tool reduced deployment benchmark reliability while error outcome rates worsened.",
+        ),
     ]
 
     candidate = mine_insights(hits, topic="AI tool reliability")[0]

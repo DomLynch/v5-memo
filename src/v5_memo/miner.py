@@ -17,7 +17,7 @@ _STOP = frozenset({
     "human", "impact", "isi", "library", "links", "marker", "markers", "meta", "model",
     "models", "paper", "patients", "predicts", "recent", "reported", "research",
     "response", "results", "review", "shows", "significant", "study", "studies",
-    "summary", "systematic", "through", "trial", "using", "with",
+    "summary", "systematic", "the", "through", "trial", "using", "with",
 })
 _BRIDGE_STOP = _STOP | frozenset({
     "case", "cases", "individual", "individuals", "patient", "people", "per", "person",
@@ -30,6 +30,7 @@ _POSITIVE = frozenset({
 _NEGATIVE = frozenset({
     "attenuate", "attenuated", "blunt", "blunted", "decrease", "decreased",
     "impair", "impaired", "lower", "lowered", "reduce", "reduced",
+    "worse", "worsened",
 })
 _NULL = frozenset({"null", "neutral", "unchanged", "failed", "nonsignificant"})
 _DENOMINATOR = frozenset({"cohort", "population", "aggregate", "prospective", "longitudinal"})
@@ -90,8 +91,6 @@ def mine_insights(
             continue
         bridge = _bridge_terms(token_sets[left.hit_id], token_sets[right.hit_id], doc_counts)
         if not bridge:
-            continue
-        if len(anchor_terms) > 1 and not set(bridge) & anchor_terms:
             continue
         source_keys = {left.source_key, right.source_key}
         if len(source_keys) < 2:

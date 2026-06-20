@@ -278,9 +278,10 @@ x""",
         )
 
 
-def test_minimax_memo_validation_allows_markdown_emphasized_receipt_dois() -> None:
+@pytest.mark.parametrize("receipt_line", ["**10.1/sleep-nad**", "`10.1/sleep-nad`"])
+def test_minimax_memo_validation_allows_wrapped_receipt_dois(receipt_line: str) -> None:
     memo = validate_minimax_memo(
-        """# Alpha memo: x
+        f"""# Alpha memo: x
 ## Core signal
 x
 ## The 2+2=5 angle
@@ -290,63 +291,35 @@ x
 ## What would break the idea
 x
 ## Receipts
-- **10.1/sleep-nad**
-- **10.2/exercise-nad**
-## Safety note
-x""",
-        _receipts(),
-    )
-
-    assert "**10.1/sleep-nad**" in memo
-
-
-def test_minimax_memo_validation_allows_inline_code_receipt_dois() -> None:
-    memo = validate_minimax_memo(
-        """# Alpha memo: x
-## Core signal
-x
-## The 2+2=5 angle
-x
-## Why this could matter
-x
-## What would break the idea
-x
-## Receipts
-- `10.1/sleep-nad`
+- {receipt_line}
 - `10.2/exercise-nad`
 ## Safety note
 x""",
         _receipts(),
     )
 
-    assert "`10.1/sleep-nad`" in memo
+    assert receipt_line in memo
 
 
-def test_minimax_memo_validation_rejects_seed_topic_overtitle() -> None:
-    with pytest.raises(ValueError, match="longevity"):
-        validate_minimax_memo(
-            """# Alpha memo: longevity protein restriction muscle aging tradeoff
-## Core signal
-Soleus differs from faster muscles.
-## The 2+2=5 angle
-The receipts split by muscle type.
-## Why this could matter
-It is a hypothesis.
-## What would break the idea
-A direct low-protein receipt would break it.
-## Receipts
-- 10.1016/j.molmet.2022.101615
-- 10.1152/ajpendo.1984.246.4.e297
-## Safety note
-Preclinical only.""",
-            _muscle_receipts(),
-            candidate=_muscle_candidate(),
-        )
-
-
-def test_minimax_memo_validation_rejects_invented_non_seed_title_terms() -> None:
-    candidate = InsightCandidate(
-        topic="muscle translation",
+@pytest.mark.parametrize(
+    ("topic", "title", "match"),
+    [
+        ("longevity protein restriction muscle aging tradeoff", "longevity protein restriction muscle aging tradeoff", "longevity"),
+        ("muscle translation", "clinical mortality soleus protein split", "clinical"),
+        (
+            "senescence inflammation healthspan muscle translation",
+            "senescence inflammation healthspan muscle translation",
+            "senescence",
+        ),
+    ],
+)
+def test_minimax_memo_validation_rejects_unreceipted_title_terms(
+    topic: str,
+    title: str,
+    match: str,
+) -> None:
+    candidate = _muscle_candidate() if "longevity" in topic else InsightCandidate(
+        topic=topic,
         thesis="Receipt bridge should be narrowed to muscle biology.",
         bridge_terms=("soleus", "protein"),
         tension_terms=("positive", "negative"),
@@ -357,9 +330,9 @@ def test_minimax_memo_validation_rejects_invented_non_seed_title_terms() -> None
         reasons=("source_diverse",),
     )
 
-    with pytest.raises(ValueError, match="clinical"):
+    with pytest.raises(ValueError, match=match):
         validate_minimax_memo(
-            """# Alpha memo: clinical mortality soleus protein split
+            f"""# Alpha memo: {title}
 ## Core signal
 Soleus differs from faster muscles.
 ## The 2+2=5 angle
@@ -367,41 +340,7 @@ The receipts split by muscle type.
 ## Why this could matter
 It is a hypothesis.
 ## What would break the idea
-A direct clinical receipt would break it.
-## Receipts
-- 10.1016/j.molmet.2022.101615
-- 10.1152/ajpendo.1984.246.4.e297
-## Safety note
-Preclinical only.""",
-            _muscle_receipts(),
-            candidate=candidate,
-        )
-
-
-def test_minimax_memo_validation_rejects_other_unsupported_seed_terms() -> None:
-    candidate = InsightCandidate(
-        topic="senescence inflammation healthspan muscle translation",
-        thesis="Receipt bridge should be narrowed to muscle biology.",
-        bridge_terms=("soleus", "protein"),
-        tension_terms=("positive", "negative"),
-        receipt_ids=("soleus", "hindlimb"),
-        score=80,
-        novelty_score=80,
-        evidence_score=80,
-        reasons=("source_diverse",),
-    )
-
-    with pytest.raises(ValueError, match="senescence"):
-        validate_minimax_memo(
-            """# Alpha memo: senescence inflammation healthspan muscle translation
-## Core signal
-Soleus differs from faster muscles.
-## The 2+2=5 angle
-The receipts split by muscle type.
-## Why this could matter
-It is a hypothesis.
-## What would break the idea
-A direct senescence receipt would break it.
+A direct receipt would break it.
 ## Receipts
 - 10.1016/j.molmet.2022.101615
 - 10.1152/ajpendo.1984.246.4.e297
