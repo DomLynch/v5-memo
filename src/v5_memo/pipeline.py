@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from v5_memo.binder import bind_receipts
-from v5_memo.gate import meets_min_alpha_tier, no_alpha_failure
+from v5_memo.gate import meets_publish_bar, no_alpha_failure
 from v5_memo.miner import mine_insights, query_anchor_terms
 from v5_memo.retriever import CorpusSearcher, collect_seed_hits
 from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult
@@ -37,10 +37,11 @@ def build_alpha_memo(
         hits,
         topic=topic,
         required_anchor_terms=query_anchor_terms(anchor_queries or seed_queries),
+        include_discovery=min_alpha_tier == "discovery_seed",
     )
     candidates = _apply_selector(candidates, hits, memo_selector)
     for candidate in candidates:
-        if not meets_min_alpha_tier(candidate, min_alpha_tier):
+        if not meets_publish_bar(candidate, min_alpha_tier):
             continue
         receipts = bind_receipts(candidate, hits)
         if receipts:

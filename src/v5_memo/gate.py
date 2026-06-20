@@ -6,6 +6,11 @@ from collections.abc import Sequence
 from v5_memo.schemas import CorpusHit, InsightCandidate, SearchFailure
 
 _TIER_RANK = {"discovery_seed": 0, "publishable_alpha": 1, "elite_alpha": 2}
+_MIN_SCORE_BY_TIER = {
+    "discovery_seed": 0,
+    "publishable_alpha": 70,
+    "elite_alpha": 80,
+}
 
 
 def candidate_alpha_tier(candidate: InsightCandidate) -> str:
@@ -17,6 +22,13 @@ def candidate_alpha_tier(candidate: InsightCandidate) -> str:
 
 def meets_min_alpha_tier(candidate: InsightCandidate, min_alpha_tier: str) -> bool:
     return _TIER_RANK[candidate_alpha_tier(candidate)] >= _TIER_RANK[min_alpha_tier]
+
+
+def meets_publish_bar(candidate: InsightCandidate, min_alpha_tier: str) -> bool:
+    return (
+        meets_min_alpha_tier(candidate, min_alpha_tier)
+        and candidate.score >= _MIN_SCORE_BY_TIER[min_alpha_tier]
+    )
 
 
 def no_alpha_failure(

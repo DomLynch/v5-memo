@@ -72,6 +72,7 @@ def mine_insights(
     *,
     topic: str,
     required_anchor_terms: Sequence[str] = (),
+    include_discovery: bool = False,
     max_candidates: int = 5,
 ) -> list[InsightCandidate]:
     """Return ranked alpha candidates from source-diverse hit pairs."""
@@ -109,7 +110,7 @@ def mine_insights(
         if not shape_reasons:
             continue
         tier = _alpha_tier(shape_reasons, tension_terms)
-        if tier == "discovery_seed":
+        if tier == "discovery_seed" and not include_discovery:
             continue
         score = score_connection(
             bridge_terms=bridge,
@@ -129,7 +130,7 @@ def mine_insights(
             score=score.score,
             novelty_score=score.novelty_score,
             evidence_score=score.evidence_score,
-            reasons=(*score.reasons, f"tier:{tier}"),
+            reasons=(*score.reasons, *_direction_cautions(left.text, right.text), f"tier:{tier}"),
             receipt_roles=_receipt_roles(left, right, shape_reasons),
         ))
     return sorted(candidates, key=lambda c: (c.score, c.novelty_score), reverse=True)[
@@ -170,9 +171,15 @@ def _tokens(text: str) -> frozenset[str]:
 def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 2) -> tuple[str, ...]:
     """Return ordered anchor terms that chosen receipt pairs must preserve."""
     generic = {
+        "adaptation",
+        "aging",
         "angle",
         "condition",
+        "effect",
+        "effects",
         "exercise",
+        "healthspan",
+        "longevity",
         "mechanism",
         "response",
         "stress",
@@ -216,15 +223,23 @@ def _polarity(text: str) -> frozenset[str]:
         out.add("negative")
     if tokens & _NULL:
         out.add("null")
+    if len(out) > 1:
+        out.add("mixed")
     return frozenset(out)
 
 
 def _tension_terms(left: str, right: str) -> tuple[str, ...]:
-    a = _polarity(left)
-    b = _polarity(right)
+    a = _polarity(left) - {"mixed"}
+    b = _polarity(right) - {"mixed"}
     if len(a) != 1 or len(b) != 1 or a == b:
         return ()
     return tuple(sorted(a | b))
+
+
+def _direction_cautions(left: str, right: str) -> tuple[str, ...]:
+    if "mixed" in _polarity(left) or "mixed" in _polarity(right):
+        return ("caution:mixed_direction",)
+    return ()
 
 
 def _shape_reasons(
@@ -239,11 +254,10 @@ def _shape_reasons(
     all_tokens = left_tokens | right_tokens
     left_words = _words(left.text)
     right_words = _words(right.text)
-    all_words = left_words | right_words
     reasons: list[str] = []
     if tension_terms and _has_role_split(left_words, right_words):
         reasons.append("shape:promise_outcome_reversal")
-    if tension_terms and all_words & _INTENT and all_words & _OBSERVED:
+    if tension_terms and _has_cross_receipt_split(left_words, right_words, _INTENT, _OBSERVED):
         reasons.append("shape:expectation_reversal")
     if tension_terms:
         reasons.append("shape:directional_reversal")
@@ -253,13 +267,15 @@ def _shape_reasons(
         and (tension_terms or all_tokens & _BOUNDARY)
     ):
         reasons.append("shape:boundary_condition")
-    if all_tokens & _DENOMINATOR and all_tokens & _TAIL:
+    if _has_cross_receipt_split(left_tokens, right_tokens, _DENOMINATOR, _TAIL):
         reasons.append("shape:denominator_split")
-    if left_tokens & _TIMING and right_tokens & _TIMING and left_tokens != right_tokens:
+    left_timing = left_tokens & _TIMING
+    right_timing = right_tokens & _TIMING
+    if left_timing and right_timing and left_timing != right_timing:
         reasons.append("shape:timing_split")
-    if all_tokens & _ROLE_A and all_tokens & _ROLE_B:
+    if _has_cross_receipt_split(left_tokens, right_tokens, _ROLE_A, _ROLE_B):
         reasons.append("shape:role_inversion")
-    if all_tokens & _METRIC and all_tokens & _OUTCOME:
+    if _has_cross_receipt_split(left_tokens, right_tokens, _METRIC, _OUTCOME):
         reasons.append("shape:measurement_mismatch")
     if all_tokens & _EXPERTISE:
         reasons.append("shape:expertise_split")
@@ -286,6 +302,15 @@ def _has_role_split(left_words: frozenset[str], right_words: frozenset[str]) -> 
         bool(left_words & _PROMISE and right_words & _OUTCOME_ROLE)
         or bool(right_words & _PROMISE and left_words & _OUTCOME_ROLE)
     )
+
+
+def _has_cross_receipt_split(
+    left: frozenset[str],
+    right: frozenset[str],
+    a: frozenset[str],
+    b: frozenset[str],
+) -> bool:
+    return bool(left & a and right & b) or bool(left & b and right & a)
 
 
 def _alpha_tier(shape_reasons: tuple[str, ...], tension_terms: tuple[str, ...]) -> str:
