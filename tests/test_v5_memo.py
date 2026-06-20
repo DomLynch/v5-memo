@@ -8,6 +8,7 @@ from v5_memo import (
     CorpusHit,
     bind_receipts,
     build_alpha_memo,
+    candidate_alpha_tier,
     collect_seed_hits,
     mine_insights,
     query_anchor_terms,
@@ -262,6 +263,14 @@ def test_query_anchor_terms_keep_specific_seed_terms() -> None:
     ]) == ("nad", "salvage")
 
 
+def test_query_anchor_terms_normalize_light_morphology() -> None:
+    assert query_anchor_terms(["forecasts managers supplementation"], limit=3) == (
+        "forecast",
+        "manager",
+        "supplement",
+    )
+
+
 def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
     hits = [
         CorpusHit(
@@ -283,8 +292,29 @@ def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
     assert mine_insights(hits, topic="NAD salvage exercise", required_anchor_terms=("nad", "salvage")) == []
 
 
+def test_miner_rejects_asymmetric_anchor_pairs() -> None:
+    hits = [
+        _hit(
+            "statin",
+            "Molecular mechanisms of statin intolerance",
+            "Patients and cases include rhabdomyolysis reports.",
+        ),
+        _hit(
+            "exercise",
+            "Exercise training adaptation in older adults",
+            "Patients and cases include exercise response findings.",
+        ),
+    ]
+
+    assert mine_insights(
+        hits,
+        topic="statin exercise adaptation",
+        required_anchor_terms=("statin", "exercise"),
+    ) == []
+
+
 @pytest.mark.parametrize(
-    ("name", "topic", "anchors", "hits", "expected_ids", "expected_shape"),
+    ("name", "topic", "anchors", "hits", "expected_ids", "expected_shape", "expected_tier"),
     [
         (
             "metformin",
@@ -305,6 +335,7 @@ def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
             ],
             ("protocol", "outcome"),
             "shape:expectation_reversal",
+            "elite_alpha",
         ),
         (
             "cold-water",
@@ -324,6 +355,7 @@ def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
             ],
             ("negative", "null"),
             "shape:directional_reversal",
+            "elite_alpha",
         ),
         (
             "resveratrol",
@@ -344,6 +376,7 @@ def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
             ],
             ("promise", "outcome"),
             "shape:promise_outcome_reversal",
+            "elite_alpha",
         ),
         (
             "statin-adjacent",
@@ -363,6 +396,7 @@ def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
             ],
             (),
             "",
+            "",
         ),
         (
             "rag-caveat",
@@ -373,6 +407,7 @@ def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
                 _hit("review", "Retrieval augmented generation evidence review", "Broad evidence review summarizes methods."),
             ],
             (),
+            "",
             "",
         ),
         (
@@ -393,6 +428,7 @@ def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
             ],
             (),
             "",
+            "",
         ),
     ],
 )
@@ -403,6 +439,7 @@ def test_miner_golden_alpha_quality_cases(
     hits: list[CorpusHit],
     expected_ids: tuple[str, ...],
     expected_shape: str,
+    expected_tier: str,
 ) -> None:
     del name
     candidates = mine_insights(hits, topic=topic, required_anchor_terms=anchors)
@@ -413,6 +450,7 @@ def test_miner_golden_alpha_quality_cases(
     candidate = candidates[0]
     assert candidate.receipt_ids == expected_ids
     assert expected_shape in candidate.reasons
+    assert candidate_alpha_tier(candidate) == expected_tier
 
 
 def test_miner_accepts_non_reversal_alpha_shapes() -> None:
@@ -432,6 +470,35 @@ def test_miner_accepts_non_reversal_alpha_shapes() -> None:
     candidate = mine_insights(hits, topic="longevity sauna cardiovascular risk")[0]
 
     assert "shape:denominator_split" in candidate.reasons
+    assert candidate_alpha_tier(candidate) == "publishable_alpha"
+
+
+def test_pipeline_filters_publishable_seed_when_elite_required() -> None:
+    hits = [
+        _hit(
+            "a",
+            "Sauna bathing and incident hypertension in a prospective cohort",
+            "Habitual sauna exposure reduced aggregate hypertension risk in a cohort population.",
+        ),
+        _hit(
+            "b",
+            "Sauna alcohol fatality cases in acute hypertension sessions",
+            "Rare acute sauna death cases concentrated around alcohol and hypertension risk.",
+        ),
+    ]
+
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return hits
+
+    with pytest.raises(ValueError, match="no receipt-bound"):
+        build_alpha_memo(
+            topic="longevity sauna cardiovascular risk",
+            seed_queries=["sauna hypertension"],
+            searcher=FakeSearch(),
+            min_alpha_tier="elite_alpha",
+        )
 
 
 def test_miner_ranks_shaped_candidates_above_rare_keyword_bridges() -> None:

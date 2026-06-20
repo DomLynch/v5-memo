@@ -71,6 +71,7 @@ def main() -> None:
     )
     parser.add_argument("--writer", choices=["template", "minimax"])
     parser.add_argument("--selector", choices=["deterministic", "minimax"])
+    parser.add_argument("--min-alpha-tier", choices=["publishable", "elite"])
     args = parser.parse_args()
 
     if args.coverage_report:
@@ -83,6 +84,7 @@ def main() -> None:
     planner_mode = args.planner or ("minimax" if args.searcher == "smart" else "seed")
     writer_mode = args.writer or ("minimax" if args.searcher == "smart" else "template")
     selector_mode = args.selector or ("minimax" if writer_mode == "minimax" else "deterministic")
+    alpha_tier = args.min_alpha_tier or ("elite" if args.searcher == "smart" else "publishable")
 
     searcher: CorpusSearcher
     if args.demo:
@@ -128,6 +130,7 @@ def main() -> None:
         memo_writer=memo_writer,
         memo_selector=memo_selector,
         anchor_queries=base_queries,
+        min_alpha_tier=f"{alpha_tier}_alpha",
     )
     print(result.markdown)
 

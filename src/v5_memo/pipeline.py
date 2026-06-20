@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from v5_memo.binder import bind_receipts
-from v5_memo.miner import mine_insights, query_anchor_terms
+from v5_memo.miner import candidate_alpha_tier, mine_insights, query_anchor_terms
 from v5_memo.retriever import CorpusSearcher, collect_seed_hits
 from v5_memo.schemas import CorpusHit, InsightCandidate, MemoResult
 from v5_memo.writer import render_memo
@@ -13,6 +13,7 @@ MemoWriter = Callable[[InsightCandidate, Sequence[CorpusHit]], str]
 MemoSelector = Callable[
     [Sequence[InsightCandidate], Sequence[CorpusHit]], Sequence[InsightCandidate]
 ]
+_TIER_RANK = {"discovery_seed": 0, "publishable_alpha": 1, "elite_alpha": 2}
 
 
 def build_alpha_memo(
@@ -23,6 +24,7 @@ def build_alpha_memo(
     memo_writer: MemoWriter = render_memo,
     memo_selector: MemoSelector | None = None,
     anchor_queries: Sequence[str] | None = None,
+    min_alpha_tier: str = "publishable_alpha",
     per_query_limit: int = 25,
     max_hits: int = 100,
 ) -> MemoResult:
@@ -40,6 +42,8 @@ def build_alpha_memo(
     )
     candidates = _apply_selector(candidates, hits, memo_selector)
     for candidate in candidates:
+        if _TIER_RANK[candidate_alpha_tier(candidate)] < _TIER_RANK[min_alpha_tier]:
+            continue
         receipts = bind_receipts(candidate, hits)
         if receipts:
             return MemoResult(

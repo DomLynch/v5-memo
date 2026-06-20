@@ -7,7 +7,7 @@ from v5_memo.client import (
     ResearkaSearchClient,
 )
 from v5_memo.coverage import SearchCoverage, current_search_coverage, require_full_raw_corpus
-from v5_memo.miner import mine_insights, query_anchor_terms
+from v5_memo.miner import candidate_alpha_tier, mine_insights, query_anchor_terms
 from v5_memo.minimax_writer import (
     MiniMaxM3CandidateSelector,
     MiniMaxM3MemoWriter,
@@ -32,6 +32,7 @@ __all__ = [
     "SearchCoverage",
     "bind_receipts",
     "build_alpha_memo",
+    "candidate_alpha_tier",
     "collect_seed_hits",
     "current_search_coverage",
     "mine_insights",
