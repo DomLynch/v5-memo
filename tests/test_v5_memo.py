@@ -545,6 +545,20 @@ def test_scorer_prefers_asymmetric_alpha_shapes_without_rejecting_seed_shapes() 
     assert alpha.score > seed.score
 
 
+def test_scorer_caps_common_bridge_without_tension() -> None:
+    score = score_connection(
+        bridge_terms=("bridge",),
+        bridge_doc_counts={"bridge": 99},
+        unique_source_count=3,
+        receipt_count=2,
+        has_tension=False,
+        shape_score=1,
+        shape_reasons=("shape:denominator_split",),
+    )
+
+    assert score.score <= 55
+
+
 def test_miner_ranks_expectation_reversal_above_construct_split() -> None:
     hits = [
         _hit(
