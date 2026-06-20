@@ -24,7 +24,7 @@ from v5_memo.schemas import (
     ReceiptRole,
     SearchFailure,
 )
-from v5_memo.writer import render_memo
+from v5_memo.writer import render_alpha_memo, render_discovery_seed, render_memo
 
 __all__ = [
     "CorpusHit",
@@ -49,6 +49,8 @@ __all__ = [
     "meets_min_alpha_tier",
     "mine_insights",
     "query_anchor_terms",
+    "render_alpha_memo",
+    "render_discovery_seed",
     "render_memo",
     "require_full_raw_corpus",
 ]

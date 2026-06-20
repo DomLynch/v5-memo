@@ -233,6 +233,8 @@ def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
     assert "filing/report" in prompt
     assert "case study, market study, campaign" in prompt
     assert "contradiction, boundary condition, inversion" in prompt
+    assert "Selector tier:" in prompt
+    assert "Receipt roles:" in prompt
     assert "metric mismatch" in prompt
     assert "cross-domain transfer" in prompt
 

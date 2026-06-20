@@ -1,21 +1,36 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
 
 import pytest
 
 from v5_memo import (
     CorpusHit,
+    MemoBuildError,
     bind_receipts,
     build_alpha_memo,
     candidate_alpha_tier,
     collect_seed_hits,
     mine_insights,
     query_anchor_terms,
+    render_discovery_seed,
     render_memo,
 )
 from v5_memo.schemas import InsightCandidate
 from v5_memo.scorer import score_connection
+
+_FIXTURES = Path(__file__).with_name("fixtures")
+
+
+def _golden_cases() -> list[dict[str, Any]]:
+    return [
+        json.loads(line)
+        for line in (_FIXTURES / "golden_alpha_cases.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
 
 
 def _hits() -> list[CorpusHit]:
@@ -313,135 +328,19 @@ def test_miner_rejects_asymmetric_anchor_pairs() -> None:
     ) == []
 
 
-@pytest.mark.parametrize(
-    ("name", "topic", "anchors", "hits", "expected_ids", "expected_shape", "expected_tier"),
-    [
-        (
-            "metformin",
-            "metformin resistance training adaptation",
-            ("metformin", "training"),
-            [
-                _hit(
-                    "protocol",
-                    "Protocol expected metformin strength training augmentation",
-                    "Protocol hypothesis expected metformin would improve strength training response.",
-                ),
-                _hit(
-                    "outcome",
-                    "Outcome observed metformin strength training blunting",
-                    "Outcome trial observed metformin reduced strength training hypertrophy response.",
-                ),
-                _hit("adjacent", "Metformin patient tolerability review", "Review summarized patient cases."),
-            ],
-            ("protocol", "outcome"),
-            "shape:expectation_reversal",
-            "elite_alpha",
-        ),
-        (
-            "cold-water",
-            "cold water immersion resistance training adaptation",
-            ("water", "training"),
-            [
-                _hit(
-                    "negative",
-                    "Cold water immersion attenuated resistance training adaptations",
-                    "Cold water immersion reduced hypertrophy, muscle mass, and anabolic recovery signaling.",
-                ),
-                _hit(
-                    "null",
-                    "Cold water immersion showed unchanged sham recovery",
-                    "Cold water immersion strength training trial found unchanged hypertrophy and recovery performance versus sham.",
-                ),
-            ],
-            ("negative", "null"),
-            "shape:directional_reversal",
-            "elite_alpha",
-        ),
-        (
-            "resveratrol",
-            "resveratrol exercise training adaptation",
-            ("resveratrol", "training"),
-            [
-                _hit(
-                    "promise",
-                    "Resveratrol activates mitochondrial mechanism and improves aerobic capacity",
-                    "Resveratrol mechanism activated mitochondrial function and improved running performance.",
-                ),
-                _hit(
-                    "outcome",
-                    "Resveratrol exercise training trial blunted cardiovascular adaptation",
-                    "Randomized trial observed resveratrol exercise training blunted mitochondrial cardiovascular adaptation.",
-                ),
-                _hit("adjacent", "Resveratrol tolerability review", "Review reported patient cases."),
-            ],
-            ("promise", "outcome"),
-            "shape:promise_outcome_reversal",
-            "elite_alpha",
-        ),
-        (
-            "statin-adjacent",
-            "longevity statin exercise adaptation",
-            ("statin", "training"),
-            [
-                _hit(
-                    "statin-review",
-                    "Molecular mechanisms of statin intolerance",
-                    "Statin intolerance reduced tolerability in patient rhabdomyolysis cases and persons.",
-                ),
-                _hit(
-                    "lipid-hiv",
-                    "Response to newly prescribed statin lipid-lowering therapy",
-                    "Statin lipid-lowering therapy improved LDL response in patients and persons.",
-                ),
-            ],
-            (),
-            "",
-            "",
-        ),
-        (
-            "rag-caveat",
-            "AI reliability",
-            (),
-            [
-                _hit("case", "Retrieval augmented generation evidence pipeline", "Local evidence pipeline reports results."),
-                _hit("review", "Retrieval augmented generation evidence review", "Broad evidence review summarizes methods."),
-            ],
-            (),
-            "",
-            "",
-        ),
-        (
-            "code-review-drift",
-            "LLM code review developer productivity",
-            ("code", "review"),
-            [
-                _hit(
-                    "copy",
-                    "LLM sounding board improves ad copy",
-                    "Creative work experiment found LLM sounding board improved nonexpert ad copy.",
-                ),
-                _hit(
-                    "survey",
-                    "Large language model hallucination survey",
-                    "Survey reviewed hallucination detection and mitigation benchmarks.",
-                ),
-            ],
-            (),
-            "",
-            "",
-        ),
-    ],
-)
+@pytest.mark.parametrize("case", _golden_cases(), ids=lambda case: case["name"])
 def test_miner_golden_alpha_quality_cases(
-    name: str,
-    topic: str,
-    anchors: tuple[str, ...],
-    hits: list[CorpusHit],
-    expected_ids: tuple[str, ...],
-    expected_shape: str,
-    expected_tier: str,
+    case: dict[str, Any],
 ) -> None:
-    del name
+    topic = str(case["topic"])
+    anchors = tuple(str(anchor) for anchor in case["anchors"])
+    hits = [
+        _hit(str(hit["id"]), str(hit["title"]), str(hit["abstract"]))
+        for hit in case["hits"]
+    ]
+    expected_ids = tuple(str(hit_id) for hit_id in case["expected_ids"])
+    expected_shape = str(case["expected_shape"])
+    expected_tier = str(case["expected_tier"])
     candidates = mine_insights(hits, topic=topic, required_anchor_terms=anchors)
     if not expected_ids:
         assert candidates == []
@@ -451,6 +350,44 @@ def test_miner_golden_alpha_quality_cases(
     assert candidate.receipt_ids == expected_ids
     assert expected_shape in candidate.reasons
     assert candidate_alpha_tier(candidate) == expected_tier
+
+
+def test_miner_assigns_selector_receipt_roles() -> None:
+    case = next(item for item in _golden_cases() if item["name"] == "metformin")
+    hits = [
+        _hit(str(hit["id"]), str(hit["title"]), str(hit["abstract"]))
+        for hit in case["hits"]
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic=str(case["topic"]),
+        required_anchor_terms=tuple(str(anchor) for anchor in case["anchors"]),
+    )[0]
+
+    assert [(role.receipt_id, role.role) for role in candidate.receipt_roles] == [
+        ("protocol", "promise"),
+        ("outcome", "outcome"),
+    ]
+
+
+def test_render_discovery_seed_downgrades_label() -> None:
+    candidate = InsightCandidate(
+        topic="topic",
+        thesis="Weak bridge only.",
+        bridge_terms=("bridge",),
+        tension_terms=(),
+        receipt_ids=("a", "b"),
+        score=40,
+        novelty_score=20,
+        evidence_score=60,
+        reasons=("shape:measurement_mismatch",),
+    )
+
+    memo = render_discovery_seed(candidate, [_hit("a", "A title", "A abstract")])
+
+    assert memo.startswith("# Discovery seed:")
+    assert "# Alpha memo:" not in memo
 
 
 def test_miner_accepts_non_reversal_alpha_shapes() -> None:
@@ -492,13 +429,14 @@ def test_pipeline_filters_publishable_seed_when_elite_required() -> None:
             del query, limit
             return hits
 
-    with pytest.raises(ValueError, match="no receipt-bound"):
+    with pytest.raises(MemoBuildError, match="no receipt-bound") as exc:
         build_alpha_memo(
             topic="longevity sauna cardiovascular risk",
             seed_queries=["sauna hypertension"],
             searcher=FakeSearch(),
             min_alpha_tier="elite_alpha",
         )
+    assert exc.value.failure.details["min_alpha_tier"] == "elite_alpha"
 
 
 def test_miner_ranks_shaped_candidates_above_rare_keyword_bridges() -> None:
