@@ -553,7 +553,7 @@ def test_negated_improvement_can_form_negative_null_elite_pair() -> None:
         _hit(
             "attenuated",
             "Cold water immersion suppresses muscle recovery after resistance training",
-            "Cold water immersion suppressed anabolic recovery mechanisms following resistance training.",
+            "Cold water immersion suppresses anabolic recovery mechanisms following resistance training.",
         ),
         _hit(
             "null",
@@ -569,6 +569,38 @@ def test_negated_improvement_can_form_negative_null_elite_pair() -> None:
     )[0]
 
     assert candidate.tension_terms == ("negative", "null")
+    assert candidate_alpha_tier(candidate) == "elite_alpha"
+
+
+def test_common_multiword_anchor_can_support_tense_same_intervention_pair() -> None:
+    hits = [
+        _hit(
+            "negative",
+            "Cold water immersion suppresses muscle recovery after resistance training",
+            "Cold water immersion suppresses anabolic recovery mechanisms following resistance training.",
+        ),
+        _hit(
+            "null",
+            "Cold water immersion does not improve recovery after resistance training",
+            "Cold water immersion did not improve short-term recovery after resistance training.",
+        ),
+        *[
+            _hit(
+                f"filler-{index}",
+                f"Cold water immersion recovery protocol {index}",
+                "Cold water immersion recovery protocol context.",
+            )
+            for index in range(8)
+        ],
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic="cold water immersion resistance training adaptation",
+        required_anchor_terms=("cold", "water", "immersion"),
+    )[0]
+
+    assert candidate.receipt_ids == ("negative", "null")
     assert candidate_alpha_tier(candidate) == "elite_alpha"
 
 

@@ -135,7 +135,8 @@ def mine_insights(
         )
         if not shape_reasons:
             continue
-        if not _has_title_owned_bridge(
+        strong_anchor_bridge = bool(tension_terms and len(anchor_bridge) >= 2)
+        if not strong_anchor_bridge and not _has_title_owned_bridge(
             left,
             right,
             bridge,
