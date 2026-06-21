@@ -10,6 +10,7 @@ import urllib.parse
 from collections.abc import Sequence
 from dataclasses import replace
 from html import unescape
+from itertools import combinations
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -227,8 +228,31 @@ class FullRawCorpusSearchClient:
         return bool(self._search_url)
 
     def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
-        if not self._search_url or not query.strip():
+        variants = _fullraw_query_variants(query, limit=16)
+        if not self._search_url or not variants:
             return []
+        seed_terms = _query_terms(query)
+        per_variant_limit = max(5, min(limit, 50))
+        best: dict[str, tuple[float, CorpusHit]] = {}
+        for variant in variants:
+            hits = self._search_variant(variant, limit=per_variant_limit)
+            variant_terms = _query_terms(variant)
+            for rank, hit in enumerate(hits, start=1):
+                score = _rerank_score(hit, seed_terms=seed_terms, variant_terms=variant_terms, rank=rank)
+                scored = replace(
+                    hit,
+                    metadata={
+                        **hit.metadata,
+                        "search_variant": variant,
+                        "rerank_score": round(score, 4),
+                    },
+                )
+                current = best.get(scored.source_key)
+                if current is None or score > current[0]:
+                    best[scored.source_key] = (score, scored)
+        return [hit for _, hit in sorted(best.values(), key=lambda item: item[0], reverse=True)[:limit]]
+
+    def _search_variant(self, query: str, *, limit: int) -> list[CorpusHit]:
         payload = {
             "query": query[:1024],
             "limit": max(1, min(limit, 200)),
@@ -512,6 +536,26 @@ def _query_variants(query: str, *, limit: int) -> list[str]:
         out.append(text)
         if len(out) >= limit:
             return out
+    return out
+
+
+def _fullraw_query_variants(query: str, *, limit: int) -> list[str]:
+    terms = _query_terms(query)
+    if not terms:
+        return []
+    variants = [" ".join(terms)]
+    variants.extend(" ".join(pair) for pair in combinations(terms, 2))
+    variants.extend(_query_variants(query, limit=limit))
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for variant in variants:
+        if variant in seen:
+            continue
+        seen.add(variant)
+        out.append(variant)
+        if len(out) >= limit:
+            break
     return out
 
 
