@@ -297,8 +297,14 @@ def test_parallel_shard_build_and_search(tmp_path: Path) -> None:
 def test_discover_shard_paths_finds_nested_batch_shards(tmp_path: Path) -> None:
     nested = tmp_path / "batch_00001"
     nested.mkdir()
+    incomplete = nested / "fullraw_shard_9999.sqlite"
+    incomplete.write_text("")
     shard = nested / "fullraw_shard_0000.sqlite"
-    shard.write_text("")
+    index = FullRawFtsIndex(shard)
+    try:
+        index.initialize()
+    finally:
+        index.close()
 
     assert discover_shard_paths(tmp_path) == [shard]
 

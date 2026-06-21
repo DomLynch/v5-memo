@@ -803,7 +803,10 @@ def search_shards(
             for path in paths
         ]
         for future in as_completed(futures):
-            hits = future.result()
+            try:
+                hits = future.result()
+            except sqlite3.Error:
+                continue
             for hit in hits:
                 key = _dedupe_key(hit)
                 existing = merged.get(key)
@@ -831,7 +834,21 @@ def _search_one_shard(
 
 
 def discover_shard_paths(shard_dir: Path) -> list[Path]:
-    return sorted(path for path in shard_dir.rglob("*.sqlite") if path.is_file())
+    return sorted(
+        path for path in shard_dir.rglob("*.sqlite")
+        if path.is_file() and _has_index_meta(path)
+    )
+
+
+def _has_index_meta(path: Path) -> bool:
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=0.1) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'index_meta'"
+            ).fetchone()
+    except sqlite3.Error:
+        return False
+    return row is not None
 
 
 def aggregate_shard_stats(index_paths: list[Path], *, files_total: int = 0) -> IndexStats:
@@ -844,6 +861,8 @@ def aggregate_shard_stats(index_paths: list[Path], *, files_total: int = 0) -> I
         index = FullRawFtsIndex(path)
         try:
             stats = index.stats(files_total=0)
+        except sqlite3.Error:
+            continue
         finally:
             index.close()
         papers_indexed += stats.papers_indexed
