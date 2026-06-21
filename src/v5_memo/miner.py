@@ -105,15 +105,14 @@ def mine_insights(
             anchor_terms,
         ):
             continue
-        bridge_from_anchor = False
-        bridge = _bridge_terms(token_sets[left.hit_id], token_sets[right.hit_id], doc_counts)
+        bridge = _anchor_bridge_terms(
+            full_token_sets[left.hit_id],
+            full_token_sets[right.hit_id],
+            anchor_terms,
+        )
+        bridge_from_anchor = bool(bridge)
         if not bridge:
-            bridge = _anchor_bridge_terms(
-                full_token_sets[left.hit_id],
-                full_token_sets[right.hit_id],
-                anchor_terms,
-            )
-            bridge_from_anchor = bool(bridge)
+            bridge = _bridge_terms(token_sets[left.hit_id], token_sets[right.hit_id], doc_counts)
         if not bridge:
             continue
         source_keys = {left.source_key, right.source_key}
@@ -128,11 +127,19 @@ def mine_insights(
         )
         if not shape_reasons:
             continue
+        if not _has_title_owned_bridge(
+            left,
+            right,
+            bridge,
+            doc_counts=doc_counts,
+            total_docs=len(clean_hits),
+        ):
+            continue
         if set(shape_reasons) == {"shape:directional_reversal"} and len(bridge) < 2:
             continue
-        if bridge_from_anchor and not set(shape_reasons) & _ELITE_SHAPES:
-            continue
         tier = _alpha_tier(shape_reasons, tension_terms)
+        if bridge_from_anchor and tier != "elite_alpha":
+            continue
         if tier == "discovery_seed" and not include_discovery:
             continue
         score = score_connection(
@@ -338,6 +345,22 @@ def _axis(hit: CorpusHit, excluded: tuple[str, ...]) -> str:
     ]
     axis = [t for t in title_terms if t not in excluded_set][:4]
     return " ".join(axis) or (hit.venue or hit.source)
+
+
+def _has_title_owned_bridge(
+    left: CorpusHit,
+    right: CorpusHit,
+    bridge_terms: tuple[str, ...],
+    *,
+    doc_counts: Counter[str],
+    total_docs: int,
+) -> bool:
+    shared_title_terms = _tokens(left.title) & _tokens(right.title)
+    max_common_docs = max(4, total_docs // 10)
+    return any(
+        term in shared_title_terms and doc_counts[term] <= max_common_docs
+        for term in bridge_terms
+    )
 
 
 def _words(text: str) -> frozenset[str]:

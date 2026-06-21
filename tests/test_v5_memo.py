@@ -733,6 +733,23 @@ def test_miner_rejects_power_word_endpoint_mismatch_as_alpha() -> None:
     assert all(candidate_alpha_tier(candidate) != "publishable_alpha" for candidate in candidates)
 
 
+def test_miner_rejects_abstract_only_bridge_words_as_alpha() -> None:
+    hits = [
+        _hit(
+            "structure",
+            "Malleability of skeletal muscle in overcoming limitations",
+            "Skeletal muscle inner membrane adaptation improved close coupling under training.",
+        ),
+        _hit(
+            "mitochondria",
+            "Alteration of mitochondrial oxidative phosphorylation in aged muscle",
+            "Aged muscle reduced inner membrane coupling under mitochondrial stress.",
+        ),
+    ]
+
+    assert mine_insights(hits, topic="longevity skeletal muscle adaptation") == []
+
+
 def test_miner_does_not_promote_position_stand_plus_trial_to_elite() -> None:
     hits = [
         _hit(
