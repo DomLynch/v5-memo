@@ -105,14 +105,13 @@ def mine_insights(
             anchor_terms,
         ):
             continue
-        bridge = _anchor_bridge_terms(
+        anchor_bridge = _anchor_bridge_terms(
             full_token_sets[left.hit_id],
             full_token_sets[right.hit_id],
             anchor_terms,
         )
-        bridge_from_anchor = bool(bridge)
-        if not bridge:
-            bridge = _bridge_terms(token_sets[left.hit_id], token_sets[right.hit_id], doc_counts)
+        mined_bridge = _bridge_terms(token_sets[left.hit_id], token_sets[right.hit_id], doc_counts)
+        bridge = (*anchor_bridge, *(term for term in mined_bridge if term not in set(anchor_bridge)))[:4]
         if not bridge:
             continue
         source_keys = {left.source_key, right.source_key}
@@ -138,8 +137,6 @@ def mine_insights(
         if set(shape_reasons) == {"shape:directional_reversal"} and len(bridge) < 2:
             continue
         tier = _alpha_tier(shape_reasons, tension_terms)
-        if bridge_from_anchor and tier != "elite_alpha":
-            continue
         if tier == "discovery_seed" and not include_discovery:
             continue
         score = score_connection(

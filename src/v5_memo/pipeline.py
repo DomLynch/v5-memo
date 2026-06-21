@@ -33,9 +33,10 @@ def build_alpha_memo(
         per_query_limit=per_query_limit,
         max_hits=max_hits,
     )
-    anchor_terms = query_anchor_terms(anchor_queries or ())
-    if not anchor_terms:
+    if anchor_queries is None:
         anchor_terms = query_anchor_terms(seed_queries)
+    else:
+        anchor_terms = query_anchor_terms(anchor_queries)
     candidates: Sequence[InsightCandidate] = mine_insights(
         hits,
         topic=topic,

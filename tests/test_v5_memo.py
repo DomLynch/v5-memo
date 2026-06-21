@@ -222,6 +222,35 @@ def test_pipeline_anchors_to_original_seed_before_planner_drift() -> None:
     assert "shape:promise_outcome_reversal" in result.candidate.reasons
 
 
+def test_pipeline_does_not_fallback_to_planner_anchors_when_seed_is_broad() -> None:
+    hits = [
+        _hit(
+            "promise",
+            "Resveratrol mimics exercise mitochondrial biology",
+            "Mechanism paper reported resveratrol improved mitochondrial function.",
+        ),
+        _hit(
+            "outcome",
+            "Resveratrol blunts exercise training adaptation",
+            "Human outcome trial observed resveratrol reduced exercise training benefits.",
+        ),
+    ]
+
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return hits
+
+    result = build_alpha_memo(
+        topic="longevity exercise adaptation supplement reversal",
+        seed_queries=["arabidopsis tor cotyledon greening"],
+        anchor_queries=["longevity exercise adaptation intervention reversal"],
+        searcher=FakeSearch(),
+    )
+
+    assert result.candidate.receipt_ids == ("promise", "outcome")
+
+
 def test_pipeline_accepts_custom_memo_writer() -> None:
     class FakeSearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:

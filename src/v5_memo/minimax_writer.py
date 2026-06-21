@@ -364,6 +364,9 @@ Rules:
 - Prefer promise->outcome reversal searches: protocol/expected/designed/mimic/augment
   paired with observed/blunted/attenuated/impaired/null/reduced.
 - Prefer same intervention/construct/program across evidence objects.
+- At least half the queries must name a specific intervention, construct, product,
+  model, program, or mechanism; do not rely on generic words like intervention,
+  evidence, aging, exercise, market, business, AI, or older adults.
 - Avoid broad review, meta-analysis, position-stand, guideline, or survey queries unless
   the seed topic explicitly asks for synthesis evidence.
 - Prefer queries likely to surface real papers, not essay phrases.
