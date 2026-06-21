@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import sys
 import time
 import urllib.parse
 from collections.abc import Sequence
@@ -205,6 +206,9 @@ class FullRawCorpusSearchClient:
         timeout: float = 45.0,
         year_min: int = 1900,
         year_max: int = 2100,
+        max_variants: int = 16,
+        search_budget_seconds: float = 180.0,
+        progress: bool = False,
         strict: bool = False,
     ) -> None:
         self._search_url = search_url.strip()
@@ -212,6 +216,9 @@ class FullRawCorpusSearchClient:
         self._timeout = timeout
         self._year_min = year_min
         self._year_max = year_max
+        self._max_variants = max(1, max_variants)
+        self._search_budget_seconds = max(0.0, search_budget_seconds)
+        self._progress = progress
         self._strict = strict
 
     @classmethod
@@ -220,6 +227,9 @@ class FullRawCorpusSearchClient:
             search_url=os.environ.get("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", ""),
             token=os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", ""),
             timeout=_float_env("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", 45.0),
+            max_variants=_int_env("V5_MEMO_FULL_RAW_MAX_VARIANTS", 16),
+            search_budget_seconds=_float_env("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", 180.0),
+            progress=_bool_env("V5_MEMO_FULL_RAW_PROGRESS", False),
             strict=strict,
         )
 
@@ -228,14 +238,28 @@ class FullRawCorpusSearchClient:
         return bool(self._search_url)
 
     def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
-        variants = _fullraw_query_variants(query, limit=16)
+        variants = _fullraw_query_variants(query, limit=self._max_variants)
         if not self._search_url or not variants:
             return []
         seed_terms = _query_terms(query)
         per_variant_limit = max(5, min(limit, 50))
         best: dict[str, tuple[float, CorpusHit]] = {}
-        for variant in variants:
+        started = time.monotonic()
+        for variant_index, variant in enumerate(variants, start=1):
+            elapsed = time.monotonic() - started
+            if self._search_budget_seconds and elapsed >= self._search_budget_seconds:
+                self._log_progress(
+                    "fullraw search budget reached "
+                    f"after {elapsed:.1f}s; variants={variant_index - 1}/{len(variants)}"
+                )
+                break
+            self._log_progress(f"fullraw variant {variant_index}/{len(variants)} start: {variant}")
+            variant_started = time.monotonic()
             hits = self._search_variant(variant, limit=per_variant_limit)
+            self._log_progress(
+                f"fullraw variant {variant_index}/{len(variants)} done "
+                f"in {time.monotonic() - variant_started:.1f}s; hits={len(hits)}"
+            )
             variant_terms = _query_terms(variant)
             for rank, hit in enumerate(hits, start=1):
                 score = _rerank_score(hit, seed_terms=seed_terms, variant_terms=variant_terms, rank=rank)
@@ -250,7 +274,12 @@ class FullRawCorpusSearchClient:
                 current = best.get(scored.source_key)
                 if current is None or score > current[0]:
                     best[scored.source_key] = (score, scored)
+        self._log_progress(f"fullraw query done in {time.monotonic() - started:.1f}s; hits={len(best)}")
         return [hit for _, hit in sorted(best.values(), key=lambda item: item[0], reverse=True)[:limit]]
+
+    def _log_progress(self, message: str) -> None:
+        if self._progress:
+            print(message, file=sys.stderr, flush=True)
 
     def _search_variant(self, query: str, *, limit: int) -> list[CorpusHit]:
         payload = {
@@ -622,6 +651,13 @@ def _float_env(name: str, default: float) -> float:
 def _int_env(name: str, default: int) -> int:
     parsed = _int_or_none(os.environ.get(name, ""))
     return parsed if parsed is not None else default
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
 
 
 def _retry_after_seconds(exc: HTTPError) -> float:

@@ -207,10 +207,59 @@ def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) ->
 def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", "120")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MAX_VARIANTS", "7")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", "30")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_PROGRESS", "true")
 
     client = FullRawCorpusSearchClient.from_env()
 
     assert client._timeout == 120.0
+    assert client._max_variants == 7
+    assert client._search_budget_seconds == 30.0
+    assert client._progress is True
+
+
+def test_full_raw_client_budget_stops_variant_fanout(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    requested: list[str] = []
+    ticks = iter([0.0, 0.0, 0.0, 1.0, 31.0, 31.0])
+
+    def fake_monotonic() -> float:
+        return next(ticks)
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        requested.append(cast(str, payload["query"]))
+        return FakeResponse({
+            "meta": {"count": 1},
+            "results": [{
+                "doi": "10.123/fullraw",
+                "title": "Cold water immersion resistance training",
+                "abstract": "Cold water immersion attenuates resistance training adaptation.",
+                "year": 2020,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        search_budget_seconds=30.0,
+        max_variants=4,
+        progress=True,
+    )
+
+    hits = client.search("cold water immersion resistance training", limit=5)
+
+    assert len(requested) == 1
+    assert hits[0].doi == "10.123/fullraw"
+    err = capsys.readouterr().err
+    assert "fullraw variant 1/4 start" in err
+    assert "fullraw search budget reached after 31.0s; variants=1/4" in err
 
 
 def test_openalex_strict_mode_raises_backend_errors(monkeypatch: MonkeyPatch) -> None:
