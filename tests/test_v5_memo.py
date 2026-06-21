@@ -548,6 +548,30 @@ def test_short_single_word_bridge_is_not_enough_for_elite_shape() -> None:
     assert mine_insights(hits, topic="APR intervention training", required_anchor_terms=("apr",)) == []
 
 
+def test_negated_improvement_can_form_negative_null_elite_pair() -> None:
+    hits = [
+        _hit(
+            "attenuated",
+            "Cold water immersion suppresses muscle recovery after resistance training",
+            "Cold water immersion suppressed anabolic recovery mechanisms following resistance training.",
+        ),
+        _hit(
+            "null",
+            "Cold water immersion does not improve recovery after resistance training",
+            "Cold water immersion did not improve short-term recovery after resistance training.",
+        ),
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic="cold water immersion resistance training adaptation",
+        required_anchor_terms=("cold", "water", "immersion"),
+    )[0]
+
+    assert candidate.tension_terms == ("negative", "null")
+    assert candidate_alpha_tier(candidate) == "elite_alpha"
+
+
 @pytest.mark.parametrize("case", _golden_cases(), ids=lambda case: case["name"])
 def test_miner_golden_alpha_quality_cases(
     case: dict[str, Any],

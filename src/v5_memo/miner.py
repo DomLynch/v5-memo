@@ -35,7 +35,7 @@ _POSITIVE = frozenset({
 _NEGATIVE = frozenset({
     "attenuate", "attenuated", "blunt", "blunted", "decrease", "decreased",
     "impair", "impaired", "lower", "lowered", "reduce", "reduced",
-    "worse", "worsened",
+    "suppress", "suppressed", "suppresses", "worse", "worsened",
 })
 _ATTENUATE = frozenset({"attenuate", "attenuated"})
 _ADVERSE_ENDPOINT = frozenset({
@@ -193,6 +193,8 @@ def _norm_token(token: str) -> str:
         return token[:-3] + "y"
     if len(token) > 7 and token.endswith("ation"):
         return token[:-5]
+    if len(token) > 6 and token.endswith("sses"):
+        return token[:-2]
     if len(token) > 4 and token.endswith("s") and not token.endswith("ss"):
         return token[:-1]
     return token
@@ -276,8 +278,8 @@ def _anchor_bridge_terms(
 def _polarity(text: str) -> frozenset[str]:
     tokens = _tokens(text)
     out: set[str] = set()
-    negated_positive = bool(tokens & _POSITIVE and tokens & _NEGATED)
-    if tokens & _POSITIVE and not negated_positive:
+    unnegated_positive, negated_positive = _positive_context(text)
+    if unnegated_positive:
         out.add("positive")
     if negated_positive:
         out.add("null")
@@ -291,6 +293,23 @@ def _polarity(text: str) -> frozenset[str]:
     if len(out) > 1:
         out.add("mixed")
     return frozenset(out)
+
+
+def _positive_context(text: str) -> tuple[bool, bool]:
+    words = [_norm_token(raw) for raw in _WORD.findall(text.casefold())]
+    unnegated = False
+    negated = False
+    for index, word in enumerate(words):
+        if word not in _POSITIVE:
+            continue
+        prefix = set(words[max(0, index - 2):index])
+        if prefix & _NEGATED:
+            negated = True
+        elif prefix & _NEGATIVE:
+            continue
+        else:
+            unnegated = True
+    return unnegated, negated
 
 
 def _tension_terms(left: str, right: str) -> tuple[str, ...]:
