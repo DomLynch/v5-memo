@@ -702,6 +702,54 @@ def test_miner_does_not_turn_mixed_endpoint_packaging_into_reversal() -> None:
     assert all("shape:directional_reversal" not in c.reasons for c in candidates)
 
 
+def test_miner_rejects_power_word_endpoint_mismatch_as_alpha() -> None:
+    hits = [
+        _hit(
+            "redox",
+            "Oxidative stress responses to a graded maximal exercise test in older adults following explosive-type resistance training",
+            "Sixteen older adults were randomized to explosive-type resistance training or control. Training attenuated oxidative stress biomarkers after graded maximal exercise.",
+        ),
+        _hit(
+            "hmb",
+            "Effects of HMB-free acid supplementation on strength power and hormonal adaptations following resistance training",
+            "Sixteen matched healthy men received HMB-FA or placebo. HMB-FA increased peak power and 1RM and produced greater decrements in cortisol and ACTH.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="longevity exercise adaptation supplement reversal",
+        required_anchor_terms=("training",),
+        include_discovery=True,
+    )
+
+    assert all(candidate_alpha_tier(candidate) != "publishable_alpha" for candidate in candidates)
+
+
+def test_miner_does_not_promote_position_stand_plus_trial_to_elite() -> None:
+    hits = [
+        _hit(
+            "stand",
+            "International Society of Sports Nutrition Position Stand: beta-hydroxy-beta-methylbutyrate",
+            "The position stand reviewed prior HMB supplementation studies and reported possible positive performance effects.",
+        ),
+        _hit(
+            "trial",
+            "Effects of HMB-free acid supplementation on strength power and hormonal adaptations following resistance training",
+            "HMB-FA increased peak power and 1RM but produced greater decrements in cortisol and ACTH following resistance training.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="longevity exercise adaptation supplement reversal",
+        required_anchor_terms=("hmb",),
+        include_discovery=True,
+    )
+
+    assert all(candidate_alpha_tier(candidate) != "elite_alpha" for candidate in candidates)
+
+
 def test_pipeline_raises_when_no_receipt_bound_candidate() -> None:
     class EmptySearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:

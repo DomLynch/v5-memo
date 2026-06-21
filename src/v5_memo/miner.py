@@ -21,7 +21,7 @@ _STOP = frozenset({
 })
 _BRIDGE_STOP = _STOP | frozenset({
     "case", "cases", "individual", "individuals", "patient", "people", "per", "person",
-    "persons", "such", "thus", "when",
+    "persons", "such", "thus", "when", "following", "matched", "sixteen",
 })
 _POSITIVE = frozenset({
     "augment", "augmented", "enhance", "enhanced", "increase", "increased",
@@ -31,6 +31,11 @@ _NEGATIVE = frozenset({
     "attenuate", "attenuated", "blunt", "blunted", "decrease", "decreased",
     "impair", "impaired", "lower", "lowered", "reduce", "reduced",
     "worse", "worsened",
+})
+_ATTENUATE = frozenset({"attenuate", "attenuated"})
+_ADVERSE_ENDPOINT = frozenset({
+    "acth", "cortisol", "damage", "death", "deaths", "error", "errors",
+    "fatal", "fatality", "inflammation", "mortality", "pain", "risk", "stress",
 })
 _NULL = frozenset({"null", "neutral", "unchanged", "failed", "nonsignificant"})
 _DENOMINATOR = frozenset({"cohort", "population", "aggregate", "prospective", "longitudinal"})
@@ -64,6 +69,9 @@ _PUBLISHABLE_SHAPES = frozenset({
 _ELITE_SHAPES = frozenset({
     "shape:promise_outcome_reversal",
     "shape:expectation_reversal",
+})
+_SYNTHESIS_TITLE_TERMS = frozenset({
+    "consensus", "guideline", "meta", "position", "review", "stand", "systematic",
 })
 
 
@@ -241,7 +249,10 @@ def _polarity(text: str) -> frozenset[str]:
     if tokens & _POSITIVE:
         out.add("positive")
     if tokens & _NEGATIVE:
-        out.add("negative")
+        if tokens & _ATTENUATE and tokens & _ADVERSE_ENDPOINT and not (tokens & (_NEGATIVE - _ATTENUATE)):
+            out.add("positive")
+        else:
+            out.add("negative")
     if tokens & _NULL:
         out.add("null")
     if len(out) > 1:
@@ -300,6 +311,8 @@ def _shape_reasons(
         reasons.append("shape:measurement_mismatch")
     if all_tokens & _EXPERTISE:
         reasons.append("shape:expertise_split")
+    if _is_synthesis_hit(left) or _is_synthesis_hit(right):
+        reasons = [reason for reason in reasons if reason not in _ELITE_SHAPES]
     return tuple(dict.fromkeys(reasons))
 
 
@@ -316,6 +329,10 @@ def _axis(hit: CorpusHit, excluded: tuple[str, ...]) -> str:
 
 def _words(text: str) -> frozenset[str]:
     return _tokens(text)
+
+
+def _is_synthesis_hit(hit: CorpusHit) -> bool:
+    return bool({_norm_token(raw) for raw in _WORD.findall(hit.title.casefold())} & _SYNTHESIS_TITLE_TERMS)
 
 
 def _has_role_split(left_words: frozenset[str], right_words: frozenset[str]) -> bool:

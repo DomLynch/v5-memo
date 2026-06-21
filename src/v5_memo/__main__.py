@@ -84,7 +84,9 @@ def main() -> None:
     planner_mode = args.planner or ("minimax" if args.searcher == "smart" else "seed")
     writer_mode = args.writer or ("minimax" if args.searcher == "smart" else "template")
     selector_mode = args.selector or ("minimax" if writer_mode == "minimax" else "deterministic")
-    alpha_tier = args.min_alpha_tier or ("elite" if args.searcher == "smart" else "publishable")
+    alpha_tier = args.min_alpha_tier or (
+        "elite" if args.searcher == "smart" or selector_mode == "minimax" else "publishable"
+    )
     min_alpha_tier = "discovery_seed" if alpha_tier == "discovery" else f"{alpha_tier}_alpha"
 
     searcher: CorpusSearcher
