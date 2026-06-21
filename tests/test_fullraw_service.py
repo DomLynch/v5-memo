@@ -51,6 +51,29 @@ def test_iter_raw_file_hits_skips_invalid_jsonl_rows(tmp_path: Path) -> None:
     assert [hit["doi"] for hit in hits] == ["10.raw/real"]
 
 
+def test_iter_raw_file_hits_keeps_semantic_scholar_abstract_only_rows(tmp_path: Path) -> None:
+    source = tmp_path / "s2_abstracts.jsonl.gz"
+    _write_gzip(
+        source,
+        json.dumps({
+            "corpusid": 12345,
+            "openaccessinfo": {"externalids": {"DOI": "10.raw/s2"}},
+            "abstract": "Resveratrol exercise training changed mitochondrial adaptation.",
+        }) + "\n",
+    )
+
+    hits = list(iter_raw_file_hits(RawFile(
+        source="semantic_scholar_abstracts",
+        format="semantic_scholar_jsonl",
+        remote=f"file://{source}",
+    )))
+
+    assert hits[0]["title"] == ""
+    assert hits[0]["doi"] == "10.raw/s2"
+    assert hits[0]["semantic_scholar_id"] == "12345"
+    assert hits[0]["abstract"] == "Resveratrol exercise training changed mitochondrial adaptation."
+
+
 def test_iter_raw_file_hits_reads_local_pubmed_xml_fixture(tmp_path: Path) -> None:
     source = tmp_path / "pubmed.xml.gz"
     _write_gzip(

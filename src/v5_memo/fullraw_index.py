@@ -411,7 +411,7 @@ class FullRawFtsIndex:
     def _insert_hit(self, hit: dict[str, object], *, source_remote: str) -> bool:
         title = _clean(hit.get("title"))
         if not title:
-            return False
+            return self._update_hit_abstract(hit)
         abstract = _clean(hit.get("abstract"))
         journal = _clean(hit.get("journal") or hit.get("venue"))
         source_key = _dedupe_key(hit)
@@ -459,6 +459,45 @@ class FullRawFtsIndex:
         paper_id = cursor.lastrowid
         if paper_id is None:
             return False
+        self._conn.execute(
+            "INSERT INTO paper_fts(rowid, title, abstract, journal) VALUES (?, ?, ?, ?)",
+            (paper_id, title, abstract, journal),
+        )
+        return True
+
+    def _update_hit_abstract(self, hit: dict[str, object]) -> bool:
+        abstract = _clean(hit.get("abstract"))
+        if not abstract:
+            return False
+        clauses: list[str] = []
+        params: list[str] = []
+        for column, key in (
+            ("doi", "doi"),
+            ("pmid", "pmid"),
+            ("pmcid", "pmcid"),
+            ("semantic_scholar_id", "semantic_scholar_id"),
+            ("openalex_id", "openalex_id"),
+        ):
+            value = _clean(hit.get(key))
+            if value:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        if not clauses:
+            return False
+        row = self._conn.execute(
+            f"SELECT id, title, abstract, journal FROM papers WHERE {' OR '.join(clauses)} LIMIT 1",
+            params,
+        ).fetchone()
+        if row is None or _clean(row["abstract"]):
+            return False
+        paper_id = int(row["id"])
+        title = _clean(row["title"])
+        journal = _clean(row["journal"])
+        self._conn.execute("UPDATE papers SET abstract = ? WHERE id = ?", (abstract, paper_id))
+        self._conn.execute(
+            "INSERT INTO paper_fts(paper_fts, rowid, title, abstract, journal) VALUES ('delete', ?, ?, ?, ?)",
+            (paper_id, title, "", journal),
+        )
         self._conn.execute(
             "INSERT INTO paper_fts(rowid, title, abstract, journal) VALUES (?, ?, ?, ?)",
             (paper_id, title, abstract, journal),

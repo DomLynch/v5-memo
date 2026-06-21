@@ -171,11 +171,15 @@ def _open_gzip_stream(remote: str, *, rclone_bin: str) -> _GzipStream:
 def _normalize_json_hit(item: Any, source: str) -> dict[str, object] | None:
     if not isinstance(item, dict):
         return None
-    external = item.get("externalids") or item.get("externalIds") or item.get("ids")
+    open_access = item.get("openaccessinfo") or item.get("openAccessInfo")
+    open_access_ids = (
+        open_access.get("externalids") or open_access.get("externalIds")
+        if isinstance(open_access, dict)
+        else None
+    )
+    external = item.get("externalids") or item.get("externalIds") or item.get("ids") or open_access_ids
     external_ids = external if isinstance(external, dict) else {}
     title = _clean(item.get("title") or item.get("display_name"))
-    if not title:
-        return None
     doi = _normalize_doi(item.get("doi") or external_ids.get("DOI") or external_ids.get("doi"))
     pmid = _clean(external_ids.get("PubMed") or item.get("pmid"))
     pmcid = _clean(external_ids.get("PubMedCentral") or item.get("pmcid"))
@@ -186,6 +190,8 @@ def _normalize_json_hit(item: Any, source: str) -> dict[str, object] | None:
         or _abstract_from_inverted_index(item.get("abstract_inverted_index"))
         or _clean((item.get("tldr") or {}).get("text") if isinstance(item.get("tldr"), dict) else "")
     )
+    if not title and not (source == "semantic_scholar_abstracts" and abstract and (doi or pmid or pmcid or s2_id)):
+        return None
     venue = _clean(
         item.get("venue")
         or item.get("journal")
