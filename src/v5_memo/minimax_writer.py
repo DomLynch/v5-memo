@@ -43,7 +43,8 @@ _TITLE_STOPWORDS = frozenset({
     "boundary", "condition", "conditions", "hypothesis", "discovery", "seed",
     "split", "splits", "diverge", "diverges", "divergence", "outlier",
     "bridge", "bridges", "receipt", "receipts",
-    "while",
+    "while", "even", "leave", "leaves", "leaving", "level", "levels",
+    "elevate", "elevates", "elevated", "elevating",
 })
 
 
