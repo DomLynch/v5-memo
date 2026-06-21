@@ -19,7 +19,7 @@ from v5_memo.minimax_writer import (
 )
 from v5_memo.pipeline import build_alpha_memo
 from v5_memo.retriever import CorpusSearcher
-from v5_memo.schemas import CorpusHit
+from v5_memo.schemas import CorpusHit, MemoBuildError
 from v5_memo.writer import render_memo
 
 
@@ -136,17 +136,32 @@ def main() -> None:
         )
     anchor_queries = base_queries if explicit_queries else queries
     wider_recall = planner_mode == "minimax" or selector_mode == "minimax"
-    result = build_alpha_memo(
-        topic=args.topic,
-        seed_queries=queries,
-        searcher=searcher,
-        memo_writer=memo_writer,
-        memo_selector=memo_selector,
-        anchor_queries=anchor_queries,
-        min_alpha_tier=min_alpha_tier,
-        per_query_limit=50 if wider_recall else 25,
-        max_hits=250 if wider_recall else 100,
-    )
+    try:
+        result = build_alpha_memo(
+            topic=args.topic,
+            seed_queries=queries,
+            searcher=searcher,
+            memo_writer=memo_writer,
+            memo_selector=memo_selector,
+            anchor_queries=anchor_queries,
+            min_alpha_tier=min_alpha_tier,
+            per_query_limit=50 if wider_recall else 25,
+            max_hits=250 if wider_recall else 100,
+        )
+    except MemoBuildError:
+        if explicit_queries or planner_mode != "minimax":
+            raise
+        result = build_alpha_memo(
+            topic=args.topic,
+            seed_queries=queries,
+            searcher=searcher,
+            memo_writer=memo_writer,
+            memo_selector=memo_selector,
+            anchor_queries=(),
+            min_alpha_tier=min_alpha_tier,
+            per_query_limit=50,
+            max_hits=250,
+        )
     print(result.markdown)
 
 
