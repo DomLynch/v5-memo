@@ -22,8 +22,9 @@ def collect_seed_hits(
     """Search multiple seeds and dedupe before mining insights."""
     seen: dict[str, int] = {}
     out: list[CorpusHit] = []
+    query_limit = min(per_query_limit, max(1, -(-max_hits // max(1, len(seed_queries)))))
     for query in seed_queries:
-        for hit in searcher.search(query, limit=per_query_limit):
+        for hit in searcher.search(query, limit=query_limit):
             key = hit.source_key
             if key in seen:
                 existing = out[seen[key]]

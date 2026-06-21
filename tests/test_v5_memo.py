@@ -166,6 +166,30 @@ def test_collect_seed_hits_dedupes_across_seed_queries() -> None:
     assert hits[0].metadata["seed_queries"] == ("nad", "mitochondrial")
 
 
+def test_collect_seed_hits_balances_planned_query_budget() -> None:
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            return [
+                CorpusHit(
+                    hit_id=f"{query}-{index}",
+                    title=f"{query} hit {index}",
+                    abstract="receipt",
+                    source="fullraw",
+                    doi=f"10.{query}/{index}",
+                )
+                for index in range(limit)
+            ]
+
+    hits = collect_seed_hits(
+        FakeSearch(),
+        ["noisy-first-query", "later-reversal-query"],
+        per_query_limit=10,
+        max_hits=6,
+    )
+
+    assert any(hit.hit_id.startswith("later-reversal-query") for hit in hits)
+
+
 def test_pipeline_builds_best_memo() -> None:
     class FakeSearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
