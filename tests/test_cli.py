@@ -183,6 +183,8 @@ def test_planned_cli_without_user_query_anchors_to_planned_queries(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    seen_seed_queries: list[Sequence[str]] = []
+
     class FakePlanner:
         def plan(
             self,
@@ -191,7 +193,8 @@ def test_planned_cli_without_user_query_anchors_to_planned_queries(
             seed_queries: Sequence[str],
             limit: int = 8,
         ) -> list[str]:
-            del topic, seed_queries, limit
+            del topic, limit
+            seen_seed_queries.append(seed_queries)
             return ["resveratrol exercise training adaptation"]
 
     monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
@@ -226,3 +229,4 @@ def test_planned_cli_without_user_query_anchors_to_planned_queries(
     captured = capsys.readouterr()
     assert "Alpha memo" in captured.out
     assert "resveratrol" in captured.out.casefold()
+    assert seen_seed_queries == [["longevity exercise adaptation"]]
