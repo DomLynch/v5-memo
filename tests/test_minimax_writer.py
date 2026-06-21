@@ -377,6 +377,54 @@ Preclinical only.""",
     assert memo.startswith("# Alpha memo: soleus leucine")
 
 
+def test_minimax_title_guard_allows_light_inflection_and_grammar_words() -> None:
+    memo = validate_minimax_memo(
+        """# Alpha memo: resveratrol blunting while exercise training
+## Core signal
+Resveratrol may blunt training adaptation.
+## The 2+2=5 angle
+The title is still receipt-owned despite light grammar.
+## Why this could matter
+It is a receipt-bound signal.
+## What would break the idea
+A direct receipt could reverse the direction.
+## Receipts
+- 10.1113/jphysiol.2013.258061
+- 10.1016/j.cell.2006.11.013
+## Safety note
+Hypothesis only.""",
+        [
+            CorpusHit(
+                hit_id="human",
+                title="Resveratrol blunts the positive effects of exercise training",
+                abstract="Older men receiving resveratrol had reduced exercise training benefits.",
+                source="openalex",
+                doi="10.1113/jphysiol.2013.258061",
+            ),
+            CorpusHit(
+                hit_id="mouse",
+                title="Resveratrol improves mitochondrial function and exercise performance",
+                abstract="Resveratrol improved mitochondrial biology and running endurance in mice.",
+                source="openalex",
+                doi="10.1016/j.cell.2006.11.013",
+            ),
+        ],
+        candidate=InsightCandidate(
+            topic="resveratrol exercise adaptation",
+            thesis="Resveratrol promise may reverse in human training.",
+            bridge_terms=("resveratrol", "exercise", "training"),
+            tension_terms=("positive", "negative"),
+            receipt_ids=("human", "mouse"),
+            score=90,
+            novelty_score=90,
+            evidence_score=90,
+            reasons=("shape:promise_outcome_reversal",),
+        ),
+    )
+
+    assert memo.startswith("# Alpha memo: resveratrol blunting")
+
+
 def test_minimax_planner_returns_json_queries_plus_original_seeds() -> None:
     opener = FakeOpener(
         json.dumps(

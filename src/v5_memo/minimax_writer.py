@@ -43,6 +43,7 @@ _TITLE_STOPWORDS = frozenset({
     "boundary", "condition", "conditions", "hypothesis", "discovery", "seed",
     "split", "splits", "diverge", "diverges", "divergence", "outlier",
     "bridge", "bridges", "receipt", "receipts",
+    "while",
 })
 
 
@@ -651,6 +652,10 @@ def _receipt_terms(receipts: Sequence[CorpusHit]) -> set[str]:
 
 
 def _normalize_title_term(term: str) -> str:
+    if len(term) > 6 and term.endswith("ing"):
+        return term[:-3]
+    if len(term) > 5 and term.endswith("ed"):
+        return term[:-2]
     if len(term) > 4 and term.endswith("s") and not term.endswith(("ss", "sis")):
         return term[:-1]
     return term
