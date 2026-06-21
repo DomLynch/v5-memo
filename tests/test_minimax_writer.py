@@ -206,6 +206,27 @@ Research only."""
     )
 
 
+def test_minimax_title_guard_ignores_generic_phrasing_terms() -> None:
+    memo = """# Alpha memo: NAD mitochondrial levels elevate even while leaving
+## Core signal
+NAD and mitochondrial repair may connect the receipts.
+## The 2+2=5 angle
+The point is the bridge, not broad phrasing.
+## Why this could matter
+It is a receipt-bound signal.
+## What would break the idea
+A direct receipt could resolve the split.
+## Receipts
+- 10.1/sleep-nad
+- 10.2/exercise-nad
+## Safety note
+Research only."""
+
+    assert validate_minimax_memo(memo, _receipts(), candidate=_candidate()).startswith(
+        "# Alpha memo: NAD mitochondrial"
+    )
+
+
 def test_build_minimax_prompt_bounds_long_abstracts() -> None:
     long_hit = CorpusHit(
         hit_id="long",
