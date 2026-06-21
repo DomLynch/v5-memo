@@ -30,7 +30,7 @@ _BRIDGE_STOP = _STOP | frozenset({
 })
 _POSITIVE = frozenset({
     "augment", "augmented", "enhance", "enhanced", "increase", "increased",
-    "improve", "improved", "raises", "raised",
+    "improve", "improved", "improvement", "raises", "raised",
 })
 _NEGATIVE = frozenset({
     "attenuate", "attenuated", "blunt", "blunted", "decrease", "decreased",
@@ -43,6 +43,9 @@ _ADVERSE_ENDPOINT = frozenset({
     "fatal", "fatality", "inflammation", "mortality", "pain", "risk", "stress",
 })
 _NULL = frozenset({"null", "neutral", "unchanged", "failed", "nonsignificant"})
+_NEGATED = frozenset({
+    "fail", "failed", "fails", "lack", "lacked", "lacks", "no", "not", "without",
+})
 _DENOMINATOR = frozenset({"cohort", "population", "aggregate", "prospective", "longitudinal"})
 _TAIL = frozenset({"case", "cases", "fatal", "fatality", "death", "deaths", "risk", "rare"})
 _TIMING = frozenset({"acute", "chronic", "short", "long", "early", "late", "immediate", "delayed"})
@@ -273,8 +276,11 @@ def _anchor_bridge_terms(
 def _polarity(text: str) -> frozenset[str]:
     tokens = _tokens(text)
     out: set[str] = set()
-    if tokens & _POSITIVE:
+    negated_positive = bool(tokens & _POSITIVE and tokens & _NEGATED)
+    if tokens & _POSITIVE and not negated_positive:
         out.add("positive")
+    if negated_positive:
+        out.add("null")
     if tokens & _NEGATIVE:
         if tokens & _ATTENUATE and tokens & _ADVERSE_ENDPOINT and not (tokens & (_NEGATIVE - _ATTENUATE)):
             out.add("positive")
