@@ -298,6 +298,7 @@ Hard rules:
 - Treat the seed topic as search context only; do not use broad seed-topic words in
   the title unless those words appear in the locked receipt titles/abstracts.
 - Title the memo around receipt-owned concepts, not around the user's seed query.
+- In the title, copy receipt/bridge terms verbatim; do not use synonyms or paraphrases.
 - Scope every implication to the receipts: state the specific population, market,
   company, channel, model, benchmark, timeframe, geography, or source type only when
   the receipts provide it.

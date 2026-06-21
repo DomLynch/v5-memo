@@ -245,6 +245,27 @@ def test_openalex_retries_once_after_rate_limit(monkeypatch: MonkeyPatch) -> Non
     assert hits[0].title == "Resveratrol exercise adaptation"
 
 
+def test_openalex_lenient_rate_limit_returns_empty_without_sleep(monkeypatch: MonkeyPatch) -> None:
+    sleeps: list[float] = []
+    headers = Message()
+    headers["Retry-After"] = "60"
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del request, timeout
+        raise HTTPError("https://api.example", 429, "Too Many Requests", headers, None)
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    monkeypatch.setattr("v5_memo.client.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    hits = OpenAlexFullCorpusSearchClient(base_url="https://api.example").search(
+        "resveratrol adaptation",
+        limit=1,
+    )
+
+    assert hits == []
+    assert sleeps == []
+
+
 def test_hybrid_search_merges_and_dedupes_sources() -> None:
     class StaticSearch:
         def __init__(self, hits: list[CorpusHit]) -> None:
@@ -283,6 +304,30 @@ def test_hybrid_search_merges_and_dedupes_sources() -> None:
 
     assert [hit.doi for hit in hits] == ["10.same", "10.only"]
     assert hits[0].source == "researka:corpus"
+
+
+def test_hybrid_search_skips_failed_backend() -> None:
+    class FailingSearch:
+        def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
+            del query, limit
+            raise SearchBackendError("rate limited")
+
+    class StaticSearch:
+        def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
+            del query, limit
+            return [
+                CorpusHit(
+                    hit_id="10.good",
+                    title="Resveratrol exercise adaptation",
+                    abstract="Human trial evidence.",
+                    source="fullraw:semantic_scholar",
+                    doi="10.good",
+                )
+            ]
+
+    hits = HybridCorpusSearchClient([FailingSearch(), StaticSearch()]).search("resveratrol")
+
+    assert [hit.doi for hit in hits] == ["10.good"]
 
 
 def test_openalex_client_fans_out_dedupes_and_reranks(monkeypatch: object) -> None:
@@ -418,6 +463,29 @@ def test_parse_full_raw_search_accepts_results_shape_and_openalex_abstract() -> 
     assert hit.venue == "Nature Aging"
     assert hit.metadata["query_match_count"] == 280000000
     assert hit.metadata["cited_by_count"] == 42
+
+
+def test_parse_full_raw_search_rejects_conflicting_doi_year_metadata() -> None:
+    hits = _parse_full_raw_search_response({
+        "results": [
+            {
+                "doi": "https://doi.org/10.1152/japplphysiol.00007.2024",
+                "title": "Unrelated title with mismatched DOI metadata",
+                "abstract": "Exercise adaptation terms appear in corrupted metadata.",
+                "year": 2016,
+                "provider": "semantic_scholar",
+            },
+            {
+                "doi": "https://doi.org/10.1152/japplphysiol.00007.2024",
+                "title": "Exercise adaptation paper",
+                "abstract": "Exercise adaptation terms appear in clean metadata.",
+                "year": 2024,
+                "provider": "semantic_scholar",
+            },
+        ],
+    })
+
+    assert [hit.year for hit in hits] == [2024]
 
 
 def test_parse_full_corpus_paper_hit() -> None:

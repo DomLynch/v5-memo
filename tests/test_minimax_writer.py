@@ -226,6 +226,7 @@ def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
 
     assert "seed topic as search context only" in prompt
     assert "receipt-owned title" in prompt
+    assert "copy receipt/bridge terms verbatim" in prompt
     assert "Scope every implication to the receipts" in prompt
     assert "population, market" in prompt
     assert "company, channel, model, benchmark" in prompt

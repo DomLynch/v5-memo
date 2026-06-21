@@ -182,8 +182,18 @@ def test_pipeline_builds_best_memo() -> None:
     assert result.markdown.startswith("# Alpha memo")
 
 
-def test_pipeline_anchors_to_planned_queries_before_broad_seed() -> None:
+def test_pipeline_anchors_to_original_seed_before_planner_drift() -> None:
     hits = [
+        _hit(
+            "plant-promise",
+            "Arabidopsis TOR regulates cotyledon greening",
+            "TOR signaling supports cotyledon greening in Arabidopsis.",
+        ),
+        _hit(
+            "plant-outcome",
+            "Arabidopsis BIN2 suppresses cotyledon greening",
+            "BIN2 altered TOR cotyledon greening outcomes in Arabidopsis.",
+        ),
         _hit(
             "promise",
             "Resveratrol mimics exercise mitochondrial biology",
@@ -203,8 +213,8 @@ def test_pipeline_anchors_to_planned_queries_before_broad_seed() -> None:
 
     result = build_alpha_memo(
         topic="resveratrol exercise adaptation",
-        seed_queries=["resveratrol exercise adaptation"],
-        anchor_queries=["longevity exercise adaptation pharmacology"],
+        seed_queries=["arabidopsis tor cotyledon greening"],
+        anchor_queries=["resveratrol exercise training adaptation"],
         searcher=FakeSearch(),
     )
 
