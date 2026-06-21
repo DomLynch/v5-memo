@@ -41,6 +41,11 @@ def score_connection(
 
     rarity = sum(1.0 / max(1, bridge_doc_counts.get(term, 1)) for term in bridge_terms)
     novelty = round(100 * min(1.0, rarity / len(bridge_terms)))
+    if has_tension and (
+        "shape:promise_outcome_reversal" in shape_reasons
+        or "shape:expectation_reversal" in shape_reasons
+    ):
+        novelty = max(novelty, 50)
     evidence = min(100, 35 + 20 * min(unique_source_count, 3) + 5 * min(receipt_count, 3))
     source_bonus = 10 if unique_source_count >= 2 else 0
     tension_bonus = 10 if has_tension else 0

@@ -64,7 +64,7 @@ _PROMISE = _INTENT | _ROLE_A | frozenset({
 _OUTCOME_ROLE = _OBSERVED | frozenset({
     "cohort", "endpoint", "endpoints", "experiment", "intervention", "randomized",
     "trial", "trials",
-})
+}) | _NEGATIVE | _NULL
 _PUBLISHABLE_SHAPES = frozenset({
     "shape:promise_outcome_reversal",
     "shape:expectation_reversal",
@@ -135,8 +135,14 @@ def mine_insights(
         )
         if not shape_reasons:
             continue
+        elite_anchor_bridge = _has_elite_anchor_bridge(
+            anchor_bridge,
+            pair_anchor_terms,
+            shape_reasons,
+            tension_terms,
+        )
         strong_anchor_bridge = bool(tension_terms and len(anchor_bridge) >= 2)
-        if not strong_anchor_bridge and not _has_title_owned_bridge(
+        if not (strong_anchor_bridge or elite_anchor_bridge) and not _has_title_owned_bridge(
             left,
             right,
             bridge,
@@ -393,6 +399,21 @@ def _has_title_owned_bridge(
     return any(
         term in shared_title_terms and doc_counts[term] <= max_common_docs
         for term in bridge_terms
+    )
+
+
+def _has_elite_anchor_bridge(
+    anchor_bridge: tuple[str, ...],
+    pair_anchor_terms: frozenset[str],
+    shape_reasons: tuple[str, ...],
+    tension_terms: tuple[str, ...],
+) -> bool:
+    return (
+        bool(tension_terms)
+        and bool(set(shape_reasons) & _ELITE_SHAPES)
+        and len(anchor_bridge) == 1
+        and anchor_bridge[0] in pair_anchor_terms
+        and len(anchor_bridge[0]) >= 8
     )
 
 

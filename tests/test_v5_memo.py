@@ -539,6 +539,41 @@ def test_anchor_only_bridge_can_support_elite_reversal() -> None:
     assert "shape:promise_outcome_reversal" in candidate.reasons
 
 
+def test_title_only_specific_anchor_can_support_elite_promise_outcome_pair() -> None:
+    hits = [
+        _hit(
+            "promise",
+            "Resveratrol Improves Mitochondrial Function and Protects against Metabolic Disease by Activating SIRT1 and PGC-1alpha",
+            "",
+        ),
+        _hit(
+            "outcome",
+            "Resveratrol blunts the positive effects of exercise training on cardiovascular health in aged men",
+            "",
+        ),
+        *[
+            _hit(
+                f"filler-{index}",
+                f"Resveratrol exercise training context {index}",
+                "Resveratrol exercise training context.",
+            )
+            for index in range(10)
+        ],
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic="resveratrol exercise training adaptation reversal",
+        required_anchor_terms=("resveratrol",),
+    )[0]
+
+    assert candidate.receipt_ids == ("promise", "outcome")
+    assert candidate.bridge_terms == ("resveratrol",)
+    assert "shape:promise_outcome_reversal" in candidate.reasons
+    assert candidate_alpha_tier(candidate) == "elite_alpha"
+    assert meets_publish_bar(candidate, "elite_alpha")
+
+
 def test_short_single_word_bridge_is_not_enough_for_elite_shape() -> None:
     hits = [
         _hit("a", "APR improves training", "APR improved training outcomes."),
