@@ -43,8 +43,9 @@ _TITLE_STOPWORDS = frozenset({
     "boundary", "condition", "conditions", "hypothesis", "discovery", "seed",
     "split", "splits", "diverge", "diverges", "divergence", "outlier",
     "bridge", "bridges", "receipt", "receipts",
-    "while", "even", "leave", "leaves", "leaving", "level", "levels",
+    "while", "even", "leave", "leaves", "leaving", "level", "levels", "lift", "lifts",
     "elevate", "elevates", "elevated", "elevating",
+    "status", "statuses", "suppress", "suppresses", "suppressed", "suppressing",
 })
 
 
@@ -652,11 +653,12 @@ def _validate_receipt_owned_title(
 
 
 def _title_terms(text: str) -> set[str]:
-    return {
-        _normalize_title_term(term)
-        for term in _TITLE_WORD_RE.findall(text.casefold())
-        if term not in _TITLE_STOPWORDS
-    }
+    terms: set[str] = set()
+    for raw in _TITLE_WORD_RE.findall(text.casefold()):
+        term = _normalize_title_term(raw)
+        if raw not in _TITLE_STOPWORDS and term not in _TITLE_STOPWORDS:
+            terms.add(term)
+    return terms
 
 
 def _receipt_terms(receipts: Sequence[CorpusHit]) -> set[str]:
@@ -667,6 +669,8 @@ def _receipt_terms(receipts: Sequence[CorpusHit]) -> set[str]:
 
 
 def _normalize_title_term(term: str) -> str:
+    if len(term) > 6 and term.endswith("sses"):
+        return term[:-2]
     if len(term) > 6 and term.endswith("ing"):
         return term[:-3]
     if len(term) > 5 and term.endswith("ed"):

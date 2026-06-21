@@ -207,7 +207,7 @@ Research only."""
 
 
 def test_minimax_title_guard_ignores_generic_phrasing_terms() -> None:
-    memo = """# Alpha memo: NAD mitochondrial levels elevate even while leaving
+    memo = """# Alpha memo: NAD mitochondrial status lifts even while suppresses levels leaving
 ## Core signal
 NAD and mitochondrial repair may connect the receipts.
 ## The 2+2=5 angle
