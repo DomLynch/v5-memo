@@ -9,6 +9,7 @@ from pytest import MonkeyPatch
 from v5_memo import CorpusHit
 from v5_memo.__main__ import main
 from v5_memo.client import ResearkaSearchClient
+from v5_memo.schemas import MemoBuildError
 
 
 class EmptyFullRaw:
@@ -310,3 +311,62 @@ def test_planned_cli_self_corrects_when_first_planned_anchor_drifts(
     captured = capsys.readouterr()
     assert "Alpha memo" in captured.out
     assert "resveratrol" in captured.out.casefold()
+
+
+def test_planned_cli_does_not_rerun_fullraw_after_no_alpha(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class FakePlanner:
+        def plan(
+            self,
+            *,
+            topic: str,
+            seed_queries: Sequence[str],
+            limit: int = 8,
+        ) -> list[str]:
+            del topic, seed_queries, limit
+            return ["generic exercise power adaptation"]
+
+    class FakeFullRaw:
+        configured = True
+
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del limit
+            calls.append(query)
+            return [
+                CorpusHit(
+                    hit_id="weak",
+                    title="Exercise adaptation review",
+                    abstract="Review summarized exercise adaptation literature.",
+                    source="fullraw",
+                    doi="10.weak/review",
+                )
+            ]
+
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr("v5_memo.__main__.FullRawCorpusSearchClient.from_env", lambda strict=False: FakeFullRaw())
+    monkeypatch.setattr("v5_memo.__main__.MiniMaxM3SearchPlanner.from_env", lambda: FakePlanner())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "minimax",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+            "--topic",
+            "longevity exercise adaptation",
+        ],
+    )
+
+    with pytest.raises(MemoBuildError):
+        main()
+
+    assert calls == ["generic exercise power adaptation"]
