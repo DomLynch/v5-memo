@@ -107,12 +107,14 @@ def test_researka_client_reports_missing_token_as_unconfigured() -> None:
 
 def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object) -> None:
     captured: dict[str, object] = {}
+    payloads: list[dict[str, object]] = []
 
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         captured["url"] = request.full_url
         captured["data"] = request.data
         captured["headers"] = dict(request.header_items())
         captured["timeout"] = timeout
+        payloads.append(json.loads(cast(bytes, request.data).decode("utf-8")))
         return FakeResponse({
             "meta": {"count": 492361307},
             "results": [
@@ -139,24 +141,55 @@ def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object)
 
     hits = client.search("nad exercise " * 200, limit=250)
 
-    payload = json.loads(cast(bytes, captured["data"]).decode("utf-8"))
     headers = cast(dict[str, str], captured["headers"])
     assert captured["url"] == "https://search.example/full-raw"
     assert captured["timeout"] == 7.0
     assert headers["Authorization"] == "Bearer raw-token"
-    assert payload == {
+    assert payloads[0] == {
         "query": ("nad exercise " * 200)[:1024],
-        "limit": 200,
-        "top_k": 200,
+        "limit": 50,
+        "top_k": 50,
         "year_min": 1950,
         "year_max": 2026,
         "corpus": "full_raw_450m_plus",
         "timeout_seconds": 7.0,
     }
+    assert any(payload["query"] == "nad exercise" for payload in payloads)
     assert hits[0].source == "fullraw:semantic_scholar"
     assert hits[0].doi == "10.123/raw"
     assert hits[0].metadata["query_match_count"] == 492361307
     assert hits[0].metadata["score"] == 17.2
+
+
+def test_full_raw_client_relaxes_strict_long_queries(monkeypatch: object) -> None:
+    requested: list[str] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        query = cast(str, payload["query"])
+        requested.append(query)
+        if query != "management forecast":
+            return FakeResponse({"meta": {"count": 0}, "results": []})
+        return FakeResponse({
+            "meta": {"count": 1},
+            "results": [{
+                "doi": "10.123/forecast",
+                "title": "Management forecasts and information asymmetry",
+                "abstract": "Management forecasts reveal information asymmetry.",
+                "year": 2012,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw")
+
+    hits = client.search("voluntary management earnings forecast accuracy information asymmetry", limit=10)
+
+    assert "management forecast" in requested
+    assert hits[0].doi == "10.123/forecast"
+    assert hits[0].metadata["search_variant"] == "management forecast"
 
 
 def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) -> None:

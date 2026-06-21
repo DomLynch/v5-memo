@@ -543,19 +543,25 @@ def _fullraw_query_variants(query: str, *, limit: int) -> list[str]:
     terms = _query_terms(query)
     if not terms:
         return []
-    variants = [" ".join(terms)]
-    variants.extend(" ".join(pair) for pair in combinations(terms, 2))
-    variants.extend(_query_variants(query, limit=limit))
-
     out: list[str] = []
     seen: set[str] = set()
-    for variant in variants:
+    unique_terms = tuple(dict.fromkeys(terms))
+
+    def add(variant: str) -> bool:
         if variant in seen:
-            continue
+            return False
         seen.add(variant)
         out.append(variant)
-        if len(out) >= limit:
-            break
+        return len(out) >= limit
+
+    if add(" ".join(terms)):
+        return out
+    for pair in combinations(unique_terms, 2):
+        if add(" ".join(pair)):
+            return out
+    for variant in _query_variants(query, limit=limit):
+        if add(variant):
+            return out
     return out
 
 
