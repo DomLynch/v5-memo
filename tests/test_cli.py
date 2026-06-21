@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Sequence
+from types import SimpleNamespace
 
 import pytest
 from pytest import MonkeyPatch
@@ -370,3 +371,62 @@ def test_planned_cli_does_not_rerun_fullraw_after_no_alpha(
         main()
 
     assert calls == ["generic exercise power adaptation"]
+
+
+def test_planned_cli_keeps_full_query_recall_budget(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: dict[str, int] = {}
+
+    class FakePlanner:
+        def plan(
+            self,
+            *,
+            topic: str,
+            seed_queries: Sequence[str],
+            limit: int = 8,
+        ) -> list[str]:
+            del topic, seed_queries
+            return [f"planned query {index}" for index in range(limit)]
+
+    class FakeFullRaw:
+        configured = True
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        per_query_limit = kwargs["per_query_limit"]
+        max_hits = kwargs["max_hits"]
+        assert isinstance(per_query_limit, int)
+        assert isinstance(max_hits, int)
+        seen["per_query_limit"] = per_query_limit
+        seen["max_hits"] = max_hits
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr("v5_memo.__main__.FullRawCorpusSearchClient.from_env", lambda strict=False: FakeFullRaw())
+    monkeypatch.setattr("v5_memo.__main__.MiniMaxM3SearchPlanner.from_env", lambda: FakePlanner())
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "minimax",
+            "--planner-limit",
+            "8",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+            "--topic",
+            "longevity exercise adaptation",
+        ],
+    )
+
+    main()
+
+    assert "Alpha memo" in capsys.readouterr().out
+    assert seen == {"per_query_limit": 50, "max_hits": 500}
