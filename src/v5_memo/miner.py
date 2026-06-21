@@ -91,9 +91,8 @@ def mine_insights(
     if len(clean_hits) < 2:
         return []
 
-    topic_tokens = _tokens(topic)
     full_token_sets = {hit.hit_id: _tokens(hit.text) for hit in clean_hits}
-    token_sets = {hit.hit_id: full_token_sets[hit.hit_id] - topic_tokens for hit in clean_hits}
+    title_token_sets = {hit.hit_id: _tokens(hit.title) for hit in clean_hits}
     anchor_terms = frozenset(required_anchor_terms)
     doc_counts = Counter(term for terms in full_token_sets.values() for term in terms)
 
@@ -108,13 +107,15 @@ def mine_insights(
         ):
             continue
         pair_anchor_terms = anchor_terms or _shared_seed_anchor_terms(left, right)
+        title_shared = title_token_sets[left.hit_id] & title_token_sets[right.hit_id]
         anchor_bridge = _anchor_bridge_terms(
             full_token_sets[left.hit_id],
             full_token_sets[right.hit_id],
             pair_anchor_terms,
+            title_shared,
         )
-        mined_bridge = _bridge_terms(token_sets[left.hit_id], token_sets[right.hit_id], doc_counts)
-        bridge = (*anchor_bridge, *(term for term in mined_bridge if term not in set(anchor_bridge)))[:4]
+        title_bridge = _title_bridge_terms(title_shared, doc_counts)
+        bridge = (*anchor_bridge, *(term for term in title_bridge if term not in set(anchor_bridge)))[:4]
         if not bridge:
             continue
         source_keys = {left.source_key, right.source_key}
@@ -246,10 +247,11 @@ def _pair_has_anchor(
     return bool(left_tokens & right_tokens & anchor_terms)
 
 
-def _bridge_terms(
-    left: frozenset[str], right: frozenset[str], doc_counts: Counter[str],
+def _title_bridge_terms(
+    title_shared: frozenset[str],
+    doc_counts: Counter[str],
 ) -> tuple[str, ...]:
-    shared = (left & right) - _BRIDGE_STOP
+    shared = title_shared - _BRIDGE_STOP
     ranked = sorted(shared, key=lambda term: (doc_counts[term], term))
     return tuple(ranked[:4])
 
@@ -258,8 +260,9 @@ def _anchor_bridge_terms(
     left: frozenset[str],
     right: frozenset[str],
     anchor_terms: frozenset[str],
+    title_shared: frozenset[str],
 ) -> tuple[str, ...]:
-    shared = (left & right & anchor_terms) - _BRIDGE_STOP
+    shared = (left & right & anchor_terms & title_shared) - _BRIDGE_STOP
     return tuple(sorted(shared)[:2])
 
 
