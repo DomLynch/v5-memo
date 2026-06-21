@@ -556,11 +556,12 @@ def _fullraw_query_variants(query: str, *, limit: int) -> list[str]:
 
     if add(" ".join(terms)):
         return out
+    window_limit = min(limit, max(6, limit // 2))
+    for variant in _query_variants(query, limit=window_limit):
+        if add(variant):
+            return out
     for pair in combinations(unique_terms, 2):
         if add(" ".join(pair)):
-            return out
-    for variant in _query_variants(query, limit=limit):
-        if add(variant):
             return out
     return out
 
@@ -577,7 +578,14 @@ def _rerank_score(
     variant_coverage = _coverage(variant_terms, text)
     cited = hit.metadata.get("cited_by_count")
     citation_score = math.log10(max(0, cited) + 1) if isinstance(cited, (int, float)) else 0.0
-    return (seed_coverage * 70.0) + (variant_coverage * 20.0) + (citation_score * 4.0) - rank
+    evidence_bonus = 0.0
+    if hit.abstract:
+        evidence_bonus += min(12.0, len(hit.abstract) / 250.0)
+    if hit.doi:
+        evidence_bonus += 4.0
+    if hit.abstract and "openalex" in hit.source.casefold():
+        evidence_bonus += 4.0
+    return (seed_coverage * 70.0) + (variant_coverage * 20.0) + (citation_score * 4.0) + evidence_bonus - rank
 
 
 def _coverage(terms: tuple[str, ...], text: str) -> float:

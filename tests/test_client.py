@@ -16,6 +16,7 @@ from v5_memo.client import (
     OpenAlexFullCorpusSearchClient,
     ResearkaSearchClient,
     SearchBackendError,
+    _fullraw_query_variants,
     _parse_corpus_search_response,
     _parse_full_raw_search_response,
     _parse_openalex_response,
@@ -439,6 +440,52 @@ def test_query_variants_do_not_depend_on_one_long_query() -> None:
         "mitochondrial stress exercise response",
         "nad salvage mitochondrial",
     ]
+
+
+def test_fullraw_variants_try_strong_windows_before_weak_pairs() -> None:
+    assert _fullraw_query_variants(
+        "cold water immersion attenuates muscle mass strength resistance training",
+        limit=6,
+    ) == [
+        "cold water immersion attenuates muscle mass strength resistance training",
+        "cold water immersion attenuates",
+        "water immersion attenuates muscle",
+        "immersion attenuates muscle mass",
+        "attenuates muscle mass strength",
+        "muscle mass strength resistance",
+    ]
+
+
+def test_fullraw_rerank_prefers_abstract_backed_doi_receipts(monkeypatch: MonkeyPatch) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del request, timeout
+        return FakeResponse({
+            "results": [
+                {
+                    "title": "Resveratrol exercise training older men",
+                    "year": 2024,
+                    "provider": "semantic_scholar",
+                },
+                {
+                    "doi": "https://doi.org/10.1113/jphysiol.2013.258061",
+                    "title": "Resveratrol exercise training older men",
+                    "abstract": (
+                        "Resveratrol exercise training older men adaptation cardiovascular "
+                        "health maximal oxygen uptake blood pressure cholesterol blunted."
+                    ),
+                    "year": 2013,
+                    "provider": "openalex",
+                },
+            ],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    client = FullRawCorpusSearchClient(search_url="https://fullraw.example/search")
+
+    hits = client.search("resveratrol exercise training older men", limit=2)
+
+    assert hits[0].doi == "10.1113/jphysiol.2013.258061"
+    assert hits[0].abstract
 
 
 def test_parse_openalex_response_reconstructs_abstract() -> None:
