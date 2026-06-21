@@ -91,6 +91,34 @@ def test_fullraw_index_builds_ranked_queryable_index(tmp_path: Path) -> None:
     assert "discloses" in fts_match
 
 
+def test_fullraw_index_enriches_semantic_scholar_abstract_rows(tmp_path: Path) -> None:
+    paper = tmp_path / "s2_paper.jsonl.gz"
+    abstract = tmp_path / "s2_abstract.jsonl.gz"
+    _write_jsonl_gzip(paper, [{
+        "corpusid": 12345,
+        "title": "Resveratrol exercise training adaptation",
+        "year": 2024,
+    }])
+    _write_jsonl_gzip(abstract, [{
+        "corpusid": 12345,
+        "abstract": "Resveratrol exercise training blunted mitochondrial adaptation in older adults.",
+    }])
+    index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
+    try:
+        result = index.index_files([
+            RawFile(source="semantic_scholar", format="semantic_scholar_jsonl", remote=f"file://{paper}"),
+            RawFile(source="semantic_scholar_abstracts", format="semantic_scholar_jsonl", remote=f"file://{abstract}"),
+        ])
+        hits = index.search("mitochondrial older adults", limit=5)
+    finally:
+        index.close()
+
+    assert result.files_completed == 2
+    assert result.papers_inserted == 2
+    assert hits[0]["semantic_scholar_id"] == "12345"
+    assert "blunted mitochondrial adaptation" in str(hits[0]["abstract"])
+
+
 def test_fullraw_index_uses_persisted_custom_term_map(tmp_path: Path) -> None:
     raw_file = _raw_file(tmp_path, "openalex", [{
         "doi": "https://doi.org/10.example/guidance",
