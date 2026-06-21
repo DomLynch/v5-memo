@@ -777,7 +777,7 @@ def search_shards(
 
 
 def discover_shard_paths(shard_dir: Path) -> list[Path]:
-    return sorted(path for path in shard_dir.glob("*.sqlite") if path.is_file())
+    return sorted(path for path in shard_dir.rglob("*.sqlite") if path.is_file())
 
 
 def aggregate_shard_stats(index_paths: list[Path], *, files_total: int = 0) -> IndexStats:
@@ -902,6 +902,8 @@ def run_server() -> None:
     index_path = Path(
         os.environ.get("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite")
     )
+    shard_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SHARD_DIR", "").strip()
+    shard_dir = Path(shard_dir_config) if shard_dir_config else None
     manifest_path = Path(
         os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json")
     )
@@ -912,19 +914,39 @@ def run_server() -> None:
         os.environ.get("V5_MEMO_FULL_RAW_INDEX_TOKEN", "")
         or os.environ.get("V5_MEMO_FULL_RAW_TOKEN", "")
     ).strip()
-    index = FullRawFtsIndex(index_path)
-    index.initialize()
+    index = None if shard_dir else FullRawFtsIndex(index_path)
+    if index is not None:
+        index.initialize()
+
+    def current_stats() -> IndexStats:
+        if shard_dir is not None:
+            return aggregate_shard_stats(discover_shard_paths(shard_dir), files_total=len(files))
+        assert index is not None
+        return index.stats(files_total=len(files))
+
+    def current_search(query: str, *, limit: int, year_min: int, year_max: int) -> list[dict[str, object]]:
+        if shard_dir is not None:
+            return search_shards(
+                discover_shard_paths(shard_dir),
+                query,
+                limit=limit,
+                year_min=year_min,
+                year_max=year_max,
+            )
+        assert index is not None
+        return index.search(query, limit=limit, year_min=year_min, year_max=year_max)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             if self.path != "/health":
                 self.send_error(404)
                 return
-            stats = index.stats(files_total=len(files))
+            stats = current_stats()
             _write_json(self, 200, {
                 "ok": True,
                 "backend": _BACKEND,
                 "index_path": str(index_path),
+                "shard_dir": str(shard_dir) if shard_dir is not None else "",
                 "papers_indexed": stats.papers_indexed,
                 "files_indexed": stats.files_indexed,
                 "files_total": stats.files_total,
@@ -953,9 +975,13 @@ def run_server() -> None:
                 _write_json(self, 400, {"error": "query is required"})
                 return
             started = time.monotonic()
-            hits = index.search(query, limit=limit, year_min=year_min, year_max=year_max)
-            stats = index.stats(files_total=len(files))
-            explain = index.explain_query(query)
+            hits = current_search(query, limit=limit, year_min=year_min, year_max=year_max)
+            stats = current_stats()
+            explain = (
+                {"fts_match": query, "groups": []}
+                if shard_dir is not None
+                else index.explain_query(query)  # type: ignore[union-attr]
+            )
             _write_json(self, 200, {
                 "meta": {
                     "count": len(hits),

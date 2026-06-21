@@ -266,6 +266,15 @@ def test_parallel_shard_build_and_search(tmp_path: Path) -> None:
     assert len([hit for hit in hits if hit["doi"] == "10.2308/tar-9603274096"]) == 1
 
 
+def test_discover_shard_paths_finds_nested_batch_shards(tmp_path: Path) -> None:
+    nested = tmp_path / "batch_00001"
+    nested.mkdir()
+    shard = nested / "fullraw_shard_0000.sqlite"
+    shard.write_text("")
+
+    assert discover_shard_paths(tmp_path) == [shard]
+
+
 def test_build_upload_shard_batches_uploads_and_deletes_local_batches(tmp_path: Path) -> None:
     files: list[RawFile] = []
     for index in range(4):
