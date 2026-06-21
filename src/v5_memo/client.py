@@ -115,7 +115,7 @@ class OpenAlexFullCorpusSearchClient:
                     data: Any = json.loads(response.read().decode("utf-8"))
                 return _parse_openalex_response(data)
             except HTTPError as exc:
-                if exc.code == 429 and attempt == 0:
+                if exc.code == 429 and self._strict and attempt == 0:
                     time.sleep(_retry_after_seconds(exc))
                     continue
                 if self._strict:
@@ -272,7 +272,11 @@ class HybridCorpusSearchClient:
             search = getattr(searcher, "search", None)
             if not callable(search):
                 continue
-            for hit in search(query, limit=limit):
+            try:
+                hits = search(query, limit=limit)
+            except SearchBackendError:
+                continue
+            for hit in hits:
                 best.setdefault(hit.source_key, hit)
                 if len(best) >= limit:
                     break
@@ -395,6 +399,9 @@ def _parse_full_raw_paper_hit(item: Any, *, match_count: int | None) -> CorpusHi
     if not title:
         return None
     doi = _normalize_doi(item.get("doi"))
+    year = _int_or_none(item.get("year") or item.get("publication_year"))
+    if _doi_year_conflicts(doi, year):
+        return None
     pmid = _clean(item.get("pmid"), limit=64)
     pmcid = _clean(item.get("pmcid"), limit=64)
     openalex_id = _clean(item.get("openalex_id") or item.get("openalex") or item.get("id"), limit=256)
@@ -423,7 +430,7 @@ def _parse_full_raw_paper_hit(item: Any, *, match_count: int | None) -> CorpusHi
         title=title,
         abstract=abstract,
         source=f"fullraw:{origin.casefold()}" if origin else "fullraw:450m-plus",
-        year=_int_or_none(item.get("year") or item.get("publication_year")),
+        year=year,
         url=f"https://doi.org/{doi}" if doi else url or openalex_id,
         doi=doi,
         venue=venue,
@@ -453,6 +460,13 @@ def _normalize_doi(value: object) -> str | None:
     if not doi:
         return None
     return re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi, flags=re.I) or None
+
+
+def _doi_year_conflicts(doi: str | None, year: int | None) -> bool:
+    if not doi or year is None:
+        return False
+    years = [int(match) for match in re.findall(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)", doi)]
+    return any(abs(parsed - year) > 3 for parsed in years)
 
 
 def _abstract_from_inverted_index(value: object) -> str:
