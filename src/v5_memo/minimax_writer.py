@@ -363,6 +363,8 @@ Rules:
 - Include synonym/adjacent-mechanism angles, not just restatements.
 - Prefer promise->outcome reversal searches: protocol/expected/designed/mimic/augment
   paired with observed/blunted/attenuated/impaired/null/reduced.
+- Split those two evidence sides into separate title-like queries. Do not pack the
+  promise/mechanism terms and the blunted/null outcome terms into one huge query.
 - Prefer same intervention/construct/program across evidence objects.
 - At least half the queries must name a specific intervention, construct, product,
   model, program, or mechanism; do not rely on generic words like intervention,
