@@ -177,3 +177,52 @@ def test_smart_cli_planner_surfaces_elite_pair_from_broad_seed(
     assert "Alpha memo" in captured.out
     assert "resveratrol" in captured.out.casefold()
     assert "different directions" in captured.out
+
+
+def test_planned_cli_without_user_query_anchors_to_planned_queries(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FakePlanner:
+        def plan(
+            self,
+            *,
+            topic: str,
+            seed_queries: Sequence[str],
+            limit: int = 8,
+        ) -> list[str]:
+            del topic, seed_queries, limit
+            return ["resveratrol exercise training adaptation"]
+
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr(
+        "v5_memo.__main__.FullRawCorpusSearchClient.from_env",
+        lambda strict=False: ResveratrolOpenAlex(require_resveratrol_query=True),
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.MiniMaxM3SearchPlanner.from_env",
+        lambda: FakePlanner(),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "minimax",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+            "--topic",
+            "longevity exercise adaptation",
+        ],
+    )
+
+    main()
+
+    captured = capsys.readouterr()
+    assert "Alpha memo" in captured.out
+    assert "resveratrol" in captured.out.casefold()

@@ -117,6 +117,7 @@ def main() -> None:
     memo_selector = None
     if selector_mode == "minimax":
         memo_selector = MiniMaxM3CandidateSelector.from_env().select
+    explicit_queries = bool(args.query)
     base_queries = args.query or [
         "sleep NAD salvage mitochondrial stress",
         "exercise NAD salvage mitochondrial repair",
@@ -128,6 +129,7 @@ def main() -> None:
             seed_queries=base_queries,
             limit=args.planner_limit,
         )
+    anchor_queries = base_queries if explicit_queries else queries
     wider_recall = planner_mode == "minimax" or selector_mode == "minimax"
     result = build_alpha_memo(
         topic=args.topic,
@@ -135,7 +137,7 @@ def main() -> None:
         searcher=searcher,
         memo_writer=memo_writer,
         memo_selector=memo_selector,
-        anchor_queries=base_queries,
+        anchor_queries=anchor_queries,
         min_alpha_tier=min_alpha_tier,
         per_query_limit=50 if wider_recall else 25,
         max_hits=250 if wider_recall else 100,
