@@ -463,7 +463,11 @@ def validate_minimax_memo(
         raise MemoFormatError(
             f"MiniMax memo missing required sections: {', '.join(missing_sections)}"
         )
-    missing = [hit.receipt_id for hit in receipts if hit.receipt_id not in text]
+    missing = [
+        _receipt_display_id(hit)
+        for hit in receipts
+        if _receipt_display_id(hit) not in text
+    ]
     if missing:
         raise ValueError(f"MiniMax memo dropped receipt IDs: {', '.join(missing)}")
     allowed_dois = _receipt_dois(receipts)
@@ -480,11 +484,12 @@ def validate_minimax_memo(
 def _receipt_block(index: int, hit: CorpusHit) -> str:
     year = str(hit.year) if hit.year is not None else "unknown"
     venue = hit.venue or "unknown venue"
+    receipt_id = _receipt_display_id(hit)
     locator = hit.doi or hit.url or hit.hit_id
     abstract = _truncate_receipt_text(hit.abstract, RECEIPT_ABSTRACT_CHAR_LIMIT)
     return (
         f"Receipt {index}\n"
-        f"ID: {hit.receipt_id}\n"
+        f"ID: {receipt_id}\n"
         f"Title: {hit.title}\n"
         f"Year: {year}\n"
         f"Venue: {venue}\n"
@@ -624,6 +629,13 @@ def _receipt_dois(receipts: Sequence[CorpusHit]) -> set[str]:
             if value:
                 allowed.update(_extract_dois(value))
     return allowed
+
+
+def _receipt_display_id(hit: CorpusHit) -> str:
+    if hit.doi:
+        return hit.doi
+    match = re.search(r"\bW\d+\b", hit.hit_id, re.IGNORECASE)
+    return match.group(0) if match else hit.hit_id
 
 
 def _extract_dois(text: str) -> set[str]:

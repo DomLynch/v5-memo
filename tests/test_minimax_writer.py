@@ -462,6 +462,44 @@ Hypothesis only.""",
     assert memo.startswith("# Alpha memo: resveratrol blunting")
 
 
+def test_minimax_memo_validation_accepts_displayed_openalex_work_id() -> None:
+    receipt = CorpusHit(
+        hit_id="https://openalex.org/W7070693264",
+        title="Exercise training adaptation response",
+        abstract="Training improved adaptation markers.",
+        source="fullraw",
+    )
+    memo = validate_minimax_memo(
+        """# Alpha memo: exercise training adaptation
+## Core signal
+The receipt is cited by source-local ID.
+## The 2+2=5 angle
+This is only a receipt preservation check.
+## Why this could matter
+It keeps non-DOI receipts traceable.
+## What would break the idea
+A missing source-local ID breaks it.
+## Receipts
+- W7070693264
+## Safety note
+Traceability only.""",
+        [receipt],
+        candidate=InsightCandidate(
+            topic="exercise adaptation",
+            thesis="Receipt preservation check.",
+            bridge_terms=("exercise", "training"),
+            tension_terms=(),
+            receipt_ids=("https://openalex.org/W7070693264",),
+            score=70,
+            novelty_score=70,
+            evidence_score=70,
+            reasons=("source_diverse",),
+        ),
+    )
+
+    assert "W7070693264" in memo
+
+
 def test_minimax_planner_returns_json_queries_plus_original_seeds() -> None:
     opener = FakeOpener(
         json.dumps(
