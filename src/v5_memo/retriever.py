@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Protocol
 
 from v5_memo.schemas import CorpusHit
@@ -19,15 +20,25 @@ def collect_seed_hits(
     max_hits: int = 100,
 ) -> list[CorpusHit]:
     """Search multiple seeds and dedupe before mining insights."""
-    seen: set[str] = set()
+    seen: dict[str, int] = {}
     out: list[CorpusHit] = []
     for query in seed_queries:
         for hit in searcher.search(query, limit=per_query_limit):
             key = hit.source_key
             if key in seen:
+                existing = out[seen[key]]
+                raw_queries = existing.metadata.get("seed_queries", ())
+                queries: tuple[str, ...] = (
+                    raw_queries if isinstance(raw_queries, tuple) else ()
+                )
+                if query not in queries:
+                    out[seen[key]] = replace(
+                        existing,
+                        metadata={**existing.metadata, "seed_queries": (*queries, query)},
+                    )
                 continue
-            seen.add(key)
-            out.append(hit)
+            seen[key] = len(out)
+            out.append(replace(hit, metadata={**hit.metadata, "seed_queries": (query,)}))
             if len(out) >= max_hits:
                 return out
     return out

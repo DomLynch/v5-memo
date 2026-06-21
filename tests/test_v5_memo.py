@@ -163,6 +163,7 @@ def test_collect_seed_hits_dedupes_across_seed_queries() -> None:
     hits = collect_seed_hits(FakeSearch(), ["nad", "mitochondrial"], per_query_limit=2)
 
     assert [hit.hit_id for hit in hits] == ["shared", "nad", "mitochondrial"]
+    assert hits[0].metadata["seed_queries"] == ("nad", "mitochondrial")
 
 
 def test_pipeline_builds_best_memo() -> None:
@@ -301,13 +302,23 @@ def test_pipeline_applies_selector_to_existing_candidates() -> None:
         topic="AI tool reliability",
         required_anchor_terms=query_anchor_terms(["tool"]),
     )
-    chosen = deterministic[-1].receipt_ids
+    chosen = next(
+        candidate
+        for candidate in reversed(deterministic)
+        if meets_publish_bar(candidate, "publishable_alpha")
+    ).receipt_ids
 
     result = build_alpha_memo(
         topic="AI tool reliability",
         seed_queries=["tool"],
         searcher=FakeSearch(),
-        memo_selector=lambda candidates, _hits: [candidates[-1]],
+        memo_selector=lambda candidates, _hits: [
+            next(
+                candidate
+                for candidate in reversed(candidates)
+                if meets_publish_bar(candidate, "publishable_alpha")
+            )
+        ],
     )
 
     assert len(deterministic) >= 2
@@ -777,6 +788,27 @@ def test_miner_rejects_abstract_only_bridge_words_as_alpha() -> None:
     ]
 
     assert mine_insights(hits, topic="longevity skeletal muscle adaptation") == []
+
+
+def test_miner_rejects_pairs_from_unrelated_seed_queries() -> None:
+    hits = [
+        CorpusHit(
+            hit_id="cancer",
+            title="mTOR inhibition improves cancer response",
+            abstract="mTOR inhibition improved clinical response.",
+            source="openalex",
+            metadata={"seed_queries": ("mTOR cancer",)},
+        ),
+        CorpusHit(
+            hit_id="aging",
+            title="mTOR inhibition worsens cognitive aging signal",
+            abstract="mTOR inhibition reduced cognitive aging outcomes.",
+            source="openalex",
+            metadata={"seed_queries": ("mTOR aging",)},
+        ),
+    ]
+
+    assert mine_insights(hits, topic="longevity exercise adaptation", include_discovery=True) == []
 
 
 def test_miner_does_not_promote_position_stand_plus_trial_to_elite() -> None:

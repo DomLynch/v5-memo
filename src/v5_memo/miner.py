@@ -99,6 +99,8 @@ def mine_insights(
 
     candidates: list[InsightCandidate] = []
     for left, right in combinations(clean_hits, 2):
+        if not anchor_terms and not _shares_seed_query(left, right):
+            continue
         if anchor_terms and not _pair_has_anchor(
             full_token_sets[left.hit_id],
             full_token_sets[right.hit_id],
@@ -358,6 +360,17 @@ def _has_title_owned_bridge(
         term in shared_title_terms and doc_counts[term] <= max_common_docs
         for term in bridge_terms
     )
+
+
+def _shares_seed_query(left: CorpusHit, right: CorpusHit) -> bool:
+    left_queries = _seed_queries(left)
+    right_queries = _seed_queries(right)
+    return not left_queries or not right_queries or bool(set(left_queries) & set(right_queries))
+
+
+def _seed_queries(hit: CorpusHit) -> tuple[str, ...]:
+    raw = hit.metadata.get("seed_queries", ())
+    return raw if isinstance(raw, tuple) else ()
 
 
 def _words(text: str) -> frozenset[str]:
