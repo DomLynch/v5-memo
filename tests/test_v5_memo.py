@@ -808,7 +808,39 @@ def test_miner_rejects_pairs_from_unrelated_seed_queries() -> None:
         ),
     ]
 
-    assert mine_insights(hits, topic="longevity exercise adaptation", include_discovery=True) == []
+    assert mine_insights(
+        hits,
+        topic="longevity exercise adaptation",
+        required_anchor_terms=(),
+        include_discovery=True,
+    ) == []
+
+
+def test_miner_uses_shared_seed_query_terms_as_bridge_anchors() -> None:
+    hits = [
+        CorpusHit(
+            hit_id="a",
+            title="Resveratrol activates mitochondrial adaptation",
+            abstract="Resveratrol improved mitochondrial adaptation.",
+            source="openalex",
+            metadata={"seed_queries": ("resveratrol mitochondrial exercise adaptation blunted",)},
+        ),
+        CorpusHit(
+            hit_id="b",
+            title="Resveratrol mitochondrial training adaptation blunting",
+            abstract="Resveratrol reduced mitochondrial training adaptation.",
+            source="openalex",
+            metadata={"seed_queries": ("resveratrol mitochondrial exercise adaptation blunted",)},
+        ),
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic="longevity exercise adaptation",
+        required_anchor_terms=(),
+    )[0]
+
+    assert "resveratrol" in candidate.bridge_terms[:2]
 
 
 def test_miner_does_not_promote_position_stand_plus_trial_to_elite() -> None:

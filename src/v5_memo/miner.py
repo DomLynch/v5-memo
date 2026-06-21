@@ -107,10 +107,11 @@ def mine_insights(
             anchor_terms,
         ):
             continue
+        pair_anchor_terms = anchor_terms or _shared_seed_anchor_terms(left, right)
         anchor_bridge = _anchor_bridge_terms(
             full_token_sets[left.hit_id],
             full_token_sets[right.hit_id],
-            anchor_terms,
+            pair_anchor_terms,
         )
         mined_bridge = _bridge_terms(token_sets[left.hit_id], token_sets[right.hit_id], doc_counts)
         bridge = (*anchor_bridge, *(term for term in mined_bridge if term not in set(anchor_bridge)))[:4]
@@ -366,6 +367,14 @@ def _shares_seed_query(left: CorpusHit, right: CorpusHit) -> bool:
     left_queries = _seed_queries(left)
     right_queries = _seed_queries(right)
     return not left_queries or not right_queries or bool(set(left_queries) & set(right_queries))
+
+
+def _shared_seed_anchor_terms(left: CorpusHit, right: CorpusHit) -> frozenset[str]:
+    shared_queries = set(_seed_queries(left)) & set(_seed_queries(right))
+    anchors: set[str] = set()
+    for query in shared_queries:
+        anchors.update(query_anchor_terms([query]))
+    return frozenset(anchors)
 
 
 def _seed_queries(hit: CorpusHit) -> tuple[str, ...]:
