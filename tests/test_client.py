@@ -456,6 +456,16 @@ def test_fullraw_variants_try_strong_windows_before_weak_pairs() -> None:
     ]
 
 
+def test_fullraw_variants_do_not_append_broad_pair_fallback() -> None:
+    variants = _fullraw_query_variants(
+        "cold water immersion attenuates muscle mass strength resistance training",
+        limit=20,
+    )
+
+    assert "cold water" not in variants
+    assert "cold muscle" not in variants
+
+
 def test_fullraw_rerank_prefers_abstract_backed_doi_receipts(monkeypatch: MonkeyPatch) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del request, timeout

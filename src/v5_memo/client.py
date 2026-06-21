@@ -561,6 +561,8 @@ def _fullraw_query_variants(query: str, *, limit: int) -> list[str]:
         if add(variant):
             return out
     for pair in combinations(unique_terms, 2):
+        if min(len(term) for term in pair) < 6:
+            continue
         if add(" ".join(pair)):
             return out
     return out
