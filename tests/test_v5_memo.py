@@ -539,6 +539,15 @@ def test_anchor_only_bridge_can_support_elite_reversal() -> None:
     assert "shape:promise_outcome_reversal" in candidate.reasons
 
 
+def test_short_single_word_bridge_is_not_enough_for_elite_shape() -> None:
+    hits = [
+        _hit("a", "APR improves training", "APR improved training outcomes."),
+        _hit("b", "APR blunts recovery", "APR blunted recovery outcomes."),
+    ]
+
+    assert mine_insights(hits, topic="APR intervention training", required_anchor_terms=("apr",)) == []
+
+
 @pytest.mark.parametrize("case", _golden_cases(), ids=lambda case: case["name"])
 def test_miner_golden_alpha_quality_cases(
     case: dict[str, Any],

@@ -20,6 +20,8 @@ _STOP = frozenset({
     "summary", "systematic", "the", "their", "there", "through", "trial", "using", "with",
 })
 _BRIDGE_STOP = _STOP | frozenset({
+    "action", "functional", "horse", "impairment", "intermittent", "learning",
+    "men", "power", "women",
     "case", "cases", "individual", "individuals", "patient", "people", "per", "person",
     "persons", "such", "thus", "when", "following", "matched",
     "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
@@ -141,6 +143,8 @@ def mine_insights(
         if set(shape_reasons) == {"shape:directional_reversal"} and len(bridge) < 2:
             continue
         tier = _alpha_tier(shape_reasons, tension_terms)
+        if tier == "elite_alpha" and len(bridge) == 1 and len(bridge[0]) < 8:
+            continue
         if tier == "discovery_seed" and not include_discovery:
             continue
         score = score_connection(
