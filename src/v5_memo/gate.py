@@ -11,6 +11,11 @@ _MIN_SCORE_BY_TIER = {
     "publishable_alpha": 70,
     "elite_alpha": 80,
 }
+_MIN_NOVELTY_BY_TIER = {
+    "discovery_seed": 0,
+    "publishable_alpha": 0,
+    "elite_alpha": 35,
+}
 
 
 def candidate_alpha_tier(candidate: InsightCandidate) -> str:
@@ -28,6 +33,7 @@ def meets_publish_bar(candidate: InsightCandidate, min_alpha_tier: str) -> bool:
     return (
         meets_min_alpha_tier(candidate, min_alpha_tier)
         and candidate.score >= _MIN_SCORE_BY_TIER[min_alpha_tier]
+        and candidate.novelty_score >= _MIN_NOVELTY_BY_TIER[min_alpha_tier]
     )
 
 

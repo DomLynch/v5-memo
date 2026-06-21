@@ -642,6 +642,22 @@ def test_publish_bar_blocks_low_score_publishable_shape() -> None:
     assert not meets_publish_bar(candidate, "publishable_alpha")
 
 
+def test_publish_bar_blocks_low_novelty_elite_shape() -> None:
+    candidate = InsightCandidate(
+        topic="topic",
+        thesis="Shaped but generic.",
+        bridge_terms=("randomized", "placebo"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("a", "b"),
+        score=90,
+        novelty_score=18,
+        evidence_score=90,
+        reasons=("shape:promise_outcome_reversal", "tier:elite_alpha"),
+    )
+
+    assert not meets_publish_bar(candidate, "elite_alpha")
+
+
 def test_miner_ranks_shaped_candidates_above_rare_keyword_bridges() -> None:
     hits = [
         _hit("weak-a", "Zorblax workflow evidence summary", "Zorblax workflow evidence appears in one summary."),
