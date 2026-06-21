@@ -16,7 +16,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Iterable
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -795,24 +795,39 @@ def search_shards(
 ) -> list[dict[str, object]]:
     """Search multiple shard DBs and merge ranked, deduped results."""
     merged: dict[str, dict[str, object]] = {}
-    for path in index_paths:
-        if not path.exists():
-            continue
-        index = FullRawFtsIndex(path)
-        try:
-            hits = index.search(query, limit=limit, year_min=year_min, year_max=year_max)
-        finally:
-            index.close()
-        for hit in hits:
-            key = _dedupe_key(hit)
-            existing = merged.get(key)
-            if existing is None or _hit_score(hit) > _hit_score(existing):
-                merged[key] = hit
+    paths = [path for path in index_paths if path.exists()]
+    workers = max(1, min(int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "8")), len(paths) or 1))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [
+            pool.submit(_search_one_shard, path, query, limit, year_min, year_max)
+            for path in paths
+        ]
+        for future in as_completed(futures):
+            hits = future.result()
+            for hit in hits:
+                key = _dedupe_key(hit)
+                existing = merged.get(key)
+                if existing is None or _hit_score(hit) > _hit_score(existing):
+                    merged[key] = hit
     return sorted(
         merged.values(),
         key=lambda hit: (_hit_score(hit), _int_or_none(hit.get("cited_by_count")) or 0),
         reverse=True,
     )[: max(1, min(limit, 200))]
+
+
+def _search_one_shard(
+    path: Path,
+    query: str,
+    limit: int,
+    year_min: int,
+    year_max: int,
+) -> list[dict[str, object]]:
+    index = FullRawFtsIndex(path)
+    try:
+        return index.search(query, limit=limit, year_min=year_min, year_max=year_max)
+    finally:
+        index.close()
 
 
 def discover_shard_paths(shard_dir: Path) -> list[Path]:
