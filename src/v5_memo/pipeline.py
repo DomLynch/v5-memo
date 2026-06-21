@@ -34,9 +34,9 @@ def build_alpha_memo(
         max_hits=max_hits,
     )
     if anchor_queries is None:
-        anchor_terms = query_anchor_terms(seed_queries)
+        anchor_terms = _anchor_terms_for_queries(seed_queries)
     else:
-        anchor_terms = query_anchor_terms(anchor_queries)
+        anchor_terms = _anchor_terms_for_queries(anchor_queries)
     candidates: Sequence[InsightCandidate] = mine_insights(
         hits,
         topic=topic,
@@ -78,3 +78,14 @@ def _apply_selector(
         if original is not None and original not in selected:
             selected.append(original)
     return selected
+
+
+def _anchor_terms_for_queries(queries: Sequence[str]) -> tuple[str, ...]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for query in queries:
+        for term in query_anchor_terms([query], limit=2):
+            if term not in seen:
+                seen.add(term)
+                out.append(term)
+    return tuple(out)

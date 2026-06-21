@@ -207,6 +207,43 @@ def test_pipeline_builds_best_memo() -> None:
     assert result.markdown.startswith("# Alpha memo")
 
 
+def test_pipeline_anchors_cover_late_planned_query_angles() -> None:
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del limit
+            if "resveratrol" not in query:
+                return []
+            return [
+                CorpusHit(
+                    hit_id="promise",
+                    title="Resveratrol improves mitochondrial function and exercise performance",
+                    abstract="Resveratrol activated a mitochondrial mechanism and improved running performance.",
+                    source="openalex",
+                    doi="10.promise",
+                ),
+                CorpusHit(
+                    hit_id="outcome",
+                    title="Resveratrol exercise training trial blunted cardiovascular adaptation",
+                    abstract="Randomized trial observed resveratrol blunted exercise training adaptation.",
+                    source="semantic_scholar",
+                    doi="10.outcome",
+                ),
+            ]
+
+    result = build_alpha_memo(
+        topic="longevity exercise adaptation supplement reversal",
+        seed_queries=[
+            "rapamycin mTOR exercise adaptation blunted",
+            "NMN NAD skeletal muscle attenuation",
+            "resveratrol exercise training adaptation blunted",
+        ],
+        searcher=FakeSearch(),
+        min_alpha_tier="elite_alpha",
+    )
+
+    assert result.candidate.receipt_ids == ("promise", "outcome")
+
+
 def test_pipeline_anchors_to_original_seed_before_planner_drift() -> None:
     hits = [
         _hit(
