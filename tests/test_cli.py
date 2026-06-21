@@ -230,3 +230,83 @@ def test_planned_cli_without_user_query_anchors_to_planned_queries(
     assert "Alpha memo" in captured.out
     assert "resveratrol" in captured.out.casefold()
     assert seen_seed_queries == [["longevity exercise adaptation"]]
+
+
+def test_planned_cli_self_corrects_when_first_planned_anchor_drifts(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FakePlanner:
+        def plan(
+            self,
+            *,
+            topic: str,
+            seed_queries: Sequence[str],
+            limit: int = 8,
+        ) -> list[str]:
+            del topic, seed_queries, limit
+            return [
+                "arabidopsis tor cotyledon greening",
+                "resveratrol exercise training adaptation",
+            ]
+
+    class FakeFullRaw:
+        configured = True
+
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del limit
+            if "arabidopsis" in query:
+                return [
+                    CorpusHit(
+                        hit_id="plant-a",
+                        title="Arabidopsis TOR controls cotyledon greening",
+                        abstract="TOR promoted cotyledon greening in Arabidopsis.",
+                        source="fullraw",
+                        doi="10.plant/a",
+                    )
+                ]
+            if "resveratrol" in query:
+                return [
+                    CorpusHit(
+                        hit_id="promise",
+                        title="Resveratrol mimics exercise mitochondrial biology",
+                        abstract="Mechanism paper reported resveratrol improved mitochondrial function.",
+                        source="fullraw",
+                        doi="10.promise",
+                    ),
+                    CorpusHit(
+                        hit_id="outcome",
+                        title="Resveratrol blunts exercise training adaptation",
+                        abstract="Human outcome trial observed resveratrol reduced exercise training benefits.",
+                        source="fullraw",
+                        doi="10.outcome",
+                    ),
+                ]
+            return []
+
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr("v5_memo.__main__.FullRawCorpusSearchClient.from_env", lambda strict=False: FakeFullRaw())
+    monkeypatch.setattr("v5_memo.__main__.MiniMaxM3SearchPlanner.from_env", lambda: FakePlanner())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "minimax",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+            "--topic",
+            "longevity exercise adaptation",
+        ],
+    )
+
+    main()
+
+    captured = capsys.readouterr()
+    assert "Alpha memo" in captured.out
+    assert "resveratrol" in captured.out.casefold()
