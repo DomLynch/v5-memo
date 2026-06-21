@@ -12,16 +12,19 @@ from v5_memo.scorer import score_connection
 _WORD = re.compile(r"[a-z][a-z0-9]{2,}")
 _STOP = frozenset({
     "about", "advances", "after", "agent", "among", "analysis", "and", "based", "beneficial",
-    "between", "can", "cell", "clinical", "comprehensive", "data", "effect",
+    "also", "between", "can", "cell", "clinical", "comprehensive", "data", "effect",
     "effects", "evidence", "finding", "findings", "from", "group", "groups",
     "human", "impact", "isi", "library", "links", "marker", "markers", "meta", "model",
     "models", "paper", "patients", "predicts", "recent", "reported", "research",
-    "response", "results", "review", "shows", "significant", "study", "studies",
-    "summary", "systematic", "the", "through", "trial", "using", "with",
+    "response", "results", "review", "showed", "shows", "significant", "study", "studies",
+    "summary", "systematic", "the", "their", "there", "through", "trial", "using", "with",
 })
 _BRIDGE_STOP = _STOP | frozenset({
     "case", "cases", "individual", "individuals", "patient", "people", "per", "person",
-    "persons", "such", "thus", "when", "following", "matched", "sixteen",
+    "persons", "such", "thus", "when", "following", "matched",
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+    "eighteen", "nineteen", "twenty",
 })
 _POSITIVE = frozenset({
     "augment", "augmented", "enhance", "enhanced", "increase", "increased",
@@ -51,7 +54,7 @@ _INTENT = frozenset({"aim", "aimed", "designed", "expect", "expected", "hypothes
 _OBSERVED = frozenset({"found", "observed", "outcome", "outcomes", "reported", "result", "results", "showed"})
 _PROMISE = _INTENT | _ROLE_A | frozenset({
     "activate", "activated", "activates", "activating", "activation", "mechanism",
-    "mechanisms", "mimic", "mimics",
+    "mechanisms", "mimetic", "mimetics", "mimic", "mimics",
 })
 _OUTCOME_ROLE = _OBSERVED | frozenset({
     "cohort", "endpoint", "endpoints", "experiment", "intervention", "randomized",
@@ -124,6 +127,8 @@ def mine_insights(
             tension_terms=tension_terms,
         )
         if not shape_reasons:
+            continue
+        if set(shape_reasons) == {"shape:directional_reversal"} and len(bridge) < 2:
             continue
         if bridge_from_anchor and not set(shape_reasons) & _ELITE_SHAPES:
             continue
@@ -198,12 +203,20 @@ def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 3) -> tuple[
         "effects",
         "exercise",
         "healthspan",
+        "intervention",
         "longevity",
         "mechanism",
+        "mimetic",
         "pharmacology",
+        "protocol",
         "response",
+        "reversal",
         "stress",
     }
+    generic.update(
+        _POSITIVE | _NEGATIVE | _OBSERVED | _INTENT | _PROMISE | _OUTCOME_ROLE
+        | _BOUNDARY | _TIMING | _METRIC | _OUTCOME | _ROLE_A | _ROLE_B
+    )
     out: list[str] = []
     seen: set[str] = set()
     for query in seed_queries:

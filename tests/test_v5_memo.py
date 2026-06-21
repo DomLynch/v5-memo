@@ -334,6 +334,13 @@ def test_query_anchor_terms_drop_broad_topic_words() -> None:
     )
 
 
+def test_query_anchor_terms_drop_alpha_shape_words() -> None:
+    assert query_anchor_terms([
+        "exercise adaptation intervention reversal",
+        "protocol expected augment observed blunted training adaptation",
+    ]) == ("training",)
+
+
 def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
     hits = [
         CorpusHit(

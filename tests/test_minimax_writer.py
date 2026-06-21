@@ -10,6 +10,7 @@ from v5_memo.minimax_writer import (
     MiniMaxM3MemoWriter,
     MiniMaxM3SearchPlanner,
     build_minimax_prompt,
+    build_minimax_search_prompt,
     build_minimax_selection_prompt,
     parse_minimax_queries,
     parse_minimax_selection,
@@ -238,6 +239,19 @@ def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
     assert "Receipt roles:" in prompt
     assert "metric mismatch" in prompt
     assert "cross-domain transfer" in prompt
+
+
+def test_minimax_planner_prompt_prefers_reversal_pairs_not_reviews() -> None:
+    prompt = build_minimax_search_prompt(
+        topic="exercise adaptation supplement reversal",
+        seed_queries=["exercise adaptation"],
+        limit=4,
+    )
+
+    assert "promise->outcome reversal" in prompt
+    assert "observed/blunted/attenuated/impaired/null/reduced" in prompt
+    assert "same intervention/construct/program" in prompt
+    assert "Avoid broad review, meta-analysis, position-stand" in prompt
 
 
 def test_minimax_memo_validation_rejects_dropped_receipt_ids() -> None:
@@ -521,6 +535,8 @@ def test_minimax_selection_prompt_names_weak_bridge_failures() -> None:
     assert "unsupported domain jump" in prompt
     assert "generic \"evidence is mixed\"" in prompt
     assert "promise/mechanism receipt plus one observed outcome receipt" in prompt
+    assert "only commonality is a broad endpoint" in prompt
+    assert "Reject review/position-stand/meta-analysis/survey plus one trial" in prompt
     assert "Do not invent candidates or receipt IDs" in prompt
 
 

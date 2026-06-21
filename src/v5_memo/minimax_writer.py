@@ -361,6 +361,11 @@ Rules:
 - Search is over a massive academic corpus, so use specific scientific terms.
 - Do not make one huge query; make diverse 3-7 term queries.
 - Include synonym/adjacent-mechanism angles, not just restatements.
+- Prefer promise->outcome reversal searches: protocol/expected/designed/mimic/augment
+  paired with observed/blunted/attenuated/impaired/null/reduced.
+- Prefer same intervention/construct/program across evidence objects.
+- Avoid broad review, meta-analysis, position-stand, guideline, or survey queries unless
+  the seed topic explicitly asks for synthesis evidence.
 - Prefer queries likely to surface real papers, not essay phrases.
 - Return JSON only: an array of strings.
 """
@@ -382,6 +387,10 @@ Rules:
 - Strong: same intervention/construct/program, direct reversal, endpoint split, or negative/null boundary.
 - Strongest: one promise/mechanism receipt plus one observed outcome receipt sharing the same core construct.
 - Weak: adjacent papers, broad survey plus case study, unsupported domain jump, or generic "evidence is mixed".
+- Reject shared-vocabulary bridges where the only commonality is a broad endpoint,
+  sample size, method word, or generic intervention class.
+- Reject review/position-stand/meta-analysis/survey plus one trial as alpha unless
+  the synthesis paper is itself the object of contradiction.
 - If no candidate is tight enough, classify as "discovery_seed".
 - Do not invent candidates or receipt IDs.
 - Return JSON only:
