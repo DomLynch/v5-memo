@@ -415,15 +415,14 @@ def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None
     assert [payload["search_pass"] for payload in requested] == [
         "focused",
         "broad",
+        "broad",
         "adjacent",
         "falsifier",
         "citation_heavy",
-        "recency",
     ]
-    assert requested[-2]["rank_mode"] == "citation"
-    assert requested[-1]["rank_mode"] == "recency"
-    assert {hit.metadata["search_pass"] for hit in hits} >= {"focused", "citation_heavy", "recency"}
-    assert {hit.metadata["rank_mode"] for hit in hits} >= {"relevance", "citation", "recency"}
+    assert requested[-1]["rank_mode"] == "citation"
+    assert {hit.metadata["search_pass"] for hit in hits} >= {"focused", "citation_heavy"}
+    assert {hit.metadata["rank_mode"] for hit in hits} >= {"relevance", "citation"}
 
 
 def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: object) -> None:
@@ -448,8 +447,8 @@ def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: objec
     receipt = hits[0].metadata["fullraw_search_receipt"]
     assert isinstance(receipt, dict)
     assert receipt["duplicate_rate"] == 0.75
-    assert receipt["search_passes"] == ("focused", "adjacent", "falsifier", "citation_heavy")
-    assert receipt["rank_modes"] == ("relevance", "citation")
+    assert receipt["search_passes"] == ("focused", "broad", "adjacent", "falsifier")
+    assert receipt["rank_modes"] == ("relevance",)
 
 
 def test_full_raw_client_can_fail_closed_on_narrow_shard_receipt(monkeypatch: object) -> None:
@@ -871,15 +870,14 @@ def test_fullraw_search_passes_cover_breadth_depth_modes() -> None:
         "broad",
         "broad",
         "broad",
+        "broad",
+        "broad",
         "adjacent",
         "falsifier",
-        "citation_heavy",
-        "recency",
     ]
-    assert passes[-2].rank_mode == "citation"
-    assert passes[-1].rank_mode == "recency"
-    assert "mechanism outcome" in passes[-4].query
-    assert "null adverse conflicting" in passes[-3].query
+    assert all(search_pass.rank_mode == "relevance" for search_pass in passes)
+    assert "mechanism outcome" in passes[-2].query
+    assert "null adverse conflicting" in passes[-1].query
 
 
 def test_fullraw_search_passes_include_core_variant_before_depth_modes() -> None:
@@ -888,11 +886,20 @@ def test_fullraw_search_passes_include_core_variant_before_depth_modes() -> None
     assert [search_pass.name for search_pass in passes] == [
         "focused",
         "core",
+        "broad",
         "adjacent",
         "falsifier",
-        "citation_heavy",
     ]
     assert passes[1].query == "resveratrol exercise training"
+
+
+def test_fullraw_search_passes_prioritize_promise_pair_variants() -> None:
+    passes = _fullraw_search_passes(
+        "resveratrol sirt1 pgc 1a mitochondrial biogenesis endurance training",
+        limit=5,
+    )
+
+    assert "resveratrol mitochondrial" in [search_pass.query for search_pass in passes]
 
 
 def test_fullraw_rerank_prefers_abstract_backed_doi_receipts(monkeypatch: MonkeyPatch) -> None:

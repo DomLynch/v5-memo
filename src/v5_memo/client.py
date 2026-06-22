@@ -768,13 +768,13 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
     if limit <= 0:
         return []
     out: list[FullRawSearchPass] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str]] = set()
 
     def add(name: str, variant: str, rank_mode: str = "relevance") -> bool:
         clean = " ".join(variant.split())
         if not clean:
             return False
-        key = (name, clean, rank_mode)
+        key = (clean, rank_mode)
         if key in seen:
             return False
         seen.add(key)
@@ -788,7 +788,7 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
     core_variant = _fullraw_core_variant(query)
     if core_variant and add("core", core_variant):
         return out
-    pair_limit = max(0, limit - len(out) - 4)
+    pair_limit = max(0, limit - len(out) - 2)
     for variant in _fullraw_pair_variants(query, limit=pair_limit):
         if add("broad", variant):
             return out
