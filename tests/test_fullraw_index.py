@@ -1674,6 +1674,39 @@ def test_sweep_pass_prefix_prioritizes_source_breadth(tmp_path: Path) -> None:
     assert receipt["sources_searched"] == {"openalex": 1, "pubmed": 1, "semantic_scholar": 1}
 
 
+def test_sweep_pass_order_stays_source_balanced_after_first_prefix(tmp_path: Path) -> None:
+    entries: list[ShardCatalogEntry] = []
+    sources = ("openalex", "pubmed", "semantic_scholar")
+    for index in range(12):
+        source = sources[index % len(sources)]
+        entries.append(ShardCatalogEntry(
+            path=tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite",
+            batch_id=index,
+            shard_id=0,
+            sources=(source,),
+            files_completed=1,
+            papers_inserted=1000,
+            bytes_used=(12 - index) * 1_000_000,
+            cited_by_max=index,
+            topic_terms=("pregnancy",) if index % 2 == 0 else ("management",),
+        ))
+
+    selected = select_sweep_shard_entries(entries, query="pregnancy management", limit=12)
+    prioritized = fullraw_index._prioritize_sweep_pass_entries(
+        selected,
+        3,
+        query="pregnancy management",
+    )
+    first_six_receipt = shard_coverage_receipt(entries, prioritized[:6])
+
+    assert first_six_receipt["sources_searched"] == {
+        "openalex": 2,
+        "pubmed": 2,
+        "semantic_scholar": 2,
+    }
+    assert {entry.path for entry in prioritized} == {entry.path for entry in selected}
+
+
 def test_profile_relaxed_sweep_query_uses_shard_topics(tmp_path: Path) -> None:
     entries = [
         ShardCatalogEntry(
