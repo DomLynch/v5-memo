@@ -2071,6 +2071,23 @@ def _add_planned_sweep_receipt(
     receipt["sweep_planned_papers"] = planned.get("papers_searched", 0)
 
 
+def _sweep_pass_roles_sufficient(receipt: dict[str, object]) -> bool:
+    raw_passes = receipt.get("sweep_search_passes")
+    if not isinstance(raw_passes, list | tuple) or not raw_passes:
+        return True
+    planned_roles = {
+        str(pass_item.get("role"))
+        for pass_item in raw_passes
+        if isinstance(pass_item, dict) and str(pass_item.get("role", "")).strip()
+    }
+    if not planned_roles:
+        return True
+    max_passes = _int_or_none(receipt.get("sweep_max_passes")) or len(planned_roles)
+    required_roles = min(len(planned_roles), max(1, max_passes))
+    completed_roles = set(_string_tuple(receipt.get("sweep_completed_pass_roles")))
+    return len(completed_roles & planned_roles) >= required_roles
+
+
 def shard_coverage_gate_response(
     receipt: dict[str, object],
     *,
@@ -2617,7 +2634,7 @@ def run_server() -> None:
             receipt,
             min_shards_searched=min_shards_searched,
             min_sources_searched=min_sources_searched,
-        ) is None
+        ) is None and _sweep_pass_roles_sufficient(receipt)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:

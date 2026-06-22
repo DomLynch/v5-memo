@@ -2349,6 +2349,33 @@ def test_hit_diversity_receipt_reports_duplicates_and_citation_buckets() -> None
     assert receipt["result_citation_diversity"] == 3
 
 
+def test_sweep_pass_roles_sufficient_requires_planned_roles() -> None:
+    planned = [
+        {"role": "focused"},
+        {"role": "broad"},
+        {"role": "adjacent_field"},
+        {"role": "falsifier"},
+        {"role": "citation_heavy"},
+        {"role": "recency"},
+    ]
+
+    assert not fullraw_index._sweep_pass_roles_sufficient({
+        "sweep_search_passes": planned,
+        "sweep_completed_pass_roles": ["focused", "broad", "adjacent_field", "falsifier", "citation_heavy"],
+        "sweep_max_passes": 10,
+    })
+    assert fullraw_index._sweep_pass_roles_sufficient({
+        "sweep_search_passes": planned,
+        "sweep_completed_pass_roles": ["focused", "broad", "adjacent_field", "falsifier", "citation_heavy", "recency"],
+        "sweep_max_passes": 10,
+    })
+    assert fullraw_index._sweep_pass_roles_sufficient({
+        "sweep_search_passes": planned,
+        "sweep_completed_pass_roles": ["focused", "broad", "adjacent_field"],
+        "sweep_max_passes": 3,
+    })
+
+
 def test_sweep_cache_key_includes_sweep_shard_limit() -> None:
     small = fullraw_index._sweep_cache_key(
         "management forecast disclosure",
