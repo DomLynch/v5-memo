@@ -1340,6 +1340,136 @@ def test_server_auto_continues_sweep_until_receipt_is_sufficient(tmp_path: Path)
         proc.wait(timeout=10)
 
 
+def test_server_auto_sweep_skips_failed_shard_passes(tmp_path: Path) -> None:
+    invalid_batch = tmp_path / "batch_00000"
+    invalid_batch.mkdir()
+    invalid_shard = invalid_batch / "fullraw_shard_0000.sqlite"
+    invalid_shard.write_text("not sqlite")
+    (invalid_batch / "complete.json").write_text(json.dumps({
+        "batch_id": 0,
+        "files": [{"source": "openalex"}],
+        "shards": [{
+            "shard_id": 0,
+            "files_completed": 1,
+            "papers_inserted": 1,
+            "bytes_used": invalid_shard.stat().st_size,
+            "topic_terms": ["management", "forecast", "disclosure"],
+        }],
+    }))
+    for index in (1, 2):
+        batch = tmp_path / f"batch_{index:05d}"
+        batch.mkdir()
+        shard = batch / "fullraw_shard_0000.sqlite"
+        raw_file = _raw_file(tmp_path, f"auto_skip_failed_{index}", [{
+            "doi": f"https://doi.org/10.example/auto-skip-{index}",
+            "display_name": f"Management forecast disclosure skip failed {index}",
+            "abstract": "Management forecast disclosure evidence.",
+            "publication_year": 2024,
+        }])
+        index_db = FullRawFtsIndex(shard)
+        try:
+            index_db.index_files([raw_file], commit_interval=1)
+            profile = index_db.profile()
+        finally:
+            index_db.close()
+        (batch / "complete.json").write_text(json.dumps({
+            "batch_id": index,
+            "files": [{"source": "openalex"}],
+            "shards": [{
+                "shard_id": 0,
+                "files_completed": 1,
+                "papers_inserted": 1,
+                "bytes_used": shard.stat().st_size,
+                **profile,
+            }],
+        }))
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"files": []}))
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path.cwd() / "src"),
+        "V5_MEMO_FULL_RAW_INDEX_PORT": str(port),
+        "V5_MEMO_FULL_RAW_MANIFEST": str(manifest),
+        "V5_MEMO_FULL_RAW_SHARD_DIR": str(tmp_path),
+        "V5_MEMO_FULL_RAW_SHARD_TRUST_FILENAMES": "1",
+        "V5_MEMO_FULL_RAW_SHARD_MANIFEST_STATS": "1",
+        "V5_MEMO_FULL_RAW_ASYNC_SWEEP": "1",
+        "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR": str(tmp_path / "cache"),
+        "V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT": "3",
+        "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT": "1",
+        "V5_MEMO_FULL_RAW_SWEEP_MAX_PASSES": "3",
+        "V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED": "2",
+        "V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED": "1",
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "v5_memo.fullraw_index", "serve"],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        base = f"http://127.0.0.1:{port}"
+        for _ in range(50):
+            try:
+                urllib.request.urlopen(base + "/health", timeout=1).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            _, stderr = proc.communicate(timeout=1)
+            raise AssertionError(f"server did not start: {stderr}")
+
+        def post_search(*, queue_if_missing: bool = False) -> tuple[int, dict[str, object]]:
+            request = urllib.request.Request(
+                base + "/search",
+                data=json.dumps({
+                    "query": "management forecast disclosure",
+                    "top_k": 5,
+                    "cache_only": True,
+                    "queue_if_missing": queue_if_missing,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    payload = json.loads(response.read().decode())
+                    assert isinstance(payload, dict)
+                    return response.status, payload
+            except urllib.error.HTTPError as exc:
+                payload = json.loads(exc.read().decode())
+                assert isinstance(payload, dict)
+                return exc.code, payload
+
+        status, _queued = post_search(queue_if_missing=True)
+        assert status == 200
+        final_body: dict[str, object] = {}
+        for _ in range(50):
+            status, final_body = post_search()
+            if status == 200 and final_body.get("results"):
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("auto sweep did not skip failed shard")
+        meta = final_body["meta"]
+        assert isinstance(meta, dict)
+        receipt = meta["shard_receipt"]
+        assert isinstance(receipt, dict)
+        assert receipt["shards_searched"] == 2
+        assert receipt["sweep_failed_shards"] == 1
+        assert receipt["sweep_remaining_shards"] == 0
+        assert len(receipt["sweep_failed_paths"]) == 1
+        assert len(receipt["sweep_completed_paths"]) == 2
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
 def test_select_search_shard_entries_balances_sources_and_batches(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
