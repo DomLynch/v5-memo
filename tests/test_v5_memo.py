@@ -1065,6 +1065,30 @@ def test_miner_does_not_promote_position_stand_plus_trial_to_elite() -> None:
     assert all(candidate_alpha_tier(candidate) != "elite_alpha" for candidate in candidates)
 
 
+def test_miner_does_not_promote_mechanism_adjacent_cwi_pair_to_elite() -> None:
+    hits = [
+        _hit(
+            "adaptation",
+            "Cold water immersion attenuates anabolic signalling and skeletal muscle fiber hypertrophy",
+            "Cold water immersion attenuated hypertrophy after whole-body resistance training.",
+        ),
+        _hit(
+            "mechanism",
+            "Mechanism involved of post-exercise cold water immersion",
+            "Blood redistribution and increase in energy expenditure occurred during rewarming.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="cold water immersion resistance training adaptation",
+        required_anchor_terms=("cold", "water"),
+        include_discovery=True,
+    )
+
+    assert all(candidate_alpha_tier(candidate) != "elite_alpha" for candidate in candidates)
+
+
 def test_pipeline_raises_when_no_receipt_bound_candidate() -> None:
     class EmptySearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:

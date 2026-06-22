@@ -59,8 +59,8 @@ _BOUNDARY = frozenset({"boundary", "context", "dose", "endpoint", "modality", "p
 _INTENT = frozenset({"aim", "aimed", "designed", "expect", "expected", "hypothesis", "intended", "protocol", "theory"})
 _OBSERVED = frozenset({"found", "observed", "outcome", "outcomes", "reported", "result", "results", "showed"})
 _PROMISE = _INTENT | _ROLE_A | frozenset({
-    "activate", "activated", "activates", "activating", "activation", "mechanism",
-    "mechanisms", "mimetic", "mimetics", "mimic", "mimics",
+    "activate", "activated", "activates", "activating", "activation",
+    "mimetic", "mimetics", "mimic", "mimics",
 })
 _OUTCOME_ROLE = _OBSERVED | frozenset({
     "cohort", "endpoint", "endpoints", "experiment", "intervention", "randomized",
