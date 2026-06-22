@@ -136,6 +136,78 @@ def test_cli_forwards_memo_coverage_thresholds_from_env(
     assert seen["min_search_passes"] == 4
 
 
+def test_fullraw_cli_inherits_search_service_coverage_thresholds(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", "50")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", "2")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "seed",
+            "--writer",
+            "template",
+            "--topic",
+            "management forecast disclosure",
+        ],
+    )
+
+    main()
+
+    assert "Alpha memo" in capsys.readouterr().out
+    assert seen["min_shards_searched"] == 50
+    assert seen["min_sources_searched"] == 2
+
+
+def test_cli_explicit_zero_disables_inherited_coverage_threshold(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", "50")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "seed",
+            "--writer",
+            "template",
+            "--min-shards-searched",
+            "0",
+        ],
+    )
+
+    main()
+
+    assert "Alpha memo" in capsys.readouterr().out
+    assert seen["min_shards_searched"] == 0
+
+
 def test_fullraw_searcher_fails_closed_without_endpoint(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

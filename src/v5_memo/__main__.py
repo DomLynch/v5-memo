@@ -106,10 +106,27 @@ def main() -> None:
     parser.add_argument("--writer", choices=["template", "minimax"])
     parser.add_argument("--selector", choices=["deterministic", "minimax"])
     parser.add_argument("--min-alpha-tier", choices=["discovery", "publishable", "elite"])
-    parser.add_argument("--min-shards-searched", type=int, default=_int_env("V5_MEMO_MEMO_MIN_SHARDS_SEARCHED"))
-    parser.add_argument("--min-sources-searched", type=int, default=_int_env("V5_MEMO_MEMO_MIN_SOURCES_SEARCHED"))
-    parser.add_argument("--min-search-passes", type=int, default=_int_env("V5_MEMO_MEMO_MIN_SEARCH_PASSES"))
+    parser.add_argument("--min-shards-searched", type=int)
+    parser.add_argument("--min-sources-searched", type=int)
+    parser.add_argument("--min-search-passes", type=int)
     args = parser.parse_args()
+    fullraw_backed = args.searcher in {"fullraw", "hybrid", "smart"}
+    args.min_shards_searched = _coverage_threshold(
+        args.min_shards_searched,
+        primary="V5_MEMO_MEMO_MIN_SHARDS_SEARCHED",
+        fallback="V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED",
+        allow_fallback=fullraw_backed,
+    )
+    args.min_sources_searched = _coverage_threshold(
+        args.min_sources_searched,
+        primary="V5_MEMO_MEMO_MIN_SOURCES_SEARCHED",
+        fallback="V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED",
+        allow_fallback=fullraw_backed,
+    )
+    args.min_search_passes = _coverage_threshold(
+        args.min_search_passes,
+        primary="V5_MEMO_MEMO_MIN_SEARCH_PASSES",
+    )
 
     if args.coverage_report:
         print(current_search_coverage().summary)
@@ -234,10 +251,34 @@ def _topic_filter_terms(topic: str) -> tuple[str, ...]:
 
 
 def _int_env(name: str) -> int:
+    return _optional_int_env(name) or 0
+
+
+def _coverage_threshold(
+    explicit: int | None,
+    *,
+    primary: str,
+    fallback: str = "",
+    allow_fallback: bool = False,
+) -> int:
+    if explicit is not None:
+        return max(0, explicit)
+    primary_value = _optional_int_env(primary)
+    if primary_value is not None:
+        return primary_value
+    if allow_fallback and fallback:
+        return _optional_int_env(fallback) or 0
+    return 0
+
+
+def _optional_int_env(name: str) -> int | None:
     try:
-        return max(0, int(os.environ.get(name, "0")))
+        raw = os.environ.get(name)
+        if raw is None or raw.strip() == "":
+            return None
+        return max(0, int(raw))
     except ValueError:
-        return 0
+        return None
 
 
 if __name__ == "__main__":
