@@ -542,6 +542,57 @@ Receipt-bound only.""",
     assert "fibre hypertrophy" in memo
 
 
+def test_minimax_title_guard_allows_alpha_role_terms() -> None:
+    receipts = [
+        CorpusHit(
+            hit_id="cwi",
+            title="Cold water immersion attenuates skeletal muscle fiber hypertrophy",
+            abstract="The trial reported lower skeletal muscle fiber hypertrophy after cold water immersion.",
+            source="openalex",
+            doi="10.1152/japplphysiol.00127.2019",
+        ),
+        CorpusHit(
+            hit_id="recovery",
+            title="Cold water immersion and resistance training recovery",
+            abstract="The trial measured resistance training recovery after cold water immersion.",
+            source="openalex",
+            doi="10.1249/mss.0000000000001269",
+        ),
+    ]
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Cold water immersion may split recovery narrative from adaptation endpoints.",
+        bridge_terms=("cold", "water", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("cwi", "recovery"),
+        score=90,
+        novelty_score=70,
+        evidence_score=90,
+        reasons=("shape:promise_outcome_reversal", "tier:elite_alpha"),
+    )
+
+    memo = validate_minimax_memo(
+        """# Alpha memo: cold water immersion promise outcome split
+## Core signal
+Cold water immersion changes the adaptation signal.
+## The 2+2=5 angle
+The receipts split recovery language from fiber hypertrophy.
+## Why this could matter
+It challenges recovery marketing.
+## What would break the idea
+A direct trial showing adaptation benefits would break it.
+## Receipts
+- 10.1152/japplphysiol.00127.2019
+- 10.1249/mss.0000000000001269
+## Safety note
+Receipt-bound only.""",
+        receipts,
+        candidate=candidate,
+    )
+
+    assert "promise outcome split" in memo
+
+
 def test_minimax_memo_validation_accepts_displayed_openalex_work_id() -> None:
     receipt = CorpusHit(
         hit_id="https://openalex.org/W7070693264",

@@ -45,6 +45,7 @@ _TITLE_STOPWORDS = frozenset({
     "signal", "signals", "effect", "effects", "tradeoff", "tradeoffs",
     "boundary", "condition", "conditions", "hypothesis", "discovery", "seed",
     "split", "splits", "diverge", "diverges", "divergence", "outlier",
+    "promise", "outcome", "outcomes",
     "bridge", "bridges", "receipt", "receipts",
     "while", "even", "leave", "leaves", "leaving", "level", "levels", "lift", "lifts",
     "elevate", "elevates", "elevated", "elevating",
