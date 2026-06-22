@@ -22,7 +22,7 @@ _STOP = frozenset({
 _BRIDGE_STOP = _STOP | frozenset({
     "action", "compare", "compared", "comparing", "comparative", "comparison",
     "functional", "horse", "impairment", "intermittent", "learning",
-    "men", "muscle", "power", "protein", "women",
+    "men", "muscle", "power", "protein", "synthesi", "women",
     "case", "cases", "individual", "individuals", "patient", "people", "per", "person",
     "persons", "such", "thus", "when", "following", "matched",
     "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
@@ -241,6 +241,7 @@ def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 3) -> tuple[
         "response",
         "reversal",
         "stress",
+        "synthesi",
         "train",
         "trained",
         "training",

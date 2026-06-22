@@ -444,7 +444,7 @@ def test_query_anchor_terms_drop_alpha_shape_words() -> None:
 def test_query_anchor_terms_drop_broad_substrate_and_tissue_words() -> None:
     assert query_anchor_terms([
         "protein timing distribution resistance training muscle protein synthesis hypertrophy",
-    ], limit=4) == ("timing", "distribution", "synthesi", "hypertrophy")
+    ], limit=4) == ("timing", "distribution", "hypertrophy")
 
 
 def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
@@ -1010,6 +1010,30 @@ def test_miner_rejects_broad_protein_muscle_cachexia_bridge() -> None:
             "cachexia",
             "Liver and muscle protein metabolism in cachexia",
             "Cachexia reduced muscle protein metabolism without training timing or distribution endpoints.",
+        ),
+    ]
+
+    assert mine_insights(
+        hits,
+        topic="protein timing distribution resistance training muscle protein synthesis hypertrophy",
+        required_anchor_terms=query_anchor_terms([
+            "protein timing distribution resistance training muscle protein synthesis hypertrophy"
+        ]),
+        include_discovery=True,
+    ) == []
+
+
+def test_miner_rejects_broad_synthesis_duplicate_bridge() -> None:
+    hits = [
+        _hit(
+            "diphtheria-a",
+            "Studies on the mode of action of diphtheria toxin. Protein synthesis in primary heart cell cultures",
+            "Diphtheria toxin reduced protein synthesis in cell cultures.",
+        ),
+        _hit(
+            "diphtheria-b",
+            "Studies on the mode of action of diphtheria toxin: protein synthesis in primary heart cell cultures",
+            "Diphtheria toxin failed to improve protein synthesis in cell cultures.",
         ),
     ]
 
