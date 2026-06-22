@@ -1375,6 +1375,67 @@ def test_pipeline_fails_closed_when_fullraw_receipt_diversity_is_too_narrow() ->
     assert coverage["result_citation_diversity"] == 1
 
 
+def test_pipeline_fails_closed_when_actual_receipt_sources_are_too_narrow() -> None:
+    class NarrowResultSourceSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            receipt = {
+                "shards_searched": 60,
+                "sources_searched": {"openalex": 30, "semantic_scholar": 30},
+                "year_range_searched": {"min": 1990, "max": 2024},
+                "cited_by_range_searched": {"min": 0, "max": 1200},
+                "sweep_completed_pass_roles": [
+                    "focused",
+                    "broad",
+                    "adjacent_field",
+                    "falsifier",
+                    "citation_heavy",
+                    "recency",
+                ],
+                "result_duplicate_rate": 0.0,
+                "result_citation_diversity": 2,
+            }
+            return [
+                CorpusHit(
+                    hit_id="same-source-1",
+                    title="NAD salvage links sleep fragmentation to mitochondrial stress",
+                    abstract="Sleep fragmentation reduced resilience through NAD salvage and mitochondrial stress.",
+                    source="fullraw:semantic_scholar",
+                    year=2024,
+                    doi="10.same-source/1",
+                    metadata={"shard_receipt": receipt, "search_pass": "focused"},
+                ),
+                CorpusHit(
+                    hit_id="same-source-2",
+                    title="NAD salvage predicts exercise response through mitochondrial repair",
+                    abstract="Exercise improved resilience when NAD salvage and mitochondrial repair markers moved together.",
+                    source="fullraw:semantic_scholar",
+                    year=2023,
+                    doi="10.same-source/2",
+                    metadata={"shard_receipt": receipt, "search_pass": "broad"},
+                ),
+            ]
+
+    with pytest.raises(MemoBuildError, match="coverage too narrow") as exc:
+        build_alpha_memo(
+            topic="longevity resilience",
+            seed_queries=["nad mitochondrial"],
+            searcher=NarrowResultSourceSearch(),
+            min_alpha_tier="discovery_seed",
+            min_shards_searched=50,
+            min_sources_searched=2,
+            min_search_passes=6,
+            min_result_citation_diversity=2,
+            max_result_duplicate_rate=0.2,
+        )
+
+    assert exc.value.failure.details["failures"] == ("sources_searched",)
+    coverage = exc.value.failure.details["coverage"]
+    assert isinstance(coverage, dict)
+    assert coverage["sources_used"] == ("semantic_scholar",)
+    assert coverage["sources_searched"] == ("openalex", "semantic_scholar")
+
+
 def test_pipeline_blocks_title_only_elite_memos() -> None:
     class TitleOnlySearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:

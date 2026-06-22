@@ -2570,6 +2570,57 @@ def test_hit_diversity_receipt_reports_duplicates_and_citation_buckets() -> None
         "very_high": 1,
     }
     assert receipt["result_citation_diversity"] == 3
+    assert receipt["result_sources_returned"] == {}
+    assert receipt["result_source_count"] == 0
+
+
+def test_hit_merge_keeps_lower_ranked_source_diversity() -> None:
+    hits, receipt = fullraw_index._merge_hit_groups_with_receipt(
+        [
+            [
+                {
+                    "doi": "10.example/openalex-high",
+                    "source": "openalex",
+                    "score": 10.0,
+                    "cited_by_count": 500,
+                    "abstract": "OpenAlex high score.",
+                },
+                {
+                    "doi": "10.example/openalex-mid",
+                    "source": "openalex",
+                    "score": 9.0,
+                    "cited_by_count": 400,
+                    "abstract": "OpenAlex mid score.",
+                },
+            ],
+            [
+                {
+                    "doi": "10.example/semantic-low",
+                    "source": "semantic_scholar",
+                    "score": 1.0,
+                    "cited_by_count": 2,
+                    "abstract": "Semantic Scholar lower score.",
+                },
+                {
+                    "doi": "10.example/pubmed-low",
+                    "source": "pubmed",
+                    "score": 0.5,
+                    "cited_by_count": 0,
+                    "abstract": "PubMed lower score.",
+                },
+            ],
+        ],
+        limit=3,
+    )
+
+    assert [hit["source"] for hit in hits] == ["openalex", "semantic_scholar", "pubmed"]
+    assert receipt["result_sources_returned"] == {
+        "openalex": 1,
+        "pubmed": 1,
+        "semantic_scholar": 1,
+    }
+    assert receipt["result_source_count"] == 3
+    assert receipt["result_abstract_count"] == 3
 
 
 def test_sweep_pass_roles_sufficient_requires_planned_roles() -> None:

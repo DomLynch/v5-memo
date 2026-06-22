@@ -57,7 +57,8 @@ def no_alpha_failure(
 
 
 def memo_coverage_summary(receipts: Sequence[CorpusHit]) -> dict[str, object]:
-    sources: set[str] = set()
+    sources_used: set[str] = set()
+    shard_sources_searched: set[str] = set()
     search_passes: set[str] = set()
     shards_searched = 0
     years = [hit.year for hit in receipts if hit.year is not None]
@@ -66,6 +67,7 @@ def memo_coverage_summary(receipts: Sequence[CorpusHit]) -> dict[str, object]:
     result_citation_diversity = 0
     abstract_count = 0
     for hit in receipts:
+        sources_used.add(_source_provider(hit.source))
         if hit.abstract.strip():
             abstract_count += 1
         search_pass = hit.metadata.get("search_pass")
@@ -89,7 +91,9 @@ def memo_coverage_summary(receipts: Sequence[CorpusHit]) -> dict[str, object]:
         )
         raw_sources = receipt.get("sources_searched")
         if isinstance(raw_sources, dict):
-            sources.update(str(source) for source, count in raw_sources.items() if _int_value(count) > 0)
+            shard_sources_searched.update(
+                str(source) for source, count in raw_sources.items() if _int_value(count) > 0
+            )
         year_range = receipt.get("year_range_searched")
         if isinstance(year_range, dict):
             years.extend(
@@ -102,8 +106,10 @@ def memo_coverage_summary(receipts: Sequence[CorpusHit]) -> dict[str, object]:
             cited_by_max = max(cited_by_max, _int_value(cited_range.get("max")))
     return {
         "shards_searched": shards_searched,
-        "sources_searched": tuple(sorted(sources)),
-        "source_count": len(sources),
+        "sources_used": tuple(sorted(source for source in sources_used if source)),
+        "source_count": len({source for source in sources_used if source}),
+        "sources_searched": tuple(sorted(shard_sources_searched)),
+        "shard_source_count": len(shard_sources_searched),
         "year_range": {"min": min(years), "max": max(years)} if years else {"min": None, "max": None},
         "cited_by_max": cited_by_max,
         "search_passes": tuple(sorted(search_passes)),
@@ -193,6 +199,10 @@ def _string_values(value: object) -> tuple[str, ...]:
     if not isinstance(value, list | tuple):
         return ()
     return tuple(str(item) for item in value if str(item))
+
+
+def _source_provider(source: str) -> str:
+    return source.split(":", 1)[1] if source.startswith("fullraw:") else source
 
 
 def _int_or_none(value: object) -> int | None:

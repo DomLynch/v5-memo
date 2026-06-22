@@ -55,7 +55,7 @@ _STOP = {
     "el", "en", "la", "los", "metode", "pada", "penelitian",
 }
 _BACKEND = "v5-fullraw-indexed-fts5"
-_SWEEP_STRATEGY = "profile_relaxed_v7"
+_SWEEP_STRATEGY = "profile_relaxed_v8"
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
@@ -1127,7 +1127,7 @@ def _merge_hit_groups_with_receipt(
             existing = merged.get(key)
             if existing is None or _hit_score(hit) > _hit_score(existing):
                 merged[key] = hit
-    ranked = _rank_limited_hits(merged.values(), limit=limit)
+    ranked = _rank_source_diverse_hits(merged.values(), limit=limit)
     return ranked, _hit_diversity_receipt(
         raw_result_count=raw_count,
         unique_result_count=len(merged),
@@ -1144,6 +1144,9 @@ def _hit_diversity_receipt(
     duplicate_count = max(0, raw_result_count - unique_result_count)
     citation_counts = [_int_or_none(hit.get("cited_by_count")) or 0 for hit in returned_hits]
     bucket_counts: Counter[str] = Counter(_citation_bucket(count) for count in citation_counts)
+    source_counts = Counter(_hit_source(hit) for hit in returned_hits)
+    source_counts.pop("", None)
+    abstract_count = sum(1 for hit in returned_hits if _clean(hit.get("abstract")))
     return {
         "result_count_raw": raw_result_count,
         "result_count_unique": unique_result_count,
@@ -1157,6 +1160,9 @@ def _hit_diversity_receipt(
         ),
         "result_citation_bucket_counts": dict(sorted(bucket_counts.items())),
         "result_citation_diversity": sum(1 for count in bucket_counts.values() if count > 0),
+        "result_sources_returned": dict(sorted(source_counts.items())),
+        "result_source_count": len(source_counts),
+        "result_abstract_count": abstract_count,
     }
 
 
@@ -1182,6 +1188,45 @@ def _rank_limited_hits(
         key=lambda hit: (_hit_score(hit), _int_or_none(hit.get("cited_by_count")) or 0),
         reverse=True,
     )[: max(1, min(limit, 200))]
+
+
+def _rank_source_diverse_hits(
+    hits: Iterable[dict[str, object]],
+    *,
+    limit: int,
+) -> list[dict[str, object]]:
+    ranked = _rank_limited_hits(hits, limit=200)
+    limit = max(1, min(limit, 200))
+    by_source: dict[str, list[dict[str, object]]] = {}
+    for hit in ranked:
+        by_source.setdefault(_hit_source(hit), []).append(hit)
+    ordered: list[dict[str, object]] = []
+    for source in sorted(by_source, key=lambda item: (_hit_score(by_source[item][0]), item), reverse=True):
+        _extend_unique_hits(ordered, by_source[source][:1], limit)
+    _extend_unique_hits(ordered, ranked, limit)
+    return ordered
+
+
+def _extend_unique_hits(
+    out: list[dict[str, object]],
+    hits: Iterable[dict[str, object]],
+    limit: int,
+) -> None:
+    if len(out) >= limit:
+        return
+    seen = {_dedupe_key(hit) for hit in out}
+    for hit in hits:
+        key = _dedupe_key(hit)
+        if key in seen:
+            continue
+        out.append(hit)
+        seen.add(key)
+        if len(out) >= limit:
+            return
+
+
+def _hit_source(hit: dict[str, object]) -> str:
+    return _clean(hit.get("source") or hit.get("raw_source") or hit.get("provider")).casefold()
 
 
 def select_search_shard_paths(paths: list[Path]) -> list[Path]:
