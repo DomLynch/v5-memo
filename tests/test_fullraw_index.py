@@ -2000,6 +2000,141 @@ def test_server_auto_sweep_skips_failed_shard_passes(tmp_path: Path) -> None:
         proc.wait(timeout=10)
 
 
+def test_server_sweep_expands_selection_after_failed_shards(tmp_path: Path) -> None:
+    for index in range(4):
+        batch = tmp_path / f"batch_{index:05d}"
+        batch.mkdir()
+        invalid_shard = batch / "fullraw_shard_0000.sqlite"
+        invalid_shard.write_text("not sqlite")
+        (batch / "complete.json").write_text(json.dumps({
+            "batch_id": index,
+            "files": [{"source": "openalex"}],
+            "shards": [{
+                "shard_id": 0,
+                "files_completed": 1,
+                "papers_inserted": 1,
+                "bytes_used": invalid_shard.stat().st_size,
+                "cited_by_max": 1000 - index,
+                "topic_terms": ["management", "forecast", "disclosure"],
+            }],
+        }))
+    for index in range(4, 10):
+        batch = tmp_path / f"batch_{index:05d}"
+        batch.mkdir()
+        shard = batch / "fullraw_shard_0000.sqlite"
+        raw_file = _raw_file(tmp_path, f"expand_after_failed_{index}", [{
+            "doi": f"https://doi.org/10.example/expand-failed-{index}",
+            "display_name": f"Management forecast disclosure risk replacement {index}",
+            "abstract": "Management forecast disclosure risk replacement evidence.",
+            "publication_year": 2024,
+            "cited_by_count": index,
+        }])
+        index_db = FullRawFtsIndex(shard)
+        try:
+            index_db.index_files([raw_file], commit_interval=1)
+            profile = index_db.profile()
+        finally:
+            index_db.close()
+        (batch / "complete.json").write_text(json.dumps({
+            "batch_id": index,
+            "files": [{"source": "openalex"}],
+            "shards": [{
+                "shard_id": 0,
+                "files_completed": 1,
+                "papers_inserted": 1,
+                "bytes_used": shard.stat().st_size,
+                **profile,
+            }],
+        }))
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"files": []}))
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path.cwd() / "src"),
+        "V5_MEMO_FULL_RAW_INDEX_PORT": str(port),
+        "V5_MEMO_FULL_RAW_MANIFEST": str(manifest),
+        "V5_MEMO_FULL_RAW_SHARD_DIR": str(tmp_path),
+        "V5_MEMO_FULL_RAW_SHARD_TRUST_FILENAMES": "1",
+        "V5_MEMO_FULL_RAW_SHARD_MANIFEST_STATS": "1",
+        "V5_MEMO_FULL_RAW_ASYNC_SWEEP": "1",
+        "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR": str(tmp_path / "cache"),
+        "V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT": "8",
+        "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT": "2",
+        "V5_MEMO_FULL_RAW_SWEEP_MAX_PASSES": "5",
+        "V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED": "5",
+        "V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED": "1",
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "v5_memo.fullraw_index", "serve"],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        base = f"http://127.0.0.1:{port}"
+        for _ in range(50):
+            try:
+                urllib.request.urlopen(base + "/health", timeout=1).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            _, stderr = proc.communicate(timeout=1)
+            raise AssertionError(f"server did not start: {stderr}")
+
+        def post_search(*, queue_if_missing: bool = False) -> tuple[int, dict[str, object]]:
+            request = urllib.request.Request(
+                base + "/search",
+                data=json.dumps({
+                    "query": "management forecast disclosure",
+                    "top_k": 5,
+                    "cache_only": True,
+                    "queue_if_missing": queue_if_missing,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    payload = json.loads(response.read().decode())
+                    assert isinstance(payload, dict)
+                    return response.status, payload
+            except urllib.error.HTTPError as exc:
+                payload = json.loads(exc.read().decode())
+                assert isinstance(payload, dict)
+                return exc.code, payload
+
+        status, _queued = post_search(queue_if_missing=True)
+        assert status == 200
+        final_body: dict[str, object] = {}
+        for _ in range(200):
+            status, final_body = post_search(queue_if_missing=True)
+            if status == 200 and final_body.get("results"):
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("sweep did not replace failed selected shards")
+        meta = final_body["meta"]
+        assert isinstance(meta, dict)
+        receipt = meta["shard_receipt"]
+        assert isinstance(receipt, dict)
+        assert receipt["shards_searched"] >= 5
+        assert receipt["sweep_failed_shards"] == 4
+        assert receipt["sweep_selected_shards"] > 8
+        assert len(receipt["sweep_completed_paths"]) >= 5
+        results = final_body["results"]
+        assert isinstance(results, list)
+        assert len(results) == 5
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
 def test_select_search_shard_entries_balances_sources_and_batches(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -2222,6 +2357,45 @@ def test_sweep_pass_order_stays_source_balanced_after_first_prefix(tmp_path: Pat
         "semantic_scholar": 2,
     }
     assert {entry.path for entry in prioritized} == {entry.path for entry in selected}
+
+
+def test_expanded_sweep_reorders_replacements_before_old_pending_tail(tmp_path: Path) -> None:
+    attempted = ShardCatalogEntry(
+        path=tmp_path / "attempted.sqlite",
+        batch_id=0,
+        shard_id=0,
+        sources=("openalex",),
+        files_completed=1,
+        papers_inserted=1,
+        bytes_used=1,
+    )
+    old_large = ShardCatalogEntry(
+        path=tmp_path / "old-large.sqlite",
+        batch_id=1,
+        shard_id=0,
+        sources=("openalex",),
+        files_completed=1,
+        papers_inserted=1,
+        bytes_used=9_000_000_000,
+    )
+    replacement_small = ShardCatalogEntry(
+        path=tmp_path / "replacement-small.sqlite",
+        batch_id=2,
+        shard_id=0,
+        sources=("openalex",),
+        files_completed=1,
+        papers_inserted=1,
+        bytes_used=1,
+    )
+
+    reordered = fullraw_index._reorder_expanded_sweep_entries(
+        [attempted, old_large],
+        [attempted, replacement_small, old_large],
+        attempted_paths={str(attempted.path)},
+        limit=3,
+    )
+
+    assert reordered == [attempted, replacement_small, old_large]
 
 
 def test_profile_relaxed_sweep_query_uses_shard_topics(tmp_path: Path) -> None:

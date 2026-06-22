@@ -55,7 +55,7 @@ _STOP = {
     "el", "en", "la", "los", "metode", "pada", "penelitian",
 }
 _BACKEND = "v5-fullraw-indexed-fts5"
-_SWEEP_STRATEGY = "profile_relaxed_v4"
+_SWEEP_STRATEGY = "profile_relaxed_v6"
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
@@ -1371,6 +1371,28 @@ def _cache_fit_warm_entries(
     return ordered
 
 
+def _reorder_expanded_sweep_entries(
+    current: list[ShardCatalogEntry],
+    expanded: list[ShardCatalogEntry],
+    *,
+    attempted_paths: set[str],
+    limit: int,
+) -> list[ShardCatalogEntry]:
+    attempted_entries = [entry for entry in current if str(entry.path) in attempted_paths]
+    reordered = list(attempted_entries)
+    _extend_unique_entries(
+        reordered,
+        (entry for entry in expanded if str(entry.path) not in attempted_paths),
+        limit,
+    )
+    _extend_unique_entries(
+        reordered,
+        (entry for entry in current if str(entry.path) not in attempted_paths),
+        limit,
+    )
+    return reordered
+
+
 def _profile_relaxed_sweep_query(
     query: str,
     entries: list[ShardCatalogEntry],
@@ -2541,7 +2563,47 @@ def run_server() -> None:
                     _string_tuple((existing.receipt if existing else {}).get("sweep_completed_pass_roles"))
                 )
                 receipt: dict[str, object] = existing.receipt if existing else {}
+
+                def expand_sweep_entries_for_failures() -> None:
+                    nonlocal planned_receipt, sweep_entries, sweep_passes
+                    if min_shards_searched <= 0:
+                        return
+                    target_limit = min(
+                        len(catalog),
+                        max(
+                            sweep_shard_limit,
+                            min_shards_searched + len(failed_path_strings) + sweep_pass_shard_limit,
+                        ),
+                    )
+                    if target_limit <= len(sweep_entries):
+                        return
+                    expanded_entries = select_sweep_shard_entries(
+                        catalog,
+                        query=query,
+                        limit=target_limit,
+                    )
+                    expanded_entries = _prioritize_sweep_pass_entries(
+                        expanded_entries,
+                        sweep_pass_shard_limit,
+                        query=query,
+                    )
+                    expanded_entries = _cache_fit_warm_entries(
+                        catalog,
+                        expanded_entries,
+                        query=query,
+                        target_ready=min_shards_searched,
+                    )
+                    sweep_entries = _reorder_expanded_sweep_entries(
+                        sweep_entries,
+                        expanded_entries,
+                        attempted_paths=completed_path_strings | failed_path_strings,
+                        limit=target_limit,
+                    )
+                    planned_receipt = shard_coverage_receipt(catalog, sweep_entries)
+                    sweep_passes = _sweep_search_passes(query, sweep_entries, rank_mode=rank_mode)
+
                 for pass_index in range(sweep_max_passes):
+                    expand_sweep_entries_for_failures()
                     pass_plan = sweep_passes[(previous_passes + pass_index) % len(sweep_passes)]
                     remaining_entries = [
                         entry
@@ -2567,6 +2629,7 @@ def run_server() -> None:
                     failed_path_strings.update(
                         str(entry.path) for entry in pass_entries if str(entry.path) not in completed_path_strings
                     )
+                    expand_sweep_entries_for_failures()
                     searched_entries = [entry for entry in sweep_entries if str(entry.path) in completed_path_strings]
                     receipt = shard_coverage_receipt(catalog, searched_entries)
                     _add_planned_sweep_receipt(receipt, planned_receipt)
