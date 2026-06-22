@@ -934,6 +934,7 @@ def search_shard_entries(
     year_min: int = 1900,
     year_max: int = 2100,
     rank_mode: str = "relevance",
+    workers: int | None = None,
 ) -> list[dict[str, object]]:
     return _search_shard_paths(
         [entry.path for entry in entries],
@@ -942,6 +943,7 @@ def search_shard_entries(
         year_min=year_min,
         year_max=year_max,
         rank_mode=rank_mode,
+        workers=workers,
     )
 
 
@@ -953,10 +955,12 @@ def _search_shard_paths(
     year_min: int,
     year_max: int,
     rank_mode: str,
+    workers: int | None = None,
 ) -> list[dict[str, object]]:
     merged: dict[str, dict[str, object]] = {}
-    workers = max(1, min(int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "8")), len(paths) or 1))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    worker_count = workers if workers is not None else int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "8"))
+    worker_count = max(1, min(worker_count, len(paths) or 1))
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
         futures = [
             pool.submit(_search_one_shard, path, query, limit, year_min, year_max, rank_mode)
             for path in paths
@@ -1661,6 +1665,8 @@ def run_server() -> None:
     min_sources_searched = _positive_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED") or 0
     sweep_enabled = os.environ.get("V5_MEMO_FULL_RAW_ASYNC_SWEEP", "").casefold() in {"1", "true", "yes"}
     sweep_ttl = _float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS", "")) or 86400.0
+    sweep_workers = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKERS") or 1
+    sweep_max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
     sweep_cache_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR", "").strip()
     sweep_cache_dir = Path(sweep_cache_dir_config) if sweep_cache_dir_config else None
     manifest_path = Path(
@@ -1772,6 +1778,8 @@ def run_server() -> None:
         with sweep_lock:
             if key in sweep_inflight:
                 return "running"
+            if len(sweep_inflight) >= sweep_max_inflight:
+                return "busy"
             sweep_inflight.add(key)
 
         def worker() -> None:
@@ -1783,6 +1791,7 @@ def run_server() -> None:
                     year_min=year_min,
                     year_max=year_max,
                     rank_mode=rank_mode,
+                    workers=sweep_workers,
                 )
                 receipt = shard_coverage_receipt(catalog, catalog)
                 sweep_cache_put(key, SweepCacheEntry(time.time(), hits, receipt))
@@ -2277,7 +2286,7 @@ def _first_fts_term(value: str) -> str:
 def _profile_topic_terms(rows: Iterable[sqlite3.Row], *, limit: int) -> tuple[str, ...]:
     counts: Counter[str] = Counter()
     for row in rows:
-        text = f"{row['title'] or ''} {row['abstract'] or ''} {row['journal'] or ''}"
+        text = f"{row['title'] or ''} {row['abstract'] or ''}"
         counts.update(_fts_terms(text))
     return tuple(term for term, _count in counts.most_common(max(1, limit)))
 
