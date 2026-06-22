@@ -1197,6 +1197,21 @@ def test_server_async_sweep_caches_all_shard_results(tmp_path: Path) -> None:
         assert receipt["sweep_strategy"] == fullraw_index._SWEEP_STRATEGY
         assert receipt["sweep_query"] == "management forecast disclosure"
         assert receipt["sweep_original_query"] == "voluntary management earnings forecast disclosure"
+        assert receipt["sweep_completed_pass_roles"] == ["focused"]
+        search_passes = receipt["sweep_search_passes"]
+        assert isinstance(search_passes, list)
+        assert [item["role"] for item in search_passes] == [
+            "focused",
+            "broad",
+            "adjacent_field",
+            "falsifier",
+            "citation_heavy",
+            "recency",
+        ]
+        assert receipt["result_count_raw"] == 2
+        assert receipt["result_count_unique"] == 2
+        assert receipt["result_duplicate_rate"] == 0.0
+        assert receipt["result_citation_diversity"] >= 1
         assert len(results) == 2
     finally:
         proc.terminate()
@@ -1273,7 +1288,7 @@ def test_server_rejects_narrow_cached_sweep_receipt(tmp_path: Path) -> None:
             request = urllib.request.Request(
                 base + "/search",
                 data=json.dumps({
-                    "query": "management forecast disclosure",
+                    "query": "voluntary management earnings forecast disclosure",
                     "top_k": 5,
                     "cache_only": True,
                     "queue_if_missing": queue_if_missing,
@@ -1302,6 +1317,12 @@ def test_server_rejects_narrow_cached_sweep_receipt(tmp_path: Path) -> None:
                     "min_sources_searched": 1,
                 }
                 assert body["shard_receipt"]["shards_searched"] == 1
+                assert (
+                    body["shard_receipt"]["sweep_original_query"]
+                    == "voluntary management earnings forecast disclosure"
+                )
+                assert body["shard_receipt"]["sweep_query"] == "management forecast disclosure"
+                assert body["shard_receipt"]["sweep_completed_pass_roles"] == ["focused"]
                 break
             time.sleep(0.1)
         else:
@@ -2140,6 +2161,81 @@ def test_profile_relaxed_sweep_query_falls_back_to_term_map_aliases(tmp_path: Pa
     )
 
     assert relaxed == "management forecast disclosure"
+
+
+def test_sweep_search_passes_cover_required_retrieval_modes(tmp_path: Path) -> None:
+    entries = [
+        ShardCatalogEntry(
+            path=tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite",
+            batch_id=index,
+            shard_id=0,
+            sources=("openalex",),
+            files_completed=1,
+            papers_inserted=100,
+            bytes_used=1000,
+            topic_terms=topic_terms,
+        )
+        for index, topic_terms in enumerate([
+            ("management", "forecast"),
+            ("forecast", "disclosure"),
+            ("supply", "chain"),
+            ("longevity", "exercise"),
+        ])
+    ]
+
+    passes = fullraw_index._sweep_search_passes(
+        "voluntary management earnings forecast disclosure",
+        entries,
+        rank_mode="relevance",
+    )
+
+    assert [pass_item.role for pass_item in passes] == [
+        "focused",
+        "broad",
+        "adjacent_field",
+        "falsifier",
+        "citation_heavy",
+        "recency",
+    ]
+    assert passes[0].query == "management forecast disclosure"
+    assert passes[0].rank_mode == "relevance"
+    assert passes[2].query == "supply chain longevity"
+    assert passes[3].query == "management risk"
+    assert passes[4].rank_mode == "citation"
+    assert passes[5].rank_mode == "recency"
+
+
+def test_hit_diversity_receipt_reports_duplicates_and_citation_buckets() -> None:
+    hits, receipt = fullraw_index._merge_hit_groups_with_receipt(
+        [
+            [
+                {"doi": "10.example/one", "score": 1.0, "cited_by_count": 0},
+                {"doi": "10.example/two", "score": 1.0, "cited_by_count": 25},
+            ],
+            [
+                {"doi": "10.example/one", "score": 2.0, "cited_by_count": 1200},
+                {"doi": "10.example/three", "score": 1.0, "cited_by_count": 250},
+            ],
+        ],
+        limit=5,
+    )
+
+    assert [hit["doi"] for hit in hits] == [
+        "10.example/one",
+        "10.example/three",
+        "10.example/two",
+    ]
+    assert receipt["result_count_raw"] == 4
+    assert receipt["result_count_unique"] == 3
+    assert receipt["result_duplicate_count"] == 1
+    assert receipt["result_duplicate_rate"] == 0.25
+    assert receipt["result_cited_by_range"] == {"min": 25, "max": 1200}
+    assert receipt["result_citation_bucket_counts"] == {
+        "high": 1,
+        "medium": 1,
+        "very_high": 1,
+    }
+    assert receipt["result_citation_diversity"] == 3
 
 
 def test_sweep_cache_key_includes_sweep_shard_limit() -> None:
