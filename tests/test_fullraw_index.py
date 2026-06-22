@@ -30,6 +30,7 @@ from v5_memo.fullraw_index import (
     search_shards,
     select_search_shard_entries,
     select_search_shard_paths,
+    select_sweep_shard_entries,
     shard_coverage_gate_response,
     shard_coverage_receipt,
 )
@@ -845,6 +846,61 @@ def test_select_search_shard_entries_uses_profile_diversity(
     topic_terms_searched = receipt["topic_terms_searched"]
     assert isinstance(topic_terms_searched, tuple)
     assert "forecast" in topic_terms_searched
+
+
+def test_select_sweep_shard_entries_expands_relevant_scope(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    entries: list[ShardCatalogEntry] = []
+    sources = ("openalex", "semantic_scholar", "pubmed")
+    for index in range(18):
+        topic_terms = ("management", "forecast") if index % 4 == 0 else ("longevity",)
+        entries.append(ShardCatalogEntry(
+            path=tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite",
+            batch_id=index,
+            shard_id=0,
+            sources=(sources[index % len(sources)],),
+            files_completed=1,
+            papers_inserted=100 + index,
+            bytes_used=1000,
+            cited_by_max=index,
+            topic_terms=topic_terms,
+        ))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "3")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "balanced")
+
+    foreground = select_search_shard_entries(entries, query="management forecast disclosure")
+    sweep = select_sweep_shard_entries(entries, query="management forecast disclosure", limit=9)
+    receipt = shard_coverage_receipt(entries, sweep)
+
+    assert len(foreground) == 3
+    assert len(sweep) == 9
+    assert {entry.sources[0] for entry in sweep} == {"openalex", "semantic_scholar", "pubmed"}
+    assert sum(1 for entry in sweep if "forecast" in entry.topic_terms) >= 3
+    assert receipt["partial_shard_search"] is True
+    assert receipt["shards_searched"] == 9
+
+
+def test_sweep_cache_key_includes_sweep_shard_limit() -> None:
+    small = fullraw_index._sweep_cache_key(
+        "management forecast disclosure",
+        limit=5,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="citation",
+        sweep_shard_limit=32,
+    )
+    large = fullraw_index._sweep_cache_key(
+        "management forecast disclosure",
+        limit=5,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="citation",
+        sweep_shard_limit=128,
+    )
+
+    assert small != large
 
 
 def test_shard_coverage_gate_response_rejects_too_narrow_search() -> None:

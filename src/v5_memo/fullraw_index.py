@@ -1012,6 +1012,40 @@ def select_search_shard_entries(
     return _select_balanced_shard_entries(entries, limit, query=query)
 
 
+def select_sweep_shard_entries(
+    entries: list[ShardCatalogEntry],
+    *,
+    query: str = "",
+    limit: int | None = None,
+) -> list[ShardCatalogEntry]:
+    entries = sorted(entries, key=lambda entry: (entry.batch_id, entry.shard_id, str(entry.path)))
+    if not entries:
+        return []
+    sweep_limit = limit if limit is not None else (_positive_int_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT") or 128)
+    if sweep_limit >= len(entries):
+        return entries
+    sweep_limit = max(1, sweep_limit)
+    selected: list[ShardCatalogEntry] = []
+    query_terms = set(_fts_terms(query))
+    if query_terms:
+        relevant = [
+            entry
+            for entry in _rotate_entries(entries, _query_offset(f"sweep:{query}", len(entries)))
+            if query_terms & set(entry.topic_terms)
+        ]
+        relevant.sort(
+            key=lambda entry: (
+                len(query_terms & set(entry.topic_terms)),
+                entry.cited_by_max,
+                entry.papers_inserted,
+            ),
+            reverse=True,
+        )
+        _extend_unique_entries(selected, relevant, min(sweep_limit, max(1, sweep_limit * 2 // 3)))
+    _extend_unique_entries(selected, _select_balanced_shard_entries(entries, sweep_limit, query=query), sweep_limit)
+    return selected
+
+
 def _select_balanced_shard_entries(
     entries: list[ShardCatalogEntry],
     limit: int,
@@ -1667,6 +1701,7 @@ def run_server() -> None:
     sweep_ttl = _float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS", "")) or 86400.0
     sweep_workers = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKERS") or 1
     sweep_max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
+    sweep_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT") or 128
     sweep_cache_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR", "").strip()
     sweep_cache_dir = Path(sweep_cache_dir_config) if sweep_cache_dir_config else None
     manifest_path = Path(
@@ -1784,8 +1819,9 @@ def run_server() -> None:
 
         def worker() -> None:
             try:
+                sweep_entries = select_sweep_shard_entries(catalog, query=query, limit=sweep_shard_limit)
                 hits = search_shard_entries(
-                    catalog,
+                    sweep_entries,
                     query,
                     limit=limit,
                     year_min=year_min,
@@ -1793,7 +1829,9 @@ def run_server() -> None:
                     rank_mode=rank_mode,
                     workers=sweep_workers,
                 )
-                receipt = shard_coverage_receipt(catalog, catalog)
+                receipt = shard_coverage_receipt(catalog, sweep_entries)
+                receipt["sweep_scope"] = "relevant"
+                receipt["sweep_shard_limit"] = sweep_shard_limit
                 sweep_cache_put(key, SweepCacheEntry(time.time(), hits, receipt))
             except Exception:
                 with sweep_lock:
@@ -1857,7 +1895,14 @@ def run_server() -> None:
                 return
             started = time.monotonic()
             catalog = current_catalog() if shard_dir is not None else []
-            cache_key = _sweep_cache_key(query, limit=limit, year_min=year_min, year_max=year_max, rank_mode=rank_mode)
+            cache_key = _sweep_cache_key(
+                query,
+                limit=limit,
+                year_min=year_min,
+                year_max=year_max,
+                rank_mode=rank_mode,
+                sweep_shard_limit=sweep_shard_limit,
+            )
             cached = sweep_cache_get(cache_key) if catalog else None
             sweep_status = "disabled"
             if cached is not None:
@@ -1921,6 +1966,8 @@ def run_server() -> None:
                         "enabled": sweep_enabled and bool(catalog),
                         "status": sweep_status,
                         "cache_key": cache_key if sweep_enabled and catalog else "",
+                        "scope": "relevant",
+                        "shard_limit": sweep_shard_limit,
                     },
                 },
                 "results": hits,
@@ -2214,7 +2261,15 @@ def _hit_score(hit: dict[str, object]) -> float:
     return _float_or_none(hit.get("score")) or 0.0
 
 
-def _sweep_cache_key(query: str, *, limit: int, year_min: int, year_max: int, rank_mode: str) -> str:
+def _sweep_cache_key(
+    query: str,
+    *,
+    limit: int,
+    year_min: int,
+    year_max: int,
+    rank_mode: str,
+    sweep_shard_limit: int,
+) -> str:
     payload = json.dumps(
         {
             "query": query,
@@ -2222,6 +2277,7 @@ def _sweep_cache_key(query: str, *, limit: int, year_min: int, year_max: int, ra
             "year_min": year_min,
             "year_max": year_max,
             "rank_mode": _rank_mode(rank_mode),
+            "sweep_shard_limit": sweep_shard_limit,
         },
         sort_keys=True,
     )
