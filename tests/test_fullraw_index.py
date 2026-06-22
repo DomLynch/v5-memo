@@ -12,6 +12,7 @@ import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from pytest import MonkeyPatch
@@ -1805,6 +1806,37 @@ def test_build_upload_shard_batches_uploads_and_deletes_local_batches(tmp_path: 
     assert all(result.skipped for result in repeated)
 
 
+def test_build_upload_shard_batches_uses_batch_id_offset(tmp_path: Path) -> None:
+    files = [
+        _raw_file(tmp_path, "offset_a", [{
+            "doi": "https://doi.org/10.example/offset-a",
+            "display_name": "Offset batch evidence A",
+        }]),
+        _raw_file(tmp_path, "offset_b", [{
+            "doi": "https://doi.org/10.example/offset-b",
+            "display_name": "Offset batch evidence B",
+        }]),
+    ]
+    remote = tmp_path / "remote"
+
+    results = build_upload_shard_batches(
+        files,
+        shard_dir=tmp_path / "local-build",
+        upload_remote=f"file://{remote}",
+        batch_files=1,
+        shard_count=1,
+        workers=1,
+        commit_interval=1,
+        delete_local=True,
+        batch_id_offset=90000,
+    )
+
+    assert [result.batch_id for result in results] == [90000, 90001]
+    assert (remote / "batch_90000" / "complete.json").exists()
+    assert (remote / "batch_90001" / "complete.json").exists()
+    assert not (remote / "batch_00000").exists()
+
+
 def test_build_upload_shard_batches_uploads_with_corrupt_file_quarantined(tmp_path: Path) -> None:
     good = _raw_file(tmp_path, "good_batch", [{
         "doi": "https://doi.org/10.example/good-batch",
@@ -1893,3 +1925,50 @@ def test_build_upload_shards_cli_exits_nonzero_on_failed_batch(
         fullraw_index.main()
 
     assert exc.value.code == 2
+
+
+def test_build_upload_shards_cli_filters_source_and_offsets_batches(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    files = [
+        RawFile(source="openalex", format="openalex_jsonl", remote="file:///openalex.gz"),
+        RawFile(source="pubmed", format="pubmed_xml", remote="file:///pubmed-a.gz"),
+        RawFile(source="semantic_scholar", format="semantic_scholar_jsonl", remote="file:///s2.gz"),
+        RawFile(source="pubmed", format="pubmed_xml", remote="file:///pubmed-b.gz"),
+    ]
+    seen: dict[str, object] = {}
+
+    def fake_build_upload_shard_batches(
+        selected: list[RawFile],
+        **kwargs: object,
+    ) -> list[ShardBatchResult]:
+        seen["files"] = selected
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fullraw_index.py",
+            "build-upload-shards",
+            "--source-filter",
+            "pubmed",
+            "--batch-id-offset",
+            "90000",
+            "--upload-remote",
+            f"file://{tmp_path / 'remote'}",
+        ],
+    )
+    monkeypatch.setattr(fullraw_index, "load_or_build_manifest", lambda *_args, **_kwargs: files)
+    monkeypatch.setattr(fullraw_index, "build_upload_shard_batches", fake_build_upload_shard_batches)
+
+    fullraw_index.main()
+
+    selected_files = cast(list[RawFile], seen["files"])
+    assert [raw_file.remote for raw_file in selected_files] == [
+        "file:///pubmed-a.gz",
+        "file:///pubmed-b.gz",
+    ]
+    assert seen["batch_id_offset"] == 90000
