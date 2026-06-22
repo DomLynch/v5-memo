@@ -1608,12 +1608,19 @@ def shard_coverage_receipt(
     entries: list[ShardCatalogEntry],
     selected: list[ShardCatalogEntry],
 ) -> dict[str, object]:
+    sources_total = _source_counts(entries)
+    sources_searched = _source_counts(selected)
     return {
         "shards_total": len(entries),
         "shards_searched": len(selected),
         "partial_shard_search": len(entries) > len(selected),
-        "sources_total": _source_counts(entries),
-        "sources_searched": _source_counts(selected),
+        "sources_total": sources_total,
+        "sources_searched": sources_searched,
+        "source_count_total": len(sources_total),
+        "source_count_searched": len(sources_searched),
+        "sources_missing_from_search": tuple(
+            source for source in sorted(sources_total) if source not in sources_searched
+        ),
         "batch_range_total": _batch_range(entries),
         "batch_range_searched": _batch_range(selected),
         "year_range_total": _year_range(entries),
@@ -1624,6 +1631,25 @@ def shard_coverage_receipt(
         "papers_total": sum(entry.papers_inserted for entry in entries),
         "papers_searched": sum(entry.papers_inserted for entry in selected),
     }
+
+
+def _add_planned_sweep_receipt(
+    receipt: dict[str, object],
+    planned: dict[str, object],
+) -> None:
+    receipt["sweep_planned_shards"] = planned.get("shards_searched", 0)
+    receipt["sweep_planned_sources"] = planned.get("sources_searched", {})
+    receipt["sweep_planned_source_count"] = planned.get("source_count_searched", 0)
+    receipt["sweep_planned_year_range"] = planned.get(
+        "year_range_searched",
+        {"min": None, "max": None},
+    )
+    receipt["sweep_planned_cited_by_range"] = planned.get(
+        "cited_by_range_searched",
+        {"min": 0, "max": 0},
+    )
+    receipt["sweep_planned_topic_terms"] = planned.get("topic_terms_searched", ())
+    receipt["sweep_planned_papers"] = planned.get("papers_searched", 0)
 
 
 def shard_coverage_gate_response(
@@ -2047,6 +2073,7 @@ def run_server() -> None:
         def worker() -> None:
             try:
                 sweep_entries = select_sweep_shard_entries(catalog, query=query, limit=sweep_shard_limit)
+                planned_receipt = shard_coverage_receipt(catalog, sweep_entries)
                 sweep_query = _profile_relaxed_sweep_query(query, sweep_entries)
                 completed_path_strings = _sweep_completed_path_strings(existing.receipt if existing else {})
                 failed_path_strings = _sweep_failed_path_strings(existing.receipt if existing else {})
@@ -2079,6 +2106,7 @@ def run_server() -> None:
                     )
                     searched_entries = [entry for entry in sweep_entries if str(entry.path) in completed_path_strings]
                     receipt = shard_coverage_receipt(catalog, searched_entries)
+                    _add_planned_sweep_receipt(receipt, planned_receipt)
                     receipt["sweep_scope"] = "relevant"
                     receipt["sweep_shard_limit"] = sweep_shard_limit
                     receipt["sweep_selected_shards"] = len(sweep_entries)

@@ -431,6 +431,14 @@ def test_query_anchor_terms_normalize_light_morphology() -> None:
 def test_query_anchor_terms_drop_broad_topic_words() -> None:
     assert query_anchor_terms(["longevity aging adaptation healthspan pharmacology resveratrol training"]) == (
         "resveratrol",
+        "training",
+    )
+
+
+def test_query_anchor_terms_backfill_context_for_single_specific_anchor() -> None:
+    assert query_anchor_terms(["resveratrol exercise training adaptation"]) == (
+        "resveratrol",
+        "exercise",
     )
 
 
@@ -1299,6 +1307,34 @@ def test_pipeline_fails_closed_when_memo_coverage_is_too_narrow() -> None:
         "sources_searched",
         "search_passes",
     )
+
+
+def test_pipeline_blocks_title_only_elite_memos() -> None:
+    class TitleOnlySearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return [
+                _hit(
+                    "protocol",
+                    "Metformin to augment strength training effective response in seniors",
+                    "",
+                ),
+                _hit(
+                    "outcome",
+                    "Metformin blunts muscle hypertrophy in response to resistance training",
+                    "",
+                ),
+            ]
+
+    with pytest.raises(MemoBuildError, match="coverage too narrow") as exc:
+        build_alpha_memo(
+            topic="metformin resistance training adaptation",
+            seed_queries=["metformin resistance training"],
+            searcher=TitleOnlySearch(),
+            min_alpha_tier="elite_alpha",
+        )
+
+    assert exc.value.failure.details["failures"] == ("abstract_receipts",)
 
 
 def test_pipeline_accepts_deep_fullraw_memo_coverage() -> None:

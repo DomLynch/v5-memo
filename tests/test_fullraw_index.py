@@ -1206,6 +1206,12 @@ def test_server_resumes_narrow_cached_sweep_receipt(tmp_path: Path) -> None:
         assert receipt["sweep_passes"] == 2
         assert receipt["sweep_pass_selected_shards"] == 1
         assert receipt["sweep_remaining_shards"] == 1
+        assert receipt["sweep_planned_shards"] == 3
+        assert receipt["sweep_planned_sources"] == {"openalex": 3}
+        assert receipt["sweep_planned_source_count"] == 1
+        assert receipt["sweep_planned_year_range"] == {"min": 2024, "max": 2024}
+        assert receipt["sweep_planned_cited_by_range"] == {"min": 10, "max": 12}
+        assert receipt["sweep_planned_papers"] == 3
         completed_paths = receipt["sweep_completed_paths"]
         assert isinstance(completed_paths, list)
         assert len(completed_paths) == 2
@@ -1331,6 +1337,12 @@ def test_server_auto_continues_sweep_until_receipt_is_sufficient(tmp_path: Path)
         assert receipt["sweep_passes"] == 3
         assert receipt["sweep_max_passes"] == 3
         assert receipt["sweep_remaining_shards"] == 0
+        assert receipt["sweep_planned_shards"] == 3
+        assert receipt["sweep_planned_sources"] == {"openalex": 3}
+        assert receipt["sweep_planned_source_count"] == 1
+        assert receipt["sweep_planned_year_range"] == {"min": 2024, "max": 2024}
+        assert receipt["sweep_planned_cited_by_range"] == {"min": 10, "max": 12}
+        assert receipt["sweep_planned_papers"] == 3
         assert len(receipt["sweep_completed_paths"]) == 3
         results = final_body["results"]
         assert isinstance(results, list)
@@ -1496,6 +1508,9 @@ def test_select_search_shard_entries_balances_sources_and_batches(
     assert receipt["shards_searched"] == 3
     assert receipt["partial_shard_search"] is True
     assert receipt["sources_searched"] == {"openalex": 1, "pubmed": 1, "semantic_scholar": 1}
+    assert receipt["source_count_total"] == 3
+    assert receipt["source_count_searched"] == 3
+    assert receipt["sources_missing_from_search"] == ()
 
 
 def test_select_search_shard_entries_rotates_by_query_variant(

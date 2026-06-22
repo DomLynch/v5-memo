@@ -408,7 +408,7 @@ def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None
         })
 
     monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
-    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=6)
+    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=8)
 
     hits = client.search("management forecast disclosure", limit=10)
 
@@ -419,10 +419,28 @@ def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None
         "broad",
         "adjacent",
         "falsifier",
+        "citation_heavy",
+        "recency",
     ]
-    assert all(payload["rank_mode"] == "relevance" for payload in requested)
-    assert {hit.metadata["search_pass"] for hit in hits} >= {"focused", "broad"}
-    assert {hit.metadata["rank_mode"] for hit in hits} == {"relevance"}
+    assert [payload["rank_mode"] for payload in requested] == [
+        "relevance",
+        "relevance",
+        "relevance",
+        "relevance",
+        "relevance",
+        "relevance",
+        "citation",
+        "recency",
+    ]
+    assert {hit.metadata["search_pass"] for hit in hits} >= {
+        "focused",
+        "broad",
+        "adjacent",
+        "falsifier",
+        "citation_heavy",
+        "recency",
+    }
+    assert {hit.metadata["rank_mode"] for hit in hits} == {"relevance", "citation", "recency"}
 
 
 def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: object) -> None:
@@ -916,6 +934,26 @@ def test_fullraw_search_passes_prioritize_specific_short_anchor_pairs() -> None:
     assert "nmn vo2max" in [search_pass.query for search_pass in nmn_passes]
 
 
+def test_fullraw_search_passes_keep_pair_variants_on_primary_anchor() -> None:
+    passes = _fullraw_search_passes(
+        "metformin resistance training adaptation",
+        limit=6,
+    )
+
+    queries = [search_pass.query for search_pass in passes]
+    assert "metformin training" in queries
+    assert "resistance training" not in queries
+
+
+def test_fullraw_search_passes_keep_promise_terms_for_protocol_recall() -> None:
+    passes = _fullraw_search_passes(
+        "metformin expected to augment resistance training hypertrophy protocol",
+        limit=4,
+    )
+
+    assert "metformin augment" in [search_pass.query for search_pass in passes]
+
+
 def test_fullraw_rerank_prefers_abstract_backed_doi_receipts(monkeypatch: MonkeyPatch) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del request, timeout
@@ -1026,6 +1064,23 @@ def test_parse_full_raw_search_rejects_conflicting_doi_year_metadata() -> None:
     })
 
     assert [hit.year for hit in hits] == [2024]
+
+
+def test_parse_full_raw_search_keeps_valid_doi_article_codes_that_look_like_years() -> None:
+    hits = _parse_full_raw_search_response({
+        "results": [
+            {
+                "doi": "https://doi.org/10.1093/GERONI/IGY023.2009",
+                "title": "Metformin to augment strength training effective response in seniors",
+                "abstract": "The MASTERS trial tested whether metformin augments strength training response.",
+                "year": 2018,
+                "provider": "openalex",
+            },
+        ],
+    })
+
+    assert [hit.doi for hit in hits] == ["10.1093/GERONI/IGY023.2009"]
+    assert hits[0].year == 2018
 
 
 def test_parse_full_corpus_paper_hit() -> None:
