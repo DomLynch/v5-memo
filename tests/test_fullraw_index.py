@@ -1004,6 +1004,154 @@ def test_server_rejects_narrow_cached_sweep_receipt(tmp_path: Path) -> None:
         proc.wait(timeout=10)
 
 
+def test_server_resumes_narrow_cached_sweep_receipt(tmp_path: Path) -> None:
+    for index in range(2):
+        batch = tmp_path / f"batch_{index:05d}"
+        batch.mkdir()
+        shard = batch / "fullraw_shard_0000.sqlite"
+        raw_file = _raw_file(tmp_path, f"resume_cached_sweep_{index}", [{
+            "doi": f"https://doi.org/10.example/resume-cache-{index}",
+            "display_name": f"Management forecast disclosure resume {index}",
+            "abstract": "Management forecast disclosure evidence.",
+            "publication_year": 2024,
+            "cited_by_count": 10 + index,
+        }])
+        index_db = FullRawFtsIndex(shard)
+        try:
+            index_db.index_files([raw_file], commit_interval=1)
+            profile = index_db.profile()
+        finally:
+            index_db.close()
+        (batch / "complete.json").write_text(json.dumps({
+            "batch_id": index,
+            "files": [{"source": "openalex"}],
+            "shards": [{
+                "shard_id": 0,
+                "files_completed": 1,
+                "papers_inserted": 1,
+                "bytes_used": shard.stat().st_size,
+                **profile,
+            }],
+        }))
+    cache_dir = tmp_path / "cache"
+    catalog = fullraw_index.build_shard_catalog(tmp_path, trust_filenames=True)
+    selected = select_sweep_shard_entries(catalog, query="management forecast disclosure", limit=2)
+    partial_receipt = shard_coverage_receipt(catalog, [selected[0]])
+    partial_receipt.update({
+        "sweep_scope": "relevant",
+        "sweep_shard_limit": 2,
+        "sweep_selected_shards": 2,
+        "sweep_timed_out": True,
+        "sweep_timeout_seconds": 300.0,
+        "sweep_shard_timeout_seconds": 10.0,
+        "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+        "sweep_query": "management forecast disclosure",
+        "sweep_passes": 1,
+        "sweep_completed_paths": [str(selected[0].path)],
+    })
+    cache_key = fullraw_index._sweep_cache_key(
+        "management forecast disclosure",
+        limit=5,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        sweep_shard_limit=2,
+    )
+    fullraw_index._write_sweep_cache(
+        cache_dir / f"{cache_key}.json",
+        fullraw_index.SweepCacheEntry(
+            time.time(),
+            [{
+                "doi": "10.example/resume-cache-0",
+                "title": "Management forecast disclosure resume 0",
+                "score": 1.0,
+            }],
+            partial_receipt,
+        ),
+    )
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"files": []}))
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path.cwd() / "src"),
+        "V5_MEMO_FULL_RAW_INDEX_PORT": str(port),
+        "V5_MEMO_FULL_RAW_MANIFEST": str(manifest),
+        "V5_MEMO_FULL_RAW_SHARD_DIR": str(tmp_path),
+        "V5_MEMO_FULL_RAW_SHARD_TRUST_FILENAMES": "1",
+        "V5_MEMO_FULL_RAW_SHARD_MANIFEST_STATS": "1",
+        "V5_MEMO_FULL_RAW_ASYNC_SWEEP": "1",
+        "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR": str(cache_dir),
+        "V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT": "2",
+        "V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED": "2",
+        "V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED": "1",
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "v5_memo.fullraw_index", "serve"],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        base = f"http://127.0.0.1:{port}"
+        for _ in range(50):
+            try:
+                urllib.request.urlopen(base + "/health", timeout=1).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            _, stderr = proc.communicate(timeout=1)
+            raise AssertionError(f"server did not start: {stderr}")
+
+        def post_search() -> dict[str, object]:
+            request = urllib.request.Request(
+                base + "/search",
+                data=json.dumps({
+                    "query": "management forecast disclosure",
+                    "top_k": 5,
+                    "cache_only": True,
+                    "queue_if_missing": True,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:
+                payload = json.loads(response.read().decode())
+            assert isinstance(payload, dict)
+            return payload
+
+        cached = post_search()
+        for _ in range(50):
+            meta = cached["meta"]
+            assert isinstance(meta, dict)
+            if meta["async_sweep"]["status"] == "hit":
+                break
+            time.sleep(0.1)
+            cached = post_search()
+        else:
+            raise AssertionError("narrow cached sweep did not resume")
+        meta = cached["meta"]
+        assert isinstance(meta, dict)
+        receipt = meta["shard_receipt"]
+        assert isinstance(receipt, dict)
+        assert receipt["shards_searched"] == 2
+        assert receipt["sweep_passes"] == 2
+        completed_paths = receipt["sweep_completed_paths"]
+        assert isinstance(completed_paths, list)
+        assert len(completed_paths) == 2
+        results = cached["results"]
+        assert isinstance(results, list)
+        assert len(results) == 2
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
 def test_select_search_shard_entries_balances_sources_and_batches(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

@@ -1052,12 +1052,35 @@ def _search_shard_paths_with_paths(
         timed_out = True
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
-    hits = sorted(
-        merged.values(),
+    hits = _rank_limited_hits(merged.values(), limit=limit)
+    return hits, completed_paths, timed_out
+
+
+def _merge_hit_groups(
+    hit_groups: Iterable[Iterable[dict[str, object]]],
+    *,
+    limit: int,
+) -> list[dict[str, object]]:
+    merged: dict[str, dict[str, object]] = {}
+    for hits in hit_groups:
+        for hit in hits:
+            key = _dedupe_key(hit)
+            existing = merged.get(key)
+            if existing is None or _hit_score(hit) > _hit_score(existing):
+                merged[key] = hit
+    return _rank_limited_hits(merged.values(), limit=limit)
+
+
+def _rank_limited_hits(
+    hits: Iterable[dict[str, object]],
+    *,
+    limit: int,
+) -> list[dict[str, object]]:
+    return sorted(
+        hits,
         key=lambda hit: (_hit_score(hit), _int_or_none(hit.get("cited_by_count")) or 0),
         reverse=True,
     )[: max(1, min(limit, 200))]
-    return hits, completed_paths, timed_out
 
 
 def select_search_shard_paths(paths: list[Path]) -> list[Path]:
@@ -1960,7 +1983,8 @@ def run_server() -> None:
     ) -> str:
         if not sweep_enabled or shard_dir is None:
             return "disabled"
-        if sweep_cache_get(key) is not None:
+        existing = sweep_cache_get(key)
+        if existing is not None and receipt_is_sufficient(existing.receipt):
             return "hit"
         with sweep_lock:
             if key in sweep_inflight:
@@ -1973,8 +1997,12 @@ def run_server() -> None:
             try:
                 sweep_entries = select_sweep_shard_entries(catalog, query=query, limit=sweep_shard_limit)
                 sweep_query = _profile_relaxed_sweep_query(query, sweep_entries)
+                completed_path_strings = _sweep_completed_path_strings(existing.receipt if existing else {})
+                remaining_entries = [
+                    entry for entry in sweep_entries if str(entry.path) not in completed_path_strings
+                ]
                 hits, completed_paths, timed_out = _search_shard_paths_with_paths(
-                    [entry.path for entry in sweep_entries],
+                    [entry.path for entry in remaining_entries],
                     sweep_query,
                     limit=limit,
                     year_min=year_min,
@@ -1984,8 +2012,8 @@ def run_server() -> None:
                     timeout_seconds=sweep_timeout_seconds,
                     shard_timeout_seconds=sweep_shard_timeout_seconds,
                 )
-                completed = set(completed_paths)
-                searched_entries = [entry for entry in sweep_entries if entry.path in completed]
+                completed_path_strings.update(str(path) for path in completed_paths)
+                searched_entries = [entry for entry in sweep_entries if str(entry.path) in completed_path_strings]
                 receipt = shard_coverage_receipt(catalog, searched_entries)
                 receipt["sweep_scope"] = "relevant"
                 receipt["sweep_shard_limit"] = sweep_shard_limit
@@ -1995,9 +2023,12 @@ def run_server() -> None:
                 receipt["sweep_shard_timeout_seconds"] = sweep_shard_timeout_seconds
                 receipt["sweep_strategy"] = _SWEEP_STRATEGY
                 receipt["sweep_query"] = sweep_query
+                receipt["sweep_passes"] = (_int_or_none((existing.receipt if existing else {}).get("sweep_passes")) or 0) + 1
+                receipt["sweep_completed_paths"] = sorted(completed_path_strings)
                 if sweep_query != query:
                     receipt["sweep_original_query"] = query
-                sweep_cache_put(key, SweepCacheEntry(time.time(), hits, receipt))
+                merged_hits = _merge_hit_groups([existing.hits if existing else [], hits], limit=limit)
+                sweep_cache_put(key, SweepCacheEntry(time.time(), merged_hits, receipt))
             except Exception:
                 with sweep_lock:
                     sweep_inflight.discard(key)
@@ -2016,6 +2047,13 @@ def run_server() -> None:
             "min_shards_searched": min_shards_searched,
             "min_sources_searched": min_sources_searched,
         }
+
+    def receipt_is_sufficient(receipt: dict[str, object]) -> bool:
+        return shard_coverage_gate_response(
+            receipt,
+            min_shards_searched=min_shards_searched,
+            min_sources_searched=min_sources_searched,
+        ) is None
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -2083,8 +2121,14 @@ def run_server() -> None:
                 sweep_strategy=_SWEEP_STRATEGY,
             )
             cached = sweep_cache_get(cache_key) if catalog else None
+            resume_cached = (
+                cached is not None
+                and cache_only
+                and queue_if_missing
+                and not receipt_is_sufficient(cached.receipt)
+            )
             sweep_status = "disabled"
-            if cached is not None:
+            if cached is not None and not resume_cached:
                 hits = cached.hits
                 receipt = cached.receipt
                 sweep_status = "hit"
@@ -2104,9 +2148,22 @@ def run_server() -> None:
                             rank_mode=rank_mode,
                             catalog=catalog,
                         )
+                        if sweep_status == "hit" and (cached := sweep_cache_get(cache_key)) is not None:
+                            hits = cached.hits
+                            receipt = cached.receipt
                     else:
                         with sweep_lock:
                             sweep_status = "running" if cache_key in sweep_inflight else "miss"
+                    if receipt:
+                        coverage_gate = shard_coverage_gate_response(
+                            receipt,
+                            min_shards_searched=min_shards_searched,
+                            min_sources_searched=min_sources_searched,
+                        )
+                        if coverage_gate is not None:
+                            status, body = coverage_gate
+                            _write_json(self, status, body)
+                            return
                     _write_json(self, 200, {
                         "meta": {
                             "count": len(hits),
@@ -2520,6 +2577,13 @@ def _sweep_cache_path(cache_dir: Path | None, key: str) -> Path | None:
     if cache_dir is None:
         return None
     return cache_dir / f"{key}.json"
+
+
+def _sweep_completed_path_strings(receipt: dict[str, object]) -> set[str]:
+    value = receipt.get("sweep_completed_paths")
+    if not isinstance(value, list | tuple):
+        return set()
+    return {str(path) for path in value if str(path)}
 
 
 def _load_sweep_cache(path: Path, *, ttl_seconds: float) -> SweepCacheEntry | None:
