@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 from email.message import Message
+from http.client import RemoteDisconnected
 from typing import cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
@@ -17,6 +18,7 @@ from v5_memo.client import (
     ResearkaSearchClient,
     SearchBackendError,
     _fullraw_query_variants,
+    _fullraw_search_passes,
     _parse_corpus_search_response,
     _parse_full_raw_search_response,
     _parse_openalex_response,
@@ -153,6 +155,8 @@ def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object)
         "year_min": 1950,
         "year_max": 2026,
         "corpus": "full_raw_450m_plus",
+        "search_pass": "focused",
+        "rank_mode": "relevance",
         "timeout_seconds": 7.0,
     }
     assert any(payload["query"] == "nad exercise" for payload in payloads)
@@ -193,6 +197,309 @@ def test_full_raw_client_relaxes_strict_long_queries(monkeypatch: object) -> Non
     assert hits[0].metadata["search_variant"] == "management forecast"
 
 
+def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
+    receipt = {
+        "shards_total": 100,
+        "shards_searched": 24,
+        "partial_shard_search": True,
+        "sources_searched": {"openalex": 12, "semantic_scholar": 12},
+    }
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del request, timeout
+        return FakeResponse({
+            "meta": {"count": 1, "shard_receipt": receipt},
+            "results": [{
+                "doi": "10.123/receipt",
+                "title": "Management forecast disclosure breadth",
+                "abstract": "Management forecast disclosure evidence.",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=1)
+
+    hits = client.search("management forecast disclosure", limit=3)
+
+    assert hits[0].metadata["shard_receipt"] == receipt
+
+
+def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        payloads.append(payload)
+        if payload.get("cache_only") is True:
+            return FakeResponse({
+                "meta": {
+                    "count": 1,
+                    "shard_receipt": {
+                        "shards_total": 100,
+                        "shards_searched": 48,
+                        "sources_searched": {"openalex": 24, "semantic_scholar": 24},
+                    },
+                    "async_sweep": {"status": "hit"},
+                },
+                "results": [{
+                    "doi": "10.123/deep",
+                    "title": "Deep sweep evidence",
+                    "abstract": "Management forecast disclosure evidence from a deep sweep.",
+                    "year": 2024,
+                    "source": "semantic_scholar",
+                }],
+            })
+        return FakeResponse({
+            "meta": {
+                "count": 1,
+                "shard_receipt": {"shards_total": 100, "shards_searched": 12},
+                "async_sweep": {"status": "queued"},
+            },
+            "results": [{
+                "doi": "10.123/shallow",
+                "title": "Shallow foreground evidence",
+                "abstract": "Management forecast disclosure evidence.",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        sweep_wait_seconds=1.0,
+        min_shards_searched=48,
+        min_sources_searched=2,
+    )
+
+    hits = client.search("management forecast disclosure", limit=3)
+
+    assert payloads[0].get("cache_only") is None
+    assert payloads[1].get("cache_only") is True
+    assert payloads[1].get("queue_if_missing") is True
+    assert hits[0].doi == "10.123/deep"
+    assert hits[0].metadata["shard_receipt"] == {
+        "shards_total": 100,
+        "shards_searched": 48,
+        "sources_searched": {"openalex": 24, "semantic_scholar": 24},
+    }
+
+
+def test_full_raw_client_uses_cache_only_after_strict_foreground_timeout(
+    monkeypatch: object,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        payloads.append(payload)
+        if payload.get("cache_only") is True:
+            return FakeResponse({
+                "meta": {
+                    "count": 1,
+                    "shard_receipt": {
+                        "shards_total": 100,
+                        "shards_searched": 48,
+                        "sources_searched": {"openalex": 24, "semantic_scholar": 24},
+                    },
+                    "async_sweep": {"status": "hit"},
+                },
+                "results": [{
+                    "doi": "10.123/recovered",
+                    "title": "Recovered cache-only evidence",
+                    "abstract": "Management forecast disclosure recovered from cache-only sweep.",
+                    "year": 2024,
+                    "source": "semantic_scholar",
+                }],
+            })
+        raise TimeoutError("foreground too slow")
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        sweep_wait_seconds=1.0,
+        min_shards_searched=48,
+        min_sources_searched=2,
+        strict=True,
+    )
+
+    hits = client.search("management forecast disclosure", limit=3)
+
+    assert [payload.get("cache_only") for payload in payloads] == [None, True]
+    assert payloads[1].get("queue_if_missing") is True
+    assert hits[0].doi == "10.123/recovered"
+
+
+def test_full_raw_client_retries_connection_reset_during_cache_poll(
+    monkeypatch: object,
+) -> None:
+    payloads: list[dict[str, object]] = []
+    reset_once = True
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        nonlocal reset_once
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        payloads.append(payload)
+        if payload.get("cache_only") is not True:
+            raise TimeoutError("foreground too slow")
+        if reset_once:
+            reset_once = False
+            raise ConnectionResetError("reset")
+        return FakeResponse({
+            "meta": {
+                "count": 1,
+                "shard_receipt": {
+                    "shards_total": 100,
+                    "shards_searched": 48,
+                    "sources_searched": {"openalex": 24, "semantic_scholar": 24},
+                },
+                "async_sweep": {"status": "hit"},
+            },
+            "results": [{
+                "doi": "10.123/recovered",
+                "title": "Recovered cache-only evidence",
+                "abstract": "Management forecast disclosure recovered from cache-only sweep.",
+                "year": 2024,
+                "source": "semantic_scholar",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        sweep_wait_seconds=1.0,
+        min_shards_searched=48,
+        min_sources_searched=2,
+        strict=True,
+    )
+
+    hits = client.search("management forecast disclosure", limit=3)
+
+    assert [payload.get("cache_only") for payload in payloads] == [None, True, True]
+    assert hits[0].doi == "10.123/recovered"
+
+
+def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None:
+    requested: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        requested.append(payload)
+        search_pass = str(payload["search_pass"])
+        rank_mode = str(payload["rank_mode"])
+        return FakeResponse({
+            "meta": {"count": 1, "shard_receipt": {"shards_searched": 12}},
+            "results": [{
+                "doi": f"10.123/{search_pass}-{rank_mode}",
+                "title": f"{search_pass} evidence",
+                "abstract": "Management forecast disclosure evidence.",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=8)
+
+    hits = client.search("management forecast disclosure", limit=10)
+
+    assert [payload["search_pass"] for payload in requested] == [
+        "focused",
+        "broad",
+        "broad",
+        "broad",
+        "adjacent",
+        "falsifier",
+        "citation_heavy",
+        "recency",
+    ]
+    assert [payload["rank_mode"] for payload in requested] == [
+        "relevance",
+        "relevance",
+        "relevance",
+        "relevance",
+        "relevance",
+        "relevance",
+        "citation",
+        "recency",
+    ]
+    assert {hit.metadata["search_pass"] for hit in hits} >= {
+        "focused",
+        "broad",
+        "adjacent",
+        "falsifier",
+        "citation_heavy",
+        "recency",
+    }
+    assert {hit.metadata["rank_mode"] for hit in hits} == {"relevance", "citation", "recency"}
+
+
+def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: object) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del request, timeout
+        return FakeResponse({
+            "meta": {"count": 1, "shard_receipt": {"shards_searched": 12}},
+            "results": [{
+                "doi": "10.123/shared",
+                "title": "Shared fullraw receipt",
+                "abstract": "Management forecast disclosure evidence.",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=4)
+
+    hits = client.search("management forecast disclosure", limit=10)
+
+    receipt = hits[0].metadata["fullraw_search_receipt"]
+    assert isinstance(receipt, dict)
+    assert receipt["duplicate_rate"] == 0.75
+    assert receipt["search_passes"] == ("focused", "broad")
+    assert receipt["rank_modes"] == ("relevance",)
+
+
+def test_full_raw_client_can_fail_closed_on_narrow_shard_receipt(monkeypatch: object) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del request, timeout
+        return FakeResponse({
+            "meta": {
+                "count": 1,
+                "shard_receipt": {
+                    "shards_total": 100,
+                    "shards_searched": 3,
+                    "sources_searched": {"openalex": 3},
+                },
+            },
+            "results": [{
+                "doi": "10.123/narrow",
+                "title": "Narrow pull",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        min_shards_searched=12,
+        min_sources_searched=2,
+    )
+
+    assert client.search("management forecast disclosure", limit=3) == []
+
+
 def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "secret")
@@ -209,6 +516,8 @@ def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> Non
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", "120")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_MAX_VARIANTS", "7")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", "30")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_WAIT_SECONDS", "120")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_POLL_SECONDS", "2")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_PROGRESS", "true")
 
     client = FullRawCorpusSearchClient.from_env()
@@ -216,6 +525,8 @@ def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> Non
     assert client._timeout == 120.0
     assert client._max_variants == 7
     assert client._search_budget_seconds == 30.0
+    assert client._sweep_wait_seconds == 120.0
+    assert client._sweep_poll_seconds == 2.0
     assert client._progress is True
 
 
@@ -260,6 +571,57 @@ def test_full_raw_client_budget_stops_variant_fanout(
     err = capsys.readouterr().err
     assert "fullraw variant 1/4 start" in err
     assert "fullraw search budget reached after 31.0s; variants=1/4" in err
+
+
+def test_full_raw_client_retries_remote_disconnected_once(monkeypatch: MonkeyPatch) -> None:
+    calls = 0
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        nonlocal calls
+        del request, timeout
+        calls += 1
+        if calls == 1:
+            raise RemoteDisconnected("closed")
+        return FakeResponse({
+            "results": [{
+                "doi": "10.123/fullraw",
+                "title": "Resveratrol exercise training adaptation",
+                "abstract": "Resveratrol exercise training adaptation changed older human outcomes.",
+                "year": 2013,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=1)
+
+    hits = client.search("resveratrol exercise training adaptation", limit=5)
+
+    assert calls == 2
+    assert hits[0].doi == "10.123/fullraw"
+
+
+def test_full_raw_client_strict_remote_disconnected_raises_after_retry_cap(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        nonlocal calls
+        del request, timeout
+        calls += 1
+        raise RemoteDisconnected("closed")
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        strict=True,
+    )
+
+    with pytest.raises(SearchBackendError, match="Full raw corpus search failed"):
+        client.search("resveratrol exercise training adaptation", limit=5)
+    assert calls == 2
 
 
 def test_openalex_strict_mode_raises_backend_errors(monkeypatch: MonkeyPatch) -> None:
@@ -515,6 +877,83 @@ def test_fullraw_variants_do_not_append_broad_pair_fallback() -> None:
     assert "cold muscle" not in variants
 
 
+def test_fullraw_search_passes_cover_breadth_depth_modes() -> None:
+    passes = _fullraw_search_passes(
+        "cold water immersion attenuates muscle mass strength resistance training",
+        limit=8,
+    )
+
+    assert [search_pass.name for search_pass in passes] == [
+        "focused",
+        "broad",
+        "broad",
+        "broad",
+        "broad",
+        "broad",
+        "broad",
+        "broad",
+    ]
+    assert all(search_pass.rank_mode == "relevance" for search_pass in passes)
+    assert "cold immersion" in [search_pass.query for search_pass in passes]
+
+
+def test_fullraw_search_passes_include_core_variant_before_depth_modes() -> None:
+    passes = _fullraw_search_passes("resveratrol exercise training adaptation", limit=5)
+
+    assert [search_pass.name for search_pass in passes] == [
+        "focused",
+        "core",
+        "broad",
+        "broad",
+        "broad",
+    ]
+    assert passes[1].query == "resveratrol exercise training"
+    assert "resveratrol training" in [search_pass.query for search_pass in passes]
+
+
+def test_fullraw_search_passes_prioritize_promise_pair_variants() -> None:
+    passes = _fullraw_search_passes(
+        "resveratrol sirt1 pgc 1a mitochondrial biogenesis endurance training",
+        limit=5,
+    )
+
+    assert "resveratrol mitochondrial" in [search_pass.query for search_pass in passes]
+
+
+def test_fullraw_search_passes_prioritize_specific_short_anchor_pairs() -> None:
+    metformin_passes = _fullraw_search_passes(
+        "metformin augment strength training seniors",
+        limit=5,
+    )
+    nmn_passes = _fullraw_search_passes(
+        "nmn supplementation vo2max adaptation trained cyclists",
+        limit=5,
+    )
+
+    assert "metformin training" in [search_pass.query for search_pass in metformin_passes]
+    assert "nmn vo2max" in [search_pass.query for search_pass in nmn_passes]
+
+
+def test_fullraw_search_passes_keep_pair_variants_on_primary_anchor() -> None:
+    passes = _fullraw_search_passes(
+        "metformin resistance training adaptation",
+        limit=6,
+    )
+
+    queries = [search_pass.query for search_pass in passes]
+    assert "metformin training" in queries
+    assert "resistance training" not in queries
+
+
+def test_fullraw_search_passes_keep_promise_terms_for_protocol_recall() -> None:
+    passes = _fullraw_search_passes(
+        "metformin expected to augment resistance training hypertrophy protocol",
+        limit=4,
+    )
+
+    assert "metformin augment" in [search_pass.query for search_pass in passes]
+
+
 def test_fullraw_rerank_prefers_abstract_backed_doi_receipts(monkeypatch: MonkeyPatch) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del request, timeout
@@ -545,6 +984,105 @@ def test_fullraw_rerank_prefers_abstract_backed_doi_receipts(monkeypatch: Monkey
 
     assert hits[0].doi == "10.1113/jphysiol.2013.258061"
     assert hits[0].abstract
+
+
+def test_fullraw_search_backfills_missing_doi_abstracts(monkeypatch: MonkeyPatch) -> None:
+    seen_urls: list[str] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        seen_urls.append(request.full_url)
+        if "api.openalex.org/works/doi:" in request.full_url:
+            return FakeResponse({
+                "id": "https://openalex.org/W123",
+                "doi": "https://doi.org/10.1093/geroni/igy023.2009",
+                "display_name": "Metformin to augment strength training effective response in seniors",
+                "publication_year": 2018,
+                "abstract_inverted_index": {
+                    "Protocol": [0],
+                    "hypothesized": [1],
+                    "metformin": [2],
+                    "would": [3],
+                    "augment": [4],
+                    "training": [5],
+                },
+                "primary_location": {"source": {"display_name": "Innovation in Aging"}},
+            })
+        return FakeResponse({
+            "results": [
+                {
+                    "doi": "https://doi.org/10.1093/geroni/igy023.2009",
+                    "title": "Metformin to augment strength training effective response in seniors",
+                    "year": 2018,
+                    "provider": "semantic_scholar",
+                },
+            ],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    client = FullRawCorpusSearchClient(
+        search_url="https://fullraw.example/search",
+        max_variants=1,
+        doi_abstract_backfill_limit=1,
+    )
+
+    hits = client.search("metformin augment strength training", limit=1)
+
+    assert hits[0].abstract == "Protocol hypothesized metformin would augment training"
+    assert hits[0].metadata["abstract_backfill"] == "openalex_doi"
+    assert any("api.openalex.org/works/doi:" in url for url in seen_urls)
+
+
+def test_fullraw_search_drops_doi_title_mismatch(monkeypatch: MonkeyPatch) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        if "api.openalex.org/works/doi:" in request.full_url:
+            if "10.1016%2fs0008-6363%2895%2900018-6" in request.full_url.casefold():
+                return FakeResponse({
+                    "id": "https://openalex.org/W1000",
+                    "doi": "https://doi.org/10.1016/s0008-6363(95)00018-6",
+                    "display_name": "Reactive hyperaemia is impaired in hypertrophied guinea pig hearts",
+                    "publication_year": 1995,
+                    "abstract_inverted_index": {"Reactive": [0], "hyperaemia": [1]},
+                })
+            return FakeResponse({
+                "id": "https://openalex.org/W999",
+                "doi": "https://doi.org/10.1161/01.cir.0000129233.51320.92",
+                "display_name": "Omega-3 fatty acids and atrial fibrillation prevention",
+                "publication_year": 2004,
+                "abstract_inverted_index": {"Omega": [0], "prevention": [1]},
+            })
+        return FakeResponse({
+            "results": [
+                {
+                    "doi": "https://doi.org/10.1161/01.CIR.0000129233.51320.92",
+                    "title": "LVAD recovery correlates with sarcoplasmic reticulum calcium content",
+                    "abstract": "LVAD clinical recovery correlated with sarcoplasmic reticulum calcium content.",
+                    "year": 2004,
+                    "provider": "openalex",
+                },
+                {
+                    "doi": "https://doi.org/10.1016/s0008-6363(95)00018-6",
+                    "title": "Reactive hyperaemia is impaired in hypertrophied guinea pig hearts",
+                    "abstract": "Reactive hyperaemia was impaired in hypertrophied guinea pig hearts.",
+                    "year": 1995,
+                    "provider": "openalex",
+                },
+            ],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    client = FullRawCorpusSearchClient(
+        search_url="https://fullraw.example/search",
+        max_variants=1,
+        doi_abstract_backfill_limit=5,
+    )
+
+    hits = client.search("recovery hypertrophy", limit=2)
+
+    assert [hit.title for hit in hits] == [
+        "Reactive hyperaemia is impaired in hypertrophied guinea pig hearts"
+    ]
 
 
 def test_parse_openalex_response_reconstructs_abstract() -> None:
@@ -625,6 +1163,23 @@ def test_parse_full_raw_search_rejects_conflicting_doi_year_metadata() -> None:
     })
 
     assert [hit.year for hit in hits] == [2024]
+
+
+def test_parse_full_raw_search_keeps_valid_doi_article_codes_that_look_like_years() -> None:
+    hits = _parse_full_raw_search_response({
+        "results": [
+            {
+                "doi": "https://doi.org/10.1093/GERONI/IGY023.2009",
+                "title": "Metformin to augment strength training effective response in seniors",
+                "abstract": "The MASTERS trial tested whether metformin augments strength training response.",
+                "year": 2018,
+                "provider": "openalex",
+            },
+        ],
+    })
+
+    assert [hit.doi for hit in hits] == ["10.1093/GERONI/IGY023.2009"]
+    assert hits[0].year == 2018
 
 
 def test_parse_full_corpus_paper_hit() -> None:

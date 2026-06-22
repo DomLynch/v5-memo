@@ -8,9 +8,10 @@ import re
 import sys
 import time
 import urllib.parse
-from collections.abc import Sequence
-from dataclasses import replace
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, replace
 from html import unescape
+from http.client import RemoteDisconnected
 from itertools import combinations
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -21,6 +22,60 @@ from v5_memo.schemas import CorpusHit
 
 class SearchBackendError(RuntimeError):
     """Raised when strict search mode cannot reach or parse a backend."""
+
+
+@dataclass(frozen=True, slots=True)
+class FullRawSearchPass:
+    name: str
+    query: str
+    rank_mode: str = "relevance"
+
+
+_FULLRAW_CORE_DROP = {
+    "adaptation",
+    "adaptations",
+    "effect",
+    "effects",
+    "mechanism",
+    "mechanisms",
+    "outcome",
+    "outcomes",
+    "response",
+    "responses",
+    "result",
+    "results",
+}
+_FULLRAW_PAIR_DROP = _FULLRAW_CORE_DROP | {
+    "adult",
+    "adults",
+    "blunt",
+    "blunted",
+    "human",
+    "humans",
+    "older",
+    "supplement",
+    "supplementation",
+    "trained",
+}
+_FULLRAW_WEAK_PAIR_TERMS = {"resistance", "strength", "training"}
+_DOI_BACKFILL_PRIORITY_TERMS = {
+    "attenuate",
+    "attenuated",
+    "augment",
+    "blunt",
+    "blunted",
+    "expected",
+    "hypothesis",
+    "impair",
+    "impaired",
+    "mimic",
+    "mimetic",
+    "protocol",
+    "randomized",
+    "reduce",
+    "reduced",
+    "trial",
+}
 
 
 class OpenAlexFullCorpusSearchClient:
@@ -188,7 +243,7 @@ class ResearkaSearchClient:
         try:
             with urlopen(request, timeout=self._timeout) as response:
                 data: Any = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+        except (HTTPError, URLError, TimeoutError, RemoteDisconnected, ValueError) as exc:
             if self._strict:
                 raise SearchBackendError(f"Researka search failed: {exc}") from exc
             return []
@@ -208,6 +263,11 @@ class FullRawCorpusSearchClient:
         year_max: int = 2100,
         max_variants: int = 16,
         search_budget_seconds: float = 180.0,
+        sweep_wait_seconds: float = 0.0,
+        sweep_poll_seconds: float = 1.0,
+        doi_abstract_backfill_limit: int = 0,
+        min_shards_searched: int = 0,
+        min_sources_searched: int = 0,
         progress: bool = False,
         strict: bool = False,
     ) -> None:
@@ -218,6 +278,11 @@ class FullRawCorpusSearchClient:
         self._year_max = year_max
         self._max_variants = max(1, max_variants)
         self._search_budget_seconds = max(0.0, search_budget_seconds)
+        self._sweep_wait_seconds = max(0.0, sweep_wait_seconds)
+        self._sweep_poll_seconds = max(0.0, sweep_poll_seconds)
+        self._doi_abstract_backfill_limit = max(0, doi_abstract_backfill_limit)
+        self._min_shards_searched = max(0, min_shards_searched)
+        self._min_sources_searched = max(0, min_sources_searched)
         self._progress = progress
         self._strict = strict
 
@@ -229,6 +294,14 @@ class FullRawCorpusSearchClient:
             timeout=_float_env("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", 45.0),
             max_variants=_int_env("V5_MEMO_FULL_RAW_MAX_VARIANTS", 16),
             search_budget_seconds=_float_env("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", 180.0),
+            sweep_wait_seconds=_float_env("V5_MEMO_FULL_RAW_SWEEP_WAIT_SECONDS", 0.0),
+            sweep_poll_seconds=_float_env("V5_MEMO_FULL_RAW_SWEEP_POLL_SECONDS", 1.0),
+            doi_abstract_backfill_limit=_int_env(
+                "V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT",
+                6,
+            ),
+            min_shards_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", 0),
+            min_sources_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", 0),
             progress=_bool_env("V5_MEMO_FULL_RAW_PROGRESS", False),
             strict=strict,
         )
@@ -238,36 +311,50 @@ class FullRawCorpusSearchClient:
         return bool(self._search_url)
 
     def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
-        variants = _fullraw_query_variants(query, limit=self._max_variants)
-        if not self._search_url or not variants:
+        search_passes = _fullraw_search_passes(query, limit=self._max_variants)
+        if not self._search_url or not search_passes:
             return []
         seed_terms = _query_terms(query)
         per_variant_limit = max(5, min(limit, 50))
         best: dict[str, tuple[float, CorpusHit]] = {}
+        total_seen = 0
+        duplicate_seen = 0
+        passes_run: list[str] = []
+        rank_modes_run: list[str] = []
         started = time.monotonic()
-        for variant_index, variant in enumerate(variants, start=1):
+        for variant_index, search_pass in enumerate(search_passes, start=1):
             elapsed = time.monotonic() - started
             if self._search_budget_seconds and elapsed >= self._search_budget_seconds:
                 self._log_progress(
                     "fullraw search budget reached "
-                    f"after {elapsed:.1f}s; variants={variant_index - 1}/{len(variants)}"
+                    f"after {elapsed:.1f}s; variants={variant_index - 1}/{len(search_passes)}"
                 )
                 break
-            self._log_progress(f"fullraw variant {variant_index}/{len(variants)} start: {variant}")
-            variant_started = time.monotonic()
-            hits = self._search_variant(variant, limit=per_variant_limit)
+            passes_run.append(search_pass.name)
+            rank_modes_run.append(search_pass.rank_mode)
             self._log_progress(
-                f"fullraw variant {variant_index}/{len(variants)} done "
+                f"fullraw variant {variant_index}/{len(search_passes)} "
+                f"start [{search_pass.name}/{search_pass.rank_mode}]: {search_pass.query}"
+            )
+            variant_started = time.monotonic()
+            hits = self._search_variant(search_pass, limit=per_variant_limit)
+            self._log_progress(
+                f"fullraw variant {variant_index}/{len(search_passes)} done "
                 f"in {time.monotonic() - variant_started:.1f}s; hits={len(hits)}"
             )
-            variant_terms = _query_terms(variant)
+            variant_terms = _query_terms(search_pass.query)
             for rank, hit in enumerate(hits, start=1):
+                total_seen += 1
+                if hit.source_key in best:
+                    duplicate_seen += 1
                 score = _rerank_score(hit, seed_terms=seed_terms, variant_terms=variant_terms, rank=rank)
                 scored = replace(
                     hit,
                     metadata={
                         **hit.metadata,
-                        "search_variant": variant,
+                        "search_pass": search_pass.name,
+                        "search_variant": search_pass.query,
+                        "rank_mode": search_pass.rank_mode,
                         "rerank_score": round(score, 4),
                     },
                 )
@@ -275,22 +362,84 @@ class FullRawCorpusSearchClient:
                 if current is None or score > current[0]:
                     best[scored.source_key] = (score, scored)
         self._log_progress(f"fullraw query done in {time.monotonic() - started:.1f}s; hits={len(best)}")
-        return [hit for _, hit in sorted(best.values(), key=lambda item: item[0], reverse=True)[:limit]]
+        duplicate_rate = round(duplicate_seen / total_seen, 4) if total_seen else 0.0
+        receipt = {
+            "duplicate_rate": duplicate_rate,
+            "search_passes": tuple(dict.fromkeys(passes_run)),
+            "rank_modes": tuple(dict.fromkeys(rank_modes_run)),
+        }
+        ranked_pairs = _rank_source_diverse_scored_hits(best.values(), limit=limit)
+        ranked_hits = [
+            replace(hit, metadata={**hit.metadata, "fullraw_search_receipt": receipt})
+            for _, hit in ranked_pairs
+        ]
+        return _backfill_missing_openalex_abstracts(
+            ranked_hits,
+            limit=self._doi_abstract_backfill_limit,
+        )
 
     def _log_progress(self, message: str) -> None:
         if self._progress:
             print(message, file=sys.stderr, flush=True)
 
-    def _search_variant(self, query: str, *, limit: int) -> list[CorpusHit]:
+    def _search_variant(self, search_pass: FullRawSearchPass, *, limit: int) -> list[CorpusHit]:
         payload = {
-            "query": query[:1024],
+            "query": search_pass.query[:1024],
             "limit": max(1, min(limit, 200)),
             "top_k": max(1, min(limit, 200)),
             "year_min": self._year_min,
             "year_max": self._year_max,
             "corpus": "full_raw_450m_plus",
+            "search_pass": search_pass.name,
+            "rank_mode": search_pass.rank_mode,
             "timeout_seconds": self._timeout,
         }
+        initial_error: SearchBackendError | None = None
+        try:
+            data = self._request_search(payload)
+        except SearchBackendError as exc:
+            if not self._sweep_wait_seconds:
+                raise
+            initial_error = exc
+            data = {}
+        receipt = _full_raw_shard_receipt(data)
+        if self._sweep_wait_seconds and _full_raw_async_sweep_status(data) != "hit":
+            cached = self._wait_for_sweep_hit(payload)
+            if cached is not None:
+                data = cached
+                receipt = _full_raw_shard_receipt(data)
+            elif initial_error is not None:
+                raise initial_error
+        if not self._receipt_is_sufficient(receipt):
+            message = f"Full raw corpus search coverage too narrow: {receipt}"
+            if self._strict:
+                raise SearchBackendError(message)
+            self._log_progress(message)
+            return []
+        return _parse_full_raw_search_response(data)
+
+    def _wait_for_sweep_hit(self, payload: dict[str, object]) -> Any | None:
+        deadline = time.monotonic() + self._sweep_wait_seconds
+        cache_payload = {**payload, "cache_only": True, "queue_if_missing": True}
+        while True:
+            try:
+                data = self._request_search(cache_payload)
+                status = _full_raw_async_sweep_status(data)
+            except SearchBackendError:
+                data = {}
+                status = "error"
+            if status == "hit":
+                self._log_progress("fullraw async sweep cache hit")
+                return data
+            if status == "disabled":
+                return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._log_progress(f"fullraw async sweep wait expired; status={status or 'unknown'}")
+                return None
+            time.sleep(min(max(self._sweep_poll_seconds, 0.05), remaining))
+
+    def _request_search(self, payload: dict[str, object]) -> Any:
         headers = {
             "Content-Type": "application/json",
             "User-Agent": "v5-memo/0.1",
@@ -303,14 +452,36 @@ class FullRawCorpusSearchClient:
             headers=headers,
             method="POST",
         )
-        try:
-            with urlopen(request, timeout=self._timeout) as response:
-                data: Any = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
-            if self._strict:
-                raise SearchBackendError(f"Full raw corpus search failed: {exc}") from exc
-            return []
-        return _parse_full_raw_search_response(data)
+        for attempt in range(2):
+            try:
+                with urlopen(request, timeout=self._timeout) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except (ConnectionResetError, RemoteDisconnected) as exc:
+                if attempt == 0:
+                    self._log_progress(f"fullraw remote disconnect; retrying once: {payload.get('query', '')}")
+                    continue
+                if self._strict:
+                    raise SearchBackendError(f"Full raw corpus search failed: {exc}") from exc
+                return {}
+            except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+                if self._strict:
+                    raise SearchBackendError(f"Full raw corpus search failed: {exc}") from exc
+                return {}
+        return {}
+
+    def _receipt_is_sufficient(self, receipt: dict[str, object]) -> bool:
+        if not receipt:
+            return True
+        shards = _int_or_none(receipt.get("shards_searched")) or 0
+        if self._min_shards_searched and shards < self._min_shards_searched:
+            return False
+        sources = receipt.get("sources_searched")
+        source_count = (
+            sum(1 for value in sources.values() if _int_or_none(value))
+            if isinstance(sources, dict)
+            else 0
+        )
+        return not (self._min_sources_searched and source_count < self._min_sources_searched)
 
 
 class HybridCorpusSearchClient:
@@ -364,11 +535,82 @@ def _parse_full_raw_search_response(data: Any) -> list[CorpusHit]:
     if not isinstance(items, list):
         return []
     match_count = _int_or_none(meta.get("count") or meta.get("total") or meta.get("total_count"))
-    return [
+    shard_receipt = _full_raw_shard_receipt(data)
+    hits = [
         hit
         for item in items
-        if (hit := _parse_full_raw_paper_hit(item, match_count=match_count)) is not None
+        if (
+            hit := _parse_full_raw_paper_hit(
+                item,
+                match_count=match_count,
+                shard_receipt=shard_receipt,
+            )
+        ) is not None
     ]
+    return _drop_conflicting_duplicate_doi_year_hits(hits)
+
+
+def _full_raw_shard_receipt(data: Any) -> dict[str, object]:
+    if not isinstance(data, dict):
+        return {}
+    meta = data.get("meta")
+    if not isinstance(meta, dict):
+        return {}
+    receipt = meta.get("shard_receipt")
+    if not isinstance(receipt, dict):
+        return {}
+    return dict(receipt)
+
+
+def _full_raw_async_sweep_status(data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    meta = data.get("meta")
+    if not isinstance(meta, dict):
+        return ""
+    async_sweep = meta.get("async_sweep")
+    if not isinstance(async_sweep, dict):
+        return ""
+    status = async_sweep.get("status")
+    return status if isinstance(status, str) else ""
+
+
+def _rank_source_diverse_scored_hits(
+    scored_hits: Iterable[tuple[float, CorpusHit]],
+    *,
+    limit: int,
+) -> list[tuple[float, CorpusHit]]:
+    limit = max(1, limit)
+    ranked = sorted(scored_hits, key=lambda item: item[0], reverse=True)
+    by_source: dict[str, list[tuple[float, CorpusHit]]] = {}
+    for score, hit in ranked:
+        by_source.setdefault(_source_provider(hit.source), []).append((score, hit))
+    out: list[tuple[float, CorpusHit]] = []
+    for source in sorted(by_source, key=lambda key: (by_source[key][0][0], key), reverse=True):
+        _extend_unique_scored_hits(out, by_source[source][:1], limit)
+    _extend_unique_scored_hits(out, ranked, limit)
+    return out
+
+
+def _extend_unique_scored_hits(
+    out: list[tuple[float, CorpusHit]],
+    hits: Iterable[tuple[float, CorpusHit]],
+    limit: int,
+) -> None:
+    if len(out) >= limit:
+        return
+    seen = {hit.source_key for _, hit in out}
+    for score, hit in hits:
+        if hit.source_key in seen:
+            continue
+        out.append((score, hit))
+        seen.add(hit.source_key)
+        if len(out) >= limit:
+            return
+
+
+def _source_provider(source: str) -> str:
+    return source.split(":", 1)[1] if source.startswith("fullraw:") else source
 
 
 def _parse_openalex_response(data: Any) -> list[CorpusHit]:
@@ -417,6 +659,84 @@ def _parse_openalex_work(item: Any, *, match_count: int | None) -> CorpusHit | N
     )
 
 
+def _backfill_missing_openalex_abstracts(
+    hits: list[CorpusHit],
+    *,
+    limit: int,
+) -> list[CorpusHit]:
+    if limit <= 0:
+        return hits
+    out: list[CorpusHit | None] = list(hits)
+    backfilled = 0
+    eligible = [
+        (index, hit)
+        for index, hit in enumerate(hits)
+        if hit.doi
+    ]
+    eligible.sort(key=lambda item: _doi_backfill_priority(item[1]), reverse=True)
+    for index, hit in eligible:
+        if backfilled >= limit:
+            break
+        doi = hit.doi
+        if doi is None:
+            continue
+        enriched = _fetch_openalex_work_by_doi(doi)
+        if enriched is None:
+            continue
+        backfilled += 1
+        if enriched.title and not _titles_match(hit.title, enriched.title):
+            out[index] = None
+            continue
+        if hit.abstract or not enriched.abstract:
+            continue
+        out[index] = replace(
+            hit,
+            abstract=enriched.abstract,
+            year=hit.year or enriched.year,
+            venue=hit.venue or enriched.venue,
+            metadata={**hit.metadata, "abstract_backfill": "openalex_doi"},
+        )
+    return [hit for hit in out if hit is not None]
+
+
+def _doi_backfill_priority(hit: CorpusHit) -> int:
+    text = f"{hit.title} {hit.venue or ''}".casefold()
+    terms = set(re.findall(r"[a-z][a-z0-9]+", text))
+    return len(terms & _DOI_BACKFILL_PRIORITY_TERMS)
+
+
+def _fetch_openalex_work_by_doi(doi: str) -> CorpusHit | None:
+    encoded = urllib.parse.quote(doi, safe="")
+    request = Request(
+        f"https://api.openalex.org/works/doi:{encoded}",
+        headers={"User-Agent": "v5-memo/0.1"},
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=12.0) as response:
+            data: Any = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, ValueError):
+        return None
+    return _parse_openalex_work(data, match_count=None)
+
+
+def _titles_match(left: str, right: str) -> bool:
+    left_terms = _title_terms(left)
+    right_terms = _title_terms(right)
+    if not left_terms or not right_terms:
+        return True
+    return len(left_terms & right_terms) / min(len(left_terms), len(right_terms)) >= 0.45
+
+
+def _title_terms(title: str) -> set[str]:
+    stop = {"and", "for", "from", "into", "the", "with", "without", "study", "trial"}
+    return {
+        raw
+        for raw in re.findall(r"[a-z][a-z0-9]{2,}", title.casefold())
+        if raw not in stop
+    }
+
+
 def _parse_paper_hit(item: Any) -> CorpusHit | None:
     if not isinstance(item, dict):
         return None
@@ -445,7 +765,12 @@ def _parse_paper_hit(item: Any) -> CorpusHit | None:
     )
 
 
-def _parse_full_raw_paper_hit(item: Any, *, match_count: int | None) -> CorpusHit | None:
+def _parse_full_raw_paper_hit(
+    item: Any,
+    *,
+    match_count: int | None,
+    shard_receipt: dict[str, object] | None = None,
+) -> CorpusHit | None:
     if not isinstance(item, dict):
         return None
     title = _clean(item.get("title") or item.get("display_name") or item.get("name"), limit=500)
@@ -453,8 +778,6 @@ def _parse_full_raw_paper_hit(item: Any, *, match_count: int | None) -> CorpusHi
         return None
     doi = _normalize_doi(item.get("doi"))
     year = _int_or_none(item.get("year") or item.get("publication_year"))
-    if _doi_year_conflicts(doi, year):
-        return None
     pmid = _clean(item.get("pmid"), limit=64)
     pmcid = _clean(item.get("pmcid"), limit=64)
     openalex_id = _clean(item.get("openalex_id") or item.get("openalex") or item.get("id"), limit=256)
@@ -497,6 +820,7 @@ def _parse_full_raw_paper_hit(item: Any, *, match_count: int | None) -> CorpusHi
             "cited_by_count": _int_or_none(item.get("cited_by_count") or item.get("citation_count")),
             "score": _float_or_none(item.get("score") or item.get("search_score")),
             "query_match_count": match_count,
+            "shard_receipt": shard_receipt or {},
         },
     )
 
@@ -520,6 +844,31 @@ def _doi_year_conflicts(doi: str | None, year: int | None) -> bool:
         return False
     years = [int(match) for match in re.findall(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)", doi)]
     return any(abs(parsed - year) > 3 for parsed in years)
+
+
+def _drop_conflicting_duplicate_doi_year_hits(hits: list[CorpusHit]) -> list[CorpusHit]:
+    by_doi: dict[str, list[CorpusHit]] = {}
+    for hit in hits:
+        if hit.doi:
+            by_doi.setdefault(hit.doi.casefold(), []).append(hit)
+
+    drop_ids: set[int] = set()
+    for duplicate_hits in by_doi.values():
+        if len(duplicate_hits) < 2:
+            continue
+        clean = [
+            hit
+            for hit in duplicate_hits
+            if not _doi_year_conflicts(hit.doi, hit.year)
+        ]
+        if not clean:
+            continue
+        drop_ids.update(
+            id(hit)
+            for hit in duplicate_hits
+            if _doi_year_conflicts(hit.doi, hit.year)
+        )
+    return [hit for hit in hits if id(hit) not in drop_ids]
 
 
 def _abstract_from_inverted_index(value: object) -> str:
@@ -594,6 +943,93 @@ def _fullraw_query_variants(query: str, *, limit: int) -> list[str]:
             continue
         if add(" ".join(pair)):
             return out
+    return out
+
+
+def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]:
+    if limit <= 0:
+        return []
+    out: list[FullRawSearchPass] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(name: str, variant: str, rank_mode: str = "relevance") -> bool:
+        clean = " ".join(variant.split())
+        if not clean:
+            return False
+        key = (clean, rank_mode)
+        if key in seen:
+            return False
+        seen.add(key)
+        out.append(FullRawSearchPass(name=name, query=clean, rank_mode=rank_mode))
+        return len(out) >= limit
+
+    window_limit = max(1, min(4, limit - 4 if limit > 5 else 1))
+    for index, variant in enumerate(_query_variants(query, limit=window_limit)):
+        if add("focused" if index == 0 else "broad", variant):
+            return out
+    core_variant = _fullraw_core_variant(query)
+    if core_variant and add("core", core_variant):
+        return out
+    pair_limit = max(0, limit - len(out))
+    for variant in _fullraw_pair_variants(query, limit=pair_limit):
+        if add("broad", variant):
+            return out
+    if add("adjacent", f"{query} mechanism outcome"):
+        return out
+    if add("falsifier", f"{query} null adverse conflicting"):
+        return out
+    if add("citation_heavy", query, "citation"):
+        return out
+    if add("recency", query, "recency"):
+        return out
+    for variant in _fullraw_query_variants(query, limit=limit * 2):
+        if add("broad", variant):
+            return out
+    return out
+
+
+def _fullraw_core_variant(query: str) -> str:
+    terms = _query_terms(query)
+    core = tuple(term for term in terms if term not in _FULLRAW_CORE_DROP)
+    if len(core) >= 2 and len(core) < len(terms):
+        return " ".join(core)
+    return ""
+
+
+def _fullraw_pair_variants(query: str, *, limit: int) -> list[str]:
+    if limit <= 0:
+        return []
+    terms = tuple(
+        term
+        for term in dict.fromkeys(_query_terms(query))
+        if len(term) >= 3 and term not in _FULLRAW_PAIR_DROP
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(left: str, right: str) -> bool:
+        if left == right:
+            return False
+        pair = f"{left} {right}"
+        if pair in seen:
+            return False
+        seen.add(pair)
+        out.append(pair)
+        return len(out) >= limit
+
+    if len(terms) > 2:
+        anchor = terms[0]
+        for term in terms[1:]:
+            if add(anchor, term):
+                return out
+    for gap in range(1, len(terms)):
+        for start in range(0, len(terms) - gap):
+            left = terms[start]
+            right = terms[start + gap]
+            if left in _FULLRAW_WEAK_PAIR_TERMS and right in _FULLRAW_WEAK_PAIR_TERMS:
+                continue
+            if add(left, right):
+                return out
     return out
 
 
