@@ -1309,6 +1309,34 @@ def test_pipeline_fails_closed_when_memo_coverage_is_too_narrow() -> None:
     )
 
 
+def test_pipeline_blocks_title_only_elite_memos() -> None:
+    class TitleOnlySearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return [
+                _hit(
+                    "protocol",
+                    "Metformin to augment strength training effective response in seniors",
+                    "",
+                ),
+                _hit(
+                    "outcome",
+                    "Metformin blunts muscle hypertrophy in response to resistance training",
+                    "",
+                ),
+            ]
+
+    with pytest.raises(MemoBuildError, match="coverage too narrow") as exc:
+        build_alpha_memo(
+            topic="metformin resistance training adaptation",
+            seed_queries=["metformin resistance training"],
+            searcher=TitleOnlySearch(),
+            min_alpha_tier="elite_alpha",
+        )
+
+    assert exc.value.failure.details["failures"] == ("abstract_receipts",)
+
+
 def test_pipeline_accepts_deep_fullraw_memo_coverage() -> None:
     class DeepSearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
