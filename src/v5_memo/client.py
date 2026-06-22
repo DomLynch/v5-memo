@@ -331,8 +331,6 @@ class FullRawCorpusSearchClient:
                     f"after {elapsed:.1f}s; variants={variant_index - 1}/{len(search_passes)}"
                 )
                 break
-            passes_run.append(search_pass.name)
-            rank_modes_run.append(search_pass.rank_mode)
             self._log_progress(
                 f"fullraw variant {variant_index}/{len(search_passes)} "
                 f"start [{search_pass.name}/{search_pass.rank_mode}]: {search_pass.query}"
@@ -351,6 +349,10 @@ class FullRawCorpusSearchClient:
                 f"fullraw variant {variant_index}/{len(search_passes)} done "
                 f"in {time.monotonic() - variant_started:.1f}s; hits={len(hits)}"
             )
+            if not hits:
+                continue
+            passes_run.append(search_pass.name)
+            rank_modes_run.append(search_pass.rank_mode)
             variant_terms = _query_terms(search_pass.query)
             for rank, hit in enumerate(hits, start=1):
                 total_seen += 1
