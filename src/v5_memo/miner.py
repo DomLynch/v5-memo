@@ -125,11 +125,6 @@ def mine_insights(
             anchor_terms,
         ):
             continue
-        if topic_context_terms and not (
-            _has_topic_context(left, topic_context_terms)
-            and _has_topic_context(right, topic_context_terms)
-        ):
-            continue
         pair_anchor_terms = anchor_terms or _shared_seed_anchor_terms(left, right)
         title_shared = title_token_sets[left.hit_id] & title_token_sets[right.hit_id]
         anchor_bridge = _anchor_bridge_terms(
@@ -153,6 +148,8 @@ def mine_insights(
             tension_terms=tension_terms,
         )
         if not shape_reasons:
+            continue
+        if not _pair_has_topic_context(left, right, topic_context_terms, shape_reasons):
             continue
         if anchor_terms and set(shape_reasons) & _ELITE_SHAPES and not anchor_bridge:
             continue
@@ -227,7 +224,7 @@ def _candidate_rank(candidate: InsightCandidate) -> tuple[bool, int, int, int, i
 
 
 def _topic_context_terms(topic: str, anchor_terms: frozenset[str]) -> frozenset[str]:
-    if not anchor_terms:
+    if len(anchor_terms) != 1:
         return frozenset()
     ordered = [
         token
@@ -237,14 +234,24 @@ def _topic_context_terms(topic: str, anchor_terms: frozenset[str]) -> frozenset[
         ) not in _STOP
         and token not in _TOPIC_CONTEXT_STOP
     ]
-    if len(ordered) < 3:
+    if len(ordered) < 2:
         return frozenset()
-    primary_anchor = next((term for term in ordered if term in anchor_terms), "")
-    return frozenset(
-        ordered[index + 1]
-        for index, token in enumerate(ordered[:-1])
-        if token in anchor_terms and token != primary_anchor and ordered[index + 1] not in anchor_terms
-    )
+    return frozenset(token for token in ordered if token not in anchor_terms)
+
+
+def _pair_has_topic_context(
+    left: CorpusHit,
+    right: CorpusHit,
+    context_terms: frozenset[str],
+    shape_reasons: tuple[str, ...],
+) -> bool:
+    if not context_terms:
+        return True
+    left_has = _has_topic_context(left, context_terms)
+    right_has = _has_topic_context(right, context_terms)
+    if set(shape_reasons) & _ELITE_SHAPES:
+        return left_has or right_has
+    return left_has and right_has
 
 
 def _has_topic_context(hit: CorpusHit, context_terms: frozenset[str]) -> bool:

@@ -360,7 +360,7 @@ def test_pipeline_applies_selector_to_existing_candidates() -> None:
 
     deterministic = mine_insights(
         hits,
-        topic="AI tool reliability",
+        topic="tool",
         required_anchor_terms=query_anchor_terms(["tool"]),
     )
     chosen = next(
@@ -370,7 +370,7 @@ def test_pipeline_applies_selector_to_existing_candidates() -> None:
     ).receipt_ids
 
     result = build_alpha_memo(
-        topic="AI tool reliability",
+        topic="tool",
         seed_queries=["tool"],
         searcher=FakeSearch(),
         memo_selector=lambda candidates, _hits: [
@@ -663,6 +663,54 @@ def test_title_only_specific_anchor_can_support_elite_promise_outcome_pair() -> 
     assert "shape:promise_outcome_reversal" in candidate.reasons
     assert candidate_alpha_tier(candidate) == "elite_alpha"
     assert meets_publish_bar(candidate, "elite_alpha")
+
+
+def test_mechanism_promise_may_omit_topic_context_when_outcome_has_it() -> None:
+    hits = [
+        _hit(
+            "promise",
+            "Resveratrol improves mitochondrial function and protects against metabolic disease",
+            "Resveratrol activated SIRT1 PGC-1alpha signaling and improved running performance.",
+        ),
+        _hit(
+            "outcome",
+            "Resveratrol blunts the positive effects of exercise training in aged men",
+            "The randomized exercise training trial observed resveratrol blunted training adaptation.",
+        ),
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic="resveratrol exercise training adaptation",
+        required_anchor_terms=("resveratrol",),
+    )[0]
+
+    assert candidate.receipt_ids == ("promise", "outcome")
+    assert candidate_alpha_tier(candidate) == "elite_alpha"
+
+
+def test_topic_context_blocks_same_anchor_injury_drift() -> None:
+    hits = [
+        _hit(
+            "retraction",
+            "Retraction: Resveratrol improves mitochondrial biogenesis after brain injury",
+            "Retraction notice for resveratrol PGC-1alpha signaling in early brain injury.",
+        ),
+        _hit(
+            "lung",
+            "Resveratrol attenuates hyperoxia-induced lung injury via SIRT1 PGC-1alpha",
+            "Resveratrol attenuated neonatal rat lung injury through SIRT1 PGC-1alpha signaling.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="resveratrol exercise training adaptation",
+        required_anchor_terms=("resveratrol",),
+        include_discovery=True,
+    )
+
+    assert candidates == []
 
 
 def test_title_only_augment_protocol_can_pair_with_blunted_outcome() -> None:

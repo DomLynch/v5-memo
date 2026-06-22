@@ -354,6 +354,8 @@ def test_minimax_planner_prompt_prefers_reversal_pairs_not_reviews() -> None:
     assert "Split those two evidence sides into separate title-like queries" in prompt
     assert "Return adjacent query pairs when possible" in prompt
     assert "must share the same specific intervention" in prompt
+    assert "may omit downstream endpoint words" in prompt
+    assert "mechanism queries must still" in prompt
     assert "same intervention/construct/program" in prompt
     assert "At least half the queries must name a specific intervention" in prompt
     assert "Avoid broad review, meta-analysis, position-stand" in prompt

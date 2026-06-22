@@ -180,6 +180,13 @@ class ShardCacheWarmResult:
     errors: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class SweepSearchPass:
+    role: str
+    query: str
+    rank_mode: str
+
+
 class FullRawFtsIndex:
     """SQLite FTS5 index over normalized raw-corpus records."""
 
@@ -1008,7 +1015,7 @@ def _search_shard_paths(
     timeout_seconds: float | None = None,
     shard_timeout_seconds: float | None = None,
 ) -> list[dict[str, object]]:
-    hits, _completed_paths, _timed_out = _search_shard_paths_with_paths(
+    hits, _completed_paths, _timed_out, _metrics = _search_shard_paths_with_paths_and_receipt(
         paths,
         query,
         limit=limit,
@@ -1034,7 +1041,33 @@ def _search_shard_paths_with_paths(
     timeout_seconds: float | None = None,
     shard_timeout_seconds: float | None = None,
 ) -> tuple[list[dict[str, object]], list[Path], bool]:
-    merged: dict[str, dict[str, object]] = {}
+    hits, completed_paths, timed_out, _metrics = _search_shard_paths_with_paths_and_receipt(
+        paths,
+        query,
+        limit=limit,
+        year_min=year_min,
+        year_max=year_max,
+        rank_mode=rank_mode,
+        workers=workers,
+        timeout_seconds=timeout_seconds,
+        shard_timeout_seconds=shard_timeout_seconds,
+    )
+    return hits, completed_paths, timed_out
+
+
+def _search_shard_paths_with_paths_and_receipt(
+    paths: list[Path],
+    query: str,
+    *,
+    limit: int,
+    year_min: int,
+    year_max: int,
+    rank_mode: str,
+    workers: int | None = None,
+    timeout_seconds: float | None = None,
+    shard_timeout_seconds: float | None = None,
+) -> tuple[list[dict[str, object]], list[Path], bool, dict[str, object]]:
+    hit_groups: list[list[dict[str, object]]] = []
     completed_paths: list[Path] = []
     timed_out = False
     worker_count = workers if workers is not None else int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "8"))
@@ -1062,17 +1095,13 @@ def _search_shard_paths_with_paths(
             except (OSError, sqlite3.Error):
                 continue
             completed_paths.append(path)
-            for hit in hits:
-                key = _dedupe_key(hit)
-                existing = merged.get(key)
-                if existing is None or _hit_score(hit) > _hit_score(existing):
-                    merged[key] = hit
+            hit_groups.append(hits)
     except FuturesTimeoutError:
         timed_out = True
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
-    hits = _rank_limited_hits(merged.values(), limit=limit)
-    return hits, completed_paths, timed_out
+    hits, metrics = _merge_hit_groups_with_receipt(hit_groups, limit=limit)
+    return hits, completed_paths, timed_out, metrics
 
 
 def _merge_hit_groups(
@@ -1080,14 +1109,67 @@ def _merge_hit_groups(
     *,
     limit: int,
 ) -> list[dict[str, object]]:
+    hits, _metrics = _merge_hit_groups_with_receipt(hit_groups, limit=limit)
+    return hits
+
+
+def _merge_hit_groups_with_receipt(
+    hit_groups: Iterable[Iterable[dict[str, object]]],
+    *,
+    limit: int,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
     merged: dict[str, dict[str, object]] = {}
+    raw_count = 0
     for hits in hit_groups:
         for hit in hits:
+            raw_count += 1
             key = _dedupe_key(hit)
             existing = merged.get(key)
             if existing is None or _hit_score(hit) > _hit_score(existing):
                 merged[key] = hit
-    return _rank_limited_hits(merged.values(), limit=limit)
+    ranked = _rank_limited_hits(merged.values(), limit=limit)
+    return ranked, _hit_diversity_receipt(
+        raw_result_count=raw_count,
+        unique_result_count=len(merged),
+        returned_hits=ranked,
+    )
+
+
+def _hit_diversity_receipt(
+    *,
+    raw_result_count: int,
+    unique_result_count: int,
+    returned_hits: list[dict[str, object]],
+) -> dict[str, object]:
+    duplicate_count = max(0, raw_result_count - unique_result_count)
+    citation_counts = [_int_or_none(hit.get("cited_by_count")) or 0 for hit in returned_hits]
+    bucket_counts: Counter[str] = Counter(_citation_bucket(count) for count in citation_counts)
+    return {
+        "result_count_raw": raw_result_count,
+        "result_count_unique": unique_result_count,
+        "result_count_returned": len(returned_hits),
+        "result_duplicate_count": duplicate_count,
+        "result_duplicate_rate": round(duplicate_count / raw_result_count, 4) if raw_result_count else 0.0,
+        "result_cited_by_range": (
+            {"min": min(citation_counts), "max": max(citation_counts)}
+            if citation_counts
+            else {"min": 0, "max": 0}
+        ),
+        "result_citation_bucket_counts": dict(sorted(bucket_counts.items())),
+        "result_citation_diversity": sum(1 for count in bucket_counts.values() if count > 0),
+    }
+
+
+def _citation_bucket(count: int) -> str:
+    if count <= 0:
+        return "zero"
+    if count < 10:
+        return "low"
+    if count < 100:
+        return "medium"
+    if count < 1000:
+        return "high"
+    return "very_high"
 
 
 def _rank_limited_hits(
@@ -1318,6 +1400,53 @@ def _profile_relaxed_sweep_query(
     if len(ordered) > max_terms:
         ordered = _spread_terms(ordered, max_terms)
     return " ".join(ordered) if len(ordered) >= 2 else " ".join(terms)
+
+
+def _sweep_search_passes(
+    query: str,
+    entries: list[ShardCatalogEntry],
+    *,
+    rank_mode: str,
+) -> tuple[SweepSearchPass, ...]:
+    focused = _profile_relaxed_sweep_query(query, entries)
+    broad = _broad_sweep_query(focused)
+    adjacent = _adjacent_sweep_query(query, entries) or broad
+    falsifier = _falsifier_sweep_query(focused)
+    requested_rank_mode = _rank_mode(rank_mode)
+    passes = (
+        SweepSearchPass("focused", focused, requested_rank_mode),
+        SweepSearchPass("broad", broad, requested_rank_mode),
+        SweepSearchPass("adjacent_field", adjacent, "relevance"),
+        SweepSearchPass("falsifier", falsifier, "relevance"),
+        SweepSearchPass("citation_heavy", focused, "citation"),
+        SweepSearchPass("recency", focused, "recency"),
+    )
+    return tuple(pass_item for pass_item in passes if _fts_terms(pass_item.query))
+
+
+def _broad_sweep_query(query: str) -> str:
+    terms = list(_fts_terms(query))
+    if len(terms) <= 2:
+        return " ".join(terms)
+    return " ".join(_spread_terms(terms, 2))
+
+
+def _adjacent_sweep_query(query: str, entries: list[ShardCatalogEntry]) -> str:
+    query_terms = set(_fts_terms(query))
+    adjacent_counts: Counter[str] = Counter()
+    for entry in entries:
+        for term in entry.topic_terms:
+            if term not in query_terms:
+                adjacent_counts[term] += 1
+    adjacent_terms = [term for term, _count in adjacent_counts.most_common(3)]
+    return " ".join(adjacent_terms) if len(adjacent_terms) >= 2 else ""
+
+
+def _falsifier_sweep_query(query: str) -> str:
+    terms = _fts_terms(query)
+    if not terms:
+        return ""
+    return f"{terms[0]} risk"
 
 
 def _term_aliases(term: str) -> set[str]:
@@ -2386,13 +2515,17 @@ def run_server() -> None:
                     target_ready=min_shards_searched,
                 )
                 planned_receipt = shard_coverage_receipt(catalog, sweep_entries)
-                sweep_query = _profile_relaxed_sweep_query(query, sweep_entries)
+                sweep_passes = _sweep_search_passes(query, sweep_entries, rank_mode=rank_mode)
                 completed_path_strings = _sweep_completed_path_strings(existing.receipt if existing else {})
                 failed_path_strings = _sweep_failed_path_strings(existing.receipt if existing else {})
                 merged_hits = list(existing.hits if existing else [])
                 previous_passes = _int_or_none((existing.receipt if existing else {}).get("sweep_passes")) or 0
+                completed_pass_roles = list(
+                    _string_tuple((existing.receipt if existing else {}).get("sweep_completed_pass_roles"))
+                )
                 receipt: dict[str, object] = existing.receipt if existing else {}
                 for pass_index in range(sweep_max_passes):
+                    pass_plan = sweep_passes[(previous_passes + pass_index) % len(sweep_passes)]
                     remaining_entries = [
                         entry
                         for entry in sweep_entries
@@ -2401,17 +2534,18 @@ def run_server() -> None:
                     pass_entries = remaining_entries[:sweep_pass_shard_limit]
                     if not pass_entries:
                         break
-                    hits, completed_paths, timed_out = _search_shard_paths_with_paths(
+                    hits, completed_paths, timed_out, pass_metrics = _search_shard_paths_with_paths_and_receipt(
                         [entry.path for entry in pass_entries],
-                        sweep_query,
+                        pass_plan.query,
                         limit=limit,
                         year_min=year_min,
                         year_max=year_max,
-                        rank_mode=rank_mode,
+                        rank_mode=pass_plan.rank_mode,
                         workers=sweep_workers,
                         timeout_seconds=sweep_timeout_seconds,
                         shard_timeout_seconds=sweep_shard_timeout_seconds,
                     )
+                    completed_pass_roles.append(pass_plan.role)
                     completed_path_strings.update(str(path) for path in completed_paths)
                     failed_path_strings.update(
                         str(entry.path) for entry in pass_entries if str(entry.path) not in completed_path_strings
@@ -2435,12 +2569,20 @@ def run_server() -> None:
                     receipt["sweep_timeout_seconds"] = sweep_timeout_seconds
                     receipt["sweep_shard_timeout_seconds"] = sweep_shard_timeout_seconds
                     receipt["sweep_strategy"] = _SWEEP_STRATEGY
-                    receipt["sweep_query"] = sweep_query
+                    receipt["sweep_search_passes"] = tuple(asdict(pass_item) for pass_item in sweep_passes)
+                    receipt["sweep_completed_pass_roles"] = tuple(completed_pass_roles)
+                    receipt["sweep_completed_pass_role_counts"] = dict(sorted(Counter(completed_pass_roles).items()))
+                    receipt["sweep_pass_role"] = pass_plan.role
+                    receipt["sweep_pass_query"] = pass_plan.query
+                    receipt["sweep_pass_rank_mode"] = pass_plan.rank_mode
+                    receipt["sweep_pass_result_metrics"] = pass_metrics
+                    receipt["sweep_query"] = pass_plan.query
                     receipt["sweep_passes"] = previous_passes + pass_index + 1
                     receipt["sweep_completed_paths"] = sorted(completed_path_strings)
-                    if sweep_query != query:
+                    if pass_plan.query != query:
                         receipt["sweep_original_query"] = query
-                    merged_hits = _merge_hit_groups([merged_hits, hits], limit=limit)
+                    merged_hits, result_metrics = _merge_hit_groups_with_receipt([merged_hits, hits], limit=limit)
+                    receipt.update(result_metrics)
                     final = (
                         receipt_is_sufficient(receipt)
                         or receipt["sweep_remaining_shards"] == 0
