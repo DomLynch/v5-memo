@@ -1144,7 +1144,9 @@ def _profile_relaxed_sweep_query(
                 profile_counts[term] += 1
     positive_terms = [term for term in terms if profile_counts[term] > 0]
     if len(positive_terms) < 2:
-        return " ".join(terms)
+        positive_terms = [term for term in terms if len(aliases[term]) > 1]
+    if len(positive_terms) < 2:
+        positive_terms = list(terms)
     ranked = sorted(positive_terms, key=lambda term: (-profile_counts[term], terms.index(term)))
     candidate_terms = set(ranked[: max(max_terms, min(len(ranked), max_terms + 2))])
     ordered = [term for term in terms if term in candidate_terms]

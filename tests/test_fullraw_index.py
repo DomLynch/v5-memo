@@ -1060,6 +1060,28 @@ def test_profile_relaxed_sweep_query_uses_shard_topics(tmp_path: Path) -> None:
     assert relaxed == "management forecast disclosure"
 
 
+def test_profile_relaxed_sweep_query_falls_back_to_term_map_aliases(tmp_path: Path) -> None:
+    entries = [
+        ShardCatalogEntry(
+            path=tmp_path / "batch_00000" / "fullraw_shard_0000.sqlite",
+            batch_id=0,
+            shard_id=0,
+            sources=("openalex",),
+            files_completed=1,
+            papers_inserted=100,
+            bytes_used=1000,
+            topic_terms=("system", "development", "time"),
+        )
+    ]
+
+    relaxed = fullraw_index._profile_relaxed_sweep_query(
+        "voluntary management earnings forecast disclosure",
+        entries,
+    )
+
+    assert relaxed == "management forecast disclosure"
+
+
 def test_sweep_cache_key_includes_sweep_shard_limit() -> None:
     small = fullraw_index._sweep_cache_key(
         "management forecast disclosure",
