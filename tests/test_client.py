@@ -916,6 +916,17 @@ def test_fullraw_search_passes_prioritize_specific_short_anchor_pairs() -> None:
     assert "nmn vo2max" in [search_pass.query for search_pass in nmn_passes]
 
 
+def test_fullraw_search_passes_keep_pair_variants_on_primary_anchor() -> None:
+    passes = _fullraw_search_passes(
+        "metformin resistance training adaptation",
+        limit=6,
+    )
+
+    queries = [search_pass.query for search_pass in passes]
+    assert "metformin training" in queries
+    assert "resistance training" not in queries
+
+
 def test_fullraw_rerank_prefers_abstract_backed_doi_receipts(monkeypatch: MonkeyPatch) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del request, timeout

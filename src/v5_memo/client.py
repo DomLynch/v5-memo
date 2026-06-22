@@ -59,6 +59,7 @@ _FULLRAW_PAIR_DROP = _FULLRAW_CORE_DROP | {
     "supplementation",
     "trained",
 }
+_FULLRAW_WEAK_PAIR_TERMS = {"resistance", "strength", "training"}
 
 
 class OpenAlexFullCorpusSearchClient:
@@ -856,7 +857,11 @@ def _fullraw_pair_variants(query: str, *, limit: int) -> list[str]:
                 return out
     for gap in range(1, len(terms)):
         for start in range(0, len(terms) - gap):
-            if add(terms[start], terms[start + gap]):
+            left = terms[start]
+            right = terms[start + gap]
+            if left in _FULLRAW_WEAK_PAIR_TERMS and right in _FULLRAW_WEAK_PAIR_TERMS:
+                continue
+            if add(left, right):
                 return out
     return out
 
