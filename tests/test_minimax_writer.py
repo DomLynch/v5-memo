@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from email.message import Message
+from urllib.error import HTTPError
 from urllib.request import Request
 
 import pytest
@@ -12,6 +14,7 @@ from v5_memo.minimax_writer import (
     build_minimax_prompt,
     build_minimax_search_prompt,
     build_minimax_selection_prompt,
+    call_minimax_m3,
     parse_minimax_queries,
     parse_minimax_selection,
     validate_minimax_memo,
@@ -44,6 +47,30 @@ class FakeOpener:
         self.requests.append(request)
         text = self._texts[min(len(self.requests) - 1, len(self._texts) - 1)]
         return FakeResponse({"content": [{"type": "text", "text": text}]})
+
+
+def test_minimax_call_retries_transient_http_529(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[Request] = []
+
+    def opener(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        calls.append(request)
+        if len(calls) == 1:
+            headers: Message[str, str] = Message()
+            raise HTTPError(request.full_url, 529, "overloaded", headers, None)
+        return FakeResponse({"content": [{"type": "text", "text": "ok"}]})
+
+    monkeypatch.setattr("v5_memo.minimax_writer.time.sleep", lambda _seconds: None)
+
+    assert call_minimax_m3(
+        api_key="key",
+        prompt="p",
+        system="s",
+        temperature=0.1,
+        max_tokens=10,
+        opener=opener,
+    ) == "ok"
+    assert len(calls) == 2
 
 
 def _candidate(

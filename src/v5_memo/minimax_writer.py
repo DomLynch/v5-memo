@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol, cast
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from v5_memo.gate import candidate_alpha_tier
@@ -22,6 +24,7 @@ MINIMAX_MODEL_ENV = "V5_MEMO_MINIMAX_MODEL"
 MINIMAX_TIMEOUT_ENV = "V5_MEMO_MINIMAX_TIMEOUT_SECONDS"
 MINIMAX_MAX_TOKENS_ENV = "V5_MEMO_MINIMAX_MAX_TOKENS"
 MINIMAX_KEY_FILE = Path.home() / ".codex" / "secrets" / "minimax_api_key"
+_MINIMAX_RETRY_HTTP_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 529})
 RECEIPT_ABSTRACT_CHAR_LIMIT = 1400
 _REQUIRED_MEMO_SECTIONS = (
     "# Alpha memo:",
@@ -270,9 +273,16 @@ def call_minimax_m3(
         method="POST",
     )
     request_opener = opener or cast(RequestOpener, urlopen)
-    with request_opener(request, timeout=timeout) as response:
-        data = json.loads(response.read().decode("utf-8"))
-    return _anthropic_text(data)
+    for attempt in range(3):
+        try:
+            with request_opener(request, timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            return _anthropic_text(data)
+        except HTTPError as exc:
+            if exc.code not in _MINIMAX_RETRY_HTTP_STATUS or attempt == 2:
+                raise
+            time.sleep(0.75 * (attempt + 1))
+    raise RuntimeError("unreachable MiniMax retry state")
 
 
 def load_minimax_api_key() -> str:
