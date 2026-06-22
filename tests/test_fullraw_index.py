@@ -1005,7 +1005,7 @@ def test_server_rejects_narrow_cached_sweep_receipt(tmp_path: Path) -> None:
 
 
 def test_server_resumes_narrow_cached_sweep_receipt(tmp_path: Path) -> None:
-    for index in range(2):
+    for index in range(3):
         batch = tmp_path / f"batch_{index:05d}"
         batch.mkdir()
         shard = batch / "fullraw_shard_0000.sqlite"
@@ -1035,12 +1035,15 @@ def test_server_resumes_narrow_cached_sweep_receipt(tmp_path: Path) -> None:
         }))
     cache_dir = tmp_path / "cache"
     catalog = fullraw_index.build_shard_catalog(tmp_path, trust_filenames=True)
-    selected = select_sweep_shard_entries(catalog, query="management forecast disclosure", limit=2)
+    selected = select_sweep_shard_entries(catalog, query="management forecast disclosure", limit=3)
     partial_receipt = shard_coverage_receipt(catalog, [selected[0]])
     partial_receipt.update({
         "sweep_scope": "relevant",
-        "sweep_shard_limit": 2,
-        "sweep_selected_shards": 2,
+        "sweep_shard_limit": 3,
+        "sweep_selected_shards": 3,
+        "sweep_pass_shard_limit": 1,
+        "sweep_pass_selected_shards": 1,
+        "sweep_remaining_shards": 2,
         "sweep_timed_out": True,
         "sweep_timeout_seconds": 300.0,
         "sweep_shard_timeout_seconds": 10.0,
@@ -1055,7 +1058,7 @@ def test_server_resumes_narrow_cached_sweep_receipt(tmp_path: Path) -> None:
         year_min=1900,
         year_max=2100,
         rank_mode="relevance",
-        sweep_shard_limit=2,
+        sweep_shard_limit=3,
     )
     fullraw_index._write_sweep_cache(
         cache_dir / f"{cache_key}.json",
@@ -1084,7 +1087,8 @@ def test_server_resumes_narrow_cached_sweep_receipt(tmp_path: Path) -> None:
         "V5_MEMO_FULL_RAW_SHARD_MANIFEST_STATS": "1",
         "V5_MEMO_FULL_RAW_ASYNC_SWEEP": "1",
         "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR": str(cache_dir),
-        "V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT": "2",
+        "V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT": "3",
+        "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT": "1",
         "V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED": "2",
         "V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED": "1",
     }
@@ -1141,6 +1145,8 @@ def test_server_resumes_narrow_cached_sweep_receipt(tmp_path: Path) -> None:
         assert isinstance(receipt, dict)
         assert receipt["shards_searched"] == 2
         assert receipt["sweep_passes"] == 2
+        assert receipt["sweep_pass_selected_shards"] == 1
+        assert receipt["sweep_remaining_shards"] == 1
         completed_paths = receipt["sweep_completed_paths"]
         assert isinstance(completed_paths, list)
         assert len(completed_paths) == 2
