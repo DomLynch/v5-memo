@@ -71,6 +71,37 @@ def test_demo_cli_renders_alpha_shape(
     assert "point in different directions" in captured.out
 
 
+def test_seed_planner_uses_topic_outside_demo(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--planner",
+            "seed",
+            "--searcher",
+            "openalex",
+            "--topic",
+            "resveratrol exercise training adaptation",
+        ],
+    )
+
+    main()
+
+    assert "Alpha memo" in capsys.readouterr().out
+    assert seen["seed_queries"] == ["resveratrol exercise training adaptation"]
+
+
 def test_cli_forwards_memo_coverage_thresholds_from_env(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
