@@ -950,6 +950,27 @@ def test_miner_rejects_power_word_endpoint_mismatch_as_alpha() -> None:
     assert all(candidate_alpha_tier(candidate) != "publishable_alpha" for candidate in candidates)
 
 
+def test_miner_rejects_comparative_method_word_as_alpha_bridge() -> None:
+    hits = [
+        _hit(
+            "methylome",
+            "The comparative methylome and transcriptome after change of direction compared to straight line running exercise in human skeletal muscle",
+            "The mechanism improved skeletal muscle exercise adaptation.",
+        ),
+        _hit(
+            "crispr",
+            "A Comparative Study on the Efficiency of CRISPR-Cas9 in Human Embryonic Kidney 293 Cells and Peripheral Blood Mononuclear Cells for Disruption in Programmed Cell Death Protein 1",
+            "The randomized trial observed unchanged editing outcomes.",
+        ),
+    ]
+
+    assert mine_insights(
+        hits,
+        topic="longevity exercise adaptation",
+        include_discovery=True,
+    ) == []
+
+
 def test_miner_rejects_abstract_only_bridge_words_as_alpha() -> None:
     hits = [
         _hit(
