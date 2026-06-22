@@ -41,6 +41,7 @@ _TITLE_WORD_RE = re.compile(r"[a-z][a-z0-9]{2,}")
 _TITLE_STOPWORDS = frozenset({
     "alpha", "memo", "and", "for", "from", "into", "may", "not", "the", "with",
     "without", "between", "versus", "under", "over", "through", "across",
+    "after", "before", "during", "following",
     "one", "two", "three", "both", "same", "abstract", "readout", "readouts", "report", "reports",
     "signal", "signals", "effect", "effects", "tradeoff", "tradeoffs",
     "boundary", "condition", "conditions", "hypothesis", "discovery", "seed",

@@ -593,6 +593,47 @@ Receipt-bound only.""",
     assert "promise outcome split" in memo
 
 
+def test_minimax_title_guard_allows_temporal_grammar_terms() -> None:
+    receipt = CorpusHit(
+        hit_id="cwi",
+        title="Cold water immersion resistance training adaptation",
+        abstract="Cold water immersion changed resistance training adaptation.",
+        source="openalex",
+        doi="10.5555/cwi",
+    )
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Cold water immersion may alter adaptation.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative",),
+        receipt_ids=("cwi",),
+        score=90,
+        novelty_score=70,
+        evidence_score=90,
+        reasons=("tier:elite_alpha",),
+    )
+
+    memo = validate_minimax_memo(
+        """# Alpha memo: cold immersion after resistance training
+## Core signal
+Cold water immersion changes adaptation.
+## The 2+2=5 angle
+Temporal grammar should not count as drift.
+## Why this could matter
+It keeps valid titles from failing.
+## What would break the idea
+Unsupported domain nouns still fail.
+## Receipts
+- 10.5555/cwi
+## Safety note
+Receipt-bound only.""",
+        [receipt],
+        candidate=candidate,
+    )
+
+    assert memo.startswith("# Alpha memo: cold immersion after")
+
+
 def test_minimax_memo_validation_accepts_displayed_openalex_work_id() -> None:
     receipt = CorpusHit(
         hit_id="https://openalex.org/W7070693264",
