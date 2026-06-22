@@ -1185,13 +1185,47 @@ def backfill_shard_profiles(
 ) -> dict[str, object]:
     manifests = _read_batch_manifests(shard_dir)
     changed_batches: set[Path] = set()
+    updated_batches: set[Path] = set()
+    current_batch: Path | None = None
     profiled = 0
     skipped = 0
     missing_manifest = 0
     failed: list[str] = []
+
+    def flush_batch(batch_dir: Path | None) -> None:
+        if batch_dir is None or batch_dir not in changed_batches:
+            return
+        manifest = manifests[batch_dir]
+        manifest["profiled_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        updated_batches.add(batch_dir)
+        if not dry_run:
+            if upload_remote:
+                _upload_manifest_payload(
+                    manifest,
+                    f"{upload_remote.rstrip('/')}/{batch_dir.name}/complete.json",
+                    rclone_bin=rclone_bin,
+                )
+            else:
+                _write_json_file(batch_dir / "complete.json", manifest)
+        changed_batches.remove(batch_dir)
+        if progress_interval > 0:
+            print(
+                json.dumps({
+                    "batch": batch_dir.name,
+                    "batches_updated": len(updated_batches),
+                    "event": "profile_backfill_batch_flushed",
+                    "shards_profiled": profiled,
+                }, sort_keys=True),
+                file=sys.stderr,
+                flush=True,
+            )
+
     for path in discover_shard_paths(shard_dir, trust_filenames=trust_filenames):
         if max_shards is not None and profiled >= max_shards:
             break
+        if current_batch is not None and path.parent != current_batch:
+            flush_batch(current_batch)
+        current_batch = path.parent
         manifest = manifests.get(path.parent)
         if manifest is None:
             missing_manifest += 1
@@ -1223,24 +1257,14 @@ def backfill_shard_profiles(
                 file=sys.stderr,
                 flush=True,
             )
-    if not dry_run:
-        for batch_dir in sorted(changed_batches):
-            manifest = manifests[batch_dir]
-            manifest["profiled_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            manifest_path = batch_dir / "complete.json"
-            if upload_remote:
-                _upload_manifest_payload(
-                    manifest,
-                    f"{upload_remote.rstrip('/')}/{batch_dir.name}/complete.json",
-                    rclone_bin=rclone_bin,
-                )
-            else:
-                _write_json_file(manifest_path, manifest)
+    flush_batch(current_batch)
+    for batch_dir in sorted(changed_batches):
+        flush_batch(batch_dir)
     return {
         "shards_profiled": profiled,
         "shards_skipped": skipped,
         "missing_manifest": missing_manifest,
-        "batches_updated": len(changed_batches),
+        "batches_updated": len(updated_batches),
         "dry_run": dry_run,
         "upload_remote": upload_remote,
         "errors": failed,

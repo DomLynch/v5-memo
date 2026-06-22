@@ -524,6 +524,53 @@ def test_backfill_shard_profiles_updates_existing_manifest(tmp_path: Path) -> No
     assert manifest["shards"][0]["year_min"] == 1990
 
 
+def test_backfill_shard_profiles_flushes_each_batch(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    for batch_id in range(2):
+        batch = tmp_path / f"batch_{batch_id:05d}"
+        batch.mkdir()
+        shard = batch / f"fullraw_shard_{batch_id:04d}.sqlite"
+        shard.touch()
+        (batch / "complete.json").write_text(json.dumps({
+            "batch_id": batch_id,
+            "files": [{"source": "openalex"}],
+            "shards": [{
+                "shard_id": batch_id,
+                "files_completed": 1,
+                "papers_inserted": 1,
+                "bytes_used": 1,
+            }],
+        }))
+
+    def fake_profile(path: Path) -> dict[str, object]:
+        return {
+            "year_min": 2000,
+            "year_max": 2024,
+            "cited_by_min": 1,
+            "cited_by_max": 5,
+            "cited_by_avg": 3.0,
+            "topic_terms": (path.parent.name,),
+        }
+
+    monkeypatch.setattr(fullraw_index, "_profile_shard_path", fake_profile)
+
+    result = backfill_shard_profiles(tmp_path, progress_interval=99)
+    events = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+
+    assert result["shards_profiled"] == 2
+    assert result["batches_updated"] == 2
+    assert [event["event"] for event in events] == [
+        "profile_backfill_batch_flushed",
+        "profile_backfill_batch_flushed",
+    ]
+    assert [event["batch"] for event in events] == ["batch_00000", "batch_00001"]
+    first_manifest = json.loads((tmp_path / "batch_00000" / "complete.json").read_text())
+    assert first_manifest["shards"][0]["year_min"] == 2000
+
+
 def test_backfill_shard_profiles_cli_reports_json(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
