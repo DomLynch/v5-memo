@@ -2321,19 +2321,31 @@ def run_server() -> None:
                         if sweep_status == "hit" and (cached := sweep_cache_get(cache_key)) is not None:
                             hits = cached.hits
                             receipt = cached.receipt
+                        elif resume_cached and cached is not None:
+                            receipt = cached.receipt
+                            if receipt_is_sufficient(receipt):
+                                hits = cached.hits
                     else:
                         with sweep_lock:
                             sweep_status = "running" if cache_key in sweep_inflight else "miss"
                     if receipt:
+                        partial_progress = (
+                            cache_only
+                            and queue_if_missing
+                            and sweep_status in {"queued", "running"}
+                            and not receipt_is_sufficient(receipt)
+                        )
                         coverage_gate = shard_coverage_gate_response(
                             receipt,
                             min_shards_searched=min_shards_searched,
                             min_sources_searched=min_sources_searched,
                         )
-                        if coverage_gate is not None:
+                        if coverage_gate is not None and not partial_progress:
                             status, body = coverage_gate
                             _write_json(self, status, body)
                             return
+                        if partial_progress:
+                            hits = []
                     _write_json(self, 200, {
                         "meta": {
                             "count": len(hits),
