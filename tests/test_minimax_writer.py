@@ -615,7 +615,7 @@ def test_minimax_title_guard_allows_temporal_grammar_terms() -> None:
     )
 
     memo = validate_minimax_memo(
-        """# Alpha memo: cold immersion after resistance training
+        """# Alpha memo: cold immersion yet resistance training
 ## Core signal
 Cold water immersion changes adaptation.
 ## The 2+2=5 angle
@@ -632,7 +632,7 @@ Receipt-bound only.""",
         candidate=candidate,
     )
 
-    assert memo.startswith("# Alpha memo: cold immersion after")
+    assert memo.startswith("# Alpha memo: cold immersion yet")
 
 
 def test_minimax_memo_validation_accepts_displayed_openalex_work_id() -> None:
