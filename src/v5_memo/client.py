@@ -58,6 +58,24 @@ _FULLRAW_PAIR_DROP = _FULLRAW_CORE_DROP | {
     "trained",
 }
 _FULLRAW_WEAK_PAIR_TERMS = {"resistance", "strength", "training"}
+_DOI_BACKFILL_PRIORITY_TERMS = {
+    "attenuate",
+    "attenuated",
+    "augment",
+    "blunt",
+    "blunted",
+    "expected",
+    "hypothesis",
+    "impair",
+    "impaired",
+    "mimic",
+    "mimetic",
+    "protocol",
+    "randomized",
+    "reduce",
+    "reduced",
+    "trial",
+}
 
 
 class OpenAlexFullCorpusSearchClient:
@@ -609,25 +627,38 @@ def _backfill_missing_openalex_abstracts(
 ) -> list[CorpusHit]:
     if limit <= 0:
         return hits
-    out: list[CorpusHit] = []
+    out = list(hits)
     backfilled = 0
-    for hit in hits:
-        if hit.abstract or not hit.doi or backfilled >= limit:
-            out.append(hit)
+    missing = [
+        (index, hit)
+        for index, hit in enumerate(hits)
+        if not hit.abstract and hit.doi
+    ]
+    missing.sort(key=lambda item: _doi_backfill_priority(item[1]), reverse=True)
+    for index, hit in missing:
+        if backfilled >= limit:
+            break
+        doi = hit.doi
+        if doi is None:
             continue
-        enriched = _fetch_openalex_work_by_doi(hit.doi)
+        enriched = _fetch_openalex_work_by_doi(doi)
         if enriched is None or not enriched.abstract:
-            out.append(hit)
             continue
         backfilled += 1
-        out.append(replace(
+        out[index] = replace(
             hit,
             abstract=enriched.abstract,
             year=hit.year or enriched.year,
             venue=hit.venue or enriched.venue,
             metadata={**hit.metadata, "abstract_backfill": "openalex_doi"},
-        ))
+        )
     return out
+
+
+def _doi_backfill_priority(hit: CorpusHit) -> int:
+    text = f"{hit.title} {hit.venue or ''}".casefold()
+    terms = set(re.findall(r"[a-z][a-z0-9]+", text))
+    return len(terms & _DOI_BACKFILL_PRIORITY_TERMS)
 
 
 def _fetch_openalex_work_by_doi(doi: str) -> CorpusHit | None:

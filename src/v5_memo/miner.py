@@ -81,8 +81,9 @@ _ELITE_SHAPES = frozenset({
     "shape:expectation_reversal",
 })
 _SYNTHESIS_TITLE_TERMS = frozenset({
-    "candidate", "commentary", "consensus", "guideline", "meta", "perspective",
-    "position", "potential", "question", "review", "stand", "strategy", "systematic",
+    "candidate", "commentary", "consensus", "guideline", "meta", "opinion", "opinions",
+    "perspective", "position", "potential", "question", "recommendation",
+    "recommendations", "review", "stand", "strategy", "systematic",
 })
 _CONTEXT_ANCHOR_BACKFILL = frozenset({"exercise", "resistance", "strength", "training"})
 
@@ -103,6 +104,7 @@ def mine_insights(
     full_token_sets = {hit.hit_id: _tokens(hit.text) for hit in clean_hits}
     title_token_sets = {hit.hit_id: _tokens(hit.title) for hit in clean_hits}
     anchor_terms = frozenset(required_anchor_terms)
+    topic_context_terms = _tokens(topic) & _CONTEXT_ANCHOR_BACKFILL
     doc_counts = Counter(term for terms in full_token_sets.values() for term in terms)
 
     candidates: list[InsightCandidate] = []
@@ -113,6 +115,10 @@ def mine_insights(
             full_token_sets[left.hit_id],
             full_token_sets[right.hit_id],
             anchor_terms,
+        ):
+            continue
+        if topic_context_terms and not (
+            full_token_sets[left.hit_id] & full_token_sets[right.hit_id] & topic_context_terms
         ):
             continue
         pair_anchor_terms = anchor_terms or _shared_seed_anchor_terms(left, right)
@@ -138,6 +144,8 @@ def mine_insights(
             tension_terms=tension_terms,
         )
         if not shape_reasons:
+            continue
+        if anchor_terms and set(shape_reasons) & _ELITE_SHAPES and not anchor_bridge:
             continue
         elite_anchor_bridge = _has_elite_anchor_bridge(
             anchor_bridge,
@@ -179,12 +187,49 @@ def mine_insights(
             score=score.score,
             novelty_score=score.novelty_score,
             evidence_score=score.evidence_score,
-            reasons=(*score.reasons, *_direction_cautions(left.text, right.text), f"tier:{tier}"),
+            reasons=(
+                *score.reasons,
+                *_coupling_reasons(
+                    left,
+                    right,
+                    pair_anchor_terms=pair_anchor_terms,
+                ),
+                *_direction_cautions(left.text, right.text),
+                f"tier:{tier}",
+            ),
             receipt_roles=_receipt_roles(left, right, shape_reasons),
         ))
-    return sorted(candidates, key=lambda c: (c.score, c.novelty_score), reverse=True)[
+    return sorted(candidates, key=_candidate_rank, reverse=True)[
         :max(0, max_candidates)
     ]
+
+
+def _candidate_rank(candidate: InsightCandidate) -> tuple[bool, int, int, int, int]:
+    return (
+        "coupling:named_program" in candidate.reasons,
+        candidate.score,
+        candidate.novelty_score,
+        candidate.evidence_score,
+        len(candidate.bridge_terms),
+    )
+
+
+def _coupling_reasons(
+    left: CorpusHit,
+    right: CorpusHit,
+    *,
+    pair_anchor_terms: frozenset[str],
+) -> tuple[str, ...]:
+    shared = _raw_title_terms(left.title) & _raw_title_terms(right.title)
+    for raw in shared:
+        token = _norm_token(raw.casefold())
+        if token not in pair_anchor_terms and token not in _BRIDGE_STOP and raw.isupper():
+            return ("coupling:named_program",)
+    return ()
+
+
+def _raw_title_terms(title: str) -> frozenset[str]:
+    return frozenset(re.findall(r"[A-Za-z][A-Za-z0-9]{2,}", title))
 
 
 def _dedupe_hits(hits: Sequence[CorpusHit]) -> list[CorpusHit]:

@@ -55,7 +55,7 @@ _STOP = {
     "el", "en", "la", "los", "metode", "pada", "penelitian",
 }
 _BACKEND = "v5-fullraw-indexed-fts5"
-_SWEEP_STRATEGY = "profile_relaxed_v2"
+_SWEEP_STRATEGY = "profile_relaxed_v3"
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
@@ -1150,6 +1150,44 @@ def select_sweep_shard_entries(
     return selected
 
 
+def _prioritize_sweep_pass_entries(
+    entries: list[ShardCatalogEntry],
+    prefix_size: int,
+    *,
+    query: str,
+) -> list[ShardCatalogEntry]:
+    if prefix_size <= 1 or len(entries) <= 1:
+        return entries
+    by_source: dict[str, list[ShardCatalogEntry]] = {}
+    for entry in entries:
+        source = entry.sources[0] if entry.sources else "unknown"
+        by_source.setdefault(source, []).append(entry)
+    if len(by_source) <= 1:
+        return entries
+    query_terms = set(_fts_terms(query))
+
+    def candidate_key(entry: ShardCatalogEntry) -> tuple[int, int, int, int, int, str]:
+        topic_hits = len(query_terms & set(entry.topic_terms))
+        return (
+            -topic_hits,
+            entry.bytes_used,
+            -entry.cited_by_max,
+            entry.batch_id,
+            entry.shard_id,
+            str(entry.path),
+        )
+
+    prefix: list[ShardCatalogEntry] = []
+    sources = sorted(by_source, key=lambda source: (len(by_source[source]), source))
+    for source in sources:
+        if len(prefix) >= prefix_size:
+            break
+        _extend_unique_entries(prefix, sorted(by_source[source], key=candidate_key), prefix_size)
+    _extend_unique_entries(prefix, entries, prefix_size)
+    selected_paths = {entry.path for entry in prefix}
+    return [*prefix, *(entry for entry in entries if entry.path not in selected_paths)]
+
+
 def _profile_relaxed_sweep_query(
     query: str,
     entries: list[ShardCatalogEntry],
@@ -2086,6 +2124,11 @@ def run_server() -> None:
         def worker() -> None:
             try:
                 sweep_entries = select_sweep_shard_entries(catalog, query=query, limit=sweep_shard_limit)
+                sweep_entries = _prioritize_sweep_pass_entries(
+                    sweep_entries,
+                    sweep_pass_shard_limit,
+                    query=query,
+                )
                 planned_receipt = shard_coverage_receipt(catalog, sweep_entries)
                 sweep_query = _profile_relaxed_sweep_query(query, sweep_entries)
                 completed_path_strings = _sweep_completed_path_strings(existing.receipt if existing else {})

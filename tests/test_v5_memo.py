@@ -1246,6 +1246,54 @@ def test_miner_does_not_promote_question_review_to_elite() -> None:
     assert all(candidate_alpha_tier(candidate) != "elite_alpha" for candidate in candidates)
 
 
+def test_miner_requires_elite_bridge_to_preserve_topic_anchor() -> None:
+    hits = [
+        _hit(
+            "metabolic",
+            "Effect of pharmacological and physical interventions on diabetic rats",
+            "Metformin improved diabetic metabolism in male rats.",
+        ),
+        _hit(
+            "exercise",
+            "Physical exercise training but not metformin attenuates diabetic markers",
+            "Exercise attenuated diabetic markers while metformin did not.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="metformin resistance training adaptation",
+        required_anchor_terms=("metformin", "training"),
+        include_discovery=True,
+    )
+
+    assert all(candidate_alpha_tier(candidate) != "elite_alpha" for candidate in candidates)
+
+
+def test_miner_does_not_promote_recommendation_proxy_receipts_to_elite() -> None:
+    hits = [
+        _hit(
+            "proxy",
+            "Faculty Opinions recommendation of metformin blunts muscle hypertrophy",
+            "Recommendation of a metformin resistance training paper.",
+        ),
+        _hit(
+            "protocol",
+            "Metformin to augment strength training effective response in seniors",
+            "Protocol expected metformin would augment training response.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="metformin resistance training adaptation",
+        required_anchor_terms=("metformin", "training"),
+        include_discovery=True,
+    )
+
+    assert all(candidate_alpha_tier(candidate) != "elite_alpha" for candidate in candidates)
+
+
 def test_pipeline_raises_when_no_receipt_bound_candidate() -> None:
     class EmptySearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
