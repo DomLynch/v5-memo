@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 from email.message import Message
+from http.client import RemoteDisconnected
 from typing import cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
@@ -388,6 +389,57 @@ def test_full_raw_client_budget_stops_variant_fanout(
     err = capsys.readouterr().err
     assert "fullraw variant 1/4 start" in err
     assert "fullraw search budget reached after 31.0s; variants=1/4" in err
+
+
+def test_full_raw_client_retries_remote_disconnected_once(monkeypatch: MonkeyPatch) -> None:
+    calls = 0
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        nonlocal calls
+        del request, timeout
+        calls += 1
+        if calls == 1:
+            raise RemoteDisconnected("closed")
+        return FakeResponse({
+            "results": [{
+                "doi": "10.123/fullraw",
+                "title": "Resveratrol exercise training adaptation",
+                "abstract": "Resveratrol exercise training adaptation changed older human outcomes.",
+                "year": 2013,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=1)
+
+    hits = client.search("resveratrol exercise training adaptation", limit=5)
+
+    assert calls == 2
+    assert hits[0].doi == "10.123/fullraw"
+
+
+def test_full_raw_client_strict_remote_disconnected_raises_after_retry_cap(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        nonlocal calls
+        del request, timeout
+        calls += 1
+        raise RemoteDisconnected("closed")
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        strict=True,
+    )
+
+    with pytest.raises(SearchBackendError, match="Full raw corpus search failed"):
+        client.search("resveratrol exercise training adaptation", limit=5)
+    assert calls == 2
 
 
 def test_openalex_strict_mode_raises_backend_errors(monkeypatch: MonkeyPatch) -> None:
