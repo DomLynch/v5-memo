@@ -1415,7 +1415,7 @@ def _search_one_shard(
         index.close()
 
 
-def _materialized_shard_path(path: Path) -> Path:
+def _materialized_shard_path(path: Path, *, preserve: set[Path] | None = None) -> Path:
     cache_path = _shard_cache_path(path)
     if cache_path is None:
         return path
@@ -1425,7 +1425,12 @@ def _materialized_shard_path(path: Path) -> Path:
         if cache_path.exists() and cache_path.stat().st_size == source_stat.st_size:
             os.utime(cache_path, None)
             return cache_path
-        _evict_shard_cache(cache_path.parent, required_bytes=source_stat.st_size, keep=cache_path)
+        _evict_shard_cache(
+            cache_path.parent,
+            required_bytes=source_stat.st_size,
+            keep=cache_path,
+            preserve=preserve or set(),
+        )
         tmp_path = cache_path.with_name(f".{cache_path.name}.tmp.{os.getpid()}.{threading.get_ident()}")
         try:
             shutil.copy2(path, tmp_path)
@@ -1433,7 +1438,7 @@ def _materialized_shard_path(path: Path) -> Path:
             os.utime(cache_path, None)
         finally:
             tmp_path.unlink(missing_ok=True)
-        _evict_shard_cache(cache_path.parent, required_bytes=0, keep=cache_path)
+        _evict_shard_cache(cache_path.parent, required_bytes=0, keep=cache_path, preserve=preserve or set())
         return cache_path
 
 
@@ -1458,14 +1463,28 @@ def _cached_materialized_shard_path(path: Path) -> Path | None:
     return None
 
 
-def _evict_shard_cache(cache_dir: Path, *, required_bytes: int, keep: Path) -> None:
+def _evict_shard_cache(
+    cache_dir: Path,
+    *,
+    required_bytes: int,
+    keep: Path,
+    preserve: set[Path] | None = None,
+) -> None:
     max_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
     if max_bytes is None or max_bytes <= 0:
         return
-    entries = [path for path in cache_dir.glob("*.sqlite") if path.is_file() and path != keep]
+    preserved = {path.resolve() for path in (preserve or set())}
+    entries = [
+        path
+        for path in cache_dir.glob("*.sqlite")
+        if path.is_file() and path != keep and path.resolve() not in preserved
+    ]
     total = sum(path.stat().st_size for path in entries)
     if keep.exists():
         total += keep.stat().st_size
+    for path in preserved:
+        if path != keep.resolve() and path.exists():
+            total += path.stat().st_size
     target = max(0, max_bytes - max(0, required_bytes))
     for path in sorted(entries, key=lambda item: item.stat().st_mtime):
         if total <= target:
@@ -1507,6 +1526,16 @@ def warm_shard_cache(
     def ready_entries() -> list[ShardCatalogEntry]:
         return [entry for entry in selected if _cached_materialized_shard_path(entry.path) is not None]
 
+    def ready_cache_paths() -> set[Path]:
+        return {
+            cache_path
+            for entry in selected
+            if (cache_path := _cached_materialized_shard_path(entry.path)) is not None
+        }
+
+    def ready_bytes() -> int:
+        return sum((cache_path.stat().st_size for cache_path in ready_cache_paths()), 0)
+
     def progress_payload(*, final: bool = False) -> dict[str, object]:
         ready = ready_entries()
         return {
@@ -1532,9 +1561,16 @@ def warm_shard_cache(
             break
         if _cached_materialized_shard_path(entry.path) is not None:
             continue
+        max_cache_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
+        if max_cache_bytes is not None and ready_bytes() + entry.bytes_used > max_cache_bytes:
+            errors.append(
+                f"{entry.path}: target_ready exceeds cache budget "
+                f"({ready_bytes() + entry.bytes_used} > {max_cache_bytes})"
+            )
+            break
         attempted += 1
         try:
-            _materialized_shard_path(entry.path)
+            _materialized_shard_path(entry.path, preserve=ready_cache_paths())
             if _cached_materialized_shard_path(entry.path) is not None:
                 warmed_paths.add(entry.path)
             else:
@@ -1547,7 +1583,7 @@ def warm_shard_cache(
             print(json.dumps(progress_payload(), sort_keys=True), flush=True)
 
     ready = ready_entries()
-    bytes_ready = sum(entry.bytes_used for entry in ready)
+    bytes_ready = ready_bytes()
     result = ShardCacheWarmResult(
         selected_shards=len(selected),
         target_ready=target_ready,
