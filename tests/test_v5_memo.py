@@ -424,13 +424,13 @@ def test_query_anchor_terms_normalize_light_morphology() -> None:
     assert query_anchor_terms(["forecasts managers supplementation"], limit=3) == (
         "forecast",
         "manager",
+        "supplement",
     )
 
 
 def test_query_anchor_terms_drop_broad_topic_words() -> None:
     assert query_anchor_terms(["longevity aging adaptation healthspan pharmacology resveratrol training"]) == (
         "resveratrol",
-        "training",
     )
 
 
@@ -444,7 +444,7 @@ def test_query_anchor_terms_drop_alpha_shape_words() -> None:
 def test_query_anchor_terms_drop_broad_substrate_and_tissue_words() -> None:
     assert query_anchor_terms([
         "protein timing distribution resistance training muscle protein synthesis hypertrophy",
-    ], limit=4) == ("timing", "distribution", "hypertrophy", "training")
+    ], limit=4) == ("timing", "distribution", "hypertrophy")
 
 
 def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
