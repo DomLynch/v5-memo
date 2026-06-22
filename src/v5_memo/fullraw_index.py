@@ -103,13 +103,29 @@ class ShardBatchResult:
     error: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class ShardCatalogEntry:
+    path: Path
+    batch_id: int
+    shard_id: int
+    sources: tuple[str, ...]
+    files_completed: int
+    papers_inserted: int
+    bytes_used: int
+
+
 class FullRawFtsIndex:
     """SQLite FTS5 index over normalized raw-corpus records."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, read_only: bool = False) -> None:
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(path), timeout=60.0, check_same_thread=False)
+        self._read_only = read_only
+        if read_only:
+            uri = f"{path.resolve().as_uri()}?mode=ro&immutable=1"
+            self._conn = sqlite3.connect(uri, uri=True, timeout=60.0, check_same_thread=False)
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._conn = sqlite3.connect(str(path), timeout=60.0, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
 
@@ -117,6 +133,8 @@ class FullRawFtsIndex:
         self._conn.close()
 
     def initialize(self) -> None:
+        if self._read_only:
+            return
         with self._lock:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
@@ -317,7 +335,8 @@ class FullRawFtsIndex:
         year_max: int = 2100,
     ) -> list[dict[str, object]]:
         with self._lock:
-            self.initialize()
+            if not self._read_only:
+                self.initialize()
             terms = _fts_terms(query)
             if not terms:
                 return []
@@ -792,10 +811,14 @@ def search_shards(
     limit: int = 25,
     year_min: int = 1900,
     year_max: int = 2100,
+    catalog: list[ShardCatalogEntry] | None = None,
 ) -> list[dict[str, object]]:
     """Search multiple shard DBs and merge ranked, deduped results."""
     merged: dict[str, dict[str, object]] = {}
-    paths = [path for path in index_paths if path.exists()]
+    if catalog is None:
+        paths = select_search_shard_paths([path for path in index_paths if path.exists()])
+    else:
+        paths = [entry.path for entry in select_search_shard_entries(catalog, query=query)]
     workers = max(1, min(int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "8")), len(paths) or 1))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [
@@ -819,6 +842,112 @@ def search_shards(
     )[: max(1, min(limit, 200))]
 
 
+def select_search_shard_paths(paths: list[Path]) -> list[Path]:
+    limit = _positive_int_env("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT")
+    if limit is None or limit >= len(paths):
+        return paths
+    order = os.environ.get("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "newest").casefold()
+    if order in {"oldest", "first"}:
+        return paths[:limit]
+    if order == "spread" and limit > 1:
+        step = (len(paths) - 1) / (limit - 1)
+        return [paths[round(index * step)] for index in range(limit)]
+    return paths[-limit:]
+
+
+def select_search_shard_entries(
+    entries: list[ShardCatalogEntry],
+    *,
+    query: str = "",
+) -> list[ShardCatalogEntry]:
+    entries = sorted(entries, key=lambda entry: (entry.batch_id, entry.shard_id, str(entry.path)))
+    limit = _positive_int_env("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT")
+    if limit is None or limit >= len(entries):
+        return entries
+    order = os.environ.get("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "balanced").casefold()
+    if order in {"oldest", "first", "newest", "spread"}:
+        paths = select_search_shard_paths([entry.path for entry in entries])
+        by_path = {entry.path: entry for entry in entries}
+        return [by_path[path] for path in paths if path in by_path]
+    return _select_balanced_shard_entries(entries, limit, query=query)
+
+
+def _select_balanced_shard_entries(
+    entries: list[ShardCatalogEntry],
+    limit: int,
+    *,
+    query: str,
+) -> list[ShardCatalogEntry]:
+    by_source: dict[str, list[ShardCatalogEntry]] = {}
+    for entry in entries:
+        source = entry.sources[0] if entry.sources else "unknown"
+        by_source.setdefault(source, []).append(entry)
+    selected: list[ShardCatalogEntry] = []
+    sources = sorted(by_source)
+    per_source = max(1, limit // max(1, len(sources)))
+    for source in sources:
+        source_entries = _rotate_entries(by_source[source], _query_offset(f"{query}:{source}", len(by_source[source])))
+        _extend_unique_entries(selected, _spread_entries(source_entries, per_source), limit)
+    if len(selected) < limit:
+        rotated = _rotate_entries(entries, _query_offset(query, len(entries)))
+        _extend_unique_entries(selected, _spread_entries(rotated, limit), limit)
+    if len(selected) < limit:
+        _extend_unique_entries(selected, entries[-limit:], limit)
+    return selected
+
+
+def _rotate_entries(
+    entries: list[ShardCatalogEntry],
+    offset: int,
+) -> list[ShardCatalogEntry]:
+    if not entries:
+        return []
+    offset %= len(entries)
+    return [*entries[offset:], *entries[:offset]]
+
+
+def _query_offset(query: str, size: int) -> int:
+    if size <= 0 or not query:
+        return 0
+    return sum((index + 1) * ord(char) for index, char in enumerate(query)) % size
+
+
+def _spread_entries(
+    entries: list[ShardCatalogEntry],
+    count: int,
+) -> list[ShardCatalogEntry]:
+    if count <= 0 or not entries:
+        return []
+    if count >= len(entries):
+        return list(entries)
+    if count == 1:
+        return [entries[len(entries) // 2]]
+    step = (len(entries) - 1) / (count - 1)
+    out: list[ShardCatalogEntry] = []
+    seen: set[Path] = set()
+    for index in range(count):
+        entry = entries[round(index * step)]
+        if entry.path not in seen:
+            out.append(entry)
+            seen.add(entry.path)
+    return out
+
+
+def _extend_unique_entries(
+    out: list[ShardCatalogEntry],
+    candidates: Iterable[ShardCatalogEntry],
+    limit: int,
+) -> None:
+    seen = {entry.path for entry in out}
+    for entry in candidates:
+        if len(out) >= limit:
+            return
+        if entry.path in seen:
+            continue
+        out.append(entry)
+        seen.add(entry.path)
+
+
 def _search_one_shard(
     path: Path,
     query: str,
@@ -826,23 +955,24 @@ def _search_one_shard(
     year_min: int,
     year_max: int,
 ) -> list[dict[str, object]]:
-    index = FullRawFtsIndex(path)
+    index = FullRawFtsIndex(path, read_only=True)
     try:
         return index.search(query, limit=limit, year_min=year_min, year_max=year_max)
     finally:
         index.close()
 
 
-def discover_shard_paths(shard_dir: Path) -> list[Path]:
-    return sorted(
-        path for path in shard_dir.rglob("*.sqlite")
-        if path.is_file() and _has_index_meta(path)
-    )
+def discover_shard_paths(shard_dir: Path, *, trust_filenames: bool = False) -> list[Path]:
+    paths = sorted(path for path in shard_dir.rglob("*.sqlite") if path.is_file())
+    if trust_filenames:
+        return paths
+    return [path for path in paths if _has_index_meta(path)]
 
 
 def _has_index_meta(path: Path) -> bool:
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=0.1) as conn:
+        uri = f"{path.resolve().as_uri()}?mode=ro&immutable=1"
+        with sqlite3.connect(uri, uri=True, timeout=10.0) as conn:
             row = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'index_meta'"
             ).fetchone()
@@ -858,7 +988,7 @@ def aggregate_shard_stats(index_paths: list[Path], *, files_total: int = 0) -> I
     for path in index_paths:
         if not path.exists():
             continue
-        index = FullRawFtsIndex(path)
+        index = FullRawFtsIndex(path, read_only=True)
         try:
             stats = index.stats(files_total=0)
         except sqlite3.Error:
@@ -874,6 +1004,134 @@ def aggregate_shard_stats(index_paths: list[Path], *, files_total: int = 0) -> I
         files_total=files_total,
         bytes_used=bytes_used,
     )
+
+
+def aggregate_shard_manifest_stats(shard_dir: Path, *, files_total: int = 0) -> IndexStats:
+    catalog = build_shard_catalog(shard_dir, trust_filenames=True)
+    return IndexStats(
+        papers_indexed=sum(entry.papers_inserted for entry in catalog),
+        files_indexed=sum(entry.files_completed for entry in catalog),
+        files_total=files_total,
+        bytes_used=sum(entry.bytes_used for entry in catalog),
+    )
+
+
+def build_shard_catalog(
+    shard_dir: Path,
+    *,
+    trust_filenames: bool = False,
+) -> list[ShardCatalogEntry]:
+    manifests = _read_batch_manifests(shard_dir)
+    out: list[ShardCatalogEntry] = []
+    for path in discover_shard_paths(shard_dir, trust_filenames=trust_filenames):
+        manifest = manifests.get(path.parent)
+        batch_id = _batch_id_from_path(path.parent)
+        shard_id = _shard_id_from_path(path)
+        sources: tuple[str, ...] = ()
+        files_completed = 0
+        papers_inserted = 0
+        bytes_used = path.stat().st_size if path.exists() else 0
+        if manifest is not None:
+            batch_id = _int_or_none(manifest.get("batch_id")) or batch_id
+            sources = _manifest_sources(manifest)
+            shard_meta = _manifest_shard(manifest, shard_id)
+            if shard_meta is not None:
+                files_completed = _int_or_none(shard_meta.get("files_completed")) or 0
+                papers_inserted = _int_or_none(shard_meta.get("papers_inserted")) or 0
+                bytes_used = _int_or_none(shard_meta.get("bytes_used")) or bytes_used
+        out.append(ShardCatalogEntry(
+            path=path,
+            batch_id=batch_id,
+            shard_id=shard_id,
+            sources=sources,
+            files_completed=files_completed,
+            papers_inserted=papers_inserted,
+            bytes_used=bytes_used,
+        ))
+    return out
+
+
+def shard_coverage_receipt(
+    entries: list[ShardCatalogEntry],
+    selected: list[ShardCatalogEntry],
+) -> dict[str, object]:
+    return {
+        "shards_total": len(entries),
+        "shards_searched": len(selected),
+        "partial_shard_search": len(entries) > len(selected),
+        "sources_total": _source_counts(entries),
+        "sources_searched": _source_counts(selected),
+        "batch_range_total": _batch_range(entries),
+        "batch_range_searched": _batch_range(selected),
+        "papers_total": sum(entry.papers_inserted for entry in entries),
+        "papers_searched": sum(entry.papers_inserted for entry in selected),
+    }
+
+
+def _read_batch_manifests(shard_dir: Path) -> dict[Path, dict[str, object]]:
+    manifests: dict[Path, dict[str, object]] = {}
+    for manifest_path in sorted(shard_dir.rglob("complete.json")):
+        try:
+            payload = json.loads(manifest_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            manifests[manifest_path.parent] = payload
+    return manifests
+
+
+def _manifest_sources(manifest: dict[str, object]) -> tuple[str, ...]:
+    sources: set[str] = set()
+    files = manifest.get("files", [])
+    if isinstance(files, list):
+        for raw_file in files:
+            if isinstance(raw_file, dict):
+                source = _clean(raw_file.get("source"))
+                if source:
+                    sources.add(source)
+    return tuple(sorted(sources))
+
+
+def _manifest_shard(
+    manifest: dict[str, object],
+    shard_id: int,
+) -> dict[str, object] | None:
+    shards = manifest.get("shards", [])
+    if not isinstance(shards, list):
+        return None
+    for shard in shards:
+        if not isinstance(shard, dict):
+            continue
+        parsed_shard_id = _int_or_none(shard.get("shard_id"))
+        if parsed_shard_id is not None and parsed_shard_id == shard_id:
+            return shard
+    return None
+
+
+def _source_counts(entries: list[ShardCatalogEntry]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for entry in entries:
+        sources = entry.sources or ("unknown",)
+        for source in sources:
+            counts[source] = counts.get(source, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _batch_range(entries: list[ShardCatalogEntry]) -> dict[str, int | None]:
+    if not entries:
+        return {"min": None, "max": None}
+    batch_ids = [entry.batch_id for entry in entries]
+    return {"min": min(batch_ids), "max": max(batch_ids)}
+
+
+def _batch_id_from_path(path: Path) -> int:
+    match = re.search(r"batch_(\d+)", path.name)
+    return int(match.group(1)) if match else -1
+
+
+def _shard_id_from_path(path: Path) -> int:
+    match = re.search(r"shard_(\d+)", path.name)
+    return int(match.group(1)) if match else -1
 
 
 def _split_shard_files(files: list[RawFile], shard_count: int) -> list[list[RawFile]]:
@@ -977,6 +1235,15 @@ def run_server() -> None:
     )
     shard_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SHARD_DIR", "").strip()
     shard_dir = Path(shard_dir_config) if shard_dir_config else None
+    trust_shard_filenames = os.environ.get(
+        "V5_MEMO_FULL_RAW_SHARD_TRUST_FILENAMES", ""
+    ).casefold() in {"1", "true", "yes"}
+    shard_manifest_stats = os.environ.get(
+        "V5_MEMO_FULL_RAW_SHARD_MANIFEST_STATS", ""
+    ).casefold() in {"1", "true", "yes"}
+    shard_catalog_ttl = _float_or_none(
+        os.environ.get("V5_MEMO_FULL_RAW_SHARD_CATALOG_TTL_SECONDS", "")
+    ) or 60.0
     manifest_path = Path(
         os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json")
     )
@@ -990,24 +1257,57 @@ def run_server() -> None:
     index = None if shard_dir else FullRawFtsIndex(index_path)
     if index is not None:
         index.initialize()
+    catalog_cache: tuple[float, list[ShardCatalogEntry]] = (0.0, [])
+
+    def current_catalog() -> list[ShardCatalogEntry]:
+        nonlocal catalog_cache
+        if shard_dir is None:
+            return []
+        now = time.monotonic()
+        if catalog_cache[1] and now - catalog_cache[0] < shard_catalog_ttl:
+            return catalog_cache[1]
+        catalog = build_shard_catalog(shard_dir, trust_filenames=trust_shard_filenames)
+        catalog_cache = (now, catalog)
+        return catalog
+
+    def stats_from_catalog(catalog: list[ShardCatalogEntry]) -> IndexStats:
+        return IndexStats(
+            papers_indexed=sum(entry.papers_inserted for entry in catalog),
+            files_indexed=sum(entry.files_completed for entry in catalog),
+            files_total=len(files),
+            bytes_used=sum(entry.bytes_used for entry in catalog),
+        )
 
     def current_stats() -> IndexStats:
         if shard_dir is not None:
-            return aggregate_shard_stats(discover_shard_paths(shard_dir), files_total=len(files))
+            if shard_manifest_stats:
+                return stats_from_catalog(current_catalog())
+            return aggregate_shard_stats(
+                discover_shard_paths(shard_dir, trust_filenames=trust_shard_filenames),
+                files_total=len(files),
+            )
         assert index is not None
         return index.stats(files_total=len(files))
 
     def current_search(query: str, *, limit: int, year_min: int, year_max: int) -> list[dict[str, object]]:
         if shard_dir is not None:
+            catalog = current_catalog()
             return search_shards(
-                discover_shard_paths(shard_dir),
+                [entry.path for entry in catalog],
                 query,
                 limit=limit,
                 year_min=year_min,
                 year_max=year_max,
+                catalog=catalog,
             )
         assert index is not None
         return index.search(query, limit=limit, year_min=year_min, year_max=year_max)
+
+    def current_receipt(query: str) -> dict[str, object]:
+        if shard_dir is None:
+            return {}
+        catalog = current_catalog()
+        return shard_coverage_receipt(catalog, select_search_shard_entries(catalog, query=query))
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -1025,6 +1325,7 @@ def run_server() -> None:
                 "files_total": stats.files_total,
                 "complete": stats.complete,
                 "bytes_used": stats.bytes_used,
+                "shard_receipt": current_receipt("") if shard_dir is not None else {},
             })
 
         def do_POST(self) -> None:
@@ -1066,6 +1367,7 @@ def run_server() -> None:
                     "backend": _BACKEND,
                     "expanded_query": explain["fts_match"],
                     "term_groups": explain["groups"],
+                    "shard_receipt": current_receipt(query) if shard_dir is not None else {},
                 },
                 "results": hits,
             })
@@ -1399,6 +1701,17 @@ def _int_or_none(value: object) -> int | None:
         return int(value) if value not in {"", None} else None
     except (TypeError, ValueError):
         return None
+
+
+def _positive_int_env(name: str) -> int | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 
 def _float_or_none(value: object) -> float | None:

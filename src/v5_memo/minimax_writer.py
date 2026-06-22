@@ -695,11 +695,11 @@ def _receipt_terms(receipts: Sequence[CorpusHit]) -> set[str]:
 
 def _normalize_title_term(term: str) -> str:
     if len(term) > 6 and term.endswith("sses"):
-        return term[:-2]
-    if len(term) > 6 and term.endswith("ing"):
-        return term[:-3]
-    if len(term) > 5 and term.endswith("ed"):
-        return term[:-2]
-    if len(term) > 4 and term.endswith("s") and not term.endswith(("ss", "sis")):
-        return term[:-1]
-    return term
+        term = term[:-2]
+    elif len(term) > 6 and term.endswith("ing"):
+        term = term[:-3]
+    elif len(term) > 5 and term.endswith("ed"):
+        term = term[:-2]
+    elif len(term) > 4 and term.endswith("s") and not term.endswith(("ss", "sis")):
+        term = term[:-1]
+    return {"fibre": "fiber"}.get(term, term)

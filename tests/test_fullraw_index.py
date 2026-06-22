@@ -14,11 +14,17 @@ from v5_memo import fullraw_index
 from v5_memo.fullraw_index import (
     FullRawFtsIndex,
     ShardBatchResult,
+    ShardCatalogEntry,
+    aggregate_shard_manifest_stats,
     aggregate_shard_stats,
+    build_shard_catalog,
     build_shards,
     build_upload_shard_batches,
     discover_shard_paths,
     search_shards,
+    select_search_shard_entries,
+    select_search_shard_paths,
+    shard_coverage_receipt,
 )
 from v5_memo.fullraw_service import RawFile
 
@@ -307,6 +313,134 @@ def test_discover_shard_paths_finds_nested_batch_shards(tmp_path: Path) -> None:
         index.close()
 
     assert discover_shard_paths(tmp_path) == [shard]
+
+
+def test_discover_shard_paths_can_trust_uploaded_filenames(tmp_path: Path) -> None:
+    nested = tmp_path / "batch_00001"
+    nested.mkdir()
+    incomplete = nested / "fullraw_shard_9999.sqlite"
+    incomplete.write_text("")
+
+    assert discover_shard_paths(tmp_path, trust_filenames=True) == [incomplete]
+
+
+def test_read_only_index_searches_existing_shard(tmp_path: Path) -> None:
+    shard = tmp_path / "fullraw_shard_0000.sqlite"
+    raw_file = _raw_file(tmp_path, "openalex_readonly", [{
+        "doi": "https://doi.org/10.example/read-only",
+        "display_name": "Management forecast disclosure read only",
+        "abstract": "Managers disclose forecasts and guidance.",
+        "publication_year": 2024,
+    }])
+    index = FullRawFtsIndex(shard)
+    try:
+        index.index_files([raw_file], commit_interval=1)
+    finally:
+        index.close()
+
+    read_only = FullRawFtsIndex(shard, read_only=True)
+    try:
+        hits = read_only.search("management forecast disclosure", limit=3)
+        stats = read_only.stats(files_total=1)
+    finally:
+        read_only.close()
+
+    assert [hit["doi"] for hit in hits] == ["10.example/read-only"]
+    assert stats.papers_indexed == 1
+
+
+def test_catalog_reads_manifest_and_manifest_stats(tmp_path: Path) -> None:
+    batch = tmp_path / "batch_00001"
+    batch.mkdir()
+    for shard_id in range(2):
+        (batch / f"fullraw_shard_{shard_id:04d}.sqlite").write_text("")
+    (batch / "complete.json").write_text(json.dumps({
+        "batch_id": 1,
+        "files": [
+            {"source": "openalex"},
+            {"source": "semantic_scholar"},
+        ],
+        "shards": [
+            {"shard_id": 0, "files_completed": 3, "papers_inserted": 42, "bytes_used": 1234},
+            {"shard_id": 1, "files_completed": 4, "papers_inserted": 99, "bytes_used": 4567},
+        ],
+    }))
+
+    catalog = build_shard_catalog(tmp_path, trust_filenames=True)
+    stats = aggregate_shard_manifest_stats(tmp_path, files_total=10)
+
+    assert [(entry.batch_id, entry.shard_id) for entry in catalog] == [(1, 0), (1, 1)]
+    assert catalog[0].sources == ("openalex", "semantic_scholar")
+    assert catalog[1].papers_inserted == 99
+    assert stats.files_indexed == 7
+    assert stats.papers_indexed == 141
+    assert stats.bytes_used == 5801
+
+
+def test_select_search_shard_entries_balances_sources_and_batches(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    entries: list[ShardCatalogEntry] = []
+    for index, source in enumerate(("openalex", "openalex", "pubmed", "pubmed", "semantic_scholar", "semantic_scholar")):
+        entries.append(ShardCatalogEntry(
+            path=tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite",
+            batch_id=index,
+            shard_id=0,
+            sources=(source,),
+            files_completed=1,
+            papers_inserted=100 + index,
+            bytes_used=1000,
+        ))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "3")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "balanced")
+
+    selected = select_search_shard_entries(entries)
+    receipt = shard_coverage_receipt(entries, selected)
+
+    assert {entry.sources[0] for entry in selected} == {"openalex", "pubmed", "semantic_scholar"}
+    assert receipt["shards_total"] == 6
+    assert receipt["shards_searched"] == 3
+    assert receipt["partial_shard_search"] is True
+    assert receipt["sources_searched"] == {"openalex": 1, "pubmed": 1, "semantic_scholar": 1}
+
+
+def test_select_search_shard_entries_rotates_by_query_variant(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    entries: list[ShardCatalogEntry] = []
+    for index in range(12):
+        source = ("openalex", "semantic_scholar", "pubmed")[index % 3]
+        entries.append(ShardCatalogEntry(
+            path=tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite",
+            batch_id=index,
+            shard_id=0,
+            sources=(source,),
+            files_completed=1,
+            papers_inserted=100 + index,
+            bytes_used=1000,
+        ))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "6")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "balanced")
+
+    first = select_search_shard_entries(entries, query="management forecast disclosure")
+    second = select_search_shard_entries(entries, query="management forecast")
+
+    assert {entry.sources[0] for entry in first} == {"openalex", "pubmed", "semantic_scholar"}
+    assert {entry.sources[0] for entry in second} == {"openalex", "pubmed", "semantic_scholar"}
+    assert {entry.path for entry in first} != {entry.path for entry in second}
+
+
+def test_select_search_shard_paths_can_spread(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    paths = [tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite" for index in range(5)]
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "3")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "spread")
+
+    assert select_search_shard_paths(paths) == [paths[0], paths[2], paths[4]]
 
 
 def test_build_upload_shard_batches_uploads_and_deletes_local_batches(tmp_path: Path) -> None:

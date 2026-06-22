@@ -208,6 +208,8 @@ class FullRawCorpusSearchClient:
         year_max: int = 2100,
         max_variants: int = 16,
         search_budget_seconds: float = 180.0,
+        min_shards_searched: int = 0,
+        min_sources_searched: int = 0,
         progress: bool = False,
         strict: bool = False,
     ) -> None:
@@ -218,6 +220,8 @@ class FullRawCorpusSearchClient:
         self._year_max = year_max
         self._max_variants = max(1, max_variants)
         self._search_budget_seconds = max(0.0, search_budget_seconds)
+        self._min_shards_searched = max(0, min_shards_searched)
+        self._min_sources_searched = max(0, min_sources_searched)
         self._progress = progress
         self._strict = strict
 
@@ -229,6 +233,8 @@ class FullRawCorpusSearchClient:
             timeout=_float_env("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", 45.0),
             max_variants=_int_env("V5_MEMO_FULL_RAW_MAX_VARIANTS", 16),
             search_budget_seconds=_float_env("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", 180.0),
+            min_shards_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", 0),
+            min_sources_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", 0),
             progress=_bool_env("V5_MEMO_FULL_RAW_PROGRESS", False),
             strict=strict,
         )
@@ -310,7 +316,28 @@ class FullRawCorpusSearchClient:
             if self._strict:
                 raise SearchBackendError(f"Full raw corpus search failed: {exc}") from exc
             return []
+        receipt = _full_raw_shard_receipt(data)
+        if not self._receipt_is_sufficient(receipt):
+            message = f"Full raw corpus search coverage too narrow: {receipt}"
+            if self._strict:
+                raise SearchBackendError(message)
+            self._log_progress(message)
+            return []
         return _parse_full_raw_search_response(data)
+
+    def _receipt_is_sufficient(self, receipt: dict[str, object]) -> bool:
+        if not receipt:
+            return True
+        shards = _int_or_none(receipt.get("shards_searched")) or 0
+        if self._min_shards_searched and shards < self._min_shards_searched:
+            return False
+        sources = receipt.get("sources_searched")
+        source_count = (
+            sum(1 for value in sources.values() if _int_or_none(value))
+            if isinstance(sources, dict)
+            else 0
+        )
+        return not (self._min_sources_searched and source_count < self._min_sources_searched)
 
 
 class HybridCorpusSearchClient:
@@ -364,11 +391,30 @@ def _parse_full_raw_search_response(data: Any) -> list[CorpusHit]:
     if not isinstance(items, list):
         return []
     match_count = _int_or_none(meta.get("count") or meta.get("total") or meta.get("total_count"))
+    shard_receipt = _full_raw_shard_receipt(data)
     return [
         hit
         for item in items
-        if (hit := _parse_full_raw_paper_hit(item, match_count=match_count)) is not None
+        if (
+            hit := _parse_full_raw_paper_hit(
+                item,
+                match_count=match_count,
+                shard_receipt=shard_receipt,
+            )
+        ) is not None
     ]
+
+
+def _full_raw_shard_receipt(data: Any) -> dict[str, object]:
+    if not isinstance(data, dict):
+        return {}
+    meta = data.get("meta")
+    if not isinstance(meta, dict):
+        return {}
+    receipt = meta.get("shard_receipt")
+    if not isinstance(receipt, dict):
+        return {}
+    return dict(receipt)
 
 
 def _parse_openalex_response(data: Any) -> list[CorpusHit]:
@@ -445,7 +491,12 @@ def _parse_paper_hit(item: Any) -> CorpusHit | None:
     )
 
 
-def _parse_full_raw_paper_hit(item: Any, *, match_count: int | None) -> CorpusHit | None:
+def _parse_full_raw_paper_hit(
+    item: Any,
+    *,
+    match_count: int | None,
+    shard_receipt: dict[str, object] | None = None,
+) -> CorpusHit | None:
     if not isinstance(item, dict):
         return None
     title = _clean(item.get("title") or item.get("display_name") or item.get("name"), limit=500)
@@ -497,6 +548,7 @@ def _parse_full_raw_paper_hit(item: Any, *, match_count: int | None) -> CorpusHi
             "cited_by_count": _int_or_none(item.get("cited_by_count") or item.get("citation_count")),
             "score": _float_or_none(item.get("score") or item.get("search_score")),
             "query_match_count": match_count,
+            "shard_receipt": shard_receipt or {},
         },
     )
 

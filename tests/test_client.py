@@ -193,6 +193,66 @@ def test_full_raw_client_relaxes_strict_long_queries(monkeypatch: object) -> Non
     assert hits[0].metadata["search_variant"] == "management forecast"
 
 
+def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
+    receipt = {
+        "shards_total": 100,
+        "shards_searched": 24,
+        "partial_shard_search": True,
+        "sources_searched": {"openalex": 12, "semantic_scholar": 12},
+    }
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del request, timeout
+        return FakeResponse({
+            "meta": {"count": 1, "shard_receipt": receipt},
+            "results": [{
+                "doi": "10.123/receipt",
+                "title": "Management forecast disclosure breadth",
+                "abstract": "Management forecast disclosure evidence.",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=1)
+
+    hits = client.search("management forecast disclosure", limit=3)
+
+    assert hits[0].metadata["shard_receipt"] == receipt
+
+
+def test_full_raw_client_can_fail_closed_on_narrow_shard_receipt(monkeypatch: object) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del request, timeout
+        return FakeResponse({
+            "meta": {
+                "count": 1,
+                "shard_receipt": {
+                    "shards_total": 100,
+                    "shards_searched": 3,
+                    "sources_searched": {"openalex": 3},
+                },
+            },
+            "results": [{
+                "doi": "10.123/narrow",
+                "title": "Narrow pull",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        min_shards_searched=12,
+        min_sources_searched=2,
+    )
+
+    assert client.search("management forecast disclosure", limit=3) == []
+
+
 def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "secret")
