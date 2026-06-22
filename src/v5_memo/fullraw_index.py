@@ -55,7 +55,7 @@ _STOP = {
     "el", "en", "la", "los", "metode", "pada", "penelitian",
 }
 _BACKEND = "v5-fullraw-indexed-fts5"
-_SWEEP_STRATEGY = "profile_relaxed_v6"
+_SWEEP_STRATEGY = "profile_relaxed_v7"
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
@@ -1366,8 +1366,10 @@ def _cache_fit_warm_entries(
     if not fit_prefix:
         return selected
     ordered = list(fit_prefix)
-    _extend_unique_entries(ordered, selected, max(len(selected), len(ordered)))
-    _extend_unique_entries(ordered, entries, max(len(selected), len(ordered)))
+    selection_limit = max(len(selected), len(ordered))
+    remaining_by_fit = sorted((entry for entry in entries if entry.path not in fit_paths), key=candidate_key)
+    _extend_unique_entries(ordered, remaining_by_fit, selection_limit)
+    _extend_unique_entries(ordered, selected, selection_limit)
     return ordered
 
 

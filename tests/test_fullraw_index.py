@@ -742,6 +742,55 @@ def test_warm_shard_cache_prefers_cache_fit_source_breadth(
     assert cached_sizes == [8, 9, 10]
 
 
+def test_cache_fit_orders_tail_by_smaller_replacements(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_large = ShardCatalogEntry(
+        path=tmp_path / "old-large.sqlite",
+        batch_id=0,
+        shard_id=0,
+        sources=("openalex",),
+        files_completed=1,
+        papers_inserted=1,
+        bytes_used=100,
+        cited_by_max=1000,
+        topic_terms=("management",),
+    )
+    old_medium = ShardCatalogEntry(
+        path=tmp_path / "old-medium.sqlite",
+        batch_id=1,
+        shard_id=0,
+        sources=("openalex",),
+        files_completed=1,
+        papers_inserted=1,
+        bytes_used=50,
+        cited_by_max=10,
+        topic_terms=("management",),
+    )
+    replacement_small = ShardCatalogEntry(
+        path=tmp_path / "replacement-small.sqlite",
+        batch_id=2,
+        shard_id=0,
+        sources=("openalex",),
+        files_completed=1,
+        papers_inserted=1,
+        bytes_used=5,
+        cited_by_max=1,
+        topic_terms=("adjacent",),
+    )
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "5")
+
+    ordered = fullraw_index._cache_fit_warm_entries(
+        [old_large, old_medium, replacement_small],
+        [old_large, old_medium],
+        query="management forecast",
+        target_ready=1,
+    )
+
+    assert ordered == [replacement_small, old_medium]
+
+
 def test_discover_shard_paths_finds_nested_batch_shards(tmp_path: Path) -> None:
     nested = tmp_path / "batch_00001"
     nested.mkdir()
