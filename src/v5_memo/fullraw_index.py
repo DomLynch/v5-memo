@@ -2049,12 +2049,15 @@ def run_server() -> None:
                 sweep_entries = select_sweep_shard_entries(catalog, query=query, limit=sweep_shard_limit)
                 sweep_query = _profile_relaxed_sweep_query(query, sweep_entries)
                 completed_path_strings = _sweep_completed_path_strings(existing.receipt if existing else {})
+                failed_path_strings = _sweep_failed_path_strings(existing.receipt if existing else {})
                 merged_hits = list(existing.hits if existing else [])
                 previous_passes = _int_or_none((existing.receipt if existing else {}).get("sweep_passes")) or 0
                 receipt: dict[str, object] = existing.receipt if existing else {}
                 for pass_index in range(sweep_max_passes):
                     remaining_entries = [
-                        entry for entry in sweep_entries if str(entry.path) not in completed_path_strings
+                        entry
+                        for entry in sweep_entries
+                        if str(entry.path) not in completed_path_strings | failed_path_strings
                     ]
                     pass_entries = remaining_entries[:sweep_pass_shard_limit]
                     if not pass_entries:
@@ -2071,6 +2074,9 @@ def run_server() -> None:
                         shard_timeout_seconds=sweep_shard_timeout_seconds,
                     )
                     completed_path_strings.update(str(path) for path in completed_paths)
+                    failed_path_strings.update(
+                        str(entry.path) for entry in pass_entries if str(entry.path) not in completed_path_strings
+                    )
                     searched_entries = [entry for entry in sweep_entries if str(entry.path) in completed_path_strings]
                     receipt = shard_coverage_receipt(catalog, searched_entries)
                     receipt["sweep_scope"] = "relevant"
@@ -2079,7 +2085,12 @@ def run_server() -> None:
                     receipt["sweep_pass_shard_limit"] = sweep_pass_shard_limit
                     receipt["sweep_pass_selected_shards"] = len(pass_entries)
                     receipt["sweep_max_passes"] = sweep_max_passes
-                    receipt["sweep_remaining_shards"] = max(0, len(sweep_entries) - len(completed_path_strings))
+                    receipt["sweep_failed_shards"] = len(failed_path_strings)
+                    receipt["sweep_failed_paths"] = sorted(failed_path_strings)
+                    receipt["sweep_remaining_shards"] = max(
+                        0,
+                        len(sweep_entries) - len(completed_path_strings) - len(failed_path_strings),
+                    )
                     receipt["sweep_timed_out"] = timed_out
                     receipt["sweep_timeout_seconds"] = sweep_timeout_seconds
                     receipt["sweep_shard_timeout_seconds"] = sweep_shard_timeout_seconds
@@ -2093,7 +2104,6 @@ def run_server() -> None:
                     final = (
                         receipt_is_sufficient(receipt)
                         or receipt["sweep_remaining_shards"] == 0
-                        or not completed_paths
                         or pass_index + 1 >= sweep_max_passes
                     )
                     sweep_cache_put(key, SweepCacheEntry(time.time(), merged_hits, receipt), final=final)
@@ -2651,6 +2661,13 @@ def _sweep_cache_path(cache_dir: Path | None, key: str) -> Path | None:
 
 def _sweep_completed_path_strings(receipt: dict[str, object]) -> set[str]:
     value = receipt.get("sweep_completed_paths")
+    if not isinstance(value, list | tuple):
+        return set()
+    return {str(path) for path in value if str(path)}
+
+
+def _sweep_failed_path_strings(receipt: dict[str, object]) -> set[str]:
+    value = receipt.get("sweep_failed_paths")
     if not isinstance(value, list | tuple):
         return set()
     return {str(path) for path in value if str(path)}
