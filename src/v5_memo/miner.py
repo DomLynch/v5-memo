@@ -235,6 +235,8 @@ def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 3) -> tuple[
         "mimetic",
         "pharmacology",
         "protocol",
+        "muscle",
+        "protein",
         "resistance",
         "response",
         "reversal",
