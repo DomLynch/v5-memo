@@ -1623,6 +1623,57 @@ def test_select_sweep_shard_entries_expands_relevant_scope(
     assert receipt["shards_searched"] == 9
 
 
+def test_sweep_pass_prefix_prioritizes_source_breadth(tmp_path: Path) -> None:
+    entries: list[ShardCatalogEntry] = []
+    for index in range(12):
+        entries.append(ShardCatalogEntry(
+            path=tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite",
+            batch_id=index,
+            shard_id=0,
+            sources=("openalex",),
+            files_completed=1,
+            papers_inserted=1000,
+            bytes_used=10_000_000 + index,
+            cited_by_max=1000 + index,
+            topic_terms=("management", "forecast"),
+        ))
+    entries.append(ShardCatalogEntry(
+        path=tmp_path / "batch_90000" / "fullraw_shard_0000.sqlite",
+        batch_id=90000,
+        shard_id=0,
+        sources=("pubmed",),
+        files_completed=1,
+        papers_inserted=14_214,
+        bytes_used=43_184_128,
+        cited_by_max=25_322,
+        topic_terms=("cholestasis", "pregnancy"),
+    ))
+    entries.append(ShardCatalogEntry(
+        path=tmp_path / "batch_00140" / "fullraw_shard_0000.sqlite",
+        batch_id=140,
+        shard_id=0,
+        sources=("semantic_scholar",),
+        files_completed=1,
+        papers_inserted=800,
+        bytes_used=20_000_000,
+        cited_by_max=200,
+        topic_terms=("pregnancy",),
+    ))
+
+    selected = select_sweep_shard_entries(entries, query="cholestasis pregnancy management", limit=9)
+    prioritized = fullraw_index._prioritize_sweep_pass_entries(
+        selected,
+        3,
+        query="cholestasis pregnancy management",
+    )
+    first_pass = prioritized[:3]
+    receipt = shard_coverage_receipt(entries, first_pass)
+
+    assert {entry.sources[0] for entry in first_pass} == {"openalex", "pubmed", "semantic_scholar"}
+    assert receipt["sources_missing_from_search"] == ()
+    assert receipt["sources_searched"] == {"openalex": 1, "pubmed": 1, "semantic_scholar": 1}
+
+
 def test_profile_relaxed_sweep_query_uses_shard_topics(tmp_path: Path) -> None:
     entries = [
         ShardCatalogEntry(
