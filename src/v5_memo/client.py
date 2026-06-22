@@ -398,7 +398,7 @@ class FullRawCorpusSearchClient:
             try:
                 with urlopen(request, timeout=self._timeout) as response:
                     return json.loads(response.read().decode("utf-8"))
-            except RemoteDisconnected as exc:
+            except (ConnectionResetError, RemoteDisconnected) as exc:
                 if attempt == 0:
                     self._log_progress(f"fullraw remote disconnect; retrying once: {payload.get('query', '')}")
                     continue

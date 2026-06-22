@@ -336,6 +336,57 @@ def test_full_raw_client_uses_cache_only_after_strict_foreground_timeout(
     assert hits[0].doi == "10.123/recovered"
 
 
+def test_full_raw_client_retries_connection_reset_during_cache_poll(
+    monkeypatch: object,
+) -> None:
+    payloads: list[dict[str, object]] = []
+    reset_once = True
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        nonlocal reset_once
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        payloads.append(payload)
+        if payload.get("cache_only") is not True:
+            raise TimeoutError("foreground too slow")
+        if reset_once:
+            reset_once = False
+            raise ConnectionResetError("reset")
+        return FakeResponse({
+            "meta": {
+                "count": 1,
+                "shard_receipt": {
+                    "shards_total": 100,
+                    "shards_searched": 48,
+                    "sources_searched": {"openalex": 24, "semantic_scholar": 24},
+                },
+                "async_sweep": {"status": "hit"},
+            },
+            "results": [{
+                "doi": "10.123/recovered",
+                "title": "Recovered cache-only evidence",
+                "abstract": "Management forecast disclosure recovered from cache-only sweep.",
+                "year": 2024,
+                "source": "semantic_scholar",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        sweep_wait_seconds=1.0,
+        min_shards_searched=48,
+        min_sources_searched=2,
+        strict=True,
+    )
+
+    hits = client.search("management forecast disclosure", limit=3)
+
+    assert [payload.get("cache_only") for payload in payloads] == [None, True, True]
+    assert hits[0].doi == "10.123/recovered"
+
+
 def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None:
     requested: list[dict[str, object]] = []
 
