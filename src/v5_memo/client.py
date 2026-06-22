@@ -362,7 +362,7 @@ class FullRawCorpusSearchClient:
 
     def _wait_for_sweep_hit(self, payload: dict[str, object]) -> Any | None:
         deadline = time.monotonic() + self._sweep_wait_seconds
-        cache_payload = {**payload, "cache_only": True}
+        cache_payload = {**payload, "cache_only": True, "queue_if_missing": True}
         while True:
             try:
                 data = self._request_search(cache_payload)

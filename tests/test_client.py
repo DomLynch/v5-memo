@@ -280,6 +280,7 @@ def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) ->
 
     assert payloads[0].get("cache_only") is None
     assert payloads[1].get("cache_only") is True
+    assert payloads[1].get("queue_if_missing") is True
     assert hits[0].doi == "10.123/deep"
     assert hits[0].metadata["shard_receipt"] == {
         "shards_total": 100,
@@ -331,6 +332,7 @@ def test_full_raw_client_uses_cache_only_after_strict_foreground_timeout(
     hits = client.search("management forecast disclosure", limit=3)
 
     assert [payload.get("cache_only") for payload in payloads] == [None, True]
+    assert payloads[1].get("queue_if_missing") is True
     assert hits[0].doi == "10.123/recovered"
 
 

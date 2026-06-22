@@ -750,13 +750,18 @@ def test_server_async_sweep_caches_all_shard_results(tmp_path: Path) -> None:
             _, stderr = proc.communicate(timeout=1)
             raise AssertionError(f"server did not start: {stderr}")
 
-        def post_search(*, cache_only: bool = False) -> dict[str, object]:
+        def post_search(
+            *,
+            cache_only: bool = False,
+            queue_if_missing: bool = False,
+        ) -> dict[str, object]:
             request = urllib.request.Request(
                 base + "/search",
                 data=json.dumps({
                     "query": "management forecast disclosure",
                     "top_k": 5,
                     "cache_only": cache_only,
+                    "queue_if_missing": queue_if_missing,
                 }).encode(),
                 headers={"Content-Type": "application/json"},
                 method="POST",
@@ -774,10 +779,14 @@ def test_server_async_sweep_caches_all_shard_results(tmp_path: Path) -> None:
         assert first["results"] == []
         assert first_meta["shard_receipt"] == {}
 
-        queued = post_search()
+        queued = post_search(cache_only=True, queue_if_missing=True)
         queued_meta = queued["meta"]
         assert isinstance(queued_meta, dict)
         assert queued_meta["async_sweep"]["status"] in {"queued", "hit"}
+        assert queued_meta["cache_only"] is True
+        if queued_meta["async_sweep"]["status"] != "hit":
+            assert queued["results"] == []
+            assert queued_meta["shard_receipt"] == {}
         cached = first
         for _ in range(50):
             cached = post_search(cache_only=True)

@@ -1922,6 +1922,11 @@ def run_server() -> None:
                     isinstance(raw_cache_only, str)
                     and raw_cache_only.strip().casefold() in {"1", "true", "yes", "on"}
                 )
+                raw_queue_if_missing = payload.get("queue_if_missing")
+                queue_if_missing = raw_queue_if_missing is True or (
+                    isinstance(raw_queue_if_missing, str)
+                    and raw_queue_if_missing.strip().casefold() in {"1", "true", "yes", "on"}
+                )
             except (TypeError, ValueError, json.JSONDecodeError):
                 _write_json(self, 400, {"error": "bad request"})
                 return
@@ -1950,6 +1955,16 @@ def run_server() -> None:
                     receipt = {}
                     if not sweep_enabled or not catalog:
                         sweep_status = "disabled"
+                    elif queue_if_missing:
+                        sweep_status = enqueue_sweep(
+                            key=cache_key,
+                            query=query,
+                            limit=limit,
+                            year_min=year_min,
+                            year_max=year_max,
+                            rank_mode=rank_mode,
+                            catalog=catalog,
+                        )
                     else:
                         with sweep_lock:
                             sweep_status = "running" if cache_key in sweep_inflight else "miss"
