@@ -24,6 +24,7 @@ from v5_memo.fullraw_index import (
     search_shards,
     select_search_shard_entries,
     select_search_shard_paths,
+    shard_coverage_gate_response,
     shard_coverage_receipt,
 )
 from v5_memo.fullraw_service import RawFile
@@ -349,6 +350,70 @@ def test_read_only_index_searches_existing_shard(tmp_path: Path) -> None:
     assert stats.papers_indexed == 1
 
 
+def test_fullraw_index_profiles_year_citation_and_topics(tmp_path: Path) -> None:
+    shard = tmp_path / "fullraw_shard_0000.sqlite"
+    raw_file = _raw_file(tmp_path, "openalex_profile", [
+        {
+            "doi": "https://doi.org/10.example/profile-old",
+            "display_name": "Management forecast disclosure",
+            "abstract": "Managers disclose forecasts and accounting guidance.",
+            "publication_year": 1990,
+            "cited_by_count": 110,
+        },
+        {
+            "doi": "https://doi.org/10.example/profile-new",
+            "display_name": "Longevity exercise adaptation",
+            "abstract": "Exercise adaptation and healthspan resilience.",
+            "publication_year": 2024,
+            "cited_by_count": 9,
+        },
+    ])
+    index = FullRawFtsIndex(shard)
+    try:
+        index.index_files([raw_file], commit_interval=1)
+        profile = index.profile(topic_limit=6)
+    finally:
+        index.close()
+
+    assert profile["year_min"] == 1990
+    assert profile["year_max"] == 2024
+    assert profile["cited_by_min"] == 9
+    assert profile["cited_by_max"] == 110
+    topic_terms = profile["topic_terms"]
+    assert isinstance(topic_terms, tuple)
+    assert "forecast" in topic_terms
+
+
+def test_fullraw_index_search_supports_citation_and_recency_rank_modes(tmp_path: Path) -> None:
+    shard = tmp_path / "fullraw_rank_modes.sqlite"
+    raw_file = _raw_file(tmp_path, "openalex_rank_modes", [
+        {
+            "doi": "https://doi.org/10.example/high-cited-old",
+            "display_name": "Management forecast disclosure evidence",
+            "abstract": "Management forecast disclosure evidence.",
+            "publication_year": 1990,
+            "cited_by_count": 500,
+        },
+        {
+            "doi": "https://doi.org/10.example/recent-low-cited",
+            "display_name": "Management forecast disclosure evidence",
+            "abstract": "Management forecast disclosure evidence.",
+            "publication_year": 2025,
+            "cited_by_count": 5,
+        },
+    ])
+    index = FullRawFtsIndex(shard)
+    try:
+        index.index_files([raw_file], commit_interval=1)
+        citation_hits = index.search("management forecast disclosure", limit=2, rank_mode="citation")
+        recency_hits = index.search("management forecast disclosure", limit=2, rank_mode="recency")
+    finally:
+        index.close()
+
+    assert citation_hits[0]["doi"] == "10.example/high-cited-old"
+    assert recency_hits[0]["doi"] == "10.example/recent-low-cited"
+
+
 def test_catalog_reads_manifest_and_manifest_stats(tmp_path: Path) -> None:
     batch = tmp_path / "batch_00001"
     batch.mkdir()
@@ -361,8 +426,29 @@ def test_catalog_reads_manifest_and_manifest_stats(tmp_path: Path) -> None:
             {"source": "semantic_scholar"},
         ],
         "shards": [
-            {"shard_id": 0, "files_completed": 3, "papers_inserted": 42, "bytes_used": 1234},
-            {"shard_id": 1, "files_completed": 4, "papers_inserted": 99, "bytes_used": 4567},
+            {
+                "shard_id": 0,
+                "files_completed": 3,
+                "papers_inserted": 42,
+                "bytes_used": 1234,
+                "year_min": 1980,
+                "year_max": 2024,
+                "cited_by_min": 0,
+                "cited_by_max": 500,
+                "cited_by_avg": 22.5,
+                "topic_terms": ["management", "forecast"],
+            },
+            {
+                "shard_id": 1,
+                "files_completed": 4,
+                "papers_inserted": 99,
+                "bytes_used": 4567,
+                "year_min": 2001,
+                "year_max": 2026,
+                "cited_by_min": 1,
+                "cited_by_max": 40,
+                "topic_terms": ["longevity"],
+            },
         ],
     }))
 
@@ -372,6 +458,9 @@ def test_catalog_reads_manifest_and_manifest_stats(tmp_path: Path) -> None:
     assert [(entry.batch_id, entry.shard_id) for entry in catalog] == [(1, 0), (1, 1)]
     assert catalog[0].sources == ("openalex", "semantic_scholar")
     assert catalog[1].papers_inserted == 99
+    assert catalog[0].year_min == 1980
+    assert catalog[0].cited_by_max == 500
+    assert catalog[0].topic_terms == ("management", "forecast")
     assert stats.files_indexed == 7
     assert stats.papers_indexed == 141
     assert stats.bytes_used == 5801
@@ -426,10 +515,91 @@ def test_select_search_shard_entries_rotates_by_query_variant(
 
     first = select_search_shard_entries(entries, query="management forecast disclosure")
     second = select_search_shard_entries(entries, query="management forecast")
+    first_receipt = shard_coverage_receipt(entries, first)
+    second_receipt = shard_coverage_receipt(entries, second)
 
     assert {entry.sources[0] for entry in first} == {"openalex", "pubmed", "semantic_scholar"}
     assert {entry.sources[0] for entry in second} == {"openalex", "pubmed", "semantic_scholar"}
     assert {entry.path for entry in first} != {entry.path for entry in second}
+    assert first_receipt["shards_searched"] == 6
+    assert second_receipt["shards_searched"] == 6
+    assert first_receipt["sources_searched"] == {"openalex": 2, "pubmed": 2, "semantic_scholar": 2}
+    assert second_receipt["sources_searched"] == {"openalex": 2, "pubmed": 2, "semantic_scholar": 2}
+    assert first_receipt["batch_range_searched"] != {"min": None, "max": None}
+    assert second_receipt["batch_range_searched"] != {"min": None, "max": None}
+
+
+def test_select_search_shard_entries_uses_profile_diversity(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    entries = [
+        ShardCatalogEntry(
+            path=tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite",
+            batch_id=index,
+            shard_id=0,
+            sources=("openalex",),
+            files_completed=1,
+            papers_inserted=100,
+            bytes_used=1000,
+            year_min=year_min,
+            year_max=year_max,
+            cited_by_min=cited_min,
+            cited_by_max=cited_max,
+            topic_terms=topic_terms,
+        )
+        for index, (year_min, year_max, cited_min, cited_max, topic_terms) in enumerate([
+            (1975, 1985, 0, 3, ("management",)),
+            (2019, 2026, 2, 400, ("forecast", "disclosure")),
+            (1995, 2000, 0, 1, ("unrelated",)),
+            (2008, 2012, 1, 40, ("longevity",)),
+        ])
+    ]
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "3")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "balanced")
+
+    selected = select_search_shard_entries(entries, query="management forecast disclosure")
+    receipt = shard_coverage_receipt(entries, selected)
+
+    assert entries[1] in selected
+    assert receipt["year_range_searched"] == {"min": 1975, "max": 2026}
+    assert receipt["cited_by_range_searched"] == {"min": 0, "max": 400}
+    topic_terms_searched = receipt["topic_terms_searched"]
+    assert isinstance(topic_terms_searched, tuple)
+    assert "forecast" in topic_terms_searched
+
+
+def test_shard_coverage_gate_response_rejects_too_narrow_search() -> None:
+    status, body = shard_coverage_gate_response(
+        {
+            "shards_searched": 12,
+            "sources_searched": {"openalex": 12},
+        },
+        min_shards_searched=50,
+        min_sources_searched=2,
+    ) or (0, {})
+
+    assert status == 422
+    assert body["error"] == "coverage_too_narrow"
+    assert body["requirements"] == {
+        "min_shards_searched": 50,
+        "min_sources_searched": 2,
+    }
+    assert body["shard_receipt"] == {
+        "shards_searched": 12,
+        "sources_searched": {"openalex": 12},
+    }
+
+
+def test_shard_coverage_gate_response_allows_sufficient_search() -> None:
+    assert shard_coverage_gate_response(
+        {
+            "shards_searched": 50,
+            "sources_searched": {"openalex": 25, "semantic_scholar": 25},
+        },
+        min_shards_searched=50,
+        min_sources_searched=2,
+    ) is None
 
 
 def test_select_search_shard_paths_can_spread(

@@ -15,6 +15,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from collections import Counter
 from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
@@ -70,6 +71,12 @@ class ShardBuildResult:
     stopped_for_budget: bool
     elapsed_seconds: float
     bytes_used: int
+    year_min: int | None = None
+    year_max: int | None = None
+    cited_by_min: int = 0
+    cited_by_max: int = 0
+    cited_by_avg: float = 0.0
+    topic_terms: tuple[str, ...] = ()
     file_errors: str = ""
     error: str = ""
 
@@ -112,6 +119,12 @@ class ShardCatalogEntry:
     files_completed: int
     papers_inserted: int
     bytes_used: int
+    year_min: int | None = None
+    year_max: int | None = None
+    cited_by_min: int = 0
+    cited_by_max: int = 0
+    cited_by_avg: float = 0.0
+    topic_terms: tuple[str, ...] = ()
 
 
 class FullRawFtsIndex:
@@ -224,6 +237,39 @@ class FullRawFtsIndex:
             bytes_used=bytes_used,
         )
 
+    def profile(self, *, topic_limit: int = 12, sample_limit: int = 200) -> dict[str, object]:
+        with self._lock:
+            if not self._read_only:
+                self.initialize()
+            row = self._conn.execute(
+                """
+                SELECT
+                  MIN(year) AS year_min,
+                  MAX(year) AS year_max,
+                  MIN(COALESCE(cited_by_count, 0)) AS cited_by_min,
+                  MAX(COALESCE(cited_by_count, 0)) AS cited_by_max,
+                  AVG(COALESCE(cited_by_count, 0)) AS cited_by_avg
+                FROM papers
+                """
+            ).fetchone()
+            topic_rows = self._conn.execute(
+                """
+                SELECT title, abstract, journal
+                FROM papers
+                ORDER BY COALESCE(cited_by_count, 0) DESC
+                LIMIT ?
+                """,
+                (max(1, min(sample_limit, 1000)),),
+            ).fetchall()
+        return {
+            "year_min": _int_or_none(row["year_min"]) if row is not None else None,
+            "year_max": _int_or_none(row["year_max"]) if row is not None else None,
+            "cited_by_min": _int_or_none(row["cited_by_min"]) or 0 if row is not None else 0,
+            "cited_by_max": _int_or_none(row["cited_by_max"]) or 0 if row is not None else 0,
+            "cited_by_avg": round(_float_or_none(row["cited_by_avg"]) or 0.0, 3) if row is not None else 0.0,
+            "topic_terms": _profile_topic_terms(topic_rows, limit=topic_limit),
+        }
+
     def upsert_term_map(
         self,
         term: str,
@@ -333,6 +379,7 @@ class FullRawFtsIndex:
         limit: int = 25,
         year_min: int = 1900,
         year_max: int = 2100,
+        rank_mode: str = "relevance",
     ) -> list[dict[str, object]]:
         with self._lock:
             if not self._read_only:
@@ -341,8 +388,9 @@ class FullRawFtsIndex:
             if not terms:
                 return []
             match_query = _fts_match_query(self._expanded_term_groups(terms))
+            order_by = _search_order_by(rank_mode)
             rows = self._conn.execute(
-                """
+                f"""
                 SELECT
                   p.title,
                   p.abstract,
@@ -361,7 +409,7 @@ class FullRawFtsIndex:
                 JOIN papers p ON p.id = paper_fts.rowid
                 WHERE paper_fts MATCH ?
                   AND (p.year IS NULL OR (p.year >= ? AND p.year <= ?))
-                ORDER BY rank ASC, COALESCE(p.cited_by_count, 0) DESC
+                ORDER BY {order_by}
                 LIMIT ?
                 """,
                 (match_query, year_min, year_max, max(1, min(limit, 200))),
@@ -811,6 +859,7 @@ def search_shards(
     limit: int = 25,
     year_min: int = 1900,
     year_max: int = 2100,
+    rank_mode: str = "relevance",
     catalog: list[ShardCatalogEntry] | None = None,
 ) -> list[dict[str, object]]:
     """Search multiple shard DBs and merge ranked, deduped results."""
@@ -822,7 +871,7 @@ def search_shards(
     workers = max(1, min(int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "8")), len(paths) or 1))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [
-            pool.submit(_search_one_shard, path, query, limit, year_min, year_max)
+            pool.submit(_search_one_shard, path, query, limit, year_min, year_max, rank_mode)
             for path in paths
         ]
         for future in as_completed(futures):
@@ -887,12 +936,60 @@ def _select_balanced_shard_entries(
     per_source = max(1, limit // max(1, len(sources)))
     for source in sources:
         source_entries = _rotate_entries(by_source[source], _query_offset(f"{query}:{source}", len(by_source[source])))
-        _extend_unique_entries(selected, _spread_entries(source_entries, per_source), limit)
+        _extend_unique_entries(selected, _profiled_spread_entries(source_entries, per_source, query=query), limit)
     if len(selected) < limit:
         rotated = _rotate_entries(entries, _query_offset(query, len(entries)))
-        _extend_unique_entries(selected, _spread_entries(rotated, limit), limit)
+        _extend_unique_entries(selected, _profiled_spread_entries(rotated, limit, query=query), limit)
     if len(selected) < limit:
         _extend_unique_entries(selected, entries[-limit:], limit)
+    return selected
+
+
+def _profiled_spread_entries(
+    entries: list[ShardCatalogEntry],
+    limit: int,
+    *,
+    query: str,
+) -> list[ShardCatalogEntry]:
+    if limit <= 0:
+        return []
+    rotated = _rotate_entries(entries, _query_offset(query, len(entries)))
+    if not any(entry.topic_terms or entry.year_min is not None or entry.cited_by_max for entry in entries):
+        return _spread_entries(rotated, limit)
+    selected: list[ShardCatalogEntry] = []
+    query_terms = set(_fts_terms(query))
+    if query_terms:
+        relevant = sorted(
+            rotated,
+            key=lambda entry: (
+                len(query_terms & set(entry.topic_terms)),
+                entry.cited_by_max,
+                entry.papers_inserted,
+            ),
+            reverse=True,
+        )
+        _extend_unique_entries(selected, relevant, min(limit, len(selected) + max(1, limit // 3)))
+    _extend_unique_entries(
+        selected,
+        sorted(rotated, key=lambda entry: entry.cited_by_max, reverse=True),
+        min(limit, len(selected) + 1),
+    )
+    _extend_unique_entries(
+        selected,
+        sorted(rotated, key=lambda entry: entry.cited_by_min),
+        min(limit, len(selected) + 1),
+    )
+    _extend_unique_entries(
+        selected,
+        sorted(rotated, key=lambda entry: entry.year_max or -1, reverse=True),
+        min(limit, len(selected) + 1),
+    )
+    _extend_unique_entries(
+        selected,
+        sorted(rotated, key=lambda entry: entry.year_min if entry.year_min is not None else 9999),
+        min(limit, len(selected) + 1),
+    )
+    _extend_unique_entries(selected, _spread_entries(rotated, limit), limit)
     return selected
 
 
@@ -954,10 +1051,11 @@ def _search_one_shard(
     limit: int,
     year_min: int,
     year_max: int,
+    rank_mode: str,
 ) -> list[dict[str, object]]:
     index = FullRawFtsIndex(path, read_only=True)
     try:
-        return index.search(query, limit=limit, year_min=year_min, year_max=year_max)
+        return index.search(query, limit=limit, year_min=year_min, year_max=year_max, rank_mode=rank_mode)
     finally:
         index.close()
 
@@ -1031,6 +1129,12 @@ def build_shard_catalog(
         files_completed = 0
         papers_inserted = 0
         bytes_used = path.stat().st_size if path.exists() else 0
+        year_min: int | None = None
+        year_max: int | None = None
+        cited_by_min = 0
+        cited_by_max = 0
+        cited_by_avg = 0.0
+        topic_terms: tuple[str, ...] = ()
         if manifest is not None:
             batch_id = _int_or_none(manifest.get("batch_id")) or batch_id
             sources = _manifest_sources(manifest)
@@ -1039,6 +1143,12 @@ def build_shard_catalog(
                 files_completed = _int_or_none(shard_meta.get("files_completed")) or 0
                 papers_inserted = _int_or_none(shard_meta.get("papers_inserted")) or 0
                 bytes_used = _int_or_none(shard_meta.get("bytes_used")) or bytes_used
+                year_min = _int_or_none(shard_meta.get("year_min"))
+                year_max = _int_or_none(shard_meta.get("year_max"))
+                cited_by_min = _int_or_none(shard_meta.get("cited_by_min")) or 0
+                cited_by_max = _int_or_none(shard_meta.get("cited_by_max")) or 0
+                cited_by_avg = round(_float_or_none(shard_meta.get("cited_by_avg")) or 0.0, 3)
+                topic_terms = _string_tuple(shard_meta.get("topic_terms"))
         out.append(ShardCatalogEntry(
             path=path,
             batch_id=batch_id,
@@ -1047,6 +1157,12 @@ def build_shard_catalog(
             files_completed=files_completed,
             papers_inserted=papers_inserted,
             bytes_used=bytes_used,
+            year_min=year_min,
+            year_max=year_max,
+            cited_by_min=cited_by_min,
+            cited_by_max=cited_by_max,
+            cited_by_avg=cited_by_avg,
+            topic_terms=topic_terms,
         ))
     return out
 
@@ -1063,8 +1179,40 @@ def shard_coverage_receipt(
         "sources_searched": _source_counts(selected),
         "batch_range_total": _batch_range(entries),
         "batch_range_searched": _batch_range(selected),
+        "year_range_total": _year_range(entries),
+        "year_range_searched": _year_range(selected),
+        "cited_by_range_total": _cited_by_range(entries),
+        "cited_by_range_searched": _cited_by_range(selected),
+        "topic_terms_searched": _topic_terms(selected),
         "papers_total": sum(entry.papers_inserted for entry in entries),
         "papers_searched": sum(entry.papers_inserted for entry in selected),
+    }
+
+
+def shard_coverage_gate_response(
+    receipt: dict[str, object],
+    *,
+    min_shards_searched: int = 0,
+    min_sources_searched: int = 0,
+) -> tuple[int, dict[str, object]] | None:
+    failures: list[str] = []
+    shards_searched = _int_or_none(receipt.get("shards_searched")) or 0
+    sources_searched = receipt.get("sources_searched")
+    source_count = len(sources_searched) if isinstance(sources_searched, dict) else 0
+    if min_shards_searched > 0 and shards_searched < min_shards_searched:
+        failures.append(f"shards_searched {shards_searched} < required {min_shards_searched}")
+    if min_sources_searched > 0 and source_count < min_sources_searched:
+        failures.append(f"sources_searched {source_count} < required {min_sources_searched}")
+    if not failures:
+        return None
+    return 422, {
+        "error": "coverage_too_narrow",
+        "failures": failures,
+        "requirements": {
+            "min_shards_searched": min_shards_searched,
+            "min_sources_searched": min_sources_searched,
+        },
+        "shard_receipt": receipt,
     }
 
 
@@ -1122,6 +1270,32 @@ def _batch_range(entries: list[ShardCatalogEntry]) -> dict[str, int | None]:
         return {"min": None, "max": None}
     batch_ids = [entry.batch_id for entry in entries]
     return {"min": min(batch_ids), "max": max(batch_ids)}
+
+
+def _year_range(entries: list[ShardCatalogEntry]) -> dict[str, int | None]:
+    years = [
+        year
+        for entry in entries
+        for year in (entry.year_min, entry.year_max)
+        if year is not None
+    ]
+    return {"min": min(years), "max": max(years)} if years else {"min": None, "max": None}
+
+
+def _cited_by_range(entries: list[ShardCatalogEntry]) -> dict[str, int]:
+    if not entries:
+        return {"min": 0, "max": 0}
+    return {
+        "min": min(entry.cited_by_min for entry in entries),
+        "max": max(entry.cited_by_max for entry in entries),
+    }
+
+
+def _topic_terms(entries: list[ShardCatalogEntry], *, limit: int = 12) -> tuple[str, ...]:
+    counts: Counter[str] = Counter()
+    for entry in entries:
+        counts.update(entry.topic_terms)
+    return tuple(term for term, _count in counts.most_common(limit))
 
 
 def _batch_id_from_path(path: Path) -> int:
@@ -1210,6 +1384,7 @@ def _build_shard_worker(job: ShardBuildJob) -> ShardBuildResult:
             min_free_bytes=job.min_free_bytes,
         )
         stats = index.stats(files_total=len(job.files))
+        profile = index.profile()
     finally:
         index.close()
     return ShardBuildResult(
@@ -1223,6 +1398,12 @@ def _build_shard_worker(job: ShardBuildJob) -> ShardBuildResult:
         stopped_for_budget=result.stopped_for_budget,
         elapsed_seconds=result.elapsed_seconds,
         bytes_used=stats.bytes_used,
+        year_min=_int_or_none(profile.get("year_min")),
+        year_max=_int_or_none(profile.get("year_max")),
+        cited_by_min=_int_or_none(profile.get("cited_by_min")) or 0,
+        cited_by_max=_int_or_none(profile.get("cited_by_max")) or 0,
+        cited_by_avg=round(_float_or_none(profile.get("cited_by_avg")) or 0.0, 3),
+        topic_terms=_string_tuple(profile.get("topic_terms")),
         file_errors=result.file_errors,
     )
 
@@ -1244,6 +1425,8 @@ def run_server() -> None:
     shard_catalog_ttl = _float_or_none(
         os.environ.get("V5_MEMO_FULL_RAW_SHARD_CATALOG_TTL_SECONDS", "")
     ) or 60.0
+    min_shards_searched = _positive_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED") or 0
+    min_sources_searched = _positive_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED") or 0
     manifest_path = Path(
         os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json")
     )
@@ -1289,7 +1472,14 @@ def run_server() -> None:
         assert index is not None
         return index.stats(files_total=len(files))
 
-    def current_search(query: str, *, limit: int, year_min: int, year_max: int) -> list[dict[str, object]]:
+    def current_search(
+        query: str,
+        *,
+        limit: int,
+        year_min: int,
+        year_max: int,
+        rank_mode: str,
+    ) -> list[dict[str, object]]:
         if shard_dir is not None:
             catalog = current_catalog()
             return search_shards(
@@ -1298,16 +1488,23 @@ def run_server() -> None:
                 limit=limit,
                 year_min=year_min,
                 year_max=year_max,
+                rank_mode=rank_mode,
                 catalog=catalog,
             )
         assert index is not None
-        return index.search(query, limit=limit, year_min=year_min, year_max=year_max)
+        return index.search(query, limit=limit, year_min=year_min, year_max=year_max, rank_mode=rank_mode)
 
     def current_receipt(query: str) -> dict[str, object]:
         if shard_dir is None:
             return {}
         catalog = current_catalog()
         return shard_coverage_receipt(catalog, select_search_shard_entries(catalog, query=query))
+
+    def coverage_requirements() -> dict[str, int]:
+        return {
+            "min_shards_searched": min_shards_searched,
+            "min_sources_searched": min_sources_searched,
+        }
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -1326,6 +1523,7 @@ def run_server() -> None:
                 "complete": stats.complete,
                 "bytes_used": stats.bytes_used,
                 "shard_receipt": current_receipt("") if shard_dir is not None else {},
+                "coverage_requirements": coverage_requirements(),
             })
 
         def do_POST(self) -> None:
@@ -1342,6 +1540,7 @@ def run_server() -> None:
                 limit = max(1, min(int(payload.get("limit") or payload.get("top_k") or 25), 200))
                 year_min = int(payload.get("year_min") or 1900)
                 year_max = int(payload.get("year_max") or 2100)
+                rank_mode = _rank_mode(payload.get("rank_mode"))
             except (TypeError, ValueError, json.JSONDecodeError):
                 _write_json(self, 400, {"error": "bad request"})
                 return
@@ -1349,7 +1548,23 @@ def run_server() -> None:
                 _write_json(self, 400, {"error": "query is required"})
                 return
             started = time.monotonic()
-            hits = current_search(query, limit=limit, year_min=year_min, year_max=year_max)
+            receipt = current_receipt(query) if shard_dir is not None else {}
+            coverage_gate = shard_coverage_gate_response(
+                receipt,
+                min_shards_searched=min_shards_searched,
+                min_sources_searched=min_sources_searched,
+            )
+            if coverage_gate is not None:
+                status, body = coverage_gate
+                _write_json(self, status, body)
+                return
+            hits = current_search(
+                query,
+                limit=limit,
+                year_min=year_min,
+                year_max=year_max,
+                rank_mode=rank_mode,
+            )
             stats = current_stats()
             explain = (
                 {"fts_match": query, "groups": []}
@@ -1367,7 +1582,8 @@ def run_server() -> None:
                     "backend": _BACKEND,
                     "expanded_query": explain["fts_match"],
                     "term_groups": explain["groups"],
-                    "shard_receipt": current_receipt(query) if shard_dir is not None else {},
+                    "rank_mode": rank_mode,
+                    "shard_receipt": receipt,
                 },
                 "results": hits,
             })
@@ -1653,6 +1869,40 @@ def _fts_terms(query: str) -> tuple[str, ...]:
 def _first_fts_term(value: str) -> str:
     terms = _fts_terms(value)
     return terms[0] if terms else ""
+
+
+def _profile_topic_terms(rows: Iterable[sqlite3.Row], *, limit: int) -> tuple[str, ...]:
+    counts: Counter[str] = Counter()
+    for row in rows:
+        text = f"{row['title'] or ''} {row['abstract'] or ''} {row['journal'] or ''}"
+        counts.update(_fts_terms(text))
+    return tuple(term for term, _count in counts.most_common(max(1, limit)))
+
+
+def _search_order_by(rank_mode: str) -> str:
+    mode = _rank_mode(rank_mode)
+    if mode in {"citation", "citation_heavy", "cited"}:
+        return "COALESCE(p.cited_by_count, 0) DESC, rank ASC"
+    if mode in {"recency", "recent"}:
+        return "COALESCE(p.year, 0) DESC, rank ASC, COALESCE(p.cited_by_count, 0) DESC"
+    return "rank ASC, COALESCE(p.cited_by_count, 0) DESC"
+
+
+def _rank_mode(value: object) -> str:
+    mode = str(value or "relevance").casefold()
+    if mode in {"citation", "citation_heavy", "cited"}:
+        return "citation"
+    if mode in {"recency", "recent"}:
+        return "recency"
+    return "relevance"
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,) if value else ()
+    if not isinstance(value, list | tuple):
+        return ()
+    return tuple(str(item) for item in value if str(item))
 
 
 def _unique_terms(values: Iterable[str]) -> tuple[str, ...]:

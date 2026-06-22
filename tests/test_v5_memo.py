@@ -1073,3 +1073,56 @@ def test_pipeline_raises_when_no_receipt_bound_candidate() -> None:
 
     with pytest.raises(ValueError, match="no receipt-bound"):
         build_alpha_memo(topic="topic", seed_queries=["x"], searcher=EmptySearch())
+
+
+def test_pipeline_fails_closed_when_memo_coverage_is_too_narrow() -> None:
+    class NarrowSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            receipt = {
+                "shards_searched": 12,
+                "sources_searched": {"openalex": 12},
+                "year_range_searched": {"min": 2020, "max": 2024},
+                "cited_by_range_searched": {"min": 0, "max": 10},
+            }
+            return [
+                CorpusHit(
+                    hit_id="narrow-1",
+                    title="NAD salvage links sleep fragmentation to mitochondrial stress",
+                    abstract="Sleep fragmentation reduced resilience through NAD salvage and mitochondrial stress.",
+                    source="fullraw:openalex",
+                    year=2024,
+                    doi="10.narrow/1",
+                    metadata={"shard_receipt": receipt, "search_pass": "focused"},
+                ),
+                CorpusHit(
+                    hit_id="narrow-2",
+                    title="NAD salvage predicts exercise response through mitochondrial repair",
+                    abstract="Exercise improved resilience when NAD salvage and mitochondrial repair markers moved together.",
+                    source="fullraw:openalex",
+                    year=2023,
+                    doi="10.narrow/2",
+                    metadata={"shard_receipt": receipt, "search_pass": "focused"},
+                ),
+            ]
+
+    with pytest.raises(MemoBuildError, match="coverage too narrow") as exc:
+        build_alpha_memo(
+            topic="longevity resilience",
+            seed_queries=["nad mitochondrial"],
+            searcher=NarrowSearch(),
+            min_alpha_tier="discovery_seed",
+            min_shards_searched=50,
+            min_sources_searched=2,
+            min_search_passes=2,
+        )
+
+    assert exc.value.failure.code == "memo_coverage_too_narrow"
+    coverage = exc.value.failure.details["coverage"]
+    assert isinstance(coverage, dict)
+    assert coverage["shards_searched"] == 12
+    assert exc.value.failure.details["failures"] == (
+        "shards_searched",
+        "sources_searched",
+        "search_passes",
+    )

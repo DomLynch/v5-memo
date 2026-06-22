@@ -9,7 +9,7 @@ import sys
 import time
 import urllib.parse
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from html import unescape
 from itertools import combinations
 from typing import Any
@@ -21,6 +21,13 @@ from v5_memo.schemas import CorpusHit
 
 class SearchBackendError(RuntimeError):
     """Raised when strict search mode cannot reach or parse a backend."""
+
+
+@dataclass(frozen=True, slots=True)
+class FullRawSearchPass:
+    name: str
+    query: str
+    rank_mode: str = "relevance"
 
 
 class OpenAlexFullCorpusSearchClient:
@@ -244,36 +251,50 @@ class FullRawCorpusSearchClient:
         return bool(self._search_url)
 
     def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
-        variants = _fullraw_query_variants(query, limit=self._max_variants)
-        if not self._search_url or not variants:
+        search_passes = _fullraw_search_passes(query, limit=self._max_variants)
+        if not self._search_url or not search_passes:
             return []
         seed_terms = _query_terms(query)
         per_variant_limit = max(5, min(limit, 50))
         best: dict[str, tuple[float, CorpusHit]] = {}
+        total_seen = 0
+        duplicate_seen = 0
+        passes_run: list[str] = []
+        rank_modes_run: list[str] = []
         started = time.monotonic()
-        for variant_index, variant in enumerate(variants, start=1):
+        for variant_index, search_pass in enumerate(search_passes, start=1):
             elapsed = time.monotonic() - started
             if self._search_budget_seconds and elapsed >= self._search_budget_seconds:
                 self._log_progress(
                     "fullraw search budget reached "
-                    f"after {elapsed:.1f}s; variants={variant_index - 1}/{len(variants)}"
+                    f"after {elapsed:.1f}s; variants={variant_index - 1}/{len(search_passes)}"
                 )
                 break
-            self._log_progress(f"fullraw variant {variant_index}/{len(variants)} start: {variant}")
-            variant_started = time.monotonic()
-            hits = self._search_variant(variant, limit=per_variant_limit)
+            passes_run.append(search_pass.name)
+            rank_modes_run.append(search_pass.rank_mode)
             self._log_progress(
-                f"fullraw variant {variant_index}/{len(variants)} done "
+                f"fullraw variant {variant_index}/{len(search_passes)} "
+                f"start [{search_pass.name}/{search_pass.rank_mode}]: {search_pass.query}"
+            )
+            variant_started = time.monotonic()
+            hits = self._search_variant(search_pass, limit=per_variant_limit)
+            self._log_progress(
+                f"fullraw variant {variant_index}/{len(search_passes)} done "
                 f"in {time.monotonic() - variant_started:.1f}s; hits={len(hits)}"
             )
-            variant_terms = _query_terms(variant)
+            variant_terms = _query_terms(search_pass.query)
             for rank, hit in enumerate(hits, start=1):
+                total_seen += 1
+                if hit.source_key in best:
+                    duplicate_seen += 1
                 score = _rerank_score(hit, seed_terms=seed_terms, variant_terms=variant_terms, rank=rank)
                 scored = replace(
                     hit,
                     metadata={
                         **hit.metadata,
-                        "search_variant": variant,
+                        "search_pass": search_pass.name,
+                        "search_variant": search_pass.query,
+                        "rank_mode": search_pass.rank_mode,
                         "rerank_score": round(score, 4),
                     },
                 )
@@ -281,20 +302,31 @@ class FullRawCorpusSearchClient:
                 if current is None or score > current[0]:
                     best[scored.source_key] = (score, scored)
         self._log_progress(f"fullraw query done in {time.monotonic() - started:.1f}s; hits={len(best)}")
-        return [hit for _, hit in sorted(best.values(), key=lambda item: item[0], reverse=True)[:limit]]
+        duplicate_rate = round(duplicate_seen / total_seen, 4) if total_seen else 0.0
+        receipt = {
+            "duplicate_rate": duplicate_rate,
+            "search_passes": tuple(dict.fromkeys(passes_run)),
+            "rank_modes": tuple(dict.fromkeys(rank_modes_run)),
+        }
+        return [
+            replace(hit, metadata={**hit.metadata, "fullraw_search_receipt": receipt})
+            for _, hit in sorted(best.values(), key=lambda item: item[0], reverse=True)[:limit]
+        ]
 
     def _log_progress(self, message: str) -> None:
         if self._progress:
             print(message, file=sys.stderr, flush=True)
 
-    def _search_variant(self, query: str, *, limit: int) -> list[CorpusHit]:
+    def _search_variant(self, search_pass: FullRawSearchPass, *, limit: int) -> list[CorpusHit]:
         payload = {
-            "query": query[:1024],
+            "query": search_pass.query[:1024],
             "limit": max(1, min(limit, 200)),
             "top_k": max(1, min(limit, 200)),
             "year_min": self._year_min,
             "year_max": self._year_max,
             "corpus": "full_raw_450m_plus",
+            "search_pass": search_pass.name,
+            "rank_mode": search_pass.rank_mode,
             "timeout_seconds": self._timeout,
         }
         headers = {
@@ -646,6 +678,58 @@ def _fullraw_query_variants(query: str, *, limit: int) -> list[str]:
             continue
         if add(" ".join(pair)):
             return out
+    return out
+
+
+def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]:
+    if limit <= 0:
+        return []
+    out: list[FullRawSearchPass] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(name: str, variant: str, rank_mode: str = "relevance") -> bool:
+        clean = " ".join(variant.split())
+        if not clean:
+            return False
+        key = (name, clean, rank_mode)
+        if key in seen:
+            return False
+        seen.add(key)
+        out.append(FullRawSearchPass(name=name, query=clean, rank_mode=rank_mode))
+        return len(out) >= limit
+
+    window_limit = max(1, min(4, limit - 4 if limit > 5 else 1))
+    for index, variant in enumerate(_query_variants(query, limit=window_limit)):
+        if add("focused" if index == 0 else "broad", variant):
+            return out
+    pair_limit = max(0, limit - len(out) - 4)
+    for variant in _fullraw_pair_variants(query, limit=pair_limit):
+        if add("broad", variant):
+            return out
+    if add("adjacent", f"{query} mechanism outcome"):
+        return out
+    if add("falsifier", f"{query} null adverse conflicting"):
+        return out
+    if add("citation_heavy", query, "citation"):
+        return out
+    if add("recency", query, "recency"):
+        return out
+    for variant in _fullraw_query_variants(query, limit=limit * 2):
+        if add("broad", variant):
+            return out
+    return out
+
+
+def _fullraw_pair_variants(query: str, *, limit: int) -> list[str]:
+    if limit <= 0:
+        return []
+    terms = tuple(term for term in dict.fromkeys(_query_terms(query)) if len(term) >= 6)
+    out: list[str] = []
+    for gap in range(1, len(terms)):
+        for start in range(0, len(terms) - gap):
+            out.append(f"{terms[start]} {terms[start + gap]}")
+            if len(out) >= limit:
+                return out
     return out
 
 

@@ -17,6 +17,7 @@ from v5_memo.client import (
     ResearkaSearchClient,
     SearchBackendError,
     _fullraw_query_variants,
+    _fullraw_search_passes,
     _parse_corpus_search_response,
     _parse_full_raw_search_response,
     _parse_openalex_response,
@@ -153,6 +154,8 @@ def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object)
         "year_min": 1950,
         "year_max": 2026,
         "corpus": "full_raw_450m_plus",
+        "search_pass": "focused",
+        "rank_mode": "relevance",
         "timeout_seconds": 7.0,
     }
     assert any(payload["query"] == "nad exercise" for payload in payloads)
@@ -220,6 +223,71 @@ def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
     hits = client.search("management forecast disclosure", limit=3)
 
     assert hits[0].metadata["shard_receipt"] == receipt
+
+
+def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None:
+    requested: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        requested.append(payload)
+        search_pass = str(payload["search_pass"])
+        rank_mode = str(payload["rank_mode"])
+        return FakeResponse({
+            "meta": {"count": 1, "shard_receipt": {"shards_searched": 12}},
+            "results": [{
+                "doi": f"10.123/{search_pass}-{rank_mode}",
+                "title": f"{search_pass} evidence",
+                "abstract": "Management forecast disclosure evidence.",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=6)
+
+    hits = client.search("management forecast disclosure", limit=10)
+
+    assert [payload["search_pass"] for payload in requested] == [
+        "focused",
+        "broad",
+        "adjacent",
+        "falsifier",
+        "citation_heavy",
+        "recency",
+    ]
+    assert requested[-2]["rank_mode"] == "citation"
+    assert requested[-1]["rank_mode"] == "recency"
+    assert {hit.metadata["search_pass"] for hit in hits} >= {"focused", "citation_heavy", "recency"}
+    assert {hit.metadata["rank_mode"] for hit in hits} >= {"relevance", "citation", "recency"}
+
+
+def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: object) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del request, timeout
+        return FakeResponse({
+            "meta": {"count": 1, "shard_receipt": {"shards_searched": 12}},
+            "results": [{
+                "doi": "10.123/shared",
+                "title": "Shared fullraw receipt",
+                "abstract": "Management forecast disclosure evidence.",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=4)
+
+    hits = client.search("management forecast disclosure", limit=10)
+
+    receipt = hits[0].metadata["fullraw_search_receipt"]
+    assert isinstance(receipt, dict)
+    assert receipt["duplicate_rate"] == 0.75
+    assert receipt["search_passes"] == ("focused", "adjacent", "falsifier", "citation_heavy")
+    assert receipt["rank_modes"] == ("relevance", "citation")
 
 
 def test_full_raw_client_can_fail_closed_on_narrow_shard_receipt(monkeypatch: object) -> None:
@@ -573,6 +641,28 @@ def test_fullraw_variants_do_not_append_broad_pair_fallback() -> None:
 
     assert "cold water" not in variants
     assert "cold muscle" not in variants
+
+
+def test_fullraw_search_passes_cover_breadth_depth_modes() -> None:
+    passes = _fullraw_search_passes(
+        "cold water immersion attenuates muscle mass strength resistance training",
+        limit=8,
+    )
+
+    assert [search_pass.name for search_pass in passes] == [
+        "focused",
+        "broad",
+        "broad",
+        "broad",
+        "adjacent",
+        "falsifier",
+        "citation_heavy",
+        "recency",
+    ]
+    assert passes[-2].rank_mode == "citation"
+    assert passes[-1].rank_mode == "recency"
+    assert "mechanism outcome" in passes[-4].query
+    assert "null adverse conflicting" in passes[-3].query
 
 
 def test_fullraw_rerank_prefers_abstract_backed_doi_receipts(monkeypatch: MonkeyPatch) -> None:

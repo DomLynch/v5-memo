@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from v5_memo.binder import bind_receipts
-from v5_memo.gate import meets_publish_bar, no_alpha_failure
+from v5_memo.gate import meets_publish_bar, memo_coverage_failure, no_alpha_failure
 from v5_memo.miner import mine_insights, query_anchor_terms
 from v5_memo.retriever import CorpusSearcher, collect_seed_hits
 from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult
@@ -25,6 +25,9 @@ def build_alpha_memo(
     min_alpha_tier: str = "publishable_alpha",
     per_query_limit: int = 25,
     max_hits: int = 100,
+    min_shards_searched: int = 0,
+    min_sources_searched: int = 0,
+    min_search_passes: int = 0,
 ) -> MemoResult:
     """Build the best receipt-bound memo from seed queries."""
     hits = collect_seed_hits(
@@ -44,16 +47,29 @@ def build_alpha_memo(
         include_discovery=min_alpha_tier == "discovery_seed",
     )
     candidates = _apply_selector(candidates, hits, memo_selector)
+    coverage_failures: list[MemoBuildError] = []
     for candidate in candidates:
         if not meets_publish_bar(candidate, min_alpha_tier):
             continue
         receipts = bind_receipts(candidate, hits)
         if receipts:
+            coverage_failure = memo_coverage_failure(
+                topic=topic,
+                receipts=receipts,
+                min_shards_searched=min_shards_searched,
+                min_sources_searched=min_sources_searched,
+                min_search_passes=min_search_passes,
+            )
+            if coverage_failure is not None:
+                coverage_failures.append(MemoBuildError(coverage_failure))
+                continue
             return MemoResult(
                 candidate=candidate,
                 receipts=receipts,
                 markdown=memo_writer(candidate, receipts),
             )
+    if coverage_failures:
+        raise coverage_failures[0]
     raise MemoBuildError(
         no_alpha_failure(
             topic=topic,

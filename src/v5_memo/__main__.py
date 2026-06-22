@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 
@@ -73,6 +74,9 @@ def main() -> None:
     parser.add_argument("--writer", choices=["template", "minimax"])
     parser.add_argument("--selector", choices=["deterministic", "minimax"])
     parser.add_argument("--min-alpha-tier", choices=["discovery", "publishable", "elite"])
+    parser.add_argument("--min-shards-searched", type=int, default=_int_env("V5_MEMO_MEMO_MIN_SHARDS_SEARCHED"))
+    parser.add_argument("--min-sources-searched", type=int, default=_int_env("V5_MEMO_MEMO_MIN_SOURCES_SEARCHED"))
+    parser.add_argument("--min-search-passes", type=int, default=_int_env("V5_MEMO_MEMO_MIN_SEARCH_PASSES"))
     args = parser.parse_args()
 
     if args.coverage_report:
@@ -138,8 +142,8 @@ def main() -> None:
         if not explicit_queries:
             planned_queries = [query for query in queries if query not in set(base_queries)]
             planned_queries = _topic_anchored_queries(planned_queries, args.topic)
-            queries = planned_queries or queries
-    anchor_queries = base_queries if explicit_queries else queries
+            queries = planned_queries or base_queries
+    anchor_queries = base_queries
     wider_recall = planner_mode == "minimax" or selector_mode == "minimax"
     result = build_alpha_memo(
         topic=args.topic,
@@ -151,6 +155,9 @@ def main() -> None:
         min_alpha_tier=min_alpha_tier,
         per_query_limit=50 if wider_recall else 25,
         max_hits=500 if wider_recall else 100,
+        min_shards_searched=args.min_shards_searched,
+        min_sources_searched=args.min_sources_searched,
+        min_search_passes=args.min_search_passes,
     )
     print(result.markdown)
 
@@ -167,12 +174,20 @@ def _topic_anchored_queries(queries: Sequence[str], topic: str) -> list[str]:
     topic_anchors = set(query_anchor_terms([topic], limit=4))
     if not topic_anchors:
         return list(queries)
+    required_overlap = min(2, len(topic_anchors))
     filtered = [
         query
         for query in queries
-        if topic_anchors & set(query_anchor_terms([query], limit=4))
+        if len(topic_anchors & set(query_anchor_terms([query], limit=4))) >= required_overlap
     ]
-    return filtered or list(queries)
+    return filtered
+
+
+def _int_env(name: str) -> int:
+    try:
+        return max(0, int(os.environ.get(name, "0")))
+    except ValueError:
+        return 0
 
 
 if __name__ == "__main__":
