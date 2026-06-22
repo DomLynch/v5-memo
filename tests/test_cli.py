@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -125,6 +126,8 @@ def test_cli_forwards_memo_coverage_thresholds_from_env(
     monkeypatch.setenv("V5_MEMO_MEMO_MIN_SHARDS_SEARCHED", "50")
     monkeypatch.setenv("V5_MEMO_MEMO_MIN_SOURCES_SEARCHED", "2")
     monkeypatch.setenv("V5_MEMO_MEMO_MIN_SEARCH_PASSES", "4")
+    monkeypatch.setenv("V5_MEMO_MEMO_MIN_RESULT_CITATION_DIVERSITY", "3")
+    monkeypatch.setenv("V5_MEMO_MEMO_MAX_RESULT_DUPLICATE_RATE", "0.2")
     monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
     monkeypatch.setattr(sys, "argv", ["v5_memo", "--demo"])
 
@@ -134,6 +137,16 @@ def test_cli_forwards_memo_coverage_thresholds_from_env(
     assert seen["min_shards_searched"] == 50
     assert seen["min_sources_searched"] == 2
     assert seen["min_search_passes"] == 4
+    assert seen["min_result_citation_diversity"] == 3
+    assert seen["max_result_duplicate_rate"] == 0.2
+
+
+def test_deploy_env_documents_fail_closed_memo_receipt_gates() -> None:
+    env_text = Path("deploy/v5-memo-fullraw-shards.env.example").read_text()
+
+    assert "V5_MEMO_MEMO_MIN_SEARCH_PASSES=6" in env_text
+    assert "V5_MEMO_MEMO_MIN_RESULT_CITATION_DIVERSITY=2" in env_text
+    assert "V5_MEMO_MEMO_MAX_RESULT_DUPLICATE_RATE=0.2" in env_text
 
 
 def test_fullraw_cli_inherits_search_service_coverage_thresholds(

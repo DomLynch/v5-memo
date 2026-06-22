@@ -62,6 +62,8 @@ def memo_coverage_summary(receipts: Sequence[CorpusHit]) -> dict[str, object]:
     shards_searched = 0
     years = [hit.year for hit in receipts if hit.year is not None]
     cited_by_max = 0
+    result_duplicate_rate = 0.0
+    result_citation_diversity = 0
     abstract_count = 0
     for hit in receipts:
         if hit.abstract.strip():
@@ -76,6 +78,15 @@ def memo_coverage_summary(receipts: Sequence[CorpusHit]) -> dict[str, object]:
         if not isinstance(receipt, dict):
             continue
         shards_searched = max(shards_searched, _int_value(receipt.get("shards_searched")))
+        search_passes.update(_string_values(receipt.get("sweep_completed_pass_roles")))
+        result_duplicate_rate = max(
+            result_duplicate_rate,
+            _float_value(receipt.get("result_duplicate_rate")),
+        )
+        result_citation_diversity = max(
+            result_citation_diversity,
+            _int_value(receipt.get("result_citation_diversity")),
+        )
         raw_sources = receipt.get("sources_searched")
         if isinstance(raw_sources, dict):
             sources.update(str(source) for source, count in raw_sources.items() if _int_value(count) > 0)
@@ -97,6 +108,8 @@ def memo_coverage_summary(receipts: Sequence[CorpusHit]) -> dict[str, object]:
         "cited_by_max": cited_by_max,
         "search_passes": tuple(sorted(search_passes)),
         "search_pass_count": len(search_passes),
+        "result_duplicate_rate": round(result_duplicate_rate, 4),
+        "result_citation_diversity": result_citation_diversity,
         "abstract_receipt_count": abstract_count,
     }
 
@@ -109,6 +122,8 @@ def memo_coverage_failure(
     min_sources_searched: int = 0,
     min_search_passes: int = 0,
     min_abstract_receipts: int = 0,
+    min_result_citation_diversity: int = 0,
+    max_result_duplicate_rate: float | None = None,
 ) -> SearchFailure | None:
     summary = memo_coverage_summary(receipts)
     failures: list[str] = []
@@ -123,6 +138,16 @@ def memo_coverage_failure(
         and _int_value(summary["abstract_receipt_count"]) < min_abstract_receipts
     ):
         failures.append("abstract_receipts")
+    if (
+        min_result_citation_diversity
+        and _int_value(summary["result_citation_diversity"]) < min_result_citation_diversity
+    ):
+        failures.append("result_citation_diversity")
+    if (
+        max_result_duplicate_rate is not None
+        and _float_value(summary["result_duplicate_rate"]) > max_result_duplicate_rate
+    ):
+        failures.append("result_duplicate_rate")
     if not failures:
         return None
     return SearchFailure(
@@ -136,6 +161,8 @@ def memo_coverage_failure(
                 "min_sources_searched": min_sources_searched,
                 "min_search_passes": min_search_passes,
                 "min_abstract_receipts": min_abstract_receipts,
+                "min_result_citation_diversity": min_result_citation_diversity,
+                "max_result_duplicate_rate": max_result_duplicate_rate,
             },
             "coverage": summary,
         },
@@ -145,6 +172,27 @@ def memo_coverage_failure(
 def _int_value(value: object) -> int:
     parsed = _int_or_none(value)
     return parsed if parsed is not None else 0
+
+
+def _float_value(value: object) -> float:
+    if isinstance(value, bool):
+        return 0.0
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _string_values(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,) if value else ()
+    if not isinstance(value, list | tuple):
+        return ()
+    return tuple(str(item) for item in value if str(item))
 
 
 def _int_or_none(value: object) -> int | None:

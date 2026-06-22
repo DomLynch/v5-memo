@@ -28,6 +28,8 @@ def build_alpha_memo(
     min_shards_searched: int = 0,
     min_sources_searched: int = 0,
     min_search_passes: int = 0,
+    min_result_citation_diversity: int = 0,
+    max_result_duplicate_rate: float | None = None,
 ) -> MemoResult:
     """Build the best receipt-bound memo from seed queries."""
     hits = collect_seed_hits(
@@ -60,6 +62,8 @@ def build_alpha_memo(
                 min_sources_searched=min_sources_searched,
                 min_search_passes=min_search_passes,
                 min_abstract_receipts=1 if min_alpha_tier == "elite_alpha" else 0,
+                min_result_citation_diversity=min_result_citation_diversity,
+                max_result_duplicate_rate=max_result_duplicate_rate,
             )
             if coverage_failure is not None:
                 coverage_failures.append(MemoBuildError(coverage_failure))

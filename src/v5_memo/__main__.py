@@ -109,6 +109,8 @@ def main() -> None:
     parser.add_argument("--min-shards-searched", type=int)
     parser.add_argument("--min-sources-searched", type=int)
     parser.add_argument("--min-search-passes", type=int)
+    parser.add_argument("--min-result-citation-diversity", type=int)
+    parser.add_argument("--max-result-duplicate-rate", type=float)
     args = parser.parse_args()
     fullraw_backed = args.searcher in {"fullraw", "hybrid", "smart"}
     args.min_shards_searched = _coverage_threshold(
@@ -126,6 +128,14 @@ def main() -> None:
     args.min_search_passes = _coverage_threshold(
         args.min_search_passes,
         primary="V5_MEMO_MEMO_MIN_SEARCH_PASSES",
+    )
+    args.min_result_citation_diversity = _coverage_threshold(
+        args.min_result_citation_diversity,
+        primary="V5_MEMO_MEMO_MIN_RESULT_CITATION_DIVERSITY",
+    )
+    args.max_result_duplicate_rate = _coverage_float_threshold(
+        args.max_result_duplicate_rate,
+        primary="V5_MEMO_MEMO_MAX_RESULT_DUPLICATE_RATE",
     )
 
     if args.coverage_report:
@@ -212,6 +222,8 @@ def main() -> None:
         min_shards_searched=args.min_shards_searched,
         min_sources_searched=args.min_sources_searched,
         min_search_passes=args.min_search_passes,
+        min_result_citation_diversity=args.min_result_citation_diversity,
+        max_result_duplicate_rate=args.max_result_duplicate_rate,
     )
     print(result.markdown)
 
@@ -269,6 +281,22 @@ def _coverage_threshold(
     if allow_fallback and fallback:
         return _optional_int_env(fallback) or 0
     return 0
+
+
+def _coverage_float_threshold(
+    explicit: float | None,
+    *,
+    primary: str,
+) -> float | None:
+    if explicit is not None:
+        return max(0.0, explicit)
+    try:
+        raw = os.environ.get(primary)
+        if raw is None or raw.strip() == "":
+            return None
+        return max(0.0, float(raw))
+    except ValueError:
+        return None
 
 
 def _optional_int_env(name: str) -> int | None:
