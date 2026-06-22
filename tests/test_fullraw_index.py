@@ -1788,6 +1788,142 @@ def test_server_exhaustive_sweep_continues_after_minimum_receipt(tmp_path: Path)
         proc.wait(timeout=10)
 
 
+def test_server_exhaustive_sweep_defers_failed_paths_without_final_hit(tmp_path: Path) -> None:
+    invalid_batch = tmp_path / "batch_00000"
+    invalid_batch.mkdir()
+    invalid_shard = invalid_batch / "fullraw_shard_0000.sqlite"
+    invalid_shard.write_text("not sqlite")
+    (invalid_batch / "complete.json").write_text(json.dumps({
+        "batch_id": 0,
+        "files": [{"source": "openalex"}],
+        "shards": [{
+            "shard_id": 0,
+            "files_completed": 1,
+            "papers_inserted": 1,
+            "bytes_used": invalid_shard.stat().st_size,
+            "topic_terms": ["management", "forecast", "disclosure"],
+        }],
+    }))
+
+    valid_batch = tmp_path / "batch_00001"
+    valid_batch.mkdir()
+    valid_shard = valid_batch / "fullraw_shard_0000.sqlite"
+    raw_file = _raw_file(tmp_path, "exhaustive_defer_valid", [{
+        "doi": "https://doi.org/10.example/exhaustive-defer",
+        "display_name": "Management forecast disclosure deferred failure",
+        "abstract": "Management forecast disclosure evidence.",
+        "publication_year": 2024,
+    }])
+    index_db = FullRawFtsIndex(valid_shard)
+    try:
+        index_db.index_files([raw_file], commit_interval=1)
+        profile = index_db.profile()
+    finally:
+        index_db.close()
+    (valid_batch / "complete.json").write_text(json.dumps({
+        "batch_id": 1,
+        "files": [{"source": "openalex"}],
+        "shards": [{
+            "shard_id": 0,
+            "files_completed": 1,
+            "papers_inserted": 1,
+            "bytes_used": valid_shard.stat().st_size,
+            **profile,
+        }],
+    }))
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"files": []}))
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path.cwd() / "src"),
+        "V5_MEMO_FULL_RAW_INDEX_PORT": str(port),
+        "V5_MEMO_FULL_RAW_MANIFEST": str(manifest),
+        "V5_MEMO_FULL_RAW_SHARD_DIR": str(tmp_path),
+        "V5_MEMO_FULL_RAW_SHARD_TRUST_FILENAMES": "1",
+        "V5_MEMO_FULL_RAW_SHARD_MANIFEST_STATS": "1",
+        "V5_MEMO_FULL_RAW_ASYNC_SWEEP": "1",
+        "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR": str(tmp_path / "cache"),
+        "V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT": "2",
+        "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT": "1",
+        "V5_MEMO_FULL_RAW_SWEEP_MAX_PASSES": "2",
+        "V5_MEMO_FULL_RAW_SWEEP_REQUIRE_COMPLETE": "1",
+        "V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED": "1",
+        "V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED": "1",
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "v5_memo.fullraw_index", "serve"],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        base = f"http://127.0.0.1:{port}"
+        for _ in range(50):
+            try:
+                urllib.request.urlopen(base + "/health", timeout=1).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            _, stderr = proc.communicate(timeout=1)
+            raise AssertionError(f"server did not start: {stderr}")
+
+        def post_search() -> dict[str, object]:
+            request = urllib.request.Request(
+                base + "/search",
+                data=json.dumps({
+                    "query": "management forecast disclosure",
+                    "top_k": 5,
+                    "cache_only": True,
+                    "queue_if_missing": True,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:
+                payload = json.loads(response.read().decode())
+                assert isinstance(payload, dict)
+                return payload
+
+        final_body: dict[str, object] = {}
+        for _ in range(80):
+            body = post_search()
+            meta = body.get("meta")
+            receipt = meta.get("shard_receipt") if isinstance(meta, dict) else None
+            if (
+                isinstance(receipt, dict)
+                and receipt.get("shards_searched") == 1
+                and receipt.get("sweep_deferred_shards") == 1
+            ):
+                final_body = body
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("exhaustive sweep did not defer failed shard")
+
+        meta = final_body["meta"]
+        assert isinstance(meta, dict)
+        receipt = meta["shard_receipt"]
+        assert isinstance(receipt, dict)
+        assert final_body["results"] == []
+        assert receipt["sweep_failed_shards"] == 0
+        assert receipt["sweep_remaining_shards"] == 1
+        assert len(receipt["sweep_completed_paths"]) == 1
+        assert len(receipt["sweep_deferred_paths"]) == 1
+        async_sweep = meta["async_sweep"]
+        assert isinstance(async_sweep, dict)
+        assert async_sweep["status"] != "hit"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
 def test_server_sweep_requires_pass_roles_after_shard_gate(tmp_path: Path) -> None:
     for index in range(4):
         batch = tmp_path / f"batch_{index:05d}"

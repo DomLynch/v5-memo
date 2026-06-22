@@ -2606,7 +2606,12 @@ def run_server() -> None:
                 planned_receipt = shard_coverage_receipt(catalog, sweep_entries)
                 sweep_passes = _sweep_search_passes(query, sweep_entries, rank_mode=rank_mode)
                 completed_path_strings = _sweep_completed_path_strings(existing.receipt if existing else {})
-                failed_path_strings = _sweep_failed_path_strings(existing.receipt if existing else {})
+                failed_path_strings = (
+                    set()
+                    if sweep_require_complete
+                    else _sweep_failed_path_strings(existing.receipt if existing else {})
+                )
+                deferred_path_strings: set[str] = set()
                 merged_hits = list(existing.hits if existing else [])
                 previous_passes = _int_or_none((existing.receipt if existing else {}).get("sweep_passes")) or 0
                 completed_pass_roles = list(
@@ -2646,7 +2651,7 @@ def run_server() -> None:
                     sweep_entries = _reorder_expanded_sweep_entries(
                         sweep_entries,
                         expanded_entries,
-                        attempted_paths=completed_path_strings | failed_path_strings,
+                        attempted_paths=completed_path_strings | failed_path_strings | deferred_path_strings,
                         limit=target_limit,
                     )
                     planned_receipt = shard_coverage_receipt(catalog, sweep_entries)
@@ -2658,7 +2663,8 @@ def run_server() -> None:
                     remaining_entries = [
                         entry
                         for entry in sweep_entries
-                        if str(entry.path) not in completed_path_strings | failed_path_strings
+                        if str(entry.path)
+                        not in completed_path_strings | failed_path_strings | deferred_path_strings
                     ]
                     pass_entries = remaining_entries[:sweep_pass_shard_limit]
                     if not pass_entries:
@@ -2676,9 +2682,13 @@ def run_server() -> None:
                     )
                     completed_pass_roles.append(pass_plan.role)
                     completed_path_strings.update(str(path) for path in completed_paths)
-                    failed_path_strings.update(
+                    incomplete_path_strings = {
                         str(entry.path) for entry in pass_entries if str(entry.path) not in completed_path_strings
-                    )
+                    }
+                    if sweep_require_complete:
+                        deferred_path_strings.update(incomplete_path_strings)
+                    else:
+                        failed_path_strings.update(incomplete_path_strings)
                     expand_sweep_entries_for_failures()
                     searched_entries = [entry for entry in sweep_entries if str(entry.path) in completed_path_strings]
                     receipt = shard_coverage_receipt(catalog, searched_entries)
@@ -2691,6 +2701,8 @@ def run_server() -> None:
                     receipt["sweep_max_passes"] = sweep_max_passes
                     receipt["sweep_failed_shards"] = len(failed_path_strings)
                     receipt["sweep_failed_paths"] = sorted(failed_path_strings)
+                    receipt["sweep_deferred_shards"] = len(deferred_path_strings)
+                    receipt["sweep_deferred_paths"] = sorted(deferred_path_strings)
                     receipt["sweep_remaining_shards"] = max(
                         0,
                         len(sweep_entries) - len(completed_path_strings) - len(failed_path_strings),
@@ -2715,7 +2727,10 @@ def run_server() -> None:
                     receipt.update(result_metrics)
                     required_pass_roles = min(len(sweep_passes), sweep_max_passes)
                     pass_roles_sufficient = len(set(completed_pass_roles)) >= required_pass_roles
-                    exhaustive_complete = receipt["sweep_remaining_shards"] == 0
+                    exhaustive_complete = (
+                        receipt["sweep_remaining_shards"] == 0
+                        and receipt["sweep_failed_shards"] == 0
+                    )
                     pass_budget_exhausted = pass_index + 1 >= sweep_max_passes
                     final = (
                         (receipt_is_sufficient(receipt) and pass_roles_sufficient)
@@ -2758,6 +2773,9 @@ def run_server() -> None:
         if sweep_require_complete and "sweep_remaining_shards" in receipt:
             remaining = _int_or_none(receipt.get("sweep_remaining_shards"))
             if remaining is None or remaining > 0:
+                return False
+            failed = _int_or_none(receipt.get("sweep_failed_shards")) or 0
+            if failed > 0:
                 return False
         return True
 
