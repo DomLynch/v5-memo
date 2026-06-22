@@ -1190,6 +1190,13 @@ def test_server_resumes_narrow_cached_sweep_receipt(tmp_path: Path) -> None:
             return payload
 
         cached = post_search()
+        first_meta = cached["meta"]
+        assert isinstance(first_meta, dict)
+        if first_meta["async_sweep"]["status"] != "hit":
+            first_receipt = first_meta["shard_receipt"]
+            assert isinstance(first_receipt, dict)
+            assert first_receipt["shards_searched"] == 1
+            assert cached["results"] == []
         for _ in range(50):
             meta = cached["meta"]
             assert isinstance(meta, dict)
