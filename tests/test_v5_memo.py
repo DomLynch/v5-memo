@@ -1294,6 +1294,65 @@ def test_miner_does_not_promote_recommendation_proxy_receipts_to_elite() -> None
     assert all(candidate_alpha_tier(candidate) != "elite_alpha" for candidate in candidates)
 
 
+def test_miner_prefers_named_program_reversal_over_loose_topic_pair() -> None:
+    hits = [
+        _hit(
+            "masters-protocol",
+            "METFORMIN TO AUGMENT STRENGTH TRAINING EFFECTIVE RESPONSE IN SENIORS: THE MASTERS TRIAL",
+            "The MASTERS protocol hypothesized metformin would augment strength training.",
+        ),
+        _hit(
+            "masters-outcome",
+            "Metformin blunts muscle hypertrophy in response to progressive resistance exercise training: The MASTERS trial",
+            "The outcome trial observed metformin blunted resistance training hypertrophy.",
+        ),
+        _hit(
+            "swim",
+            "Swim training reduces metformin levels in insulin resistant rats",
+            "Swim training reduced metformin levels in insulin resistant rats.",
+        ),
+        _hit(
+            "prediabetes",
+            "Independent and combined effects of exercise training and metformin on insulin sensitivity",
+            "Exercise training improved insulin sensitivity with metformin.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="metformin resistance training adaptation",
+        required_anchor_terms=("metformin", "training"),
+        include_discovery=True,
+    )
+
+    assert candidates[0].receipt_ids == ("masters-protocol", "masters-outcome")
+    assert "coupling:named_program" in candidates[0].reasons
+
+
+def test_miner_rejects_drug_resistance_false_context_for_training_topic() -> None:
+    hits = [
+        _hit(
+            "cancer",
+            "Metformin treatment reduces temozolomide resistance of glioblastoma cells",
+            "Metformin reduced drug resistance in cancer cells.",
+        ),
+        _hit(
+            "insulin",
+            "Independent effects of exercise training and metformin on insulin sensitivity",
+            "Exercise training improved insulin sensitivity with metformin.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="metformin resistance training adaptation",
+        required_anchor_terms=("metformin", "resistance"),
+        include_discovery=True,
+    )
+
+    assert candidates == []
+
+
 def test_pipeline_raises_when_no_receipt_bound_candidate() -> None:
     class EmptySearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:

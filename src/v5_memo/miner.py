@@ -104,7 +104,7 @@ def mine_insights(
     full_token_sets = {hit.hit_id: _tokens(hit.text) for hit in clean_hits}
     title_token_sets = {hit.hit_id: _tokens(hit.title) for hit in clean_hits}
     anchor_terms = frozenset(required_anchor_terms)
-    topic_context_terms = _tokens(topic) & _CONTEXT_ANCHOR_BACKFILL
+    required_context_terms = _required_context_terms(topic)
     doc_counts = Counter(term for terms in full_token_sets.values() for term in terms)
 
     candidates: list[InsightCandidate] = []
@@ -117,8 +117,9 @@ def mine_insights(
             anchor_terms,
         ):
             continue
-        if topic_context_terms and not (
-            full_token_sets[left.hit_id] & full_token_sets[right.hit_id] & topic_context_terms
+        if required_context_terms and not (
+            full_token_sets[left.hit_id] & required_context_terms
+            and full_token_sets[right.hit_id] & required_context_terms
         ):
             continue
         pair_anchor_terms = anchor_terms or _shared_seed_anchor_terms(left, right)
@@ -136,7 +137,7 @@ def mine_insights(
         source_keys = {left.source_key, right.source_key}
         if len(source_keys) < 2:
             continue
-        tension_terms = _tension_terms(left.text, right.text)
+        tension_terms = _hit_tension_terms(left, right)
         shape_reasons = _shape_reasons(
             left,
             right,
@@ -147,6 +148,11 @@ def mine_insights(
             continue
         if anchor_terms and set(shape_reasons) & _ELITE_SHAPES and not anchor_bridge:
             continue
+        coupling_reasons = _coupling_reasons(
+            left,
+            right,
+            pair_anchor_terms=pair_anchor_terms,
+        )
         elite_anchor_bridge = _has_elite_anchor_bridge(
             anchor_bridge,
             pair_anchor_terms,
@@ -165,8 +171,6 @@ def mine_insights(
         if set(shape_reasons) == {"shape:directional_reversal"} and len(bridge) < 2:
             continue
         tier = _alpha_tier(shape_reasons, tension_terms)
-        if tier == "elite_alpha" and len(bridge) == 1 and len(bridge[0]) < 8:
-            continue
         if tier == "discovery_seed" and not include_discovery:
             continue
         score = score_connection(
@@ -189,11 +193,7 @@ def mine_insights(
             evidence_score=score.evidence_score,
             reasons=(
                 *score.reasons,
-                *_coupling_reasons(
-                    left,
-                    right,
-                    pair_anchor_terms=pair_anchor_terms,
-                ),
+                *coupling_reasons,
                 *_direction_cautions(left.text, right.text),
                 f"tier:{tier}",
             ),
@@ -212,6 +212,13 @@ def _candidate_rank(candidate: InsightCandidate) -> tuple[bool, int, int, int, i
         candidate.evidence_score,
         len(candidate.bridge_terms),
     )
+
+
+def _required_context_terms(topic: str) -> frozenset[str]:
+    topic_tokens = _tokens(topic)
+    if {"resistance", "training"} <= topic_tokens:
+        return frozenset({"exercise", "strength", "training"})
+    return frozenset()
 
 
 def _coupling_reasons(
@@ -391,6 +398,21 @@ def _tension_terms(left: str, right: str) -> tuple[str, ...]:
     if len(a) != 1 or len(b) != 1 or a == b:
         return ()
     return tuple(sorted(a | b))
+
+
+def _hit_tension_terms(left: CorpusHit, right: CorpusHit) -> tuple[str, ...]:
+    a = _direction_polarity(left)
+    b = _direction_polarity(right)
+    if len(a) != 1 or len(b) != 1 or a == b:
+        return ()
+    return tuple(sorted(a | b))
+
+
+def _direction_polarity(hit: CorpusHit) -> frozenset[str]:
+    title_polarity = _polarity(hit.title) - {"mixed"}
+    if len(title_polarity) == 1:
+        return title_polarity
+    return _polarity(hit.text) - {"mixed"}
 
 
 def _direction_cautions(left: str, right: str) -> tuple[str, ...]:
