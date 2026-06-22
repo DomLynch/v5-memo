@@ -1948,15 +1948,11 @@ def run_server() -> None:
                 if cache_only:
                     hits = []
                     receipt = {}
-                    sweep_status = enqueue_sweep(
-                        key=cache_key,
-                        query=query,
-                        limit=limit,
-                        year_min=year_min,
-                        year_max=year_max,
-                        rank_mode=rank_mode,
-                        catalog=catalog,
-                    )
+                    if not sweep_enabled or not catalog:
+                        sweep_status = "disabled"
+                    else:
+                        with sweep_lock:
+                            sweep_status = "running" if cache_key in sweep_inflight else "miss"
                 else:
                     receipt = (
                         shard_coverage_receipt(catalog, select_search_shard_entries(catalog, query=query))

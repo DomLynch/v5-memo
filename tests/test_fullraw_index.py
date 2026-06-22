@@ -769,11 +769,15 @@ def test_server_async_sweep_caches_all_shard_results(tmp_path: Path) -> None:
         first = post_search(cache_only=True)
         first_meta = first["meta"]
         assert isinstance(first_meta, dict)
-        assert first_meta["async_sweep"]["status"] in {"queued", "hit"}
+        assert first_meta["async_sweep"]["status"] == "miss"
         assert first_meta["cache_only"] is True
-        if first_meta["async_sweep"]["status"] != "hit":
-            assert first["results"] == []
-            assert first_meta["shard_receipt"] == {}
+        assert first["results"] == []
+        assert first_meta["shard_receipt"] == {}
+
+        queued = post_search()
+        queued_meta = queued["meta"]
+        assert isinstance(queued_meta, dict)
+        assert queued_meta["async_sweep"]["status"] in {"queued", "hit"}
         cached = first
         for _ in range(50):
             cached = post_search(cache_only=True)
