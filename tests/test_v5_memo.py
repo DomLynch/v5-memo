@@ -1111,6 +1111,30 @@ def test_miner_does_not_promote_mechanism_adjacent_cwi_pair_to_elite() -> None:
     assert all(candidate_alpha_tier(candidate) != "elite_alpha" for candidate in candidates)
 
 
+def test_miner_does_not_promote_potential_strategy_review_to_elite() -> None:
+    hits = [
+        _hit(
+            "hwi-review",
+            "Hot water immersion as a potential strategy to manipulate adaptation after resistance training",
+            "This review aimed to determine whether hot water immersion could improve acute response and chronic adaptation.",
+        ),
+        _hit(
+            "cwi-trial",
+            "Cold water immersion attenuates anabolic signalling and skeletal muscle fiber hypertrophy",
+            "Cold water immersion attenuated hypertrophy after whole-body resistance training.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="cold water immersion resistance training adaptation",
+        required_anchor_terms=("water", "immersion"),
+        include_discovery=True,
+    )
+
+    assert all(candidate_alpha_tier(candidate) != "elite_alpha" for candidate in candidates)
+
+
 def test_pipeline_raises_when_no_receipt_bound_candidate() -> None:
     class EmptySearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:

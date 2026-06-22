@@ -80,7 +80,8 @@ _ELITE_SHAPES = frozenset({
     "shape:expectation_reversal",
 })
 _SYNTHESIS_TITLE_TERMS = frozenset({
-    "consensus", "guideline", "meta", "position", "review", "stand", "systematic",
+    "candidate", "commentary", "consensus", "guideline", "meta", "perspective",
+    "position", "potential", "question", "review", "stand", "strategy", "systematic",
 })
 
 
