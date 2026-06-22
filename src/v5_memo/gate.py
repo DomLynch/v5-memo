@@ -62,7 +62,10 @@ def memo_coverage_summary(receipts: Sequence[CorpusHit]) -> dict[str, object]:
     shards_searched = 0
     years = [hit.year for hit in receipts if hit.year is not None]
     cited_by_max = 0
+    abstract_count = 0
     for hit in receipts:
+        if hit.abstract.strip():
+            abstract_count += 1
         search_pass = hit.metadata.get("search_pass")
         if isinstance(search_pass, str) and search_pass:
             search_passes.add(search_pass)
@@ -94,6 +97,7 @@ def memo_coverage_summary(receipts: Sequence[CorpusHit]) -> dict[str, object]:
         "cited_by_max": cited_by_max,
         "search_passes": tuple(sorted(search_passes)),
         "search_pass_count": len(search_passes),
+        "abstract_receipt_count": abstract_count,
     }
 
 
@@ -104,6 +108,7 @@ def memo_coverage_failure(
     min_shards_searched: int = 0,
     min_sources_searched: int = 0,
     min_search_passes: int = 0,
+    min_abstract_receipts: int = 0,
 ) -> SearchFailure | None:
     summary = memo_coverage_summary(receipts)
     failures: list[str] = []
@@ -113,6 +118,11 @@ def memo_coverage_failure(
         failures.append("sources_searched")
     if min_search_passes and _int_value(summary["search_pass_count"]) < min_search_passes:
         failures.append("search_passes")
+    if (
+        min_abstract_receipts
+        and _int_value(summary["abstract_receipt_count"]) < min_abstract_receipts
+    ):
+        failures.append("abstract_receipts")
     if not failures:
         return None
     return SearchFailure(
@@ -125,6 +135,7 @@ def memo_coverage_failure(
                 "min_shards_searched": min_shards_searched,
                 "min_sources_searched": min_sources_searched,
                 "min_search_passes": min_search_passes,
+                "min_abstract_receipts": min_abstract_receipts,
             },
             "coverage": summary,
         },

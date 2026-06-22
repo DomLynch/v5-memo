@@ -408,7 +408,7 @@ def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None
         })
 
     monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
-    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=6)
+    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=8)
 
     hits = client.search("management forecast disclosure", limit=10)
 
@@ -419,10 +419,28 @@ def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None
         "broad",
         "adjacent",
         "falsifier",
+        "citation_heavy",
+        "recency",
     ]
-    assert all(payload["rank_mode"] == "relevance" for payload in requested)
-    assert {hit.metadata["search_pass"] for hit in hits} >= {"focused", "broad"}
-    assert {hit.metadata["rank_mode"] for hit in hits} == {"relevance"}
+    assert [payload["rank_mode"] for payload in requested] == [
+        "relevance",
+        "relevance",
+        "relevance",
+        "relevance",
+        "relevance",
+        "relevance",
+        "citation",
+        "recency",
+    ]
+    assert {hit.metadata["search_pass"] for hit in hits} >= {
+        "focused",
+        "broad",
+        "adjacent",
+        "falsifier",
+        "citation_heavy",
+        "recency",
+    }
+    assert {hit.metadata["rank_mode"] for hit in hits} == {"relevance", "citation", "recency"}
 
 
 def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: object) -> None:
