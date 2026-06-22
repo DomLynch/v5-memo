@@ -20,7 +20,8 @@ _STOP = frozenset({
     "summary", "systematic", "the", "their", "there", "through", "trial", "using", "with",
 })
 _BRIDGE_STOP = _STOP | frozenset({
-    "action", "functional", "horse", "impairment", "intermittent", "learning",
+    "action", "compare", "compared", "comparing", "comparative", "comparison",
+    "functional", "horse", "impairment", "intermittent", "learning",
     "men", "power", "women",
     "case", "cases", "individual", "individuals", "patient", "people", "per", "person",
     "persons", "such", "thus", "when", "following", "matched",
