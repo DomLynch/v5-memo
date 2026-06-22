@@ -173,7 +173,7 @@ class MiniMaxM3SearchPlanner:
                 "You design high-recall, high-signal academic corpus search queries. "
                 "Return only valid JSON."
             ),
-            temperature=0.35,
+            temperature=0.1,
             max_tokens=self._max_tokens,
             base_url=self._base_url,
             model=self._model,
@@ -418,6 +418,9 @@ Rules:
   must share the same specific intervention, construct, product, model, or program.
 - The promise/mechanism-side query may omit downstream endpoint words when those words
   would hide the seminal mechanism paper; keep the shared intervention/construct.
+- Include at least one 2-4 term upstream-promise query shaped like: shared intervention/construct
+  + improves/activates/augments + specific mechanism/output. Do not include the
+  downstream application terms in that query unless they belong to the promise paper.
 - For intervention topics, include at least one promise-side title query using words
   like expected/designed/protocol/augment/mimic and one outcome-side title query using
   words like blunts/null/reduced/impaired/attenuated for the same intervention.
