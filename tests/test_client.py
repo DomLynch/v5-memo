@@ -986,6 +986,53 @@ def test_fullraw_rerank_prefers_abstract_backed_doi_receipts(monkeypatch: Monkey
     assert hits[0].abstract
 
 
+def test_fullraw_search_backfills_missing_doi_abstracts(monkeypatch: MonkeyPatch) -> None:
+    seen_urls: list[str] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        seen_urls.append(request.full_url)
+        if "api.openalex.org/works/doi:" in request.full_url:
+            return FakeResponse({
+                "id": "https://openalex.org/W123",
+                "doi": "https://doi.org/10.1093/geroni/igy023.2009",
+                "display_name": "Metformin to augment strength training effective response in seniors",
+                "publication_year": 2018,
+                "abstract_inverted_index": {
+                    "Protocol": [0],
+                    "hypothesized": [1],
+                    "metformin": [2],
+                    "would": [3],
+                    "augment": [4],
+                    "training": [5],
+                },
+                "primary_location": {"source": {"display_name": "Innovation in Aging"}},
+            })
+        return FakeResponse({
+            "results": [
+                {
+                    "doi": "https://doi.org/10.1093/geroni/igy023.2009",
+                    "title": "Metformin to augment strength training effective response in seniors",
+                    "year": 2018,
+                    "provider": "semantic_scholar",
+                },
+            ],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    client = FullRawCorpusSearchClient(
+        search_url="https://fullraw.example/search",
+        max_variants=1,
+        doi_abstract_backfill_limit=1,
+    )
+
+    hits = client.search("metformin augment strength training", limit=1)
+
+    assert hits[0].abstract == "Protocol hypothesized metformin would augment training"
+    assert hits[0].metadata["abstract_backfill"] == "openalex_doi"
+    assert any("api.openalex.org/works/doi:" in url for url in seen_urls)
+
+
 def test_parse_openalex_response_reconstructs_abstract() -> None:
     hits = _parse_openalex_response(
         {

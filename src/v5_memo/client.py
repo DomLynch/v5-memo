@@ -247,6 +247,7 @@ class FullRawCorpusSearchClient:
         search_budget_seconds: float = 180.0,
         sweep_wait_seconds: float = 0.0,
         sweep_poll_seconds: float = 1.0,
+        doi_abstract_backfill_limit: int = 0,
         min_shards_searched: int = 0,
         min_sources_searched: int = 0,
         progress: bool = False,
@@ -261,6 +262,7 @@ class FullRawCorpusSearchClient:
         self._search_budget_seconds = max(0.0, search_budget_seconds)
         self._sweep_wait_seconds = max(0.0, sweep_wait_seconds)
         self._sweep_poll_seconds = max(0.0, sweep_poll_seconds)
+        self._doi_abstract_backfill_limit = max(0, doi_abstract_backfill_limit)
         self._min_shards_searched = max(0, min_shards_searched)
         self._min_sources_searched = max(0, min_sources_searched)
         self._progress = progress
@@ -276,6 +278,10 @@ class FullRawCorpusSearchClient:
             search_budget_seconds=_float_env("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", 180.0),
             sweep_wait_seconds=_float_env("V5_MEMO_FULL_RAW_SWEEP_WAIT_SECONDS", 0.0),
             sweep_poll_seconds=_float_env("V5_MEMO_FULL_RAW_SWEEP_POLL_SECONDS", 1.0),
+            doi_abstract_backfill_limit=_int_env(
+                "V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT",
+                6,
+            ),
             min_shards_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", 0),
             min_sources_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", 0),
             progress=_bool_env("V5_MEMO_FULL_RAW_PROGRESS", False),
@@ -344,10 +350,14 @@ class FullRawCorpusSearchClient:
             "search_passes": tuple(dict.fromkeys(passes_run)),
             "rank_modes": tuple(dict.fromkeys(rank_modes_run)),
         }
-        return [
+        ranked_hits = [
             replace(hit, metadata={**hit.metadata, "fullraw_search_receipt": receipt})
             for _, hit in sorted(best.values(), key=lambda item: item[0], reverse=True)[:limit]
         ]
+        return _backfill_missing_openalex_abstracts(
+            ranked_hits,
+            limit=self._doi_abstract_backfill_limit,
+        )
 
     def _log_progress(self, message: str) -> None:
         if self._progress:
@@ -590,6 +600,49 @@ def _parse_openalex_work(item: Any, *, match_count: int | None) -> CorpusHit | N
             "query_match_count": match_count,
         },
     )
+
+
+def _backfill_missing_openalex_abstracts(
+    hits: list[CorpusHit],
+    *,
+    limit: int,
+) -> list[CorpusHit]:
+    if limit <= 0:
+        return hits
+    out: list[CorpusHit] = []
+    backfilled = 0
+    for hit in hits:
+        if hit.abstract or not hit.doi or backfilled >= limit:
+            out.append(hit)
+            continue
+        enriched = _fetch_openalex_work_by_doi(hit.doi)
+        if enriched is None or not enriched.abstract:
+            out.append(hit)
+            continue
+        backfilled += 1
+        out.append(replace(
+            hit,
+            abstract=enriched.abstract,
+            year=hit.year or enriched.year,
+            venue=hit.venue or enriched.venue,
+            metadata={**hit.metadata, "abstract_backfill": "openalex_doi"},
+        ))
+    return out
+
+
+def _fetch_openalex_work_by_doi(doi: str) -> CorpusHit | None:
+    encoded = urllib.parse.quote(doi, safe="")
+    request = Request(
+        f"https://api.openalex.org/works/doi:{encoded}",
+        headers={"User-Agent": "v5-memo/0.1"},
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=12.0) as response:
+            data: Any = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, ValueError):
+        return None
+    return _parse_openalex_work(data, match_count=None)
 
 
 def _parse_paper_hit(item: Any) -> CorpusHit | None:
