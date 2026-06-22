@@ -7,12 +7,15 @@ can rank by relevance instead of archive order.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shutil
 import sqlite3
 import subprocess
+import sys
+import tempfile
 import threading
 import time
 from collections import Counter
@@ -25,7 +28,24 @@ from pathlib import Path
 from v5_memo.fullraw_service import RawFile, iter_raw_file_hits, load_or_build_manifest
 
 _WORD = re.compile(r"[A-Za-z0-9]+")
-_STOP = {"and", "or", "the", "with", "for", "from", "into", "this", "that"}
+_STOP = {
+    "about", "above", "after", "also", "among", "and", "are", "because", "been", "both",
+    "but", "can", "could", "does", "during", "for", "from", "has", "have", "into", "its",
+    "may", "no", "not", "off", "or", "our", "out", "over", "per", "such", "than", "that", "the",
+    "their", "these", "this", "those", "through", "was", "were", "with", "within",
+    "without", "would", "all", "any", "between", "each", "other",
+    "there", "using", "which", "while", "who", "whose", "will", "you", "your",
+    "of", "in", "by", "to", "is", "be", "at", "on", "as", "an",
+    "analysis", "associated", "based", "better", "compared", "data", "effect",
+    "effects", "first", "form", "found", "here", "it", "method", "methods",
+    "model", "models", "more", "new", "one", "paper", "provide", "provided",
+    "related", "result", "results", "show", "showed", "shown", "significant",
+    "significantly", "studies", "study", "two", "use", "used", "we", "work",
+    "dan", "di", "findings", "general", "however", "ini", "many", "merupakan",
+    "process", "role", "therefore", "understanding", "well", "yang",
+    "adalah", "analisis", "dengan", "dilakukan", "hasil", "including", "made",
+    "metode", "pada", "penelitian",
+}
 _BACKEND = "v5-fullraw-indexed-fts5"
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
@@ -125,6 +145,13 @@ class ShardCatalogEntry:
     cited_by_max: int = 0
     cited_by_avg: float = 0.0
     topic_terms: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SweepCacheEntry:
+    created_at: float
+    hits: list[dict[str, object]]
+    receipt: dict[str, object]
 
 
 class FullRawFtsIndex:
@@ -863,11 +890,42 @@ def search_shards(
     catalog: list[ShardCatalogEntry] | None = None,
 ) -> list[dict[str, object]]:
     """Search multiple shard DBs and merge ranked, deduped results."""
-    merged: dict[str, dict[str, object]] = {}
     if catalog is None:
         paths = select_search_shard_paths([path for path in index_paths if path.exists()])
     else:
         paths = [entry.path for entry in select_search_shard_entries(catalog, query=query)]
+    return _search_shard_paths(paths, query, limit=limit, year_min=year_min, year_max=year_max, rank_mode=rank_mode)
+
+
+def search_shard_entries(
+    entries: list[ShardCatalogEntry],
+    query: str,
+    *,
+    limit: int = 25,
+    year_min: int = 1900,
+    year_max: int = 2100,
+    rank_mode: str = "relevance",
+) -> list[dict[str, object]]:
+    return _search_shard_paths(
+        [entry.path for entry in entries],
+        query,
+        limit=limit,
+        year_min=year_min,
+        year_max=year_max,
+        rank_mode=rank_mode,
+    )
+
+
+def _search_shard_paths(
+    paths: list[Path],
+    query: str,
+    *,
+    limit: int,
+    year_min: int,
+    year_max: int,
+    rank_mode: str,
+) -> list[dict[str, object]]:
+    merged: dict[str, dict[str, object]] = {}
     workers = max(1, min(int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "8")), len(paths) or 1))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [
@@ -1114,6 +1172,81 @@ def aggregate_shard_manifest_stats(shard_dir: Path, *, files_total: int = 0) -> 
     )
 
 
+def backfill_shard_profiles(
+    shard_dir: Path,
+    *,
+    trust_filenames: bool = True,
+    max_shards: int | None = None,
+    force: bool = False,
+    dry_run: bool = False,
+    upload_remote: str = "",
+    rclone_bin: str = "rclone",
+    progress_interval: int = 0,
+) -> dict[str, object]:
+    manifests = _read_batch_manifests(shard_dir)
+    changed_batches: set[Path] = set()
+    profiled = 0
+    skipped = 0
+    missing_manifest = 0
+    failed: list[str] = []
+    for path in discover_shard_paths(shard_dir, trust_filenames=trust_filenames):
+        if max_shards is not None and profiled >= max_shards:
+            break
+        manifest = manifests.get(path.parent)
+        if manifest is None:
+            missing_manifest += 1
+            continue
+        shard_meta = _manifest_shard(manifest, _shard_id_from_path(path))
+        if shard_meta is None:
+            missing_manifest += 1
+            continue
+        if not force and _shard_has_profile(shard_meta):
+            skipped += 1
+            continue
+        try:
+            profile = _profile_shard_path(path)
+        except sqlite3.Error as exc:
+            failed.append(f"{path}: {str(exc)[:200]}")
+            continue
+        shard_meta.update(profile)
+        changed_batches.add(path.parent)
+        profiled += 1
+        if progress_interval > 0 and profiled % progress_interval == 0:
+            print(
+                json.dumps({
+                    "event": "profile_backfill_progress",
+                    "shards_profiled": profiled,
+                    "shards_skipped": skipped,
+                    "missing_manifest": missing_manifest,
+                    "batch": path.parent.name,
+                }, sort_keys=True),
+                file=sys.stderr,
+                flush=True,
+            )
+    if not dry_run:
+        for batch_dir in sorted(changed_batches):
+            manifest = manifests[batch_dir]
+            manifest["profiled_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            manifest_path = batch_dir / "complete.json"
+            if upload_remote:
+                _upload_manifest_payload(
+                    manifest,
+                    f"{upload_remote.rstrip('/')}/{batch_dir.name}/complete.json",
+                    rclone_bin=rclone_bin,
+                )
+            else:
+                _write_json_file(manifest_path, manifest)
+    return {
+        "shards_profiled": profiled,
+        "shards_skipped": skipped,
+        "missing_manifest": missing_manifest,
+        "batches_updated": len(changed_batches),
+        "dry_run": dry_run,
+        "upload_remote": upload_remote,
+        "errors": failed,
+    }
+
+
 def build_shard_catalog(
     shard_dir: Path,
     *,
@@ -1226,6 +1359,52 @@ def _read_batch_manifests(shard_dir: Path) -> dict[Path, dict[str, object]]:
         if isinstance(payload, dict):
             manifests[manifest_path.parent] = payload
     return manifests
+
+
+def _shard_has_profile(shard_meta: dict[str, object]) -> bool:
+    return bool(
+        _int_or_none(shard_meta.get("year_min")) is not None
+        or _int_or_none(shard_meta.get("year_max")) is not None
+        or _int_or_none(shard_meta.get("cited_by_max"))
+        or _string_tuple(shard_meta.get("topic_terms"))
+    )
+
+
+def _profile_shard_path(path: Path) -> dict[str, object]:
+    index = FullRawFtsIndex(path, read_only=True)
+    try:
+        return index.profile()
+    finally:
+        index.close()
+
+
+def _write_json_file(path: Path, payload: dict[str, object]) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _upload_manifest_payload(
+    payload: dict[str, object],
+    remote_path: str,
+    *,
+    rclone_bin: str,
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="v5-fullraw-manifest-") as tmp:
+        local_path = Path(tmp) / "complete.json"
+        _write_json_file(local_path, payload)
+        if remote_path.startswith("file://"):
+            destination = Path(remote_path.removeprefix("file://"))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(local_path, destination)
+            return
+        copied = subprocess.run(
+            [rclone_bin, "copyto", str(local_path), remote_path],
+            text=True,
+            capture_output=True,
+            timeout=None,
+            check=False,
+        )
+        if copied.returncode != 0:
+            raise RuntimeError((copied.stderr or copied.stdout or "rclone copyto failed").strip()[:500])
 
 
 def _manifest_sources(manifest: dict[str, object]) -> tuple[str, ...]:
@@ -1427,6 +1606,10 @@ def run_server() -> None:
     ) or 60.0
     min_shards_searched = _positive_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED") or 0
     min_sources_searched = _positive_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED") or 0
+    sweep_enabled = os.environ.get("V5_MEMO_FULL_RAW_ASYNC_SWEEP", "").casefold() in {"1", "true", "yes"}
+    sweep_ttl = _float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS", "")) or 86400.0
+    sweep_cache_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR", "").strip()
+    sweep_cache_dir = Path(sweep_cache_dir_config) if sweep_cache_dir_config else None
     manifest_path = Path(
         os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json")
     )
@@ -1441,6 +1624,9 @@ def run_server() -> None:
     if index is not None:
         index.initialize()
     catalog_cache: tuple[float, list[ShardCatalogEntry]] = (0.0, [])
+    sweep_cache: dict[str, SweepCacheEntry] = {}
+    sweep_inflight: set[str] = set()
+    sweep_lock = threading.RLock()
 
     def current_catalog() -> list[ShardCatalogEntry]:
         nonlocal catalog_cache
@@ -1493,6 +1679,66 @@ def run_server() -> None:
             )
         assert index is not None
         return index.search(query, limit=limit, year_min=year_min, year_max=year_max, rank_mode=rank_mode)
+
+    def sweep_cache_get(key: str) -> SweepCacheEntry | None:
+        with sweep_lock:
+            entry = sweep_cache.get(key)
+            if entry is not None and (sweep_ttl <= 0 or time.time() - entry.created_at <= sweep_ttl):
+                return entry
+        cache_path = _sweep_cache_path(sweep_cache_dir, key)
+        if cache_path is None or not cache_path.exists():
+            return None
+        entry = _load_sweep_cache(cache_path, ttl_seconds=sweep_ttl)
+        if entry is not None:
+            with sweep_lock:
+                sweep_cache[key] = entry
+        return entry
+
+    def sweep_cache_put(key: str, entry: SweepCacheEntry) -> None:
+        with sweep_lock:
+            sweep_cache[key] = entry
+            sweep_inflight.discard(key)
+        cache_path = _sweep_cache_path(sweep_cache_dir, key)
+        if cache_path is not None:
+            _write_sweep_cache(cache_path, entry)
+
+    def enqueue_sweep(
+        *,
+        key: str,
+        query: str,
+        limit: int,
+        year_min: int,
+        year_max: int,
+        rank_mode: str,
+        catalog: list[ShardCatalogEntry],
+    ) -> str:
+        if not sweep_enabled or shard_dir is None:
+            return "disabled"
+        if sweep_cache_get(key) is not None:
+            return "hit"
+        with sweep_lock:
+            if key in sweep_inflight:
+                return "running"
+            sweep_inflight.add(key)
+
+        def worker() -> None:
+            try:
+                hits = search_shard_entries(
+                    catalog,
+                    query,
+                    limit=limit,
+                    year_min=year_min,
+                    year_max=year_max,
+                    rank_mode=rank_mode,
+                )
+                receipt = shard_coverage_receipt(catalog, catalog)
+                sweep_cache_put(key, SweepCacheEntry(time.time(), hits, receipt))
+            except Exception:
+                with sweep_lock:
+                    sweep_inflight.discard(key)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return "queued"
 
     def current_receipt(query: str) -> dict[str, object]:
         if shard_dir is None:
@@ -1548,23 +1794,48 @@ def run_server() -> None:
                 _write_json(self, 400, {"error": "query is required"})
                 return
             started = time.monotonic()
-            receipt = current_receipt(query) if shard_dir is not None else {}
-            coverage_gate = shard_coverage_gate_response(
-                receipt,
-                min_shards_searched=min_shards_searched,
-                min_sources_searched=min_sources_searched,
-            )
-            if coverage_gate is not None:
-                status, body = coverage_gate
-                _write_json(self, status, body)
-                return
-            hits = current_search(
-                query,
-                limit=limit,
-                year_min=year_min,
-                year_max=year_max,
-                rank_mode=rank_mode,
-            )
+            catalog = current_catalog() if shard_dir is not None else []
+            cache_key = _sweep_cache_key(query, limit=limit, year_min=year_min, year_max=year_max, rank_mode=rank_mode)
+            cached = sweep_cache_get(cache_key) if catalog else None
+            sweep_status = "disabled"
+            if cached is not None:
+                hits = cached.hits
+                receipt = cached.receipt
+                sweep_status = "hit"
+            else:
+                receipt = (
+                    shard_coverage_receipt(catalog, select_search_shard_entries(catalog, query=query))
+                    if catalog
+                    else {}
+                )
+                coverage_gate = shard_coverage_gate_response(
+                    receipt,
+                    min_shards_searched=min_shards_searched,
+                    min_sources_searched=min_sources_searched,
+                )
+                if coverage_gate is not None:
+                    status, body = coverage_gate
+                    _write_json(self, status, body)
+                    return
+                hits = current_search(
+                    query,
+                    limit=limit,
+                    year_min=year_min,
+                    year_max=year_max,
+                    rank_mode=rank_mode,
+                )
+                sweep_status = enqueue_sweep(
+                    key=cache_key,
+                    query=query,
+                    limit=limit,
+                    year_min=year_min,
+                    year_max=year_max,
+                    rank_mode=rank_mode,
+                    catalog=catalog,
+                )
+                if sweep_status == "hit" and (cached := sweep_cache_get(cache_key)) is not None:
+                    hits = cached.hits
+                    receipt = cached.receipt
             stats = current_stats()
             explain = (
                 {"fts_match": query, "groups": []}
@@ -1584,6 +1855,11 @@ def run_server() -> None:
                     "term_groups": explain["groups"],
                     "rank_mode": rank_mode,
                     "shard_receipt": receipt,
+                    "async_sweep": {
+                        "enabled": sweep_enabled and bool(catalog),
+                        "status": sweep_status,
+                        "cache_key": cache_key if sweep_enabled and catalog else "",
+                    },
                 },
                 "results": hits,
             })
@@ -1673,6 +1949,16 @@ def main() -> None:
     stats_shards = subparsers.add_parser("stats-shards")
     stats_shards.add_argument("--shard-dir", default=shard_dir_default)
     stats_shards.add_argument("--manifest", default=os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
+
+    backfill_profiles = subparsers.add_parser("backfill-shard-profiles")
+    backfill_profiles.add_argument("--shard-dir", default=shard_dir_default)
+    backfill_profiles.add_argument("--max-shards", type=int)
+    backfill_profiles.add_argument("--force", action="store_true")
+    backfill_profiles.add_argument("--dry-run", action="store_true")
+    backfill_profiles.add_argument("--upload-remote", default="")
+    backfill_profiles.add_argument("--rclone-bin", default=os.environ.get("V5_MEMO_FULL_RAW_RCLONE", "rclone"))
+    backfill_profiles.add_argument("--verify-sqlite", action="store_true")
+    backfill_profiles.add_argument("--progress-interval", type=int, default=25)
 
     subparsers.add_parser("serve")
     args = parser.parse_args()
@@ -1826,6 +2112,22 @@ def main() -> None:
         print(json.dumps(stats_payload, sort_keys=True))
         return
 
+    if args.command == "backfill-shard-profiles":
+        profile_result = backfill_shard_profiles(
+            Path(args.shard_dir),
+            trust_filenames=not bool(args.verify_sqlite),
+            max_shards=args.max_shards,
+            force=bool(args.force),
+            dry_run=bool(args.dry_run),
+            upload_remote=str(args.upload_remote),
+            rclone_bin=str(args.rclone_bin),
+            progress_interval=max(0, int(args.progress_interval)),
+        )
+        print(json.dumps(profile_result, sort_keys=True))
+        if profile_result["errors"]:
+            raise SystemExit(2)
+        return
+
 
 def _row_to_hit(row: sqlite3.Row) -> dict[str, object]:
     rank = _float_or_none(row["rank"]) or 0.0
@@ -1848,6 +2150,54 @@ def _row_to_hit(row: sqlite3.Row) -> dict[str, object]:
 
 def _hit_score(hit: dict[str, object]) -> float:
     return _float_or_none(hit.get("score")) or 0.0
+
+
+def _sweep_cache_key(query: str, *, limit: int, year_min: int, year_max: int, rank_mode: str) -> str:
+    payload = json.dumps(
+        {
+            "query": query,
+            "limit": limit,
+            "year_min": year_min,
+            "year_max": year_max,
+            "rank_mode": _rank_mode(rank_mode),
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _sweep_cache_path(cache_dir: Path | None, key: str) -> Path | None:
+    if cache_dir is None:
+        return None
+    return cache_dir / f"{key}.json"
+
+
+def _load_sweep_cache(path: Path, *, ttl_seconds: float) -> SweepCacheEntry | None:
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    created_at = _float_or_none(payload.get("created_at")) or 0.0
+    if ttl_seconds > 0 and time.time() - created_at > ttl_seconds:
+        return None
+    hits = payload.get("hits")
+    receipt = payload.get("receipt")
+    if not isinstance(hits, list) or not isinstance(receipt, dict):
+        return None
+    return SweepCacheEntry(
+        created_at=created_at,
+        hits=[hit for hit in hits if isinstance(hit, dict)],
+        receipt=receipt,
+    )
+
+
+def _write_sweep_cache(path: Path, entry: SweepCacheEntry) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json_file(path, {
+        "created_at": entry.created_at,
+        "hits": entry.hits,
+        "receipt": entry.receipt,
+    })
 
 
 def _free_bytes(path: Path) -> int:

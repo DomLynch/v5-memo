@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
+import socket
+import subprocess
 import sys
+import time
+import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +22,7 @@ from v5_memo.fullraw_index import (
     ShardCatalogEntry,
     aggregate_shard_manifest_stats,
     aggregate_shard_stats,
+    backfill_shard_profiles,
     build_shard_catalog,
     build_shards,
     build_upload_shard_batches,
@@ -382,6 +388,7 @@ def test_fullraw_index_profiles_year_citation_and_topics(tmp_path: Path) -> None
     topic_terms = profile["topic_terms"]
     assert isinstance(topic_terms, tuple)
     assert "forecast" in topic_terms
+    assert not {"of", "in", "by", "to", "was", "study", "data", "used", "or", "however"} & set(topic_terms)
 
 
 def test_fullraw_index_search_supports_citation_and_recency_rank_modes(tmp_path: Path) -> None:
@@ -464,6 +471,196 @@ def test_catalog_reads_manifest_and_manifest_stats(tmp_path: Path) -> None:
     assert stats.files_indexed == 7
     assert stats.papers_indexed == 141
     assert stats.bytes_used == 5801
+
+
+def test_backfill_shard_profiles_updates_existing_manifest(tmp_path: Path) -> None:
+    batch = tmp_path / "batch_00000"
+    batch.mkdir()
+    shard = batch / "fullraw_shard_0000.sqlite"
+    raw_file = _raw_file(tmp_path, "openalex_backfill", [
+        {
+            "doi": "https://doi.org/10.example/backfill-old",
+            "display_name": "Management forecast disclosure",
+            "abstract": "Managers disclose forecast guidance.",
+            "publication_year": 1990,
+            "cited_by_count": 99,
+        },
+        {
+            "doi": "https://doi.org/10.example/backfill-new",
+            "display_name": "Management forecast disclosure recency",
+            "abstract": "Recent managers disclose forecast guidance.",
+            "publication_year": 2025,
+            "cited_by_count": 7,
+        },
+    ])
+    index = FullRawFtsIndex(shard)
+    try:
+        index.index_files([raw_file], commit_interval=1)
+    finally:
+        index.close()
+    (batch / "complete.json").write_text(json.dumps({
+        "batch_id": 0,
+        "files": [{"source": "openalex"}],
+        "shards": [{
+            "shard_id": 0,
+            "files_completed": 1,
+            "papers_inserted": 2,
+            "bytes_used": shard.stat().st_size,
+        }],
+    }))
+
+    result = backfill_shard_profiles(tmp_path)
+    catalog = build_shard_catalog(tmp_path, trust_filenames=True)
+    manifest = json.loads((batch / "complete.json").read_text())
+
+    assert result["shards_profiled"] == 1
+    assert result["batches_updated"] == 1
+    assert catalog[0].year_min == 1990
+    assert catalog[0].year_max == 2025
+    assert catalog[0].cited_by_max == 99
+    assert "forecast" in catalog[0].topic_terms
+    assert manifest["shards"][0]["year_min"] == 1990
+
+
+def test_backfill_shard_profiles_cli_reports_json(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    batch = tmp_path / "batch_00000"
+    batch.mkdir()
+    shard = batch / "fullraw_shard_0000.sqlite"
+    raw_file = _raw_file(tmp_path, "openalex_backfill_cli", [{
+        "doi": "https://doi.org/10.example/backfill-cli",
+        "display_name": "Management forecast disclosure CLI",
+        "abstract": "Managers disclose forecast guidance.",
+        "publication_year": 2024,
+    }])
+    index = FullRawFtsIndex(shard)
+    try:
+        index.index_files([raw_file], commit_interval=1)
+    finally:
+        index.close()
+    (batch / "complete.json").write_text(json.dumps({
+        "batch_id": 0,
+        "files": [{"source": "openalex"}],
+        "shards": [{
+            "shard_id": 0,
+            "files_completed": 1,
+            "papers_inserted": 1,
+            "bytes_used": shard.stat().st_size,
+        }],
+    }))
+    monkeypatch.setattr(sys, "argv", ["fullraw_index.py", "backfill-shard-profiles", "--shard-dir", str(tmp_path)])
+
+    fullraw_index.main()
+
+    assert json.loads(capsys.readouterr().out)["shards_profiled"] == 1
+
+
+def test_server_async_sweep_caches_all_shard_results(tmp_path: Path) -> None:
+    for index, cited in enumerate((10, 20)):
+        batch = tmp_path / f"batch_{index:05d}"
+        batch.mkdir()
+        shard = batch / "fullraw_shard_0000.sqlite"
+        raw_file = _raw_file(tmp_path, f"async_sweep_{index}", [{
+            "doi": f"https://doi.org/10.example/async-{index}",
+            "display_name": f"Management forecast disclosure async {index}",
+            "abstract": "Management forecast disclosure async evidence.",
+            "publication_year": 2024,
+            "cited_by_count": cited,
+        }])
+        index_db = FullRawFtsIndex(shard)
+        try:
+            index_db.index_files([raw_file], commit_interval=1)
+            profile = index_db.profile()
+        finally:
+            index_db.close()
+        (batch / "complete.json").write_text(json.dumps({
+            "batch_id": index,
+            "files": [{"source": "openalex"}],
+            "shards": [{
+                "shard_id": 0,
+                "files_completed": 1,
+                "papers_inserted": 1,
+                "bytes_used": shard.stat().st_size,
+                **profile,
+            }],
+        }))
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"files": []}))
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path.cwd() / "src"),
+        "V5_MEMO_FULL_RAW_INDEX_PORT": str(port),
+        "V5_MEMO_FULL_RAW_MANIFEST": str(manifest),
+        "V5_MEMO_FULL_RAW_SHARD_DIR": str(tmp_path),
+        "V5_MEMO_FULL_RAW_SHARD_TRUST_FILENAMES": "1",
+        "V5_MEMO_FULL_RAW_SHARD_MANIFEST_STATS": "1",
+        "V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT": "1",
+        "V5_MEMO_FULL_RAW_SEARCH_WORKERS": "1",
+        "V5_MEMO_FULL_RAW_ASYNC_SWEEP": "1",
+        "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR": str(tmp_path / "cache"),
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "v5_memo.fullraw_index", "serve"],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        base = f"http://127.0.0.1:{port}"
+        for _ in range(50):
+            try:
+                urllib.request.urlopen(base + "/health", timeout=1).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            _, stderr = proc.communicate(timeout=1)
+            raise AssertionError(f"server did not start: {stderr}")
+
+        def post_search() -> dict[str, object]:
+            request = urllib.request.Request(
+                base + "/search",
+                data=json.dumps({"query": "management forecast disclosure", "top_k": 5}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:
+                payload = json.loads(response.read().decode())
+            assert isinstance(payload, dict)
+            return payload
+
+        first = post_search()
+        first_meta = first["meta"]
+        assert isinstance(first_meta, dict)
+        assert first_meta["async_sweep"]["status"] in {"queued", "hit"}
+        cached = first
+        for _ in range(50):
+            cached = post_search()
+            meta = cached["meta"]
+            assert isinstance(meta, dict)
+            if meta["async_sweep"]["status"] == "hit":
+                break
+            time.sleep(0.1)
+        meta = cached["meta"]
+        assert isinstance(meta, dict)
+        receipt = meta["shard_receipt"]
+        assert isinstance(receipt, dict)
+        results = cached["results"]
+        assert isinstance(results, list)
+        assert meta["async_sweep"]["status"] == "hit"
+        assert receipt["shards_searched"] == 2
+        assert len(results) == 2
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
 
 
 def test_select_search_shard_entries_balances_sources_and_batches(

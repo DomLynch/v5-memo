@@ -142,7 +142,8 @@ def main() -> None:
         if not explicit_queries:
             planned_queries = [query for query in queries if query not in set(base_queries)]
             planned_queries = _topic_anchored_queries(planned_queries, args.topic)
-            queries = planned_queries or base_queries
+            topic_has_anchors = bool(query_anchor_terms(base_queries))
+            queries = [*base_queries, *planned_queries] if topic_has_anchors else planned_queries or base_queries
     anchor_queries = base_queries
     if not explicit_queries and not query_anchor_terms(base_queries):
         anchor_queries = queries
