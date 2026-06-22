@@ -30,7 +30,8 @@ from v5_memo.fullraw_service import RawFile, iter_raw_file_hits, load_or_build_m
 _WORD = re.compile(r"[A-Za-z0-9]+")
 _STOP = {
     "about", "above", "abstract", "after", "also", "among", "and", "are", "because", "been", "both",
-    "but", "can", "could", "does", "during", "for", "from", "has", "have", "into", "its",
+    "but", "can", "could", "different", "does", "during", "for", "from", "had", "has", "have", "high",
+    "into", "its",
     "may", "no", "not", "off", "or", "our", "out", "over", "per", "such", "than", "that", "the",
     "their", "these", "this", "those", "through", "was", "were", "with", "within",
     "without", "would", "all", "any", "between", "each", "other",
@@ -42,9 +43,9 @@ _STOP = {
     "related", "result", "results", "show", "showed", "shown", "significant",
     "significantly", "studies", "study", "two", "use", "used", "we", "work",
     "dan", "de", "di", "findings", "general", "however", "ini", "many", "merupakan",
-    "process", "role", "therefore", "understanding", "well", "yang",
+    "process", "role", "specific", "therefore", "understanding", "well", "yang",
     "adalah", "analisis", "dengan", "dilakukan", "hasil", "including", "made",
-    "metode", "pada", "penelitian",
+    "en", "la", "metode", "pada", "penelitian",
 }
 _BACKEND = "v5-fullraw-indexed-fts5"
 _DEFAULT_TERM_MAP = (
