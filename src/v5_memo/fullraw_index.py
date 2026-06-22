@@ -2457,6 +2457,9 @@ def run_server() -> None:
     sweep_workers = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKERS") or 1
     sweep_max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
     sweep_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT") or 128
+    sweep_require_complete = os.environ.get(
+        "V5_MEMO_FULL_RAW_SWEEP_REQUIRE_COMPLETE", ""
+    ).casefold() in {"1", "true", "yes", "on"}
     sweep_pass_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT") or sweep_shard_limit
     sweep_pass_shard_limit = max(1, min(sweep_pass_shard_limit, sweep_shard_limit))
     sweep_max_passes = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_PASSES") or 1
@@ -2712,15 +2715,19 @@ def run_server() -> None:
                     receipt.update(result_metrics)
                     required_pass_roles = min(len(sweep_passes), sweep_max_passes)
                     pass_roles_sufficient = len(set(completed_pass_roles)) >= required_pass_roles
+                    exhaustive_complete = receipt["sweep_remaining_shards"] == 0
+                    pass_budget_exhausted = pass_index + 1 >= sweep_max_passes
                     final = (
                         (receipt_is_sufficient(receipt) and pass_roles_sufficient)
-                        or receipt["sweep_remaining_shards"] == 0
-                        or pass_index + 1 >= sweep_max_passes
+                        or exhaustive_complete
+                        or (pass_budget_exhausted and not sweep_require_complete)
                     )
                     sweep_cache_put(key, SweepCacheEntry(time.time(), merged_hits, receipt), final=final)
                     if final:
                         break
             except Exception:
+                pass
+            finally:
                 with sweep_lock:
                     sweep_inflight.discard(key)
 
@@ -2740,11 +2747,19 @@ def run_server() -> None:
         }
 
     def receipt_is_sufficient(receipt: dict[str, object]) -> bool:
-        return shard_coverage_gate_response(
+        if shard_coverage_gate_response(
             receipt,
             min_shards_searched=min_shards_searched,
             min_sources_searched=min_sources_searched,
-        ) is None and _sweep_pass_roles_sufficient(receipt)
+        ) is not None:
+            return False
+        if not _sweep_pass_roles_sufficient(receipt):
+            return False
+        if sweep_require_complete and "sweep_remaining_shards" in receipt:
+            remaining = _int_or_none(receipt.get("sweep_remaining_shards"))
+            if remaining is None or remaining > 0:
+                return False
+        return True
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
