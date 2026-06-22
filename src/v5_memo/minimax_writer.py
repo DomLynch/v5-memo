@@ -320,6 +320,8 @@ Hard rules:
 - Scope every implication to the receipts: state the specific population, market,
   company, channel, model, benchmark, timeframe, geography, or source type only when
   the receipts provide it.
+- Respect receipt roles: if a receipt is labeled promise, protocol, intent, or
+  mechanism, describe it as expected/designed/hypothesized/framed, not as an observed result or confirmed endpoint.
 - Use source-appropriate descriptors from the receipts, not generic prestige labels:
   trial/protocol, filing/report, benchmark, case study, market study, campaign, interview,
   dataset, or model card.

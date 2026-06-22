@@ -278,6 +278,8 @@ def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
     assert "copy receipt/bridge terms verbatim" in prompt
     assert "The title must be made only from locked receipt title/abstract words" in prompt
     assert "Scope every implication to the receipts" in prompt
+    assert "Respect receipt roles" in prompt
+    assert "observed result or confirmed endpoint" in prompt
     assert "population, market" in prompt
     assert "company, channel, model, benchmark" in prompt
     assert "Use source-appropriate descriptors from the receipts" in prompt
