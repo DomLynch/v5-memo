@@ -1917,6 +1917,11 @@ def run_server() -> None:
                 timeout_seconds = _float_or_none(payload.get("timeout_seconds"))
                 if timeout_seconds is not None:
                     timeout_seconds = max(0.1, min(timeout_seconds, 600.0))
+                raw_cache_only = payload.get("cache_only")
+                cache_only = raw_cache_only is True or (
+                    isinstance(raw_cache_only, str)
+                    and raw_cache_only.strip().casefold() in {"1", "true", "yes", "on"}
+                )
             except (TypeError, ValueError, json.JSONDecodeError):
                 _write_json(self, 400, {"error": "bad request"})
                 return
@@ -1940,40 +1945,53 @@ def run_server() -> None:
                 receipt = cached.receipt
                 sweep_status = "hit"
             else:
-                receipt = (
-                    shard_coverage_receipt(catalog, select_search_shard_entries(catalog, query=query))
-                    if catalog
-                    else {}
-                )
-                coverage_gate = shard_coverage_gate_response(
-                    receipt,
-                    min_shards_searched=min_shards_searched,
-                    min_sources_searched=min_sources_searched,
-                )
-                if coverage_gate is not None:
-                    status, body = coverage_gate
-                    _write_json(self, status, body)
-                    return
-                hits = current_search(
-                    query,
-                    limit=limit,
-                    year_min=year_min,
-                    year_max=year_max,
-                    rank_mode=rank_mode,
-                    timeout_seconds=timeout_seconds,
-                )
-                sweep_status = enqueue_sweep(
-                    key=cache_key,
-                    query=query,
-                    limit=limit,
-                    year_min=year_min,
-                    year_max=year_max,
-                    rank_mode=rank_mode,
-                    catalog=catalog,
-                )
-                if sweep_status == "hit" and (cached := sweep_cache_get(cache_key)) is not None:
-                    hits = cached.hits
-                    receipt = cached.receipt
+                if cache_only:
+                    hits = []
+                    receipt = {}
+                    sweep_status = enqueue_sweep(
+                        key=cache_key,
+                        query=query,
+                        limit=limit,
+                        year_min=year_min,
+                        year_max=year_max,
+                        rank_mode=rank_mode,
+                        catalog=catalog,
+                    )
+                else:
+                    receipt = (
+                        shard_coverage_receipt(catalog, select_search_shard_entries(catalog, query=query))
+                        if catalog
+                        else {}
+                    )
+                    coverage_gate = shard_coverage_gate_response(
+                        receipt,
+                        min_shards_searched=min_shards_searched,
+                        min_sources_searched=min_sources_searched,
+                    )
+                    if coverage_gate is not None:
+                        status, body = coverage_gate
+                        _write_json(self, status, body)
+                        return
+                    hits = current_search(
+                        query,
+                        limit=limit,
+                        year_min=year_min,
+                        year_max=year_max,
+                        rank_mode=rank_mode,
+                        timeout_seconds=timeout_seconds,
+                    )
+                    sweep_status = enqueue_sweep(
+                        key=cache_key,
+                        query=query,
+                        limit=limit,
+                        year_min=year_min,
+                        year_max=year_max,
+                        rank_mode=rank_mode,
+                        catalog=catalog,
+                    )
+                    if sweep_status == "hit" and (cached := sweep_cache_get(cache_key)) is not None:
+                        hits = cached.hits
+                        receipt = cached.receipt
             stats = current_stats()
             explain = (
                 {"fts_match": query, "groups": []}
@@ -1993,6 +2011,7 @@ def run_server() -> None:
                     "term_groups": explain["groups"],
                     "rank_mode": rank_mode,
                     "shard_receipt": receipt,
+                    "cache_only": cache_only,
                     "async_sweep": {
                         "enabled": sweep_enabled and bool(catalog),
                         "status": sweep_status,

@@ -226,6 +226,114 @@ def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
     assert hits[0].metadata["shard_receipt"] == receipt
 
 
+def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        payloads.append(payload)
+        if payload.get("cache_only") is True:
+            return FakeResponse({
+                "meta": {
+                    "count": 1,
+                    "shard_receipt": {
+                        "shards_total": 100,
+                        "shards_searched": 48,
+                        "sources_searched": {"openalex": 24, "semantic_scholar": 24},
+                    },
+                    "async_sweep": {"status": "hit"},
+                },
+                "results": [{
+                    "doi": "10.123/deep",
+                    "title": "Deep sweep evidence",
+                    "abstract": "Management forecast disclosure evidence from a deep sweep.",
+                    "year": 2024,
+                    "source": "semantic_scholar",
+                }],
+            })
+        return FakeResponse({
+            "meta": {
+                "count": 1,
+                "shard_receipt": {"shards_total": 100, "shards_searched": 12},
+                "async_sweep": {"status": "queued"},
+            },
+            "results": [{
+                "doi": "10.123/shallow",
+                "title": "Shallow foreground evidence",
+                "abstract": "Management forecast disclosure evidence.",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        sweep_wait_seconds=1.0,
+        min_shards_searched=48,
+        min_sources_searched=2,
+    )
+
+    hits = client.search("management forecast disclosure", limit=3)
+
+    assert payloads[0].get("cache_only") is None
+    assert payloads[1].get("cache_only") is True
+    assert hits[0].doi == "10.123/deep"
+    assert hits[0].metadata["shard_receipt"] == {
+        "shards_total": 100,
+        "shards_searched": 48,
+        "sources_searched": {"openalex": 24, "semantic_scholar": 24},
+    }
+
+
+def test_full_raw_client_uses_cache_only_after_strict_foreground_timeout(
+    monkeypatch: object,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        payloads.append(payload)
+        if payload.get("cache_only") is True:
+            return FakeResponse({
+                "meta": {
+                    "count": 1,
+                    "shard_receipt": {
+                        "shards_total": 100,
+                        "shards_searched": 48,
+                        "sources_searched": {"openalex": 24, "semantic_scholar": 24},
+                    },
+                    "async_sweep": {"status": "hit"},
+                },
+                "results": [{
+                    "doi": "10.123/recovered",
+                    "title": "Recovered cache-only evidence",
+                    "abstract": "Management forecast disclosure recovered from cache-only sweep.",
+                    "year": 2024,
+                    "source": "semantic_scholar",
+                }],
+            })
+        raise TimeoutError("foreground too slow")
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        sweep_wait_seconds=1.0,
+        min_shards_searched=48,
+        min_sources_searched=2,
+        strict=True,
+    )
+
+    hits = client.search("management forecast disclosure", limit=3)
+
+    assert [payload.get("cache_only") for payload in payloads] == [None, True]
+    assert hits[0].doi == "10.123/recovered"
+
+
 def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None:
     requested: list[dict[str, object]] = []
 
@@ -338,6 +446,8 @@ def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> Non
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", "120")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_MAX_VARIANTS", "7")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", "30")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_WAIT_SECONDS", "120")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_POLL_SECONDS", "2")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_PROGRESS", "true")
 
     client = FullRawCorpusSearchClient.from_env()
@@ -345,6 +455,8 @@ def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> Non
     assert client._timeout == 120.0
     assert client._max_variants == 7
     assert client._search_budget_seconds == 30.0
+    assert client._sweep_wait_seconds == 120.0
+    assert client._sweep_poll_seconds == 2.0
     assert client._progress is True
 
 

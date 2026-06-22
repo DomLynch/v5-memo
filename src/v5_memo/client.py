@@ -216,6 +216,8 @@ class FullRawCorpusSearchClient:
         year_max: int = 2100,
         max_variants: int = 16,
         search_budget_seconds: float = 180.0,
+        sweep_wait_seconds: float = 0.0,
+        sweep_poll_seconds: float = 1.0,
         min_shards_searched: int = 0,
         min_sources_searched: int = 0,
         progress: bool = False,
@@ -228,6 +230,8 @@ class FullRawCorpusSearchClient:
         self._year_max = year_max
         self._max_variants = max(1, max_variants)
         self._search_budget_seconds = max(0.0, search_budget_seconds)
+        self._sweep_wait_seconds = max(0.0, sweep_wait_seconds)
+        self._sweep_poll_seconds = max(0.0, sweep_poll_seconds)
         self._min_shards_searched = max(0, min_shards_searched)
         self._min_sources_searched = max(0, min_sources_searched)
         self._progress = progress
@@ -241,6 +245,8 @@ class FullRawCorpusSearchClient:
             timeout=_float_env("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", 45.0),
             max_variants=_int_env("V5_MEMO_FULL_RAW_MAX_VARIANTS", 16),
             search_budget_seconds=_float_env("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", 180.0),
+            sweep_wait_seconds=_float_env("V5_MEMO_FULL_RAW_SWEEP_WAIT_SECONDS", 0.0),
+            sweep_poll_seconds=_float_env("V5_MEMO_FULL_RAW_SWEEP_POLL_SECONDS", 1.0),
             min_shards_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", 0),
             min_sources_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", 0),
             progress=_bool_env("V5_MEMO_FULL_RAW_PROGRESS", False),
@@ -330,6 +336,52 @@ class FullRawCorpusSearchClient:
             "rank_mode": search_pass.rank_mode,
             "timeout_seconds": self._timeout,
         }
+        initial_error: SearchBackendError | None = None
+        try:
+            data = self._request_search(payload)
+        except SearchBackendError as exc:
+            if not self._sweep_wait_seconds:
+                raise
+            initial_error = exc
+            data = {}
+        receipt = _full_raw_shard_receipt(data)
+        if self._sweep_wait_seconds and _full_raw_async_sweep_status(data) != "hit":
+            cached = self._wait_for_sweep_hit(payload)
+            if cached is not None:
+                data = cached
+                receipt = _full_raw_shard_receipt(data)
+            elif initial_error is not None:
+                raise initial_error
+        if not self._receipt_is_sufficient(receipt):
+            message = f"Full raw corpus search coverage too narrow: {receipt}"
+            if self._strict:
+                raise SearchBackendError(message)
+            self._log_progress(message)
+            return []
+        return _parse_full_raw_search_response(data)
+
+    def _wait_for_sweep_hit(self, payload: dict[str, object]) -> Any | None:
+        deadline = time.monotonic() + self._sweep_wait_seconds
+        cache_payload = {**payload, "cache_only": True}
+        while True:
+            try:
+                data = self._request_search(cache_payload)
+                status = _full_raw_async_sweep_status(data)
+            except SearchBackendError:
+                data = {}
+                status = "error"
+            if status == "hit":
+                self._log_progress("fullraw async sweep cache hit")
+                return data
+            if status == "disabled":
+                return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._log_progress(f"fullraw async sweep wait expired; status={status or 'unknown'}")
+                return None
+            time.sleep(min(max(self._sweep_poll_seconds, 0.05), remaining))
+
+    def _request_search(self, payload: dict[str, object]) -> Any:
         headers = {
             "Content-Type": "application/json",
             "User-Agent": "v5-memo/0.1",
@@ -345,27 +397,19 @@ class FullRawCorpusSearchClient:
         for attempt in range(2):
             try:
                 with urlopen(request, timeout=self._timeout) as response:
-                    data: Any = json.loads(response.read().decode("utf-8"))
-                break
+                    return json.loads(response.read().decode("utf-8"))
             except RemoteDisconnected as exc:
                 if attempt == 0:
-                    self._log_progress(f"fullraw remote disconnect; retrying once: {search_pass.query}")
+                    self._log_progress(f"fullraw remote disconnect; retrying once: {payload.get('query', '')}")
                     continue
                 if self._strict:
                     raise SearchBackendError(f"Full raw corpus search failed: {exc}") from exc
-                return []
+                return {}
             except (HTTPError, URLError, TimeoutError, ValueError) as exc:
                 if self._strict:
                     raise SearchBackendError(f"Full raw corpus search failed: {exc}") from exc
-                return []
-        receipt = _full_raw_shard_receipt(data)
-        if not self._receipt_is_sufficient(receipt):
-            message = f"Full raw corpus search coverage too narrow: {receipt}"
-            if self._strict:
-                raise SearchBackendError(message)
-            self._log_progress(message)
-            return []
-        return _parse_full_raw_search_response(data)
+                return {}
+        return {}
 
     def _receipt_is_sufficient(self, receipt: dict[str, object]) -> bool:
         if not receipt:
@@ -457,6 +501,19 @@ def _full_raw_shard_receipt(data: Any) -> dict[str, object]:
     if not isinstance(receipt, dict):
         return {}
     return dict(receipt)
+
+
+def _full_raw_async_sweep_status(data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    meta = data.get("meta")
+    if not isinstance(meta, dict):
+        return ""
+    async_sweep = meta.get("async_sweep")
+    if not isinstance(async_sweep, dict):
+        return ""
+    status = async_sweep.get("status")
+    return status if isinstance(status, str) else ""
 
 
 def _parse_openalex_response(data: Any) -> list[CorpusHit]:

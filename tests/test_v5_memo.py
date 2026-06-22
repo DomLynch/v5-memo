@@ -1274,3 +1274,49 @@ def test_pipeline_fails_closed_when_memo_coverage_is_too_narrow() -> None:
         "sources_searched",
         "search_passes",
     )
+
+
+def test_pipeline_accepts_deep_fullraw_memo_coverage() -> None:
+    class DeepSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            receipt = {
+                "shards_total": 100,
+                "shards_searched": 48,
+                "sources_searched": {"openalex": 24, "semantic_scholar": 24},
+                "year_range_searched": {"min": 1990, "max": 2024},
+                "cited_by_range_searched": {"min": 0, "max": 1200},
+                "sweep_scope": "relevant",
+            }
+            return [
+                CorpusHit(
+                    hit_id="deep-1",
+                    title="NAD salvage links sleep fragmentation to mitochondrial stress",
+                    abstract="Sleep fragmentation reduced resilience through NAD salvage and mitochondrial stress.",
+                    source="fullraw:openalex",
+                    year=2024,
+                    doi="10.deep/1",
+                    metadata={"shard_receipt": receipt, "search_pass": "focused"},
+                ),
+                CorpusHit(
+                    hit_id="deep-2",
+                    title="NAD salvage predicts exercise response through mitochondrial repair",
+                    abstract="Exercise improved resilience when NAD salvage and mitochondrial repair markers moved together.",
+                    source="fullraw:semantic_scholar",
+                    year=2023,
+                    doi="10.deep/2",
+                    metadata={"shard_receipt": receipt, "search_pass": "broad"},
+                ),
+            ]
+
+    result = build_alpha_memo(
+        topic="longevity resilience",
+        seed_queries=["nad mitochondrial"],
+        searcher=DeepSearch(),
+        min_alpha_tier="discovery_seed",
+        min_shards_searched=48,
+        min_sources_searched=2,
+        min_search_passes=2,
+    )
+
+    assert [hit.doi for hit in result.receipts] == ["10.deep/1", "10.deep/2"]
