@@ -84,6 +84,7 @@ _SYNTHESIS_TITLE_TERMS = frozenset({
     "candidate", "commentary", "consensus", "guideline", "meta", "perspective",
     "position", "potential", "question", "review", "stand", "strategy", "systematic",
 })
+_CONTEXT_ANCHOR_BACKFILL = frozenset({"exercise", "resistance", "strength", "training"})
 
 
 def mine_insights(
@@ -263,6 +264,15 @@ def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 3) -> tuple[
             out.append(token)
             if len(out) >= limit:
                 return tuple(out)
+    if out and len(out) < min(limit, 2):
+        for query in seed_queries:
+            for raw in _WORD.findall(query.casefold()):
+                token = _norm_token(raw)
+                if token in _CONTEXT_ANCHOR_BACKFILL and token not in seen:
+                    seen.add(token)
+                    out.append(token)
+                    if len(out) >= min(limit, 2):
+                        return tuple(out)
     return tuple(out)
 
 
