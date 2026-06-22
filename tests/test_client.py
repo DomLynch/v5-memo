@@ -598,6 +598,9 @@ def test_full_raw_client_strict_mode_continues_after_one_variant_error(
 
     assert calls == 2
     assert hits[0].doi == "10.123/broad"
+    receipt = hits[0].metadata["fullraw_search_receipt"]
+    assert isinstance(receipt, dict)
+    assert receipt["search_passes"] == ("broad",)
 
 
 def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) -> None:
