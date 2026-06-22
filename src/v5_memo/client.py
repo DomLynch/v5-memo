@@ -8,7 +8,7 @@ import re
 import sys
 import time
 import urllib.parse
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from html import unescape
 from http.client import RemoteDisconnected
@@ -368,9 +368,10 @@ class FullRawCorpusSearchClient:
             "search_passes": tuple(dict.fromkeys(passes_run)),
             "rank_modes": tuple(dict.fromkeys(rank_modes_run)),
         }
+        ranked_pairs = _rank_source_diverse_scored_hits(best.values(), limit=limit)
         ranked_hits = [
             replace(hit, metadata={**hit.metadata, "fullraw_search_receipt": receipt})
-            for _, hit in sorted(best.values(), key=lambda item: item[0], reverse=True)[:limit]
+            for _, hit in ranked_pairs
         ]
         return _backfill_missing_openalex_abstracts(
             ranked_hits,
@@ -572,6 +573,44 @@ def _full_raw_async_sweep_status(data: Any) -> str:
         return ""
     status = async_sweep.get("status")
     return status if isinstance(status, str) else ""
+
+
+def _rank_source_diverse_scored_hits(
+    scored_hits: Iterable[tuple[float, CorpusHit]],
+    *,
+    limit: int,
+) -> list[tuple[float, CorpusHit]]:
+    limit = max(1, limit)
+    ranked = sorted(scored_hits, key=lambda item: item[0], reverse=True)
+    by_source: dict[str, list[tuple[float, CorpusHit]]] = {}
+    for score, hit in ranked:
+        by_source.setdefault(_source_provider(hit.source), []).append((score, hit))
+    out: list[tuple[float, CorpusHit]] = []
+    for source in sorted(by_source, key=lambda key: (by_source[key][0][0], key), reverse=True):
+        _extend_unique_scored_hits(out, by_source[source][:1], limit)
+    _extend_unique_scored_hits(out, ranked, limit)
+    return out
+
+
+def _extend_unique_scored_hits(
+    out: list[tuple[float, CorpusHit]],
+    hits: Iterable[tuple[float, CorpusHit]],
+    limit: int,
+) -> None:
+    if len(out) >= limit:
+        return
+    seen = {hit.source_key for _, hit in out}
+    for score, hit in hits:
+        if hit.source_key in seen:
+            continue
+        out.append((score, hit))
+        seen.add(hit.source_key)
+        if len(out) >= limit:
+            return
+
+
+def _source_provider(source: str) -> str:
+    return source.split(":", 1)[1] if source.startswith("fullraw:") else source
 
 
 def _parse_openalex_response(data: Any) -> list[CorpusHit]:
