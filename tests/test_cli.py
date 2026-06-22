@@ -9,7 +9,7 @@ import pytest
 from pytest import MonkeyPatch
 
 from v5_memo import CorpusHit
-from v5_memo.__main__ import _topic_anchored_queries, main
+from v5_memo.__main__ import _alpha_shape_queries, _topic_anchored_queries, main
 from v5_memo.client import ResearkaSearchClient
 from v5_memo.schemas import MemoBuildError
 
@@ -111,6 +111,13 @@ def test_topic_anchored_queries_reject_planner_drift_for_specific_topics() -> No
         ],
         "metformin resistance training adaptation",
     ) == ["metformin resistance training older adults"]
+
+
+def test_alpha_shape_queries_add_universal_promise_and_outcome_probes() -> None:
+    assert _alpha_shape_queries("metformin resistance training adaptation") == [
+        "metformin expected augment resistance training protocol",
+        "metformin blunted impaired attenuated resistance training outcome",
+    ]
 
 
 def test_cli_forwards_memo_coverage_thresholds_from_env(
@@ -506,6 +513,8 @@ def test_planned_cli_drops_queries_that_lose_specific_topic_anchor(
         "seed_queries": [
             "cold water immersion resistance training adaptation",
             "cold water immersion blunts hypertrophy resistance trained men",
+            "cold water immersion expected augment resistance protocol",
+            "cold water immersion blunted impaired attenuated resistance outcome",
         ],
         "anchor_queries": ["cold water immersion resistance training adaptation"],
     }

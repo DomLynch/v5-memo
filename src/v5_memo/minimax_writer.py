@@ -9,7 +9,7 @@ import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol, cast
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from v5_memo.gate import candidate_alpha_tier
@@ -173,7 +173,7 @@ class MiniMaxM3SearchPlanner:
                 "You design high-recall, high-signal academic corpus search queries. "
                 "Return only valid JSON."
             ),
-            temperature=0.35,
+            temperature=0.1,
             max_tokens=self._max_tokens,
             base_url=self._base_url,
             model=self._model,
@@ -282,6 +282,10 @@ def call_minimax_m3(
             return _anthropic_text(data)
         except HTTPError as exc:
             if exc.code not in _MINIMAX_RETRY_HTTP_STATUS or attempt == 2:
+                raise
+            time.sleep(0.75 * (attempt + 1))
+        except (TimeoutError, URLError):
+            if attempt == 2:
                 raise
             time.sleep(0.75 * (attempt + 1))
     raise RuntimeError("unreachable MiniMax retry state")
@@ -412,11 +416,16 @@ Rules:
 - Return adjacent query pairs when possible: query N should search the promise/mechanism
   side, query N+1 should search the observed/null/blunted outcome side, and both
   must share the same specific intervention, construct, product, model, or program.
+- The promise/mechanism-side query may omit downstream endpoint words when those words
+  would hide the seminal mechanism paper; keep the shared intervention/construct.
+- Include at least one 2-4 term upstream-promise query shaped like: shared intervention/construct
+  + improves/activates/augments + specific mechanism/output. Do not include the
+  downstream application terms in that query unless they belong to the promise paper.
 - For intervention topics, include at least one promise-side title query using words
   like expected/designed/protocol/augment/mimic and one outcome-side title query using
   words like blunts/null/reduced/impaired/attenuated for the same intervention.
-- Do not spend most queries on pathway-only mechanisms unless they also include the
-  intervention and real-world endpoint from the topic.
+- Do not spend most queries on pathway-only mechanisms; mechanism queries must still
+  include the shared intervention, construct, product, model, or program.
 - Prefer same intervention/construct/program across evidence objects.
 - At least half the queries must name a specific intervention, construct, product,
   model, program, or mechanism; do not rely on generic words like intervention,

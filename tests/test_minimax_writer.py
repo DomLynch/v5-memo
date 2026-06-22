@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from email.message import Message
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 import pytest
@@ -58,6 +58,29 @@ def test_minimax_call_retries_transient_http_529(monkeypatch: pytest.MonkeyPatch
         if len(calls) == 1:
             headers: Message[str, str] = Message()
             raise HTTPError(request.full_url, 529, "overloaded", headers, None)
+        return FakeResponse({"content": [{"type": "text", "text": "ok"}]})
+
+    monkeypatch.setattr("v5_memo.minimax_writer.time.sleep", lambda _seconds: None)
+
+    assert call_minimax_m3(
+        api_key="key",
+        prompt="p",
+        system="s",
+        temperature=0.1,
+        max_tokens=10,
+        opener=opener,
+    ) == "ok"
+    assert len(calls) == 2
+
+
+def test_minimax_call_retries_transient_url_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[Request] = []
+
+    def opener(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        calls.append(request)
+        if len(calls) == 1:
+            raise URLError(TimeoutError("handshake timed out"))
         return FakeResponse({"content": [{"type": "text", "text": "ok"}]})
 
     monkeypatch.setattr("v5_memo.minimax_writer.time.sleep", lambda _seconds: None)
@@ -331,6 +354,9 @@ def test_minimax_planner_prompt_prefers_reversal_pairs_not_reviews() -> None:
     assert "Split those two evidence sides into separate title-like queries" in prompt
     assert "Return adjacent query pairs when possible" in prompt
     assert "must share the same specific intervention" in prompt
+    assert "may omit downstream endpoint words" in prompt
+    assert "upstream-promise query" in prompt
+    assert "mechanism queries must still" in prompt
     assert "same intervention/construct/program" in prompt
     assert "At least half the queries must name a specific intervention" in prompt
     assert "Avoid broad review, meta-analysis, position-stand" in prompt

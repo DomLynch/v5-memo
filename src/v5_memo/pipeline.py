@@ -48,11 +48,14 @@ def build_alpha_memo(
         required_anchor_terms=anchor_terms,
         include_discovery=min_alpha_tier == "discovery_seed",
     )
+    candidates = [
+        candidate
+        for candidate in candidates
+        if meets_publish_bar(candidate, min_alpha_tier)
+    ]
     candidates = _apply_selector(candidates, hits, memo_selector)
     coverage_failures: list[MemoBuildError] = []
     for candidate in candidates:
-        if not meets_publish_bar(candidate, min_alpha_tier):
-            continue
         receipts = bind_receipts(candidate, hits)
         if receipts:
             coverage_failure = memo_coverage_failure(

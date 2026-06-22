@@ -360,7 +360,7 @@ def test_pipeline_applies_selector_to_existing_candidates() -> None:
 
     deterministic = mine_insights(
         hits,
-        topic="AI tool reliability",
+        topic="tool",
         required_anchor_terms=query_anchor_terms(["tool"]),
     )
     chosen = next(
@@ -370,7 +370,7 @@ def test_pipeline_applies_selector_to_existing_candidates() -> None:
     ).receipt_ids
 
     result = build_alpha_memo(
-        topic="AI tool reliability",
+        topic="tool",
         seed_queries=["tool"],
         searcher=FakeSearch(),
         memo_selector=lambda candidates, _hits: [
@@ -384,6 +384,63 @@ def test_pipeline_applies_selector_to_existing_candidates() -> None:
 
     assert len(deterministic) >= 2
     assert result.candidate.receipt_ids == chosen
+
+
+def test_pipeline_filters_to_requested_tier_before_selector(monkeypatch: pytest.MonkeyPatch) -> None:
+    hits = [
+        _hit("low-a", "Tool improves benchmark accuracy", "Tool improved benchmark accuracy."),
+        _hit("low-b", "Tool reduces deployment reliability", "Tool reduced reliability."),
+        _hit("elite-a", "Protocol expected tool augmentation", "Protocol expected tool augmentation."),
+        _hit("elite-b", "Outcome observed tool blunting", "Outcome observed tool blunting."),
+    ]
+    low = InsightCandidate(
+        topic="tool reliability",
+        thesis="Low candidate.",
+        bridge_terms=("tool",),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("low-a", "low-b"),
+        score=90,
+        novelty_score=90,
+        evidence_score=90,
+        reasons=("tier:publishable_alpha",),
+    )
+    elite = InsightCandidate(
+        topic="tool reliability",
+        thesis="Elite candidate.",
+        bridge_terms=("tool",),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("elite-a", "elite-b"),
+        score=90,
+        novelty_score=90,
+        evidence_score=90,
+        reasons=("tier:elite_alpha",),
+    )
+    seen: list[InsightCandidate] = []
+
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return hits
+
+    def fake_mine(*_args: object, **_kwargs: object) -> list[InsightCandidate]:
+        return [low, elite]
+
+    def selector(candidates: Sequence[InsightCandidate], _hits: Sequence[CorpusHit]) -> Sequence[InsightCandidate]:
+        seen.extend(candidates)
+        return list(candidates)
+
+    monkeypatch.setattr("v5_memo.pipeline.mine_insights", fake_mine)
+
+    result = build_alpha_memo(
+        topic="tool reliability",
+        seed_queries=["tool"],
+        searcher=FakeSearch(),
+        memo_selector=selector,
+        min_alpha_tier="elite_alpha",
+    )
+
+    assert seen == [elite]
+    assert result.candidate == elite
 
 
 def test_pipeline_selector_cannot_invent_receipt_pair() -> None:
@@ -431,14 +488,12 @@ def test_query_anchor_terms_normalize_light_morphology() -> None:
 def test_query_anchor_terms_drop_broad_topic_words() -> None:
     assert query_anchor_terms(["longevity aging adaptation healthspan pharmacology resveratrol training"]) == (
         "resveratrol",
-        "training",
     )
 
 
-def test_query_anchor_terms_backfill_context_for_single_specific_anchor() -> None:
+def test_query_anchor_terms_do_not_promote_context_to_anchor() -> None:
     assert query_anchor_terms(["resveratrol exercise training adaptation"]) == (
         "resveratrol",
-        "exercise",
     )
 
 
@@ -610,6 +665,54 @@ def test_title_only_specific_anchor_can_support_elite_promise_outcome_pair() -> 
     assert meets_publish_bar(candidate, "elite_alpha")
 
 
+def test_mechanism_promise_may_omit_topic_context_when_outcome_has_it() -> None:
+    hits = [
+        _hit(
+            "promise",
+            "Resveratrol improves mitochondrial function and protects against metabolic disease",
+            "Resveratrol activated SIRT1 PGC-1alpha signaling and improved running performance.",
+        ),
+        _hit(
+            "outcome",
+            "Resveratrol blunts the positive effects of exercise training in aged men",
+            "The randomized exercise training trial observed resveratrol blunted training adaptation.",
+        ),
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic="resveratrol exercise training adaptation",
+        required_anchor_terms=("resveratrol",),
+    )[0]
+
+    assert candidate.receipt_ids == ("promise", "outcome")
+    assert candidate_alpha_tier(candidate) == "elite_alpha"
+
+
+def test_topic_context_blocks_same_anchor_injury_drift() -> None:
+    hits = [
+        _hit(
+            "retraction",
+            "Retraction: Resveratrol improves mitochondrial biogenesis after brain injury",
+            "Retraction notice for resveratrol PGC-1alpha signaling in early brain injury.",
+        ),
+        _hit(
+            "lung",
+            "Resveratrol attenuates hyperoxia-induced lung injury via SIRT1 PGC-1alpha",
+            "Resveratrol attenuated neonatal rat lung injury through SIRT1 PGC-1alpha signaling.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="resveratrol exercise training adaptation",
+        required_anchor_terms=("resveratrol",),
+        include_discovery=True,
+    )
+
+    assert candidates == []
+
+
 def test_title_only_augment_protocol_can_pair_with_blunted_outcome() -> None:
     hits = [
         _hit(
@@ -644,7 +747,7 @@ def test_short_single_word_bridge_is_not_enough_for_elite_shape() -> None:
     assert mine_insights(hits, topic="APR intervention training", required_anchor_terms=("apr",)) == []
 
 
-def test_negated_improvement_can_form_negative_null_elite_pair() -> None:
+def test_negated_improvement_is_publishable_not_elite_without_promise_outcome() -> None:
     hits = [
         _hit(
             "attenuated",
@@ -665,10 +768,10 @@ def test_negated_improvement_can_form_negative_null_elite_pair() -> None:
     )[0]
 
     assert candidate.tension_terms == ("negative", "null")
-    assert candidate_alpha_tier(candidate) == "elite_alpha"
+    assert candidate_alpha_tier(candidate) == "publishable_alpha"
 
 
-def test_common_multiword_anchor_can_support_tense_same_intervention_pair() -> None:
+def test_common_multiword_anchor_does_not_make_negative_null_pair_elite() -> None:
     hits = [
         _hit(
             "negative",
@@ -697,7 +800,31 @@ def test_common_multiword_anchor_can_support_tense_same_intervention_pair() -> N
     )[0]
 
     assert candidate.receipt_ids == ("negative", "null")
-    assert candidate_alpha_tier(candidate) == "elite_alpha"
+    assert candidate_alpha_tier(candidate) == "publishable_alpha"
+
+
+def test_weak_source_format_does_not_promote_pair_to_elite() -> None:
+    hits = [
+        _hit(
+            "promise",
+            "Resveratrol activates mitochondrial exercise mechanism",
+            "Resveratrol improved mitochondrial function and running performance.",
+        ),
+        _hit(
+            "supplement",
+            "Conference supplement abstract: Resveratrol blunts exercise training adaptation",
+            "Randomized trial observed resveratrol blunted exercise training adaptation.",
+        ),
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic="resveratrol exercise training adaptation",
+        required_anchor_terms=("resveratrol",),
+    )[0]
+
+    assert "shape:promise_outcome_reversal" in candidate.reasons
+    assert candidate_alpha_tier(candidate) == "publishable_alpha"
 
 
 @pytest.mark.parametrize("case", _golden_cases(), ids=lambda case: case["name"])
@@ -1244,6 +1371,113 @@ def test_miner_does_not_promote_question_review_to_elite() -> None:
     )
 
     assert all(candidate_alpha_tier(candidate) != "elite_alpha" for candidate in candidates)
+
+
+def test_miner_requires_elite_bridge_to_preserve_topic_anchor() -> None:
+    hits = [
+        _hit(
+            "metabolic",
+            "Effect of pharmacological and physical interventions on diabetic rats",
+            "Metformin improved diabetic metabolism in male rats.",
+        ),
+        _hit(
+            "exercise",
+            "Physical exercise training but not metformin attenuates diabetic markers",
+            "Exercise attenuated diabetic markers while metformin did not.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="metformin resistance training adaptation",
+        required_anchor_terms=("metformin", "training"),
+        include_discovery=True,
+    )
+
+    assert all(candidate_alpha_tier(candidate) != "elite_alpha" for candidate in candidates)
+
+
+def test_miner_does_not_promote_recommendation_proxy_receipts_to_elite() -> None:
+    hits = [
+        _hit(
+            "proxy",
+            "Faculty Opinions recommendation of metformin blunts muscle hypertrophy",
+            "Recommendation of a metformin resistance training paper.",
+        ),
+        _hit(
+            "protocol",
+            "Metformin to augment strength training effective response in seniors",
+            "Protocol expected metformin would augment training response.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="metformin resistance training adaptation",
+        required_anchor_terms=("metformin", "training"),
+        include_discovery=True,
+    )
+
+    assert all(candidate_alpha_tier(candidate) != "elite_alpha" for candidate in candidates)
+
+
+def test_miner_prefers_named_program_reversal_over_loose_topic_pair() -> None:
+    hits = [
+        _hit(
+            "masters-protocol",
+            "METFORMIN TO AUGMENT STRENGTH TRAINING EFFECTIVE RESPONSE IN SENIORS: THE MASTERS TRIAL",
+            "The MASTERS protocol hypothesized metformin would augment strength training.",
+        ),
+        _hit(
+            "masters-outcome",
+            "Metformin blunts muscle hypertrophy in response to progressive resistance exercise training: The MASTERS trial",
+            "The outcome trial observed metformin blunted resistance training hypertrophy.",
+        ),
+        _hit(
+            "swim",
+            "Swim training reduces metformin levels in insulin resistant rats",
+            "Swim training reduced metformin levels in insulin resistant rats.",
+        ),
+        _hit(
+            "prediabetes",
+            "Independent and combined effects of exercise training and metformin on insulin sensitivity",
+            "Exercise training improved insulin sensitivity with metformin.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="metformin resistance training adaptation",
+        required_anchor_terms=("metformin", "training"),
+        include_discovery=True,
+    )
+
+    assert candidates[0].receipt_ids == ("masters-protocol", "masters-outcome")
+    assert "coupling:named_program" in candidates[0].reasons
+
+
+def test_miner_rejects_drug_resistance_false_context_for_training_topic() -> None:
+    hits = [
+        _hit(
+            "cancer",
+            "Metformin treatment reduces temozolomide resistance of glioblastoma cells",
+            "Metformin reduced drug resistance in cancer cells.",
+        ),
+        _hit(
+            "insulin",
+            "Independent effects of exercise training and metformin on insulin sensitivity",
+            "Exercise training improved insulin sensitivity with metformin.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="metformin resistance training adaptation",
+        required_anchor_terms=("metformin", "resistance"),
+        include_discovery=True,
+    )
+
+    assert candidates == []
 
 
 def test_pipeline_raises_when_no_receipt_bound_candidate() -> None:

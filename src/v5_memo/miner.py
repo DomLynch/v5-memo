@@ -81,10 +81,19 @@ _ELITE_SHAPES = frozenset({
     "shape:expectation_reversal",
 })
 _SYNTHESIS_TITLE_TERMS = frozenset({
-    "candidate", "commentary", "consensus", "guideline", "meta", "perspective",
-    "position", "potential", "question", "review", "stand", "strategy", "systematic",
+    "candidate", "commentary", "consensus", "guideline", "meta", "opinion", "opinions",
+    "perspective", "position", "potential", "question", "recommendation",
+    "recommendations", "review", "stand", "strategy", "systematic",
 })
-_CONTEXT_ANCHOR_BACKFILL = frozenset({"exercise", "resistance", "strength", "training"})
+_WEAK_ELITE_SOURCE_TERMS = frozenset({
+    "abstract", "conference", "editorial", "poster", "supplement",
+})
+_TOPIC_CONTEXT_STOP = frozenset({
+    "adapt", "adaptation", "aging", "angle", "condition", "effect", "effects",
+    "evidence", "healthspan", "human", "intervention", "longevity", "mechanism",
+    "mechanisms", "outcome", "outcomes", "pharmacology", "response", "responses",
+    "reversal", "study", "trial",
+})
 
 
 def mine_insights(
@@ -103,6 +112,7 @@ def mine_insights(
     full_token_sets = {hit.hit_id: _tokens(hit.text) for hit in clean_hits}
     title_token_sets = {hit.hit_id: _tokens(hit.title) for hit in clean_hits}
     anchor_terms = frozenset(required_anchor_terms)
+    topic_context_terms = _topic_context_terms(topic, anchor_terms)
     doc_counts = Counter(term for terms in full_token_sets.values() for term in terms)
 
     candidates: list[InsightCandidate] = []
@@ -130,7 +140,7 @@ def mine_insights(
         source_keys = {left.source_key, right.source_key}
         if len(source_keys) < 2:
             continue
-        tension_terms = _tension_terms(left.text, right.text)
+        tension_terms = _hit_tension_terms(left, right)
         shape_reasons = _shape_reasons(
             left,
             right,
@@ -139,6 +149,15 @@ def mine_insights(
         )
         if not shape_reasons:
             continue
+        if not _pair_has_topic_context(left, right, topic_context_terms, shape_reasons):
+            continue
+        if anchor_terms and set(shape_reasons) & _ELITE_SHAPES and not anchor_bridge:
+            continue
+        coupling_reasons = _coupling_reasons(
+            left,
+            right,
+            pair_anchor_terms=pair_anchor_terms,
+        )
         elite_anchor_bridge = _has_elite_anchor_bridge(
             anchor_bridge,
             pair_anchor_terms,
@@ -156,9 +175,11 @@ def mine_insights(
             continue
         if set(shape_reasons) == {"shape:directional_reversal"} and len(bridge) < 2:
             continue
-        tier = _alpha_tier(shape_reasons, tension_terms)
-        if tier == "elite_alpha" and len(bridge) == 1 and len(bridge[0]) < 8:
-            continue
+        tier = _alpha_tier(shape_reasons)
+        if tier == "elite_alpha" and (
+            _is_weak_elite_receipt(left) or _is_weak_elite_receipt(right)
+        ):
+            tier = "publishable_alpha"
         if tier == "discovery_seed" and not include_discovery:
             continue
         score = score_connection(
@@ -179,12 +200,83 @@ def mine_insights(
             score=score.score,
             novelty_score=score.novelty_score,
             evidence_score=score.evidence_score,
-            reasons=(*score.reasons, *_direction_cautions(left.text, right.text), f"tier:{tier}"),
+            reasons=(
+                *score.reasons,
+                *coupling_reasons,
+                *_direction_cautions(left.text, right.text),
+                f"tier:{tier}",
+            ),
             receipt_roles=_receipt_roles(left, right, shape_reasons),
         ))
-    return sorted(candidates, key=lambda c: (c.score, c.novelty_score), reverse=True)[
+    return sorted(candidates, key=_candidate_rank, reverse=True)[
         :max(0, max_candidates)
     ]
+
+
+def _candidate_rank(candidate: InsightCandidate) -> tuple[bool, int, int, int, int]:
+    return (
+        "coupling:named_program" in candidate.reasons,
+        candidate.score,
+        candidate.novelty_score,
+        candidate.evidence_score,
+        len(candidate.bridge_terms),
+    )
+
+def _topic_context_terms(topic: str, anchor_terms: frozenset[str]) -> frozenset[str]:
+    if len(anchor_terms) != 1:
+        return frozenset()
+    ordered = [
+        token
+        for raw in _WORD.findall(topic.casefold())
+        if (
+            token := _norm_token(raw)
+        ) not in _STOP
+        and token not in _TOPIC_CONTEXT_STOP
+    ]
+    if len(ordered) < 2:
+        return frozenset()
+    return frozenset(token for token in ordered if token not in anchor_terms)
+
+
+def _pair_has_topic_context(
+    left: CorpusHit,
+    right: CorpusHit,
+    context_terms: frozenset[str],
+    shape_reasons: tuple[str, ...],
+) -> bool:
+    if not context_terms:
+        return True
+    left_has = _has_topic_context(left, context_terms)
+    right_has = _has_topic_context(right, context_terms)
+    if set(shape_reasons) & _ELITE_SHAPES:
+        return left_has or right_has
+    return left_has and right_has
+
+
+def _has_topic_context(hit: CorpusHit, context_terms: frozenset[str]) -> bool:
+    if _tokens(hit.title) & context_terms:
+        return True
+    hit_terms = _tokens(hit.text)
+    required = 1 if len(context_terms) == 1 else 2
+    return len(hit_terms & context_terms) >= required
+
+
+def _coupling_reasons(
+    left: CorpusHit,
+    right: CorpusHit,
+    *,
+    pair_anchor_terms: frozenset[str],
+) -> tuple[str, ...]:
+    shared = _raw_title_terms(left.title) & _raw_title_terms(right.title)
+    for raw in shared:
+        token = _norm_token(raw.casefold())
+        if token not in pair_anchor_terms and token not in _BRIDGE_STOP and raw.isupper():
+            return ("coupling:named_program",)
+    return ()
+
+
+def _raw_title_terms(title: str) -> frozenset[str]:
+    return frozenset(re.findall(r"[A-Za-z][A-Za-z0-9]{2,}", title))
 
 
 def _dedupe_hits(hits: Sequence[CorpusHit]) -> list[CorpusHit]:
@@ -264,15 +356,6 @@ def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 3) -> tuple[
             out.append(token)
             if len(out) >= limit:
                 return tuple(out)
-    if out and len(out) < min(limit, 2):
-        for query in seed_queries:
-            for raw in _WORD.findall(query.casefold()):
-                token = _norm_token(raw)
-                if token in _CONTEXT_ANCHOR_BACKFILL and token not in seen:
-                    seen.add(token)
-                    out.append(token)
-                    if len(out) >= min(limit, 2):
-                        return tuple(out)
     return tuple(out)
 
 
@@ -346,6 +429,21 @@ def _tension_terms(left: str, right: str) -> tuple[str, ...]:
     if len(a) != 1 or len(b) != 1 or a == b:
         return ()
     return tuple(sorted(a | b))
+
+
+def _hit_tension_terms(left: CorpusHit, right: CorpusHit) -> tuple[str, ...]:
+    a = _direction_polarity(left)
+    b = _direction_polarity(right)
+    if len(a) != 1 or len(b) != 1 or a == b:
+        return ()
+    return tuple(sorted(a | b))
+
+
+def _direction_polarity(hit: CorpusHit) -> frozenset[str]:
+    title_polarity = _polarity(hit.title) - {"mixed"}
+    if len(title_polarity) == 1:
+        return title_polarity
+    return _polarity(hit.text) - {"mixed"}
 
 
 def _direction_cautions(left: str, right: str) -> tuple[str, ...]:
@@ -484,15 +582,22 @@ def _has_cross_receipt_split(
     return bool(left & a and right & b) or bool(left & b and right & a)
 
 
-def _alpha_tier(shape_reasons: tuple[str, ...], tension_terms: tuple[str, ...]) -> str:
+def _alpha_tier(shape_reasons: tuple[str, ...]) -> str:
     reasons = set(shape_reasons)
     if reasons & _ELITE_SHAPES:
-        return "elite_alpha"
-    if "shape:directional_reversal" in reasons and set(tension_terms) == {"negative", "null"}:
         return "elite_alpha"
     if reasons & _PUBLISHABLE_SHAPES:
         return "publishable_alpha"
     return "discovery_seed"
+
+
+def _is_weak_elite_receipt(hit: CorpusHit) -> bool:
+    text = " ".join(
+        part
+        for part in (hit.title, hit.venue or "", hit.doi or "", hit.url)
+        if part
+    )
+    return bool(_tokens(text) & _WEAK_ELITE_SOURCE_TERMS)
 
 
 def _receipt_roles(

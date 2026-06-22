@@ -58,6 +58,24 @@ _FULLRAW_PAIR_DROP = _FULLRAW_CORE_DROP | {
     "trained",
 }
 _FULLRAW_WEAK_PAIR_TERMS = {"resistance", "strength", "training"}
+_DOI_BACKFILL_PRIORITY_TERMS = {
+    "attenuate",
+    "attenuated",
+    "augment",
+    "blunt",
+    "blunted",
+    "expected",
+    "hypothesis",
+    "impair",
+    "impaired",
+    "mimic",
+    "mimetic",
+    "protocol",
+    "randomized",
+    "reduce",
+    "reduced",
+    "trial",
+}
 
 
 class OpenAlexFullCorpusSearchClient:
@@ -247,6 +265,7 @@ class FullRawCorpusSearchClient:
         search_budget_seconds: float = 180.0,
         sweep_wait_seconds: float = 0.0,
         sweep_poll_seconds: float = 1.0,
+        doi_abstract_backfill_limit: int = 0,
         min_shards_searched: int = 0,
         min_sources_searched: int = 0,
         progress: bool = False,
@@ -261,6 +280,7 @@ class FullRawCorpusSearchClient:
         self._search_budget_seconds = max(0.0, search_budget_seconds)
         self._sweep_wait_seconds = max(0.0, sweep_wait_seconds)
         self._sweep_poll_seconds = max(0.0, sweep_poll_seconds)
+        self._doi_abstract_backfill_limit = max(0, doi_abstract_backfill_limit)
         self._min_shards_searched = max(0, min_shards_searched)
         self._min_sources_searched = max(0, min_sources_searched)
         self._progress = progress
@@ -276,6 +296,10 @@ class FullRawCorpusSearchClient:
             search_budget_seconds=_float_env("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", 180.0),
             sweep_wait_seconds=_float_env("V5_MEMO_FULL_RAW_SWEEP_WAIT_SECONDS", 0.0),
             sweep_poll_seconds=_float_env("V5_MEMO_FULL_RAW_SWEEP_POLL_SECONDS", 1.0),
+            doi_abstract_backfill_limit=_int_env(
+                "V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT",
+                6,
+            ),
             min_shards_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", 0),
             min_sources_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", 0),
             progress=_bool_env("V5_MEMO_FULL_RAW_PROGRESS", False),
@@ -344,10 +368,14 @@ class FullRawCorpusSearchClient:
             "search_passes": tuple(dict.fromkeys(passes_run)),
             "rank_modes": tuple(dict.fromkeys(rank_modes_run)),
         }
-        return [
+        ranked_hits = [
             replace(hit, metadata={**hit.metadata, "fullraw_search_receipt": receipt})
             for _, hit in sorted(best.values(), key=lambda item: item[0], reverse=True)[:limit]
         ]
+        return _backfill_missing_openalex_abstracts(
+            ranked_hits,
+            limit=self._doi_abstract_backfill_limit,
+        )
 
     def _log_progress(self, message: str) -> None:
         if self._progress:
@@ -590,6 +618,84 @@ def _parse_openalex_work(item: Any, *, match_count: int | None) -> CorpusHit | N
             "query_match_count": match_count,
         },
     )
+
+
+def _backfill_missing_openalex_abstracts(
+    hits: list[CorpusHit],
+    *,
+    limit: int,
+) -> list[CorpusHit]:
+    if limit <= 0:
+        return hits
+    out: list[CorpusHit | None] = list(hits)
+    backfilled = 0
+    eligible = [
+        (index, hit)
+        for index, hit in enumerate(hits)
+        if hit.doi
+    ]
+    eligible.sort(key=lambda item: _doi_backfill_priority(item[1]), reverse=True)
+    for index, hit in eligible:
+        if backfilled >= limit:
+            break
+        doi = hit.doi
+        if doi is None:
+            continue
+        enriched = _fetch_openalex_work_by_doi(doi)
+        if enriched is None:
+            continue
+        backfilled += 1
+        if enriched.title and not _titles_match(hit.title, enriched.title):
+            out[index] = None
+            continue
+        if hit.abstract or not enriched.abstract:
+            continue
+        out[index] = replace(
+            hit,
+            abstract=enriched.abstract,
+            year=hit.year or enriched.year,
+            venue=hit.venue or enriched.venue,
+            metadata={**hit.metadata, "abstract_backfill": "openalex_doi"},
+        )
+    return [hit for hit in out if hit is not None]
+
+
+def _doi_backfill_priority(hit: CorpusHit) -> int:
+    text = f"{hit.title} {hit.venue or ''}".casefold()
+    terms = set(re.findall(r"[a-z][a-z0-9]+", text))
+    return len(terms & _DOI_BACKFILL_PRIORITY_TERMS)
+
+
+def _fetch_openalex_work_by_doi(doi: str) -> CorpusHit | None:
+    encoded = urllib.parse.quote(doi, safe="")
+    request = Request(
+        f"https://api.openalex.org/works/doi:{encoded}",
+        headers={"User-Agent": "v5-memo/0.1"},
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=12.0) as response:
+            data: Any = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, ValueError):
+        return None
+    return _parse_openalex_work(data, match_count=None)
+
+
+def _titles_match(left: str, right: str) -> bool:
+    left_terms = _title_terms(left)
+    right_terms = _title_terms(right)
+    if not left_terms or not right_terms:
+        return True
+    return len(left_terms & right_terms) / min(len(left_terms), len(right_terms)) >= 0.45
+
+
+def _title_terms(title: str) -> set[str]:
+    stop = {"and", "for", "from", "into", "the", "with", "without", "study", "trial"}
+    return {
+        raw
+        for raw in re.findall(r"[a-z][a-z0-9]{2,}", title.casefold())
+        if raw not in stop
+    }
 
 
 def _parse_paper_hit(item: Any) -> CorpusHit | None:

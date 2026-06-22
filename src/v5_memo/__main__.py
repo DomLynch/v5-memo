@@ -56,6 +56,8 @@ _TOPIC_FILTER_DROP = frozenset({
     "trial",
     "trials",
 })
+_SHAPE_CONTEXT_TERMS = frozenset({"exercise", "resistance", "strength", "training"})
+
 
 class DemoSearch:
     def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
@@ -203,8 +205,13 @@ def main() -> None:
         if not explicit_queries:
             planned_queries = [query for query in queries if query not in set(base_queries)]
             planned_queries = _topic_anchored_queries(planned_queries, args.topic)
+            shape_queries = _alpha_shape_queries(args.topic)
             topic_has_anchors = bool(query_anchor_terms(base_queries))
-            queries = [*base_queries, *planned_queries] if topic_has_anchors else planned_queries or base_queries
+            queries = (
+                _dedupe_queries([*base_queries, *planned_queries, *shape_queries])
+                if topic_has_anchors
+                else planned_queries or base_queries
+            )
     anchor_queries = base_queries
     if not explicit_queries and not query_anchor_terms(base_queries):
         anchor_queries = queries
@@ -249,6 +256,33 @@ def _topic_anchored_queries(queries: Sequence[str], topic: str) -> list[str]:
         if len(topic_anchors & set(_topic_filter_terms(query))) >= required_overlap
     ]
     return filtered
+
+
+def _alpha_shape_queries(topic: str) -> list[str]:
+    terms = list(_topic_filter_terms(topic))
+    if len(terms) < 2:
+        return []
+    split_at = next(
+        (index for index, term in enumerate(terms[1:], start=1) if term in _SHAPE_CONTEXT_TERMS),
+        1,
+    )
+    anchor = " ".join(terms[:split_at])
+    rest = " ".join(terms[split_at:])
+    return [
+        f"{anchor} expected augment {rest} protocol",
+        f"{anchor} blunted impaired attenuated {rest} outcome",
+    ]
+
+
+def _dedupe_queries(queries: Sequence[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for query in queries:
+        clean = " ".join(query.split())
+        if clean and clean not in seen:
+            seen.add(clean)
+            out.append(clean)
+    return out
 
 
 def _topic_filter_terms(topic: str) -> tuple[str, ...]:
