@@ -12,6 +12,7 @@ from v5_memo.client import (
     ResearkaSearchClient,
 )
 from v5_memo.coverage import current_search_coverage, require_full_raw_corpus
+from v5_memo.miner import query_anchor_terms
 from v5_memo.minimax_writer import (
     MiniMaxM3CandidateSelector,
     MiniMaxM3MemoWriter,
@@ -136,6 +137,7 @@ def main() -> None:
         )
         if not explicit_queries:
             planned_queries = [query for query in queries if query not in set(base_queries)]
+            planned_queries = _topic_anchored_queries(planned_queries, args.topic)
             queries = planned_queries or queries
     anchor_queries = base_queries if explicit_queries else queries
     wider_recall = planner_mode == "minimax" or selector_mode == "minimax"
@@ -159,6 +161,18 @@ def _require_full_raw_or_exit() -> None:
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(2) from exc
+
+
+def _topic_anchored_queries(queries: Sequence[str], topic: str) -> list[str]:
+    topic_anchors = set(query_anchor_terms([topic], limit=4))
+    if not topic_anchors:
+        return list(queries)
+    filtered = [
+        query
+        for query in queries
+        if topic_anchors & set(query_anchor_terms([query], limit=4))
+    ]
+    return filtered or list(queries)
 
 
 if __name__ == "__main__":

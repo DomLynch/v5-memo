@@ -294,6 +294,69 @@ def test_planned_cli_drops_automatic_broad_topic_seed(
     }
 
 
+def test_planned_cli_drops_queries_that_lose_specific_topic_anchor(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: dict[str, list[str]] = {}
+
+    class FakePlanner:
+        def plan(
+            self,
+            *,
+            topic: str,
+            seed_queries: Sequence[str],
+            limit: int = 8,
+        ) -> list[str]:
+            del topic, seed_queries, limit
+            return [
+                "post activation potentiation cryotherapy attenuate 1rm strength",
+                "cold water immersion blunts hypertrophy resistance trained men",
+            ]
+
+    class FakeFullRaw:
+        configured = True
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seed_queries = kwargs["seed_queries"]
+        anchor_queries = kwargs["anchor_queries"]
+        assert isinstance(seed_queries, list)
+        assert isinstance(anchor_queries, list)
+        seen["seed_queries"] = seed_queries
+        seen["anchor_queries"] = anchor_queries
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr("v5_memo.__main__.FullRawCorpusSearchClient.from_env", lambda strict=False: FakeFullRaw())
+    monkeypatch.setattr("v5_memo.__main__.MiniMaxM3SearchPlanner.from_env", lambda: FakePlanner())
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "minimax",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+            "--topic",
+            "cold water immersion resistance training adaptation",
+        ],
+    )
+
+    main()
+
+    assert "Alpha memo" in capsys.readouterr().out
+    assert seen == {
+        "seed_queries": ["cold water immersion blunts hypertrophy resistance trained men"],
+        "anchor_queries": ["cold water immersion blunts hypertrophy resistance trained men"],
+    }
+
+
 def test_planned_cli_self_corrects_when_first_planned_anchor_drifts(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
