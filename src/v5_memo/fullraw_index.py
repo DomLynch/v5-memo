@@ -1351,7 +1351,6 @@ def _search_one_shard(
     finally:
         index.close()
 
-
 def discover_shard_paths(shard_dir: Path, *, trust_filenames: bool = False) -> list[Path]:
     paths = sorted(path for path in shard_dir.rglob("*.sqlite") if path.is_file())
     if trust_filenames:

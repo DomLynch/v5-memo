@@ -241,6 +241,8 @@ def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 3) -> tuple[
         "response",
         "reversal",
         "stress",
+        "supplement",
+        "supplementation",
         "synthesi",
         "train",
         "trained",
@@ -254,14 +256,25 @@ def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 3) -> tuple[
     out: list[str] = []
     seen: set[str] = set()
     for query in seed_queries:
+        context_terms: list[str] = []
         for raw in _WORD.findall(query.casefold()):
             token = _norm_token(raw)
+            if token in {"exercise", "training"}:
+                context_terms.append(token)
             if token in _STOP or token in generic or token in seen:
                 continue
             seen.add(token)
             out.append(token)
             if len(out) >= limit:
                 return tuple(out)
+        if out:
+            for token in context_terms:
+                if token in seen:
+                    continue
+                seen.add(token)
+                out.append(token)
+                if len(out) >= limit:
+                    return tuple(out)
     return tuple(out)
 
 
