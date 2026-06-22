@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from collections.abc import Sequence
 
@@ -24,6 +25,37 @@ from v5_memo.retriever import CorpusSearcher
 from v5_memo.schemas import CorpusHit
 from v5_memo.writer import render_memo
 
+_TOPIC_TERM_RE = re.compile(r"[a-z][a-z0-9]{2,}")
+_TOPIC_FILTER_DROP = frozenset({
+    "adaptation",
+    "adaptations",
+    "adult",
+    "adults",
+    "aging",
+    "effect",
+    "effects",
+    "evidence",
+    "healthspan",
+    "human",
+    "humans",
+    "intervention",
+    "longevity",
+    "mechanism",
+    "mechanisms",
+    "older",
+    "outcome",
+    "outcomes",
+    "pharmacology",
+    "response",
+    "responses",
+    "reversal",
+    "study",
+    "studies",
+    "supplement",
+    "supplementation",
+    "trial",
+    "trials",
+})
 
 class DemoSearch:
     def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
@@ -176,7 +208,9 @@ def _require_full_raw_or_exit() -> None:
 
 
 def _topic_anchored_queries(queries: Sequence[str], topic: str) -> list[str]:
-    topic_anchors = set(query_anchor_terms([topic], limit=4))
+    if not query_anchor_terms([topic], limit=4):
+        return list(queries)
+    topic_anchors = set(_topic_filter_terms(topic))
     if not topic_anchors:
         return list(queries)
     required_overlap = min(2, len(topic_anchors))
@@ -186,6 +220,17 @@ def _topic_anchored_queries(queries: Sequence[str], topic: str) -> list[str]:
         if len(topic_anchors & set(_topic_filter_terms(query))) >= required_overlap
     ]
     return filtered
+
+
+def _topic_filter_terms(topic: str) -> tuple[str, ...]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in _TOPIC_TERM_RE.findall(topic.casefold()):
+        if raw in _TOPIC_FILTER_DROP or raw in seen:
+            continue
+        seen.add(raw)
+        out.append(raw)
+    return tuple(out[:4])
 
 
 def _int_env(name: str) -> int:
