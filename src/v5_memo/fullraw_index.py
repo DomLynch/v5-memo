@@ -55,7 +55,7 @@ _STOP = {
     "el", "en", "la", "los", "metode", "pada", "penelitian",
 }
 _BACKEND = "v5-fullraw-indexed-fts5"
-_SWEEP_STRATEGY = "profile_relaxed_v3"
+_SWEEP_STRATEGY = "profile_relaxed_v4"
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
@@ -1177,15 +1177,21 @@ def _prioritize_sweep_pass_entries(
             str(entry.path),
         )
 
-    prefix: list[ShardCatalogEntry] = []
     sources = sorted(by_source, key=lambda source: (len(by_source[source]), source))
-    for source in sources:
-        if len(prefix) >= prefix_size:
+    ordered_by_source = {source: sorted(by_source[source], key=candidate_key) for source in sources}
+    ordered: list[ShardCatalogEntry] = []
+    while len(ordered) < len(entries):
+        before = len(ordered)
+        for source in sources:
+            source_entries = ordered_by_source[source]
+            if source_entries:
+                _extend_unique_entries(ordered, source_entries[:1], len(entries))
+                del source_entries[0]
+        if len(ordered) == before:
             break
-        _extend_unique_entries(prefix, sorted(by_source[source], key=candidate_key), prefix_size)
-    _extend_unique_entries(prefix, entries, prefix_size)
-    selected_paths = {entry.path for entry in prefix}
-    return [*prefix, *(entry for entry in entries if entry.path not in selected_paths)]
+    selected_paths = {entry.path for entry in ordered}
+    _extend_unique_entries(ordered, (entry for entry in entries if entry.path not in selected_paths), len(entries))
+    return ordered
 
 
 def _profile_relaxed_sweep_query(
