@@ -11,6 +11,7 @@ import urllib.parse
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from html import unescape
+from http.client import RemoteDisconnected
 from itertools import combinations
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -195,7 +196,7 @@ class ResearkaSearchClient:
         try:
             with urlopen(request, timeout=self._timeout) as response:
                 data: Any = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+        except (HTTPError, URLError, TimeoutError, RemoteDisconnected, ValueError) as exc:
             if self._strict:
                 raise SearchBackendError(f"Researka search failed: {exc}") from exc
             return []
@@ -341,13 +342,22 @@ class FullRawCorpusSearchClient:
             headers=headers,
             method="POST",
         )
-        try:
-            with urlopen(request, timeout=self._timeout) as response:
-                data: Any = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
-            if self._strict:
-                raise SearchBackendError(f"Full raw corpus search failed: {exc}") from exc
-            return []
+        for attempt in range(2):
+            try:
+                with urlopen(request, timeout=self._timeout) as response:
+                    data: Any = json.loads(response.read().decode("utf-8"))
+                break
+            except RemoteDisconnected as exc:
+                if attempt == 0:
+                    self._log_progress(f"fullraw remote disconnect; retrying once: {search_pass.query}")
+                    continue
+                if self._strict:
+                    raise SearchBackendError(f"Full raw corpus search failed: {exc}") from exc
+                return []
+            except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+                if self._strict:
+                    raise SearchBackendError(f"Full raw corpus search failed: {exc}") from exc
+                return []
         receipt = _full_raw_shard_receipt(data)
         if not self._receipt_is_sufficient(receipt):
             message = f"Full raw corpus search coverage too narrow: {receipt}"
