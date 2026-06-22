@@ -1869,6 +1869,8 @@ def run_server() -> None:
     sweep_workers = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKERS") or 1
     sweep_max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
     sweep_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT") or 128
+    sweep_pass_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT") or sweep_shard_limit
+    sweep_pass_shard_limit = max(1, min(sweep_pass_shard_limit, sweep_shard_limit))
     sweep_timeout_seconds = _float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SWEEP_TIMEOUT_SECONDS", "")) or 300.0
     sweep_timeout_seconds = max(1.0, min(sweep_timeout_seconds, 3600.0))
     sweep_shard_timeout_seconds = _float_or_none(
@@ -2001,8 +2003,9 @@ def run_server() -> None:
                 remaining_entries = [
                     entry for entry in sweep_entries if str(entry.path) not in completed_path_strings
                 ]
+                pass_entries = remaining_entries[:sweep_pass_shard_limit]
                 hits, completed_paths, timed_out = _search_shard_paths_with_paths(
-                    [entry.path for entry in remaining_entries],
+                    [entry.path for entry in pass_entries],
                     sweep_query,
                     limit=limit,
                     year_min=year_min,
@@ -2018,6 +2021,9 @@ def run_server() -> None:
                 receipt["sweep_scope"] = "relevant"
                 receipt["sweep_shard_limit"] = sweep_shard_limit
                 receipt["sweep_selected_shards"] = len(sweep_entries)
+                receipt["sweep_pass_shard_limit"] = sweep_pass_shard_limit
+                receipt["sweep_pass_selected_shards"] = len(pass_entries)
+                receipt["sweep_remaining_shards"] = max(0, len(sweep_entries) - len(completed_path_strings))
                 receipt["sweep_timed_out"] = timed_out
                 receipt["sweep_timeout_seconds"] = sweep_timeout_seconds
                 receipt["sweep_shard_timeout_seconds"] = sweep_shard_timeout_seconds
