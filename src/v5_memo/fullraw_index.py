@@ -29,19 +29,19 @@ from v5_memo.fullraw_service import RawFile, iter_raw_file_hits, load_or_build_m
 
 _WORD = re.compile(r"[A-Za-z0-9]+")
 _STOP = {
-    "about", "above", "after", "also", "among", "and", "are", "because", "been", "both",
+    "about", "above", "abstract", "after", "also", "among", "and", "are", "because", "been", "both",
     "but", "can", "could", "does", "during", "for", "from", "has", "have", "into", "its",
     "may", "no", "not", "off", "or", "our", "out", "over", "per", "such", "than", "that", "the",
     "their", "these", "this", "those", "through", "was", "were", "with", "within",
     "without", "would", "all", "any", "between", "each", "other",
-    "there", "using", "which", "while", "who", "whose", "will", "you", "your",
+    "should", "there", "using", "which", "while", "who", "whose", "will", "you", "your",
     "of", "in", "by", "to", "is", "be", "at", "on", "as", "an",
     "analysis", "associated", "based", "better", "compared", "data", "effect",
     "effects", "first", "form", "found", "here", "it", "method", "methods",
     "model", "models", "more", "new", "one", "paper", "provide", "provided",
     "related", "result", "results", "show", "showed", "shown", "significant",
     "significantly", "studies", "study", "two", "use", "used", "we", "work",
-    "dan", "di", "findings", "general", "however", "ini", "many", "merupakan",
+    "dan", "de", "di", "findings", "general", "however", "ini", "many", "merupakan",
     "process", "role", "therefore", "understanding", "well", "yang",
     "adalah", "analisis", "dengan", "dilakukan", "hasil", "including", "made",
     "metode", "pada", "penelitian",

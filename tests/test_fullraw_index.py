@@ -388,7 +388,9 @@ def test_fullraw_index_profiles_year_citation_and_topics(tmp_path: Path) -> None
     topic_terms = profile["topic_terms"]
     assert isinstance(topic_terms, tuple)
     assert "forecast" in topic_terms
-    assert not {"of", "in", "by", "to", "was", "study", "data", "used", "or", "however"} & set(topic_terms)
+    assert not {
+        "abstract", "of", "in", "by", "to", "was", "study", "data", "used", "or", "however", "should",
+    } & set(topic_terms)
 
 
 def test_fullraw_index_search_supports_citation_and_recency_rank_modes(tmp_path: Path) -> None:
