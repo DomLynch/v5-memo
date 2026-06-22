@@ -393,6 +393,38 @@ def test_fullraw_index_profiles_year_citation_and_topics(tmp_path: Path) -> None
     } & set(topic_terms)
 
 
+def test_fullraw_index_profile_samples_across_shard(tmp_path: Path) -> None:
+    shard = tmp_path / "fullraw_profile_spread.sqlite"
+    rows = []
+    for index in range(30):
+        title = f"Generic record {index}"
+        abstract = "Background material."
+        if index == 21:
+            title = "Management forecast disclosure"
+            abstract = "Managers disclose forecast guidance."
+        rows.append({
+            "doi": f"https://doi.org/10.example/spread-{index}",
+            "display_name": title,
+            "abstract": abstract,
+            "publication_year": 1990 + index,
+            "cited_by_count": index,
+        })
+    raw_file = _raw_file(tmp_path, "openalex_profile_spread", rows)
+    fts_index = FullRawFtsIndex(shard)
+    try:
+        fts_index.index_files([raw_file], commit_interval=10)
+        profile = fts_index.profile(topic_limit=8, sample_limit=5)
+    finally:
+        fts_index.close()
+
+    assert profile["profile_sample_size"] == 5
+    assert profile["year_min"] == 1990
+    assert profile["year_max"] == 2019
+    topic_terms = profile["topic_terms"]
+    assert isinstance(topic_terms, tuple)
+    assert "forecast" in topic_terms
+
+
 def test_fullraw_index_search_supports_citation_and_recency_rank_modes(tmp_path: Path) -> None:
     shard = tmp_path / "fullraw_rank_modes.sqlite"
     raw_file = _raw_file(tmp_path, "openalex_rank_modes", [
