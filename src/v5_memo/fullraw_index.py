@@ -20,7 +20,12 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Iterable
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    TimeoutError as FuturesTimeoutError,
+    as_completed,
+)
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -917,13 +922,22 @@ def search_shards(
     year_max: int = 2100,
     rank_mode: str = "relevance",
     catalog: list[ShardCatalogEntry] | None = None,
+    timeout_seconds: float | None = None,
 ) -> list[dict[str, object]]:
     """Search multiple shard DBs and merge ranked, deduped results."""
     if catalog is None:
         paths = select_search_shard_paths([path for path in index_paths if path.exists()])
     else:
         paths = [entry.path for entry in select_search_shard_entries(catalog, query=query)]
-    return _search_shard_paths(paths, query, limit=limit, year_min=year_min, year_max=year_max, rank_mode=rank_mode)
+    return _search_shard_paths(
+        paths,
+        query,
+        limit=limit,
+        year_min=year_min,
+        year_max=year_max,
+        rank_mode=rank_mode,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def search_shard_entries(
@@ -935,6 +949,7 @@ def search_shard_entries(
     year_max: int = 2100,
     rank_mode: str = "relevance",
     workers: int | None = None,
+    timeout_seconds: float | None = None,
 ) -> list[dict[str, object]]:
     return _search_shard_paths(
         [entry.path for entry in entries],
@@ -944,6 +959,7 @@ def search_shard_entries(
         year_max=year_max,
         rank_mode=rank_mode,
         workers=workers,
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -956,16 +972,19 @@ def _search_shard_paths(
     year_max: int,
     rank_mode: str,
     workers: int | None = None,
+    timeout_seconds: float | None = None,
 ) -> list[dict[str, object]]:
     merged: dict[str, dict[str, object]] = {}
     worker_count = workers if workers is not None else int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "8"))
     worker_count = max(1, min(worker_count, len(paths) or 1))
-    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+    pool = ThreadPoolExecutor(max_workers=worker_count)
+    try:
         futures = [
             pool.submit(_search_one_shard, path, query, limit, year_min, year_max, rank_mode)
             for path in paths
         ]
-        for future in as_completed(futures):
+        completed = as_completed(futures, timeout=timeout_seconds) if timeout_seconds else as_completed(futures)
+        for future in completed:
             try:
                 hits = future.result()
             except sqlite3.Error:
@@ -975,6 +994,10 @@ def _search_shard_paths(
                 existing = merged.get(key)
                 if existing is None or _hit_score(hit) > _hit_score(existing):
                     merged[key] = hit
+    except FuturesTimeoutError:
+        pass
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     return sorted(
         merged.values(),
         key=lambda hit: (_hit_score(hit), _int_or_none(hit.get("cited_by_count")) or 0),
@@ -1759,6 +1782,7 @@ def run_server() -> None:
         year_min: int,
         year_max: int,
         rank_mode: str,
+        timeout_seconds: float | None,
     ) -> list[dict[str, object]]:
         if shard_dir is not None:
             catalog = current_catalog()
@@ -1770,6 +1794,7 @@ def run_server() -> None:
                 year_max=year_max,
                 rank_mode=rank_mode,
                 catalog=catalog,
+                timeout_seconds=timeout_seconds,
             )
         assert index is not None
         return index.search(query, limit=limit, year_min=year_min, year_max=year_max, rank_mode=rank_mode)
@@ -1887,6 +1912,9 @@ def run_server() -> None:
                 year_min = int(payload.get("year_min") or 1900)
                 year_max = int(payload.get("year_max") or 2100)
                 rank_mode = _rank_mode(payload.get("rank_mode"))
+                timeout_seconds = _float_or_none(payload.get("timeout_seconds"))
+                if timeout_seconds is not None:
+                    timeout_seconds = max(0.1, min(timeout_seconds, 600.0))
             except (TypeError, ValueError, json.JSONDecodeError):
                 _write_json(self, 400, {"error": "bad request"})
                 return
@@ -1930,6 +1958,7 @@ def run_server() -> None:
                     year_min=year_min,
                     year_max=year_max,
                     rank_mode=rank_mode,
+                    timeout_seconds=timeout_seconds,
                 )
                 sweep_status = enqueue_sweep(
                     key=cache_key,

@@ -308,6 +308,49 @@ def test_parallel_shard_build_and_search(tmp_path: Path) -> None:
     assert len([hit for hit in hits if hit["doi"] == "10.2308/tar-9603274096"]) == 1
 
 
+def test_fullraw_shard_search_returns_partial_hits_on_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = [tmp_path / "fast.sqlite", tmp_path / "slow.sqlite"]
+    for path in paths:
+        path.touch()
+
+    def fake_search_one_shard(
+        path: Path,
+        query: str,
+        limit: int,
+        year_min: int,
+        year_max: int,
+        rank_mode: str,
+    ) -> list[dict[str, object]]:
+        del query, limit, year_min, year_max, rank_mode
+        if path.name == "slow.sqlite":
+            time.sleep(0.2)
+        return [{
+            "doi": f"10.example/{path.stem}",
+            "title": path.stem,
+            "score": 1.0,
+        }]
+
+    monkeypatch.setattr(fullraw_index, "_search_one_shard", fake_search_one_shard)
+    started = time.monotonic()
+
+    hits = fullraw_index._search_shard_paths(
+        paths,
+        "resveratrol exercise",
+        limit=5,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        workers=2,
+        timeout_seconds=0.05,
+    )
+
+    assert time.monotonic() - started < 0.15
+    assert [hit["doi"] for hit in hits] == ["10.example/fast"]
+
+
 def test_discover_shard_paths_finds_nested_batch_shards(tmp_path: Path) -> None:
     nested = tmp_path / "batch_00001"
     nested.mkdir()
