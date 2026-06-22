@@ -218,7 +218,7 @@ def _topic_anchored_queries(queries: Sequence[str], topic: str) -> list[str]:
     filtered = [
         query
         for query in queries
-        if len(topic_anchors & set(query_anchor_terms([query], limit=4))) >= required_overlap
+        if len(topic_anchors & set(_topic_filter_terms(query))) >= required_overlap
     ]
     return filtered
 

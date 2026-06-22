@@ -8,7 +8,7 @@ import pytest
 from pytest import MonkeyPatch
 
 from v5_memo import CorpusHit
-from v5_memo.__main__ import main
+from v5_memo.__main__ import _topic_anchored_queries, main
 from v5_memo.client import ResearkaSearchClient
 from v5_memo.schemas import MemoBuildError
 
@@ -100,6 +100,16 @@ def test_seed_planner_uses_topic_outside_demo(
 
     assert "Alpha memo" in capsys.readouterr().out
     assert seen["seed_queries"] == ["resveratrol exercise training adaptation"]
+
+
+def test_topic_anchored_queries_reject_planner_drift_for_specific_topics() -> None:
+    assert _topic_anchored_queries(
+        [
+            "metformin ampk activation skeletal muscle hypertrophy mechanism",
+            "metformin resistance training older adults",
+        ],
+        "metformin resistance training adaptation",
+    ) == ["metformin resistance training older adults"]
 
 
 def test_cli_forwards_memo_coverage_thresholds_from_env(
