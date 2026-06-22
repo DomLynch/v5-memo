@@ -565,6 +565,41 @@ def test_full_raw_client_can_fail_closed_on_narrow_shard_receipt(monkeypatch: ob
     assert client.search("management forecast disclosure", limit=3) == []
 
 
+def test_full_raw_client_strict_mode_continues_after_one_variant_error(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=2,
+        strict=True,
+    )
+    calls = 0
+
+    def fake_search_variant(search_pass: object, *, limit: int) -> list[CorpusHit]:
+        del search_pass, limit
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise SearchBackendError("Full raw corpus search failed: HTTP Error 422")
+        return [
+            CorpusHit(
+                hit_id="10.123/broad",
+                title="Management forecast disclosure breadth",
+                abstract="Broad management forecast disclosure evidence.",
+                year=2024,
+                source="fullraw:openalex",
+                doi="10.123/broad",
+            )
+        ]
+
+    monkeypatch.setattr(client, "_search_variant", fake_search_variant)
+
+    hits = client.search("management forecast disclosure", limit=3)
+
+    assert calls == 2
+    assert hits[0].doi == "10.123/broad"
+
+
 def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "secret")
