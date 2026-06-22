@@ -1007,6 +1007,21 @@ def test_fullraw_search_passes_cover_breadth_depth_modes() -> None:
         "relevance",
     ]
     assert "cold immersion" in [search_pass.query for search_pass in passes]
+    assert "immersion attenuates muscle mass mechanism outcome" in [
+        search_pass.query for search_pass in passes
+    ]
+    assert "immersion attenuates muscle mass risk" in [search_pass.query for search_pass in passes]
+
+
+def test_fullraw_search_passes_use_compact_depth_base_for_long_queries() -> None:
+    passes = _fullraw_search_passes(
+        "artificial intelligence drug discovery clinical trial",
+        limit=8,
+    )
+    by_name = {search_pass.name: search_pass for search_pass in passes}
+
+    assert by_name["adjacent"].query == "drug discovery clinical trial mechanism outcome"
+    assert by_name["falsifier"].query == "drug discovery clinical trial risk"
 
 
 def test_fullraw_search_passes_include_core_variant_before_depth_modes() -> None:

@@ -986,9 +986,10 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
     for variant in pair_variants[:2]:
         if add("broad", variant):
             return out
-    if add("adjacent", f"{query} mechanism outcome"):
+    depth_base = _fullraw_depth_query_base(query)
+    if add("adjacent", f"{depth_base} mechanism outcome"):
         return out
-    if add("falsifier", f"{query} null adverse conflicting"):
+    if add("falsifier", f"{depth_base} risk"):
         return out
     if add("citation_heavy", query, "citation"):
         return out
@@ -1012,6 +1013,14 @@ def _fullraw_core_variant(query: str) -> str:
     if len(core) >= 2 and len(core) < len(terms):
         return " ".join(core)
     return ""
+
+
+def _fullraw_depth_query_base(query: str) -> str:
+    terms = _query_terms(query)
+    if len(terms) < 5:
+        return query
+    variants = _query_variants(query, limit=4)
+    return variants[-1] if variants else query
 
 
 def _fullraw_pair_variants(query: str, *, limit: int) -> list[str]:
