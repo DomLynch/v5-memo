@@ -367,6 +367,9 @@ Rules:
   paired with observed/blunted/attenuated/impaired/null/reduced.
 - Split those two evidence sides into separate title-like queries. Do not pack the
   promise/mechanism terms and the blunted/null outcome terms into one huge query.
+- Return adjacent query pairs when possible: query N should search the promise/mechanism
+  side, query N+1 should search the observed/null/blunted outcome side, and both
+  must share the same specific intervention, construct, product, model, or program.
 - Prefer same intervention/construct/program across evidence objects.
 - At least half the queries must name a specific intervention, construct, product,
   model, program, or mechanism; do not rely on generic words like intervention,

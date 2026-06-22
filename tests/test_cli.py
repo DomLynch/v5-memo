@@ -234,6 +234,66 @@ def test_planned_cli_without_user_query_anchors_to_planned_queries(
     assert seen_seed_queries == [["longevity exercise adaptation"]]
 
 
+def test_planned_cli_drops_automatic_broad_topic_seed(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: dict[str, list[str]] = {}
+
+    class FakePlanner:
+        def plan(
+            self,
+            *,
+            topic: str,
+            seed_queries: Sequence[str],
+            limit: int = 8,
+        ) -> list[str]:
+            del topic, limit
+            return ["resveratrol exercise training adaptation", *seed_queries]
+
+    class FakeFullRaw:
+        configured = True
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seed_queries = kwargs["seed_queries"]
+        anchor_queries = kwargs["anchor_queries"]
+        assert isinstance(seed_queries, list)
+        assert isinstance(anchor_queries, list)
+        seen["seed_queries"] = seed_queries
+        seen["anchor_queries"] = anchor_queries
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr("v5_memo.__main__.FullRawCorpusSearchClient.from_env", lambda strict=False: FakeFullRaw())
+    monkeypatch.setattr("v5_memo.__main__.MiniMaxM3SearchPlanner.from_env", lambda: FakePlanner())
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "minimax",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+            "--topic",
+            "longevity intervention exercise adaptation reversal",
+        ],
+    )
+
+    main()
+
+    assert "Alpha memo" in capsys.readouterr().out
+    assert seen == {
+        "seed_queries": ["resveratrol exercise training adaptation"],
+        "anchor_queries": ["resveratrol exercise training adaptation"],
+    }
+
+
 def test_planned_cli_self_corrects_when_first_planned_anchor_drifts(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
