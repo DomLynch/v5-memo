@@ -1135,6 +1135,30 @@ def test_miner_does_not_promote_potential_strategy_review_to_elite() -> None:
     assert all(candidate_alpha_tier(candidate) != "elite_alpha" for candidate in candidates)
 
 
+def test_miner_does_not_promote_question_review_to_elite() -> None:
+    hits = [
+        _hit(
+            "hwi-question",
+            "Turning up the heat: can post-exercise hot water immersion be used to manipulate acute physiological responses and chronic adaptation following resistance training?",
+            "This narrative review aimed to determine whether hot water immersion could improve acute response and chronic adaptation.",
+        ),
+        _hit(
+            "cwi-trial",
+            "Cold water immersion attenuates anabolic signalling and skeletal muscle fiber hypertrophy",
+            "Cold water immersion attenuated hypertrophy after whole-body resistance training.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="cold water immersion resistance training adaptation",
+        required_anchor_terms=("cold", "immersion"),
+        include_discovery=True,
+    )
+
+    assert all(candidate_alpha_tier(candidate) != "elite_alpha" for candidate in candidates)
+
+
 def test_pipeline_raises_when_no_receipt_bound_candidate() -> None:
     class EmptySearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:

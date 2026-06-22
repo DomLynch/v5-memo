@@ -448,7 +448,10 @@ def _words(text: str) -> frozenset[str]:
 
 
 def _is_synthesis_hit(hit: CorpusHit) -> bool:
-    return bool({_norm_token(raw) for raw in _WORD.findall(hit.title.casefold())} & _SYNTHESIS_TITLE_TERMS)
+    return (
+        "?" in hit.title
+        or bool({_norm_token(raw) for raw in _WORD.findall(hit.title.casefold())} & _SYNTHESIS_TITLE_TERMS)
+    )
 
 
 def _has_role_split(left_words: frozenset[str], right_words: frozenset[str]) -> bool:
