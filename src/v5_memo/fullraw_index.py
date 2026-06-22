@@ -23,8 +23,10 @@ from collections.abc import Iterable
 from concurrent.futures import (
     ProcessPoolExecutor,
     ThreadPoolExecutor,
-    TimeoutError as FuturesTimeoutError,
     as_completed,
+)
+from concurrent.futures import (
+    TimeoutError as FuturesTimeoutError,
 )
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
