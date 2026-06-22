@@ -841,7 +841,7 @@ def test_server_async_sweep_caches_all_shard_results(tmp_path: Path) -> None:
             request = urllib.request.Request(
                 base + "/search",
                 data=json.dumps({
-                    "query": "management forecast disclosure",
+                    "query": "voluntary management earnings forecast disclosure",
                     "top_k": 5,
                     "cache_only": cache_only,
                     "queue_if_missing": queue_if_missing,
@@ -886,6 +886,9 @@ def test_server_async_sweep_caches_all_shard_results(tmp_path: Path) -> None:
         assert isinstance(results, list)
         assert meta["async_sweep"]["status"] == "hit"
         assert receipt["shards_searched"] == 2
+        assert receipt["sweep_strategy"] == fullraw_index._SWEEP_STRATEGY
+        assert receipt["sweep_query"] == "management forecast disclosure"
+        assert receipt["sweep_original_query"] == "voluntary management earnings forecast disclosure"
         assert len(results) == 2
     finally:
         proc.terminate()
@@ -1029,6 +1032,34 @@ def test_select_sweep_shard_entries_expands_relevant_scope(
     assert receipt["shards_searched"] == 9
 
 
+def test_profile_relaxed_sweep_query_uses_shard_topics(tmp_path: Path) -> None:
+    entries = [
+        ShardCatalogEntry(
+            path=tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite",
+            batch_id=index,
+            shard_id=0,
+            sources=("openalex",),
+            files_completed=1,
+            papers_inserted=100,
+            bytes_used=1000,
+            topic_terms=topic_terms,
+        )
+        for index, topic_terms in enumerate([
+            ("management", "forecast"),
+            ("forecast", "disclosure"),
+            ("management", "disclosure"),
+            ("longevity", "exercise"),
+        ])
+    ]
+
+    relaxed = fullraw_index._profile_relaxed_sweep_query(
+        "voluntary management earnings forecast disclosure",
+        entries,
+    )
+
+    assert relaxed == "management forecast disclosure"
+
+
 def test_sweep_cache_key_includes_sweep_shard_limit() -> None:
     small = fullraw_index._sweep_cache_key(
         "management forecast disclosure",
@@ -1048,6 +1079,29 @@ def test_sweep_cache_key_includes_sweep_shard_limit() -> None:
     )
 
     assert small != large
+
+
+def test_sweep_cache_key_includes_sweep_strategy() -> None:
+    old_strategy = fullraw_index._sweep_cache_key(
+        "management forecast disclosure",
+        limit=5,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="citation",
+        sweep_shard_limit=48,
+        sweep_strategy="old",
+    )
+    current_strategy = fullraw_index._sweep_cache_key(
+        "management forecast disclosure",
+        limit=5,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="citation",
+        sweep_shard_limit=48,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+    assert old_strategy != current_strategy
 
 
 def test_shard_coverage_gate_response_rejects_too_narrow_search() -> None:

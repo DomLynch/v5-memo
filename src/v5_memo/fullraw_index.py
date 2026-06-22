@@ -55,6 +55,7 @@ _STOP = {
     "el", "en", "la", "los", "metode", "pada", "penelitian",
 }
 _BACKEND = "v5-fullraw-indexed-fts5"
+_SWEEP_STRATEGY = "profile_relaxed_v1"
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
     ("forecast", ("forecast", "forecasts", "forecasting", "guidance", "estimate", "estimates")),
@@ -1123,6 +1124,62 @@ def select_sweep_shard_entries(
     return selected
 
 
+def _profile_relaxed_sweep_query(
+    query: str,
+    entries: list[ShardCatalogEntry],
+    *,
+    max_terms: int = 3,
+) -> str:
+    terms = _fts_terms(query)
+    if len(terms) <= max_terms:
+        return " ".join(terms)
+    profile_counts: Counter[str] = Counter()
+    aliases = {term: _term_aliases(term) for term in terms}
+    for entry in entries:
+        topic_terms = set(entry.topic_terms)
+        if not topic_terms:
+            continue
+        for term, term_aliases in aliases.items():
+            if topic_terms & term_aliases:
+                profile_counts[term] += 1
+    positive_terms = [term for term in terms if profile_counts[term] > 0]
+    if len(positive_terms) < 2:
+        return " ".join(terms)
+    ranked = sorted(positive_terms, key=lambda term: (-profile_counts[term], terms.index(term)))
+    candidate_terms = set(ranked[: max(max_terms, min(len(ranked), max_terms + 2))])
+    ordered = [term for term in terms if term in candidate_terms]
+    if len(ordered) > max_terms:
+        ordered = _spread_terms(ordered, max_terms)
+    return " ".join(ordered) if len(ordered) >= 2 else " ".join(terms)
+
+
+def _term_aliases(term: str) -> set[str]:
+    aliases = {term}
+    for canonical, expansions in _DEFAULT_TERM_MAP:
+        if term == canonical or term in expansions:
+            aliases.add(canonical)
+            aliases.update(expansions)
+    return aliases
+
+
+def _spread_terms(terms: list[str], count: int) -> list[str]:
+    if count <= 0 or not terms:
+        return []
+    if count >= len(terms):
+        return list(terms)
+    if count == 1:
+        return [terms[len(terms) // 2]]
+    step = (len(terms) - 1) / (count - 1)
+    out: list[str] = []
+    seen: set[str] = set()
+    for index in range(count):
+        term = terms[round(index * step)]
+        if term not in seen:
+            out.append(term)
+            seen.add(term)
+    return out
+
+
 def _select_balanced_shard_entries(
     entries: list[ShardCatalogEntry],
     limit: int,
@@ -1913,9 +1970,10 @@ def run_server() -> None:
         def worker() -> None:
             try:
                 sweep_entries = select_sweep_shard_entries(catalog, query=query, limit=sweep_shard_limit)
+                sweep_query = _profile_relaxed_sweep_query(query, sweep_entries)
                 hits, completed_paths, timed_out = _search_shard_paths_with_paths(
                     [entry.path for entry in sweep_entries],
-                    query,
+                    sweep_query,
                     limit=limit,
                     year_min=year_min,
                     year_max=year_max,
@@ -1933,6 +1991,10 @@ def run_server() -> None:
                 receipt["sweep_timed_out"] = timed_out
                 receipt["sweep_timeout_seconds"] = sweep_timeout_seconds
                 receipt["sweep_shard_timeout_seconds"] = sweep_shard_timeout_seconds
+                receipt["sweep_strategy"] = _SWEEP_STRATEGY
+                receipt["sweep_query"] = sweep_query
+                if sweep_query != query:
+                    receipt["sweep_original_query"] = query
                 sweep_cache_put(key, SweepCacheEntry(time.time(), hits, receipt))
             except Exception:
                 with sweep_lock:
@@ -2016,6 +2078,7 @@ def run_server() -> None:
                 year_max=year_max,
                 rank_mode=rank_mode,
                 sweep_shard_limit=sweep_shard_limit,
+                sweep_strategy=_SWEEP_STRATEGY,
             )
             cached = sweep_cache_get(cache_key) if catalog else None
             sweep_status = "disabled"
@@ -2056,6 +2119,7 @@ def run_server() -> None:
                                 "cache_key": cache_key if sweep_enabled and catalog else "",
                                 "scope": "relevant",
                                 "shard_limit": sweep_shard_limit,
+                                "strategy": _SWEEP_STRATEGY,
                             },
                         },
                         "results": hits,
@@ -2122,6 +2186,7 @@ def run_server() -> None:
                         "cache_key": cache_key if sweep_enabled and catalog else "",
                         "scope": "relevant",
                         "shard_limit": sweep_shard_limit,
+                        "strategy": _SWEEP_STRATEGY,
                     },
                 },
                 "results": hits,
@@ -2423,6 +2488,7 @@ def _sweep_cache_key(
     year_max: int,
     rank_mode: str,
     sweep_shard_limit: int,
+    sweep_strategy: str = _SWEEP_STRATEGY,
 ) -> str:
     payload = json.dumps(
         {
@@ -2432,6 +2498,7 @@ def _sweep_cache_key(
             "year_max": year_max,
             "rank_mode": _rank_mode(rank_mode),
             "sweep_shard_limit": sweep_shard_limit,
+            "sweep_strategy": sweep_strategy,
         },
         sort_keys=True,
     )
