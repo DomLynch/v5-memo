@@ -31,6 +31,22 @@ class FullRawSearchPass:
     rank_mode: str = "relevance"
 
 
+_FULLRAW_CORE_DROP = {
+    "adaptation",
+    "adaptations",
+    "effect",
+    "effects",
+    "mechanism",
+    "mechanisms",
+    "outcome",
+    "outcomes",
+    "response",
+    "responses",
+    "result",
+    "results",
+}
+
+
 class OpenAlexFullCorpusSearchClient:
     """Synchronous client for OpenAlex works search over the full corpus."""
 
@@ -769,6 +785,9 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
     for index, variant in enumerate(_query_variants(query, limit=window_limit)):
         if add("focused" if index == 0 else "broad", variant):
             return out
+    core_variant = _fullraw_core_variant(query)
+    if core_variant and add("core", core_variant):
+        return out
     pair_limit = max(0, limit - len(out) - 4)
     for variant in _fullraw_pair_variants(query, limit=pair_limit):
         if add("broad", variant):
@@ -785,6 +804,14 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
         if add("broad", variant):
             return out
     return out
+
+
+def _fullraw_core_variant(query: str) -> str:
+    terms = _query_terms(query)
+    core = tuple(term for term in terms if term not in _FULLRAW_CORE_DROP)
+    if len(core) >= 2 and len(core) < len(terms):
+        return " ".join(core)
+    return ""
 
 
 def _fullraw_pair_variants(query: str, *, limit: int) -> list[str]:

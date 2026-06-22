@@ -882,6 +882,19 @@ def test_fullraw_search_passes_cover_breadth_depth_modes() -> None:
     assert "null adverse conflicting" in passes[-3].query
 
 
+def test_fullraw_search_passes_include_core_variant_before_depth_modes() -> None:
+    passes = _fullraw_search_passes("resveratrol exercise training adaptation", limit=5)
+
+    assert [search_pass.name for search_pass in passes] == [
+        "focused",
+        "core",
+        "adjacent",
+        "falsifier",
+        "citation_heavy",
+    ]
+    assert passes[1].query == "resveratrol exercise training"
+
+
 def test_fullraw_rerank_prefers_abstract_backed_doi_receipts(monkeypatch: MonkeyPatch) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del request, timeout
