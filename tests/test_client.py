@@ -226,6 +226,71 @@ def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
     assert hits[0].metadata["shard_receipt"] == receipt
 
 
+def test_full_raw_client_preserves_source_diversity_after_rerank(monkeypatch: object) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del request, timeout
+        return FakeResponse({
+            "meta": {
+                "count": 5,
+                "shard_receipt": {
+                    "shards_total": 100,
+                    "shards_searched": 60,
+                    "sources_searched": {
+                        "openalex": 20,
+                        "pubmed": 20,
+                        "semantic_scholar": 20,
+                    },
+                },
+            },
+            "results": [
+                {
+                    "doi": "10.123/semantic-one",
+                    "title": "Metformin resistance training adaptation",
+                    "abstract": "Metformin resistance training adaptation evidence.",
+                    "year": 2024,
+                    "source": "semantic_scholar",
+                    "score": 99.0,
+                },
+                {
+                    "doi": "10.123/semantic-two",
+                    "title": "Metformin resistance training adaptation mechanisms",
+                    "abstract": "More metformin resistance training adaptation evidence.",
+                    "year": 2023,
+                    "source": "semantic_scholar",
+                    "score": 98.0,
+                },
+                {
+                    "doi": "10.123/openalex",
+                    "title": "Exercise adaptation pharmacology",
+                    "abstract": "OpenAlex evidence on metformin and exercise adaptation.",
+                    "year": 2022,
+                    "source": "openalex",
+                    "score": 7.0,
+                },
+                {
+                    "pmid": "12345678",
+                    "title": "Clinical exercise adaptation",
+                    "abstract": "PubMed evidence on metformin resistance training.",
+                    "year": 2021,
+                    "source": "pubmed",
+                    "score": 6.0,
+                },
+            ],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=1)
+
+    hits = client.search("metformin resistance training adaptation", limit=3)
+
+    assert {hit.source for hit in hits} == {
+        "fullraw:semantic_scholar",
+        "fullraw:openalex",
+        "fullraw:pubmed",
+    }
+    assert hits[0].doi == "10.123/semantic-one"
+
+
 def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) -> None:
     payloads: list[dict[str, object]] = []
 
