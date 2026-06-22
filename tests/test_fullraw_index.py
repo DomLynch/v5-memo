@@ -35,6 +35,7 @@ from v5_memo.fullraw_index import (
     select_sweep_shard_entries,
     shard_coverage_gate_response,
     shard_coverage_receipt,
+    warm_shard_cache,
 )
 from v5_memo.fullraw_service import RawFile
 
@@ -469,6 +470,137 @@ def test_search_one_shard_materializes_local_cache(
     assert len(cached) == 1
     assert cached[0].read_bytes() == shard.read_bytes()
     assert [hit["doi"] for hit in hits] == ["10.example/materialized-cache"]
+
+
+def test_warm_shard_cache_materializes_source_balanced_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entries: list[ShardCatalogEntry] = []
+    for index, source in enumerate(("openalex", "openalex", "pubmed", "semantic_scholar")):
+        shard = tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite"
+        shard.parent.mkdir()
+        shard.write_bytes(f"shard-{index}".encode())
+        entries.append(ShardCatalogEntry(
+            path=shard,
+            batch_id=index,
+            shard_id=0,
+            sources=(source,),
+            files_completed=1,
+            papers_inserted=10,
+            bytes_used=shard.stat().st_size,
+            topic_terms=("pregnancy", "management"),
+        ))
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+
+    result = warm_shard_cache(
+        entries,
+        query="pregnancy management",
+        sweep_shard_limit=4,
+        pass_shard_limit=3,
+        target_ready=3,
+    )
+
+    assert result.stopped_for_target is True
+    assert result.ready_shards == 3
+    assert result.warmed_shards == 3
+    assert result.sources_ready == {"openalex": 1, "pubmed": 1, "semantic_scholar": 1}
+    assert len(list(cache_dir.glob("*.sqlite"))) == 3
+
+
+def test_warm_shard_cache_cli_sets_cache_and_reports_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: dict[str, object] = {}
+
+    def fake_build_shard_catalog(shard_dir: Path, *, trust_filenames: bool = False) -> list[ShardCatalogEntry]:
+        calls["catalog"] = {"shard_dir": str(shard_dir), "trust_filenames": trust_filenames}
+        return []
+
+    def fake_warm_shard_cache(
+        entries: list[ShardCatalogEntry],
+        *,
+        query: str,
+        sweep_shard_limit: int,
+        pass_shard_limit: int,
+        target_ready: int,
+        max_shards: int | None = None,
+        max_seconds: float | None = None,
+        progress_interval: int = 0,
+    ) -> fullraw_index.ShardCacheWarmResult:
+        calls["warm"] = {
+            "entries": entries,
+            "query": query,
+            "sweep_shard_limit": sweep_shard_limit,
+            "pass_shard_limit": pass_shard_limit,
+            "target_ready": target_ready,
+            "max_shards": max_shards,
+            "max_seconds": max_seconds,
+            "progress_interval": progress_interval,
+        }
+        return fullraw_index.ShardCacheWarmResult(
+            selected_shards=12,
+            target_ready=5,
+            ready_shards=5,
+            warmed_shards=5,
+            failed_shards=0,
+            stopped_for_target=True,
+            stopped_for_time=False,
+            elapsed_seconds=1.25,
+            bytes_ready=123,
+            sources_selected={"openalex": 6, "semantic_scholar": 6},
+            sources_ready={"openalex": 3, "semantic_scholar": 2},
+        )
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setattr(fullraw_index, "build_shard_catalog", fake_build_shard_catalog)
+    monkeypatch.setattr(fullraw_index, "warm_shard_cache", fake_warm_shard_cache)
+    monkeypatch.setattr(sys, "argv", [
+        "fullraw_index.py",
+        "warm-shard-cache",
+        "--shard-dir",
+        str(tmp_path / "shards"),
+        "--query",
+        "cholestasis pregnancy management",
+        "--sweep-shard-limit",
+        "12",
+        "--pass-shard-limit",
+        "3",
+        "--target-ready",
+        "5",
+        "--max-shards",
+        "7",
+        "--max-seconds",
+        "9",
+        "--cache-dir",
+        str(cache_dir),
+        "--cache-max-gb",
+        "1",
+        "--trust-filenames",
+        "--progress-interval",
+        "0",
+    ])
+
+    fullraw_index.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ready_shards"] == 5
+    assert calls["catalog"] == {"shard_dir": str(tmp_path / "shards"), "trust_filenames": True}
+    assert calls["warm"] == {
+        "entries": [],
+        "query": "cholestasis pregnancy management",
+        "sweep_shard_limit": 12,
+        "pass_shard_limit": 3,
+        "target_ready": 5,
+        "max_shards": 7,
+        "max_seconds": 9.0,
+        "progress_interval": 0,
+    }
+    assert os.environ["V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR"] == str(cache_dir)
+    assert os.environ["V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES"] == str(1024**3)
 
 
 def test_materialized_shard_cache_evicts_old_entries(
