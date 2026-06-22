@@ -319,12 +319,13 @@ def test_fullraw_shard_search_returns_partial_hits_on_timeout(
     def fake_search_one_shard(
         path: Path,
         query: str,
-        limit: int,
-        year_min: int,
-        year_max: int,
-        rank_mode: str,
-    ) -> list[dict[str, object]]:
-        del query, limit, year_min, year_max, rank_mode
+            limit: int,
+            year_min: int,
+            year_max: int,
+            rank_mode: str,
+            timeout_seconds: float | None = None,
+        ) -> list[dict[str, object]]:
+        del query, limit, year_min, year_max, rank_mode, timeout_seconds
         if path.name == "slow.sqlite":
             time.sleep(0.2)
         return [{
@@ -363,12 +364,13 @@ def test_fullraw_shard_search_reports_completed_paths_on_timeout(
     def fake_search_one_shard(
         path: Path,
         query: str,
-        limit: int,
-        year_min: int,
-        year_max: int,
-        rank_mode: str,
-    ) -> list[dict[str, object]]:
-        del query, limit, year_min, year_max, rank_mode
+            limit: int,
+            year_min: int,
+            year_max: int,
+            rank_mode: str,
+            timeout_seconds: float | None = None,
+        ) -> list[dict[str, object]]:
+        del query, limit, year_min, year_max, rank_mode, timeout_seconds
         if path == slow:
             time.sleep(0.2)
         return [{
@@ -393,6 +395,43 @@ def test_fullraw_shard_search_reports_completed_paths_on_timeout(
     assert timed_out is True
     assert completed_paths == [fast]
     assert [hit["doi"] for hit in hits] == ["10.example/fast"]
+
+
+def test_fullraw_shard_search_passes_per_shard_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "fast.sqlite"
+    path.touch()
+    seen_timeout: list[float | None] = []
+
+    def fake_search_one_shard(
+        path: Path,
+        query: str,
+        limit: int,
+        year_min: int,
+        year_max: int,
+        rank_mode: str,
+        timeout_seconds: float | None = None,
+    ) -> list[dict[str, object]]:
+        del path, query, limit, year_min, year_max, rank_mode
+        seen_timeout.append(timeout_seconds)
+        return [{"doi": "10.example/fast", "title": "fast", "score": 1.0}]
+
+    monkeypatch.setattr(fullraw_index, "_search_one_shard", fake_search_one_shard)
+
+    fullraw_index._search_shard_paths(
+        [path],
+        "resveratrol exercise",
+        limit=5,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        workers=1,
+        shard_timeout_seconds=3.5,
+    )
+
+    assert seen_timeout == [3.5]
 
 
 def test_discover_shard_paths_finds_nested_batch_shards(tmp_path: Path) -> None:

@@ -947,6 +947,7 @@ def search_shards(
         year_max=year_max,
         rank_mode=rank_mode,
         timeout_seconds=timeout_seconds,
+        shard_timeout_seconds=timeout_seconds,
     )
 
 
@@ -960,6 +961,7 @@ def search_shard_entries(
     rank_mode: str = "relevance",
     workers: int | None = None,
     timeout_seconds: float | None = None,
+    shard_timeout_seconds: float | None = None,
 ) -> list[dict[str, object]]:
     return _search_shard_paths(
         [entry.path for entry in entries],
@@ -970,6 +972,7 @@ def search_shard_entries(
         rank_mode=rank_mode,
         workers=workers,
         timeout_seconds=timeout_seconds,
+        shard_timeout_seconds=shard_timeout_seconds,
     )
 
 
@@ -983,6 +986,7 @@ def _search_shard_paths(
     rank_mode: str,
     workers: int | None = None,
     timeout_seconds: float | None = None,
+    shard_timeout_seconds: float | None = None,
 ) -> list[dict[str, object]]:
     hits, _completed_paths, _timed_out = _search_shard_paths_with_paths(
         paths,
@@ -993,6 +997,7 @@ def _search_shard_paths(
         rank_mode=rank_mode,
         workers=workers,
         timeout_seconds=timeout_seconds,
+        shard_timeout_seconds=shard_timeout_seconds,
     )
     return hits
 
@@ -1007,6 +1012,7 @@ def _search_shard_paths_with_paths(
     rank_mode: str,
     workers: int | None = None,
     timeout_seconds: float | None = None,
+    shard_timeout_seconds: float | None = None,
 ) -> tuple[list[dict[str, object]], list[Path], bool]:
     merged: dict[str, dict[str, object]] = {}
     completed_paths: list[Path] = []
@@ -1016,7 +1022,16 @@ def _search_shard_paths_with_paths(
     pool = ThreadPoolExecutor(max_workers=worker_count)
     try:
         futures = {
-            pool.submit(_search_one_shard, path, query, limit, year_min, year_max, rank_mode): path
+            pool.submit(
+                _search_one_shard,
+                path,
+                query,
+                limit,
+                year_min,
+                year_max,
+                rank_mode,
+                shard_timeout_seconds,
+            ): path
             for path in paths
         }
         completed = as_completed(futures, timeout=timeout_seconds) if timeout_seconds else as_completed(futures)
@@ -1239,10 +1254,18 @@ def _search_one_shard(
     year_min: int,
     year_max: int,
     rank_mode: str,
+    timeout_seconds: float | None = None,
 ) -> list[dict[str, object]]:
     index = FullRawFtsIndex(path, read_only=True)
     try:
-        return index.search(query, limit=limit, year_min=year_min, year_max=year_max, rank_mode=rank_mode)
+        return index.search(
+            query,
+            limit=limit,
+            year_min=year_min,
+            year_max=year_max,
+            rank_mode=rank_mode,
+            timeout_seconds=timeout_seconds,
+        )
     finally:
         index.close()
 
@@ -1766,6 +1789,10 @@ def run_server() -> None:
     sweep_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT") or 128
     sweep_timeout_seconds = _float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SWEEP_TIMEOUT_SECONDS", "")) or 300.0
     sweep_timeout_seconds = max(1.0, min(sweep_timeout_seconds, 3600.0))
+    sweep_shard_timeout_seconds = _float_or_none(
+        os.environ.get("V5_MEMO_FULL_RAW_SWEEP_SHARD_TIMEOUT_SECONDS", "")
+    ) or 10.0
+    sweep_shard_timeout_seconds = max(0.1, min(sweep_shard_timeout_seconds, sweep_timeout_seconds))
     sweep_cache_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR", "").strip()
     sweep_cache_dir = Path(sweep_cache_dir_config) if sweep_cache_dir_config else None
     manifest_path = Path(
@@ -1895,6 +1922,7 @@ def run_server() -> None:
                     rank_mode=rank_mode,
                     workers=sweep_workers,
                     timeout_seconds=sweep_timeout_seconds,
+                    shard_timeout_seconds=sweep_shard_timeout_seconds,
                 )
                 completed = set(completed_paths)
                 searched_entries = [entry for entry in sweep_entries if entry.path in completed]
@@ -1904,6 +1932,7 @@ def run_server() -> None:
                 receipt["sweep_selected_shards"] = len(sweep_entries)
                 receipt["sweep_timed_out"] = timed_out
                 receipt["sweep_timeout_seconds"] = sweep_timeout_seconds
+                receipt["sweep_shard_timeout_seconds"] = sweep_shard_timeout_seconds
                 sweep_cache_put(key, SweepCacheEntry(time.time(), hits, receipt))
             except Exception:
                 with sweep_lock:
