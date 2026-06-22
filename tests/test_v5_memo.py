@@ -441,6 +441,12 @@ def test_query_anchor_terms_drop_alpha_shape_words() -> None:
     ]) == ()
 
 
+def test_query_anchor_terms_drop_broad_substrate_and_tissue_words() -> None:
+    assert query_anchor_terms([
+        "protein timing distribution resistance training muscle protein synthesis hypertrophy",
+    ], limit=4) == ("timing", "distribution", "synthesi", "hypertrophy")
+
+
 def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
     hits = [
         CorpusHit(
@@ -989,6 +995,30 @@ def test_miner_rejects_comparative_method_word_as_alpha_bridge() -> None:
     assert mine_insights(
         hits,
         topic="longevity exercise adaptation",
+        include_discovery=True,
+    ) == []
+
+
+def test_miner_rejects_broad_protein_muscle_cachexia_bridge() -> None:
+    hits = [
+        _hit(
+            "timing-review",
+            "Revisiting Protein Intake in Fitness Training: New Evidence on Dose, Timing, and Skeletal Muscle Adaptation",
+            "Review discusses protein timing and skeletal muscle adaptation in fitness training.",
+        ),
+        _hit(
+            "cachexia",
+            "Liver and muscle protein metabolism in cachexia",
+            "Cachexia reduced muscle protein metabolism without training timing or distribution endpoints.",
+        ),
+    ]
+
+    assert mine_insights(
+        hits,
+        topic="protein timing distribution resistance training muscle protein synthesis hypertrophy",
+        required_anchor_terms=query_anchor_terms([
+            "protein timing distribution resistance training muscle protein synthesis hypertrophy"
+        ]),
         include_discovery=True,
     ) == []
 

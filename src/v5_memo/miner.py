@@ -22,7 +22,7 @@ _STOP = frozenset({
 _BRIDGE_STOP = _STOP | frozenset({
     "action", "compare", "compared", "comparing", "comparative", "comparison",
     "functional", "horse", "impairment", "intermittent", "learning",
-    "men", "power", "women",
+    "men", "muscle", "power", "protein", "women",
     "case", "cases", "individual", "individuals", "patient", "people", "per", "person",
     "persons", "such", "thus", "when", "following", "matched",
     "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
