@@ -927,6 +927,15 @@ def test_fullraw_search_passes_keep_pair_variants_on_primary_anchor() -> None:
     assert "resistance training" not in queries
 
 
+def test_fullraw_search_passes_keep_promise_terms_for_protocol_recall() -> None:
+    passes = _fullraw_search_passes(
+        "metformin expected to augment resistance training hypertrophy protocol",
+        limit=4,
+    )
+
+    assert "metformin augment" in [search_pass.query for search_pass in passes]
+
+
 def test_fullraw_rerank_prefers_abstract_backed_doi_receipts(monkeypatch: MonkeyPatch) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del request, timeout

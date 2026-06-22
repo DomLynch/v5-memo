@@ -48,8 +48,6 @@ _FULLRAW_CORE_DROP = {
 _FULLRAW_PAIR_DROP = _FULLRAW_CORE_DROP | {
     "adult",
     "adults",
-    "augment",
-    "augmented",
     "blunt",
     "blunted",
     "human",
