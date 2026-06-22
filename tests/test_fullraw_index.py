@@ -627,6 +627,70 @@ def test_materialized_shard_cache_evicts_old_entries(
     assert keep.exists()
 
 
+def test_materialized_shard_cache_preserves_ready_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    old = cache_dir / "old.sqlite"
+    preserved = cache_dir / "preserved.sqlite"
+    keep = cache_dir / "keep.sqlite"
+    old.write_bytes(b"a" * 6)
+    preserved.write_bytes(b"b" * 6)
+    keep.write_bytes(b"c" * 6)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "12")
+
+    fullraw_index._evict_shard_cache(
+        cache_dir,
+        required_bytes=0,
+        keep=keep,
+        preserve={preserved},
+    )
+
+    assert not old.exists()
+    assert preserved.exists()
+    assert keep.exists()
+
+
+def test_warm_shard_cache_stops_before_eviction_churn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entries: list[ShardCatalogEntry] = []
+    for index, source in enumerate(("openalex", "pubmed", "semantic_scholar")):
+        shard = tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite"
+        shard.parent.mkdir()
+        shard.write_bytes(b"x" * 8)
+        entries.append(ShardCatalogEntry(
+            path=shard,
+            batch_id=index,
+            shard_id=0,
+            sources=(source,),
+            files_completed=1,
+            papers_inserted=10,
+            bytes_used=shard.stat().st_size,
+            topic_terms=("pregnancy",),
+        ))
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "16")
+
+    result = warm_shard_cache(
+        entries,
+        query="pregnancy",
+        sweep_shard_limit=3,
+        pass_shard_limit=3,
+        target_ready=3,
+    )
+
+    assert result.ready_shards == 2
+    assert result.stopped_for_target is False
+    assert result.errors
+    assert "target_ready exceeds cache budget" in result.errors[0]
+    assert len(list(cache_dir.glob("*.sqlite"))) == 2
+
+
 def test_discover_shard_paths_finds_nested_batch_shards(tmp_path: Path) -> None:
     nested = tmp_path / "batch_00001"
     nested.mkdir()
