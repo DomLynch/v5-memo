@@ -2162,6 +2162,15 @@ def run_server() -> None:
                     if sweep_status == "hit" and (cached := sweep_cache_get(cache_key)) is not None:
                         hits = cached.hits
                         receipt = cached.receipt
+            coverage_gate = shard_coverage_gate_response(
+                receipt,
+                min_shards_searched=min_shards_searched,
+                min_sources_searched=min_sources_searched,
+            )
+            if coverage_gate is not None:
+                status, body = coverage_gate
+                _write_json(self, status, body)
+                return
             stats = current_stats()
             explain = (
                 {"fts_match": query, "groups": []}
