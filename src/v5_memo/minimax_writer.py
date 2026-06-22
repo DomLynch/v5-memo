@@ -9,7 +9,7 @@ import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol, cast
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from v5_memo.gate import candidate_alpha_tier
@@ -282,6 +282,10 @@ def call_minimax_m3(
             return _anthropic_text(data)
         except HTTPError as exc:
             if exc.code not in _MINIMAX_RETRY_HTTP_STATUS or attempt == 2:
+                raise
+            time.sleep(0.75 * (attempt + 1))
+        except (TimeoutError, URLError):
+            if attempt == 2:
                 raise
             time.sleep(0.75 * (attempt + 1))
     raise RuntimeError("unreachable MiniMax retry state")

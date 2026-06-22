@@ -35,6 +35,7 @@ from v5_memo.fullraw_index import (
     select_sweep_shard_entries,
     shard_coverage_gate_response,
     shard_coverage_receipt,
+    warm_shard_cache,
 )
 from v5_memo.fullraw_service import RawFile
 
@@ -469,6 +470,43 @@ def test_search_one_shard_materializes_local_cache(
     assert len(cached) == 1
     assert cached[0].read_bytes() == shard.read_bytes()
     assert [hit["doi"] for hit in hits] == ["10.example/materialized-cache"]
+
+
+def test_warm_shard_cache_materializes_source_balanced_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entries: list[ShardCatalogEntry] = []
+    for index, source in enumerate(("openalex", "openalex", "pubmed", "semantic_scholar")):
+        shard = tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite"
+        shard.parent.mkdir()
+        shard.write_bytes(f"shard-{index}".encode())
+        entries.append(ShardCatalogEntry(
+            path=shard,
+            batch_id=index,
+            shard_id=0,
+            sources=(source,),
+            files_completed=1,
+            papers_inserted=10,
+            bytes_used=shard.stat().st_size,
+            topic_terms=("pregnancy", "management"),
+        ))
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+
+    result = warm_shard_cache(
+        entries,
+        query="pregnancy management",
+        sweep_shard_limit=4,
+        pass_shard_limit=3,
+        target_ready=3,
+    )
+
+    assert result.stopped_for_target is True
+    assert result.ready_shards == 3
+    assert result.warmed_shards == 3
+    assert result.sources_ready == {"openalex": 1, "pubmed": 1, "semantic_scholar": 1}
+    assert len(list(cache_dir.glob("*.sqlite"))) == 3
 
 
 def test_materialized_shard_cache_evicts_old_entries(

@@ -85,7 +85,12 @@ _SYNTHESIS_TITLE_TERMS = frozenset({
     "perspective", "position", "potential", "question", "recommendation",
     "recommendations", "review", "stand", "strategy", "systematic",
 })
-_CONTEXT_ANCHOR_BACKFILL = frozenset({"exercise", "resistance", "strength", "training"})
+_TOPIC_CONTEXT_STOP = frozenset({
+    "adapt", "adaptation", "aging", "angle", "condition", "effect", "effects",
+    "evidence", "healthspan", "human", "intervention", "longevity", "mechanism",
+    "mechanisms", "outcome", "outcomes", "pharmacology", "response", "responses",
+    "reversal", "study", "trial",
+})
 
 
 def mine_insights(
@@ -104,7 +109,7 @@ def mine_insights(
     full_token_sets = {hit.hit_id: _tokens(hit.text) for hit in clean_hits}
     title_token_sets = {hit.hit_id: _tokens(hit.title) for hit in clean_hits}
     anchor_terms = frozenset(required_anchor_terms)
-    required_context_terms = _required_context_terms(topic)
+    topic_context_terms = _topic_context_terms(topic, anchor_terms)
     doc_counts = Counter(term for terms in full_token_sets.values() for term in terms)
 
     candidates: list[InsightCandidate] = []
@@ -117,9 +122,9 @@ def mine_insights(
             anchor_terms,
         ):
             continue
-        if required_context_terms and not (
-            full_token_sets[left.hit_id] & required_context_terms
-            and full_token_sets[right.hit_id] & required_context_terms
+        if topic_context_terms and not (
+            _has_topic_context(left, topic_context_terms)
+            and _has_topic_context(right, topic_context_terms)
         ):
             continue
         pair_anchor_terms = anchor_terms or _shared_seed_anchor_terms(left, right)
@@ -214,11 +219,33 @@ def _candidate_rank(candidate: InsightCandidate) -> tuple[bool, int, int, int, i
     )
 
 
-def _required_context_terms(topic: str) -> frozenset[str]:
-    topic_tokens = _tokens(topic)
-    if {"resistance", "training"} <= topic_tokens:
-        return frozenset({"exercise", "strength", "training"})
-    return frozenset()
+def _topic_context_terms(topic: str, anchor_terms: frozenset[str]) -> frozenset[str]:
+    if not anchor_terms:
+        return frozenset()
+    ordered = [
+        token
+        for raw in _WORD.findall(topic.casefold())
+        if (
+            token := _norm_token(raw)
+        ) not in _STOP
+        and token not in _TOPIC_CONTEXT_STOP
+    ]
+    if len(ordered) < 3:
+        return frozenset()
+    primary_anchor = next((term for term in ordered if term in anchor_terms), "")
+    return frozenset(
+        ordered[index + 1]
+        for index, token in enumerate(ordered[:-1])
+        if token in anchor_terms and token != primary_anchor and ordered[index + 1] not in anchor_terms
+    )
+
+
+def _has_topic_context(hit: CorpusHit, context_terms: frozenset[str]) -> bool:
+    if _tokens(hit.title) & context_terms:
+        return True
+    hit_terms = _tokens(hit.text)
+    required = 1 if len(context_terms) == 1 else 2
+    return len(hit_terms & context_terms) >= required
 
 
 def _coupling_reasons(
@@ -316,15 +343,6 @@ def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 3) -> tuple[
             out.append(token)
             if len(out) >= limit:
                 return tuple(out)
-    if out and len(out) < min(limit, 2):
-        for query in seed_queries:
-            for raw in _WORD.findall(query.casefold()):
-                token = _norm_token(raw)
-                if token in _CONTEXT_ANCHOR_BACKFILL and token not in seen:
-                    seen.add(token)
-                    out.append(token)
-                    if len(out) >= min(limit, 2):
-                        return tuple(out)
     return tuple(out)
 
 

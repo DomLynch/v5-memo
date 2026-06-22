@@ -46,10 +46,12 @@ def score_connection(
         or "shape:expectation_reversal" in shape_reasons
     ):
         novelty = max(novelty, 50)
+    shape_strength = sum(_SHAPE_WEIGHTS.get(reason, 1) for reason in shape_reasons)
+    if has_tension and shape_strength >= 10:
+        novelty = max(novelty, 35)
     evidence = min(100, 35 + 20 * min(unique_source_count, 3) + 5 * min(receipt_count, 3))
     source_bonus = 10 if unique_source_count >= 2 else 0
     tension_bonus = 10 if has_tension else 0
-    shape_strength = sum(_SHAPE_WEIGHTS.get(reason, 1) for reason in shape_reasons)
     shape_bonus = min(30, 4 * max(shape_strength, shape_score, 0))
     raw_score = round(0.40 * novelty + 0.35 * evidence + source_bonus + tension_bonus + shape_bonus)
     bridge_cap = 100

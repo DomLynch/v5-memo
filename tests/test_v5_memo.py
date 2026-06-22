@@ -431,14 +431,12 @@ def test_query_anchor_terms_normalize_light_morphology() -> None:
 def test_query_anchor_terms_drop_broad_topic_words() -> None:
     assert query_anchor_terms(["longevity aging adaptation healthspan pharmacology resveratrol training"]) == (
         "resveratrol",
-        "training",
     )
 
 
-def test_query_anchor_terms_backfill_context_for_single_specific_anchor() -> None:
+def test_query_anchor_terms_do_not_promote_context_to_anchor() -> None:
     assert query_anchor_terms(["resveratrol exercise training adaptation"]) == (
         "resveratrol",
-        "exercise",
     )
 
 

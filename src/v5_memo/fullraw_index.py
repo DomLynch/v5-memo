@@ -164,6 +164,22 @@ class SweepCacheEntry:
     receipt: dict[str, object]
 
 
+@dataclass(frozen=True, slots=True)
+class ShardCacheWarmResult:
+    selected_shards: int
+    target_ready: int
+    ready_shards: int
+    warmed_shards: int
+    failed_shards: int
+    stopped_for_target: bool
+    stopped_for_time: bool
+    elapsed_seconds: float
+    bytes_ready: int
+    sources_selected: dict[str, int]
+    sources_ready: dict[str, int]
+    errors: tuple[str, ...] = ()
+
+
 class FullRawFtsIndex:
     """SQLite FTS5 index over normalized raw-corpus records."""
 
@@ -1400,19 +1416,16 @@ def _search_one_shard(
 
 
 def _materialized_shard_path(path: Path) -> Path:
-    cache_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", "").strip()
-    if not cache_dir_config:
+    cache_path = _shard_cache_path(path)
+    if cache_path is None:
         return path
-    cache_dir = Path(cache_dir_config)
     source_stat = path.stat()
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_name = f"{hashlib.sha256(str(path).encode()).hexdigest()[:16]}-{path.name}"
-    cache_path = cache_dir / cache_name
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
     with _SHARD_LOCAL_CACHE_LOCK:
         if cache_path.exists() and cache_path.stat().st_size == source_stat.st_size:
             os.utime(cache_path, None)
             return cache_path
-        _evict_shard_cache(cache_dir, required_bytes=source_stat.st_size, keep=cache_path)
+        _evict_shard_cache(cache_path.parent, required_bytes=source_stat.st_size, keep=cache_path)
         tmp_path = cache_path.with_name(f".{cache_path.name}.tmp.{os.getpid()}.{threading.get_ident()}")
         try:
             shutil.copy2(path, tmp_path)
@@ -1420,8 +1433,29 @@ def _materialized_shard_path(path: Path) -> Path:
             os.utime(cache_path, None)
         finally:
             tmp_path.unlink(missing_ok=True)
-        _evict_shard_cache(cache_dir, required_bytes=0, keep=cache_path)
+        _evict_shard_cache(cache_path.parent, required_bytes=0, keep=cache_path)
         return cache_path
+
+
+def _shard_cache_path(path: Path) -> Path | None:
+    cache_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", "").strip()
+    if not cache_dir_config:
+        return None
+    cache_name = f"{hashlib.sha256(str(path).encode()).hexdigest()[:16]}-{path.name}"
+    return Path(cache_dir_config) / cache_name
+
+
+def _cached_materialized_shard_path(path: Path) -> Path | None:
+    cache_path = _shard_cache_path(path)
+    if cache_path is None:
+        return path if path.exists() else None
+    try:
+        source_size = path.stat().st_size
+        if cache_path.exists() and cache_path.stat().st_size == source_size:
+            return cache_path
+    except OSError:
+        return None
+    return None
 
 
 def _evict_shard_cache(cache_dir: Path, *, required_bytes: int, keep: Path) -> None:
@@ -1442,6 +1476,95 @@ def _evict_shard_cache(cache_dir: Path, *, required_bytes: int, keep: Path) -> N
             total -= size
         except OSError:
             continue
+
+
+def warm_shard_cache(
+    entries: list[ShardCatalogEntry],
+    *,
+    query: str,
+    sweep_shard_limit: int,
+    pass_shard_limit: int,
+    target_ready: int,
+    max_shards: int | None = None,
+    max_seconds: float | None = None,
+    progress_interval: int = 0,
+) -> ShardCacheWarmResult:
+    started = time.monotonic()
+    selected = select_sweep_shard_entries(entries, query=query, limit=max(1, sweep_shard_limit))
+    selected = _prioritize_sweep_pass_entries(
+        selected,
+        max(1, min(pass_shard_limit, len(selected) or 1)),
+        query=query,
+    )
+    target_ready = max(0, min(target_ready, len(selected)))
+    max_shards = max_shards if max_shards is None else max(0, max_shards)
+    max_seconds = max_seconds if max_seconds is None else max(0.0, max_seconds)
+    warmed_paths: set[Path] = set()
+    failed_paths: set[Path] = set()
+    errors: list[str] = []
+    stopped_for_time = False
+
+    def ready_entries() -> list[ShardCatalogEntry]:
+        return [entry for entry in selected if _cached_materialized_shard_path(entry.path) is not None]
+
+    def progress_payload(*, final: bool = False) -> dict[str, object]:
+        ready = ready_entries()
+        return {
+            "event": "warm_shard_cache_done" if final else "warm_shard_cache_progress",
+            "query": query,
+            "selected_shards": len(selected),
+            "target_ready": target_ready,
+            "ready_shards": len(ready),
+            "warmed_shards": len(warmed_paths),
+            "failed_shards": len(failed_paths),
+            "sources_ready": _source_counts(ready),
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+
+    attempted = 0
+    for entry in selected:
+        if target_ready and len(ready_entries()) >= target_ready:
+            break
+        if max_shards is not None and attempted >= max_shards:
+            break
+        if max_seconds is not None and time.monotonic() - started >= max_seconds:
+            stopped_for_time = True
+            break
+        if _cached_materialized_shard_path(entry.path) is not None:
+            continue
+        attempted += 1
+        try:
+            _materialized_shard_path(entry.path)
+            if _cached_materialized_shard_path(entry.path) is not None:
+                warmed_paths.add(entry.path)
+            else:
+                failed_paths.add(entry.path)
+                errors.append(f"{entry.path}: materialized path missing after copy")
+        except OSError as exc:
+            failed_paths.add(entry.path)
+            errors.append(f"{entry.path}: {exc}")
+        if progress_interval > 0 and attempted % progress_interval == 0:
+            print(json.dumps(progress_payload(), sort_keys=True), flush=True)
+
+    ready = ready_entries()
+    bytes_ready = sum(entry.bytes_used for entry in ready)
+    result = ShardCacheWarmResult(
+        selected_shards=len(selected),
+        target_ready=target_ready,
+        ready_shards=len(ready),
+        warmed_shards=len(warmed_paths),
+        failed_shards=len(failed_paths),
+        stopped_for_target=target_ready > 0 and len(ready) >= target_ready,
+        stopped_for_time=stopped_for_time,
+        elapsed_seconds=round(time.monotonic() - started, 3),
+        bytes_ready=bytes_ready,
+        sources_selected=_source_counts(selected),
+        sources_ready=_source_counts(ready),
+        errors=tuple(errors),
+    )
+    if progress_interval > 0:
+        print(json.dumps({**progress_payload(final=True), **asdict(result)}, sort_keys=True), flush=True)
+    return result
 
 
 def discover_shard_paths(shard_dir: Path, *, trust_filenames: bool = False) -> list[Path]:
@@ -2540,6 +2663,35 @@ def main() -> None:
     backfill_profiles.add_argument("--verify-sqlite", action="store_true")
     backfill_profiles.add_argument("--progress-interval", type=int, default=25)
 
+    warm_cache = subparsers.add_parser("warm-shard-cache")
+    warm_cache.add_argument("--shard-dir", default=shard_dir_default)
+    warm_cache.add_argument("--query", required=True)
+    warm_cache.add_argument(
+        "--sweep-shard-limit",
+        type=int,
+        default=int(os.environ.get("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT", "96")),
+    )
+    warm_cache.add_argument(
+        "--pass-shard-limit",
+        type=int,
+        default=int(os.environ.get("V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT", "10")),
+    )
+    warm_cache.add_argument(
+        "--target-ready",
+        type=int,
+        default=int(os.environ.get("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", "50")),
+    )
+    warm_cache.add_argument("--max-shards", type=int)
+    warm_cache.add_argument("--max-seconds", type=float)
+    warm_cache.add_argument("--cache-dir", default=os.environ.get("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", ""))
+    warm_cache.add_argument(
+        "--cache-max-gb",
+        type=float,
+        default=_float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_GB", "")),
+    )
+    warm_cache.add_argument("--trust-filenames", action="store_true")
+    warm_cache.add_argument("--progress-interval", type=int, default=5)
+
     subparsers.add_parser("serve")
     args = parser.parse_args()
 
@@ -2707,6 +2859,29 @@ def main() -> None:
         )
         print(json.dumps(profile_result, sort_keys=True))
         if profile_result["errors"]:
+            raise SystemExit(2)
+        return
+
+    if args.command == "warm-shard-cache":
+        if args.cache_dir:
+            os.environ["V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR"] = str(args.cache_dir)
+        if args.cache_max_gb is not None:
+            os.environ["V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES"] = str(
+                int(max(0.0, float(args.cache_max_gb)) * 1024**3)
+            )
+        catalog = build_shard_catalog(Path(args.shard_dir), trust_filenames=bool(args.trust_filenames))
+        warm_result = warm_shard_cache(
+            catalog,
+            query=str(args.query),
+            sweep_shard_limit=max(1, int(args.sweep_shard_limit)),
+            pass_shard_limit=max(1, int(args.pass_shard_limit)),
+            target_ready=max(0, int(args.target_ready)),
+            max_shards=args.max_shards,
+            max_seconds=args.max_seconds,
+            progress_interval=max(0, int(args.progress_interval)),
+        )
+        print(json.dumps(asdict(warm_result), sort_keys=True))
+        if warm_result.failed_shards and not warm_result.stopped_for_target:
             raise SystemExit(2)
         return
 
