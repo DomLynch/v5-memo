@@ -56,6 +56,7 @@ _STOP = {
 }
 _BACKEND = "v5-fullraw-indexed-fts5"
 _SWEEP_STRATEGY = "profile_relaxed_v2"
+_SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
     ("forecast", ("forecast", "forecasts", "forecasting", "guidance", "estimate", "estimates")),
@@ -1040,7 +1041,7 @@ def _search_shard_paths_with_paths(
             path = futures[future]
             try:
                 hits = future.result()
-            except sqlite3.Error:
+            except (OSError, sqlite3.Error):
                 continue
             completed_paths.append(path)
             for hit in hits:
@@ -1338,7 +1339,7 @@ def _search_one_shard(
     rank_mode: str,
     timeout_seconds: float | None = None,
 ) -> list[dict[str, object]]:
-    index = FullRawFtsIndex(path, read_only=True)
+    index = FullRawFtsIndex(_materialized_shard_path(path), read_only=True)
     try:
         return index.search(
             query,
@@ -1350,6 +1351,51 @@ def _search_one_shard(
         )
     finally:
         index.close()
+
+
+def _materialized_shard_path(path: Path) -> Path:
+    cache_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", "").strip()
+    if not cache_dir_config:
+        return path
+    cache_dir = Path(cache_dir_config)
+    source_stat = path.stat()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_name = f"{hashlib.sha256(str(path).encode()).hexdigest()[:16]}-{path.name}"
+    cache_path = cache_dir / cache_name
+    with _SHARD_LOCAL_CACHE_LOCK:
+        if cache_path.exists() and cache_path.stat().st_size == source_stat.st_size:
+            os.utime(cache_path, None)
+            return cache_path
+        _evict_shard_cache(cache_dir, required_bytes=source_stat.st_size, keep=cache_path)
+        tmp_path = cache_path.with_name(f".{cache_path.name}.tmp.{os.getpid()}.{threading.get_ident()}")
+        try:
+            shutil.copy2(path, tmp_path)
+            os.replace(tmp_path, cache_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+        _evict_shard_cache(cache_dir, required_bytes=0, keep=cache_path)
+        return cache_path
+
+
+def _evict_shard_cache(cache_dir: Path, *, required_bytes: int, keep: Path) -> None:
+    max_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
+    if max_bytes is None or max_bytes <= 0:
+        return
+    entries = [path for path in cache_dir.glob("*.sqlite") if path.is_file() and path != keep]
+    total = sum(path.stat().st_size for path in entries)
+    if keep.exists():
+        total += keep.stat().st_size
+    target = max(0, max_bytes - max(0, required_bytes))
+    for path in sorted(entries, key=lambda item: item.stat().st_mtime):
+        if total <= target:
+            break
+        try:
+            size = path.stat().st_size
+            path.unlink()
+            total -= size
+        except OSError:
+            continue
+
 
 def discover_shard_paths(shard_dir: Path, *, trust_filenames: bool = False) -> list[Path]:
     paths = sorted(path for path in shard_dir.rglob("*.sqlite") if path.is_file())
