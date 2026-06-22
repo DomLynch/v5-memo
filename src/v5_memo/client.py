@@ -507,7 +507,7 @@ def _parse_full_raw_search_response(data: Any) -> list[CorpusHit]:
         return []
     match_count = _int_or_none(meta.get("count") or meta.get("total") or meta.get("total_count"))
     shard_receipt = _full_raw_shard_receipt(data)
-    return [
+    hits = [
         hit
         for item in items
         if (
@@ -518,6 +518,7 @@ def _parse_full_raw_search_response(data: Any) -> list[CorpusHit]:
             )
         ) is not None
     ]
+    return _drop_conflicting_duplicate_doi_year_hits(hits)
 
 
 def _full_raw_shard_receipt(data: Any) -> dict[str, object]:
@@ -632,8 +633,6 @@ def _parse_full_raw_paper_hit(
         return None
     doi = _normalize_doi(item.get("doi"))
     year = _int_or_none(item.get("year") or item.get("publication_year"))
-    if _doi_year_conflicts(doi, year):
-        return None
     pmid = _clean(item.get("pmid"), limit=64)
     pmcid = _clean(item.get("pmcid"), limit=64)
     openalex_id = _clean(item.get("openalex_id") or item.get("openalex") or item.get("id"), limit=256)
@@ -700,6 +699,31 @@ def _doi_year_conflicts(doi: str | None, year: int | None) -> bool:
         return False
     years = [int(match) for match in re.findall(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)", doi)]
     return any(abs(parsed - year) > 3 for parsed in years)
+
+
+def _drop_conflicting_duplicate_doi_year_hits(hits: list[CorpusHit]) -> list[CorpusHit]:
+    by_doi: dict[str, list[CorpusHit]] = {}
+    for hit in hits:
+        if hit.doi:
+            by_doi.setdefault(hit.doi.casefold(), []).append(hit)
+
+    drop_ids: set[int] = set()
+    for duplicate_hits in by_doi.values():
+        if len(duplicate_hits) < 2:
+            continue
+        clean = [
+            hit
+            for hit in duplicate_hits
+            if not _doi_year_conflicts(hit.doi, hit.year)
+        ]
+        if not clean:
+            continue
+        drop_ids.update(
+            id(hit)
+            for hit in duplicate_hits
+            if _doi_year_conflicts(hit.doi, hit.year)
+        )
+    return [hit for hit in hits if id(hit) not in drop_ids]
 
 
 def _abstract_from_inverted_index(value: object) -> str:

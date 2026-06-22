@@ -1048,6 +1048,23 @@ def test_parse_full_raw_search_rejects_conflicting_doi_year_metadata() -> None:
     assert [hit.year for hit in hits] == [2024]
 
 
+def test_parse_full_raw_search_keeps_valid_doi_article_codes_that_look_like_years() -> None:
+    hits = _parse_full_raw_search_response({
+        "results": [
+            {
+                "doi": "https://doi.org/10.1093/GERONI/IGY023.2009",
+                "title": "Metformin to augment strength training effective response in seniors",
+                "abstract": "The MASTERS trial tested whether metformin augments strength training response.",
+                "year": 2018,
+                "provider": "openalex",
+            },
+        ],
+    })
+
+    assert [hit.doi for hit in hits] == ["10.1093/GERONI/IGY023.2009"]
+    assert hits[0].year == 2018
+
+
 def test_parse_full_corpus_paper_hit() -> None:
     hits = _parse_corpus_search_response([
         {
