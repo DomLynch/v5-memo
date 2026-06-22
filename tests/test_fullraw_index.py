@@ -435,6 +435,65 @@ def test_fullraw_shard_search_passes_per_shard_timeout(
     assert seen_timeout == [3.5]
 
 
+def test_search_one_shard_materializes_local_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shard = tmp_path / "remote" / "batch_00000" / "fullraw_shard_0000.sqlite"
+    raw_file = _raw_file(tmp_path, "materialized_cache", [{
+        "doi": "https://doi.org/10.example/materialized-cache",
+        "display_name": "Management forecast disclosure materialized",
+        "abstract": "Management forecast disclosure local cache evidence.",
+        "publication_year": 2024,
+    }])
+    index = FullRawFtsIndex(shard)
+    try:
+        index.index_files([raw_file], commit_interval=1)
+    finally:
+        index.close()
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+
+    hits = fullraw_index._search_one_shard(
+        shard,
+        "management forecast disclosure",
+        5,
+        1900,
+        2100,
+        "relevance",
+        1.0,
+    )
+
+    cached = list(cache_dir.glob("*.sqlite"))
+    assert len(cached) == 1
+    assert cached[0].read_bytes() == shard.read_bytes()
+    assert [hit["doi"] for hit in hits] == ["10.example/materialized-cache"]
+
+
+def test_materialized_shard_cache_evicts_old_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    old = cache_dir / "old.sqlite"
+    newer = cache_dir / "newer.sqlite"
+    keep = cache_dir / "keep.sqlite"
+    old.write_bytes(b"a" * 6)
+    newer.write_bytes(b"b" * 6)
+    keep.write_bytes(b"c" * 6)
+    os.utime(old, (1, 1))
+    os.utime(newer, (2, 2))
+    os.utime(keep, (3, 3))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "12")
+
+    fullraw_index._evict_shard_cache(cache_dir, required_bytes=0, keep=keep)
+
+    assert not old.exists()
+    assert newer.exists()
+    assert keep.exists()
+
+
 def test_discover_shard_paths_finds_nested_batch_shards(tmp_path: Path) -> None:
     nested = tmp_path / "batch_00001"
     nested.mkdir()
