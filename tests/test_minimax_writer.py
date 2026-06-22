@@ -19,7 +19,7 @@ from v5_memo.minimax_writer import (
     parse_minimax_selection,
     validate_minimax_memo,
 )
-from v5_memo.schemas import CorpusHit, InsightCandidate
+from v5_memo.schemas import CorpusHit, InsightCandidate, ReceiptRole
 
 
 class FakeResponse:
@@ -277,6 +277,7 @@ def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
     assert "receipt-owned title" in prompt
     assert "copy receipt/bridge terms verbatim" in prompt
     assert "The title must be made only from locked receipt title/abstract words" in prompt
+    assert "Use this exact receipt-owned title first line: # Alpha memo: nad mitochondrial" in prompt
     assert "Scope every implication to the receipts" in prompt
     assert "Respect receipt roles" in prompt
     assert "observed result or confirmed endpoint" in prompt
@@ -290,6 +291,32 @@ def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
     assert "Receipt roles:" in prompt
     assert "metric mismatch" in prompt
     assert "cross-domain transfer" in prompt
+
+
+def test_build_minimax_prompt_uses_role_verbs_in_safe_title() -> None:
+    candidate = InsightCandidate(
+        topic="metformin training",
+        thesis="Promise/outcome split.",
+        bridge_terms=("metformin", "master", "training"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("promise", "outcome"),
+        score=100,
+        novelty_score=50,
+        evidence_score=85,
+        reasons=("tier:elite_alpha",),
+        receipt_roles=(
+            ReceiptRole("promise", "promise", "promise/outcome split"),
+            ReceiptRole("outcome", "outcome", "promise/outcome split"),
+        ),
+    )
+    receipts = [
+        CorpusHit("promise", "Metformin to augment strength training response", "", "fullraw"),
+        CorpusHit("outcome", "Metformin blunts muscle hypertrophy in resistance training", "", "fullraw"),
+    ]
+
+    prompt = build_minimax_prompt(candidate, receipts)
+
+    assert "# Alpha memo: metformin augment versus blunt master training" in prompt
 
 
 def test_minimax_planner_prompt_prefers_reversal_pairs_not_reviews() -> None:
