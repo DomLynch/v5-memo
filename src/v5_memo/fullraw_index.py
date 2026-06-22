@@ -443,6 +443,7 @@ class FullRawFtsIndex:
         year_min: int = 1900,
         year_max: int = 2100,
         rank_mode: str = "relevance",
+        timeout_seconds: float | None = None,
     ) -> list[dict[str, object]]:
         with self._lock:
             if not self._read_only:
@@ -452,31 +453,38 @@ class FullRawFtsIndex:
                 return []
             match_query = _fts_match_query(self._expanded_term_groups(terms))
             order_by = _search_order_by(rank_mode)
-            rows = self._conn.execute(
-                f"""
-                SELECT
-                  p.title,
-                  p.abstract,
-                  p.doi,
-                  p.pmid,
-                  p.pmcid,
-                  p.openalex_id,
-                  p.semantic_scholar_id,
-                  p.year,
-                  p.journal,
-                  p.source,
-                  p.url,
-                  p.cited_by_count,
-                  bm25(paper_fts, 8.0, 3.0, 1.0) AS rank
-                FROM paper_fts
-                JOIN papers p ON p.id = paper_fts.rowid
-                WHERE paper_fts MATCH ?
-                  AND (p.year IS NULL OR (p.year >= ? AND p.year <= ?))
-                ORDER BY {order_by}
-                LIMIT ?
-                """,
-                (match_query, year_min, year_max, max(1, min(limit, 200))),
-            ).fetchall()
+            if timeout_seconds is not None and timeout_seconds > 0:
+                deadline = time.monotonic() + timeout_seconds
+                self._conn.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+            try:
+                rows = self._conn.execute(
+                    f"""
+                    SELECT
+                      p.title,
+                      p.abstract,
+                      p.doi,
+                      p.pmid,
+                      p.pmcid,
+                      p.openalex_id,
+                      p.semantic_scholar_id,
+                      p.year,
+                      p.journal,
+                      p.source,
+                      p.url,
+                      p.cited_by_count,
+                      bm25(paper_fts, 8.0, 3.0, 1.0) AS rank
+                    FROM paper_fts
+                    JOIN papers p ON p.id = paper_fts.rowid
+                    WHERE paper_fts MATCH ?
+                      AND (p.year IS NULL OR (p.year >= ? AND p.year <= ?))
+                    ORDER BY {order_by}
+                    LIMIT ?
+                    """,
+                    (match_query, year_min, year_max, max(1, min(limit, 200))),
+                ).fetchall()
+            finally:
+                if timeout_seconds is not None and timeout_seconds > 0:
+                    self._conn.set_progress_handler(None, 0)
         return [_row_to_hit(row) for row in rows]
 
     def _expanded_term_groups(self, terms: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
@@ -976,35 +984,64 @@ def _search_shard_paths(
     workers: int | None = None,
     timeout_seconds: float | None = None,
 ) -> list[dict[str, object]]:
+    hits, _completed_paths, _timed_out = _search_shard_paths_with_paths(
+        paths,
+        query,
+        limit=limit,
+        year_min=year_min,
+        year_max=year_max,
+        rank_mode=rank_mode,
+        workers=workers,
+        timeout_seconds=timeout_seconds,
+    )
+    return hits
+
+
+def _search_shard_paths_with_paths(
+    paths: list[Path],
+    query: str,
+    *,
+    limit: int,
+    year_min: int,
+    year_max: int,
+    rank_mode: str,
+    workers: int | None = None,
+    timeout_seconds: float | None = None,
+) -> tuple[list[dict[str, object]], list[Path], bool]:
     merged: dict[str, dict[str, object]] = {}
+    completed_paths: list[Path] = []
+    timed_out = False
     worker_count = workers if workers is not None else int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "8"))
     worker_count = max(1, min(worker_count, len(paths) or 1))
     pool = ThreadPoolExecutor(max_workers=worker_count)
     try:
-        futures = [
-            pool.submit(_search_one_shard, path, query, limit, year_min, year_max, rank_mode)
+        futures = {
+            pool.submit(_search_one_shard, path, query, limit, year_min, year_max, rank_mode): path
             for path in paths
-        ]
+        }
         completed = as_completed(futures, timeout=timeout_seconds) if timeout_seconds else as_completed(futures)
         for future in completed:
+            path = futures[future]
             try:
                 hits = future.result()
             except sqlite3.Error:
                 continue
+            completed_paths.append(path)
             for hit in hits:
                 key = _dedupe_key(hit)
                 existing = merged.get(key)
                 if existing is None or _hit_score(hit) > _hit_score(existing):
                     merged[key] = hit
     except FuturesTimeoutError:
-        pass
+        timed_out = True
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
-    return sorted(
+    hits = sorted(
         merged.values(),
         key=lambda hit: (_hit_score(hit), _int_or_none(hit.get("cited_by_count")) or 0),
         reverse=True,
     )[: max(1, min(limit, 200))]
+    return hits, completed_paths, timed_out
 
 
 def select_search_shard_paths(paths: list[Path]) -> list[Path]:
@@ -1727,6 +1764,8 @@ def run_server() -> None:
     sweep_workers = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKERS") or 1
     sweep_max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
     sweep_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT") or 128
+    sweep_timeout_seconds = _float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SWEEP_TIMEOUT_SECONDS", "")) or 300.0
+    sweep_timeout_seconds = max(1.0, min(sweep_timeout_seconds, 3600.0))
     sweep_cache_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR", "").strip()
     sweep_cache_dir = Path(sweep_cache_dir_config) if sweep_cache_dir_config else None
     manifest_path = Path(
@@ -1847,18 +1886,24 @@ def run_server() -> None:
         def worker() -> None:
             try:
                 sweep_entries = select_sweep_shard_entries(catalog, query=query, limit=sweep_shard_limit)
-                hits = search_shard_entries(
-                    sweep_entries,
+                hits, completed_paths, timed_out = _search_shard_paths_with_paths(
+                    [entry.path for entry in sweep_entries],
                     query,
                     limit=limit,
                     year_min=year_min,
                     year_max=year_max,
                     rank_mode=rank_mode,
                     workers=sweep_workers,
+                    timeout_seconds=sweep_timeout_seconds,
                 )
-                receipt = shard_coverage_receipt(catalog, sweep_entries)
+                completed = set(completed_paths)
+                searched_entries = [entry for entry in sweep_entries if entry.path in completed]
+                receipt = shard_coverage_receipt(catalog, searched_entries)
                 receipt["sweep_scope"] = "relevant"
                 receipt["sweep_shard_limit"] = sweep_shard_limit
+                receipt["sweep_selected_shards"] = len(sweep_entries)
+                receipt["sweep_timed_out"] = timed_out
+                receipt["sweep_timeout_seconds"] = sweep_timeout_seconds
                 sweep_cache_put(key, SweepCacheEntry(time.time(), hits, receipt))
             except Exception:
                 with sweep_lock:

@@ -127,11 +127,13 @@ def main() -> None:
         base_queries = args.query
     elif planner_mode == "minimax":
         base_queries = [args.topic]
-    else:
+    elif args.demo:
         base_queries = [
             "sleep NAD salvage mitochondrial stress",
             "exercise NAD salvage mitochondrial repair",
         ]
+    else:
+        base_queries = [args.topic]
     queries = base_queries
     if planner_mode == "minimax":
         queries = MiniMaxM3SearchPlanner.from_env().plan(
