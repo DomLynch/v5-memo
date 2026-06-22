@@ -321,6 +321,7 @@ class FullRawCorpusSearchClient:
         duplicate_seen = 0
         passes_run: list[str] = []
         rank_modes_run: list[str] = []
+        variant_errors: list[SearchBackendError] = []
         started = time.monotonic()
         for variant_index, search_pass in enumerate(search_passes, start=1):
             elapsed = time.monotonic() - started
@@ -337,7 +338,15 @@ class FullRawCorpusSearchClient:
                 f"start [{search_pass.name}/{search_pass.rank_mode}]: {search_pass.query}"
             )
             variant_started = time.monotonic()
-            hits = self._search_variant(search_pass, limit=per_variant_limit)
+            try:
+                hits = self._search_variant(search_pass, limit=per_variant_limit)
+            except SearchBackendError as exc:
+                variant_errors.append(exc)
+                self._log_progress(
+                    f"fullraw variant {variant_index}/{len(search_passes)} failed "
+                    f"in {time.monotonic() - variant_started:.1f}s: {exc}"
+                )
+                continue
             self._log_progress(
                 f"fullraw variant {variant_index}/{len(search_passes)} done "
                 f"in {time.monotonic() - variant_started:.1f}s; hits={len(hits)}"
@@ -361,6 +370,8 @@ class FullRawCorpusSearchClient:
                 current = best.get(scored.source_key)
                 if current is None or score > current[0]:
                     best[scored.source_key] = (score, scored)
+        if self._strict and not best and variant_errors:
+            raise variant_errors[-1]
         self._log_progress(f"fullraw query done in {time.monotonic() - started:.1f}s; hits={len(best)}")
         duplicate_rate = round(duplicate_seen / total_seen, 4) if total_seen else 0.0
         receipt = {
