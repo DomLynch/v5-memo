@@ -85,6 +85,9 @@ _SYNTHESIS_TITLE_TERMS = frozenset({
     "perspective", "position", "potential", "question", "recommendation",
     "recommendations", "review", "stand", "strategy", "systematic",
 })
+_WEAK_ELITE_SOURCE_TERMS = frozenset({
+    "abstract", "conference", "editorial", "poster", "supplement",
+})
 _TOPIC_CONTEXT_STOP = frozenset({
     "adapt", "adaptation", "aging", "angle", "condition", "effect", "effects",
     "evidence", "healthspan", "human", "intervention", "longevity", "mechanism",
@@ -175,7 +178,11 @@ def mine_insights(
             continue
         if set(shape_reasons) == {"shape:directional_reversal"} and len(bridge) < 2:
             continue
-        tier = _alpha_tier(shape_reasons, tension_terms)
+        tier = _alpha_tier(shape_reasons)
+        if tier == "elite_alpha" and (
+            _is_weak_elite_receipt(left) or _is_weak_elite_receipt(right)
+        ):
+            tier = "publishable_alpha"
         if tier == "discovery_seed" and not include_discovery:
             continue
         score = score_connection(
@@ -569,15 +576,22 @@ def _has_cross_receipt_split(
     return bool(left & a and right & b) or bool(left & b and right & a)
 
 
-def _alpha_tier(shape_reasons: tuple[str, ...], tension_terms: tuple[str, ...]) -> str:
+def _alpha_tier(shape_reasons: tuple[str, ...]) -> str:
     reasons = set(shape_reasons)
     if reasons & _ELITE_SHAPES:
-        return "elite_alpha"
-    if "shape:directional_reversal" in reasons and set(tension_terms) == {"negative", "null"}:
         return "elite_alpha"
     if reasons & _PUBLISHABLE_SHAPES:
         return "publishable_alpha"
     return "discovery_seed"
+
+
+def _is_weak_elite_receipt(hit: CorpusHit) -> bool:
+    text = " ".join(
+        part
+        for part in (hit.title, hit.venue or "", hit.doi or "", hit.url)
+        if part
+    )
+    return bool(_tokens(text) & _WEAK_ELITE_SOURCE_TERMS)
 
 
 def _receipt_roles(

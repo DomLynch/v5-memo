@@ -699,7 +699,7 @@ def test_short_single_word_bridge_is_not_enough_for_elite_shape() -> None:
     assert mine_insights(hits, topic="APR intervention training", required_anchor_terms=("apr",)) == []
 
 
-def test_negated_improvement_can_form_negative_null_elite_pair() -> None:
+def test_negated_improvement_is_publishable_not_elite_without_promise_outcome() -> None:
     hits = [
         _hit(
             "attenuated",
@@ -720,10 +720,10 @@ def test_negated_improvement_can_form_negative_null_elite_pair() -> None:
     )[0]
 
     assert candidate.tension_terms == ("negative", "null")
-    assert candidate_alpha_tier(candidate) == "elite_alpha"
+    assert candidate_alpha_tier(candidate) == "publishable_alpha"
 
 
-def test_common_multiword_anchor_can_support_tense_same_intervention_pair() -> None:
+def test_common_multiword_anchor_does_not_make_negative_null_pair_elite() -> None:
     hits = [
         _hit(
             "negative",
@@ -752,7 +752,31 @@ def test_common_multiword_anchor_can_support_tense_same_intervention_pair() -> N
     )[0]
 
     assert candidate.receipt_ids == ("negative", "null")
-    assert candidate_alpha_tier(candidate) == "elite_alpha"
+    assert candidate_alpha_tier(candidate) == "publishable_alpha"
+
+
+def test_weak_source_format_does_not_promote_pair_to_elite() -> None:
+    hits = [
+        _hit(
+            "promise",
+            "Resveratrol activates mitochondrial exercise mechanism",
+            "Resveratrol improved mitochondrial function and running performance.",
+        ),
+        _hit(
+            "supplement",
+            "Conference supplement abstract: Resveratrol blunts exercise training adaptation",
+            "Randomized trial observed resveratrol blunted exercise training adaptation.",
+        ),
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic="resveratrol exercise training adaptation",
+        required_anchor_terms=("resveratrol",),
+    )[0]
+
+    assert "shape:promise_outcome_reversal" in candidate.reasons
+    assert candidate_alpha_tier(candidate) == "publishable_alpha"
 
 
 @pytest.mark.parametrize("case", _golden_cases(), ids=lambda case: case["name"])

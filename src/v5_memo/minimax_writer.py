@@ -416,6 +416,8 @@ Rules:
 - Return adjacent query pairs when possible: query N should search the promise/mechanism
   side, query N+1 should search the observed/null/blunted outcome side, and both
   must share the same specific intervention, construct, product, model, or program.
+- The promise/mechanism-side query may omit downstream endpoint words when those words
+  would hide the seminal mechanism paper; keep the shared intervention/construct.
 - For intervention topics, include at least one promise-side title query using words
   like expected/designed/protocol/augment/mimic and one outcome-side title query using
   words like blunts/null/reduced/impaired/attenuated for the same intervention.
