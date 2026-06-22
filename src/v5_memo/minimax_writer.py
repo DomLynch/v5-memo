@@ -303,6 +303,7 @@ def build_minimax_prompt(candidate: InsightCandidate, receipts: Sequence[CorpusH
     receipt_block = "\n\n".join(
         _receipt_block(index, hit) for index, hit in enumerate(receipts, start=1)
     )
+    title = _safe_alpha_title(candidate, receipts)
     return f"""Write a sharper alpha memo from the locked evidence below.
 
 Hard rules:
@@ -320,6 +321,8 @@ Hard rules:
 - Scope every implication to the receipts: state the specific population, market,
   company, channel, model, benchmark, timeframe, geography, or source type only when
   the receipts provide it.
+- Respect receipt roles: if a receipt is labeled promise, protocol, intent, or
+  mechanism, describe it as expected/designed/hypothesized/framed, not as an observed result or confirmed endpoint.
 - Use source-appropriate descriptors from the receipts, not generic prestige labels:
   trial/protocol, filing/report, benchmark, case study, market study, campaign, interview,
   dataset, or model card.
@@ -327,11 +330,12 @@ Hard rules:
   contradiction, boundary condition, inversion, neglected proxy, metric mismatch, or
   cross-domain transfer.
 - Avoid generic phrases such as "more research is needed" unless tied to a receipt-specific test.
+- Use this exact receipt-owned title first line: # Alpha memo: {title}
 - Output Markdown only.
 - Keep it under 450 words.
 
 Required structure:
-# Alpha memo: <receipt-owned title>
+# Alpha memo: {title}
 ## Core signal
 ## The 2+2=5 angle
 ## Why this could matter
@@ -360,6 +364,29 @@ Receipt roles:
 Locked receipts:
 {receipt_block}
 """
+
+
+def _safe_alpha_title(candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> str:
+    by_id = {_receipt_display_id(hit): hit for hit in receipts} | {hit.hit_id: hit for hit in receipts}
+    promise_terms: list[str] = []
+    outcome_terms: list[str] = []
+    for role in candidate.receipt_roles:
+        hit = by_id.get(role.receipt_id)
+        if hit is None:
+            continue
+        title_terms = _title_terms(hit.title)
+        if role.role == "promise":
+            promise_terms.extend(term for term in ("augment", "mimic", "protocol", "expected") if term in title_terms)
+        elif role.role == "outcome":
+            outcome_terms.extend(term for term in ("blunt", "impair", "attenuate", "null", "reduce") if term in title_terms)
+    terms = [term for term in candidate.bridge_terms if term]
+    if promise_terms and outcome_terms:
+        terms = [terms[0], promise_terms[0], "versus", outcome_terms[0], *terms[1:3]]
+    else:
+        roles = {role.role for role in candidate.receipt_roles}
+        if {"promise", "outcome"} <= roles:
+            terms.extend(["promise", "outcome"])
+    return " ".join(dict.fromkeys(terms)) or "receipt-bound alpha"
 
 
 def build_minimax_search_prompt(*, topic: str, seed_queries: Sequence[str], limit: int) -> str:
