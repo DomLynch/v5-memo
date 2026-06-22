@@ -314,6 +314,9 @@ Hard rules:
   the title unless those words appear in the locked receipt titles/abstracts.
 - Title the memo around receipt-owned concepts, not around the user's seed query.
 - In the title, copy receipt/bridge terms verbatim; do not use synonyms or paraphrases.
+- The title must be made only from locked receipt title/abstract words or listed
+  bridge terms. Put framing words such as opposite, direction, trend, divergent,
+  and framing in the body, not the title.
 - Scope every implication to the receipts: state the specific population, market,
   company, channel, model, benchmark, timeframe, geography, or source type only when
   the receipts provide it.
