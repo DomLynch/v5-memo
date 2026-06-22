@@ -691,6 +691,57 @@ def test_warm_shard_cache_stops_before_eviction_churn(
     assert len(list(cache_dir.glob("*.sqlite"))) == 2
 
 
+def test_warm_shard_cache_prefers_cache_fit_source_breadth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    specs = [
+        ("openalex", 28, ("pregnancy", "management")),
+        ("openalex", 8, ("adjacent",)),
+        ("pubmed", 9, ("pregnancy",)),
+        ("semantic_scholar", 29, ("pregnancy", "management")),
+        ("semantic_scholar", 10, ("adjacent",)),
+    ]
+    entries: list[ShardCatalogEntry] = []
+    for index, (source, size, topic_terms) in enumerate(specs):
+        shard = tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite"
+        shard.parent.mkdir()
+        shard.write_bytes(b"x" * size)
+        entries.append(ShardCatalogEntry(
+            path=shard,
+            batch_id=index,
+            shard_id=0,
+            sources=(source,),
+            files_completed=1,
+            papers_inserted=10,
+            bytes_used=size,
+            cited_by_max=1000 if "management" in topic_terms else 1,
+            topic_terms=topic_terms,
+        ))
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "27")
+
+    result = warm_shard_cache(
+        entries,
+        query="pregnancy management",
+        sweep_shard_limit=5,
+        pass_shard_limit=3,
+        target_ready=3,
+    )
+
+    cached_files = list(cache_dir.glob("*.sqlite"))
+    cached_sizes = sorted(path.stat().st_size for path in cached_files)
+    assert result.stopped_for_target is True
+    assert result.ready_shards == 3
+    assert result.bytes_ready == 27
+    assert result.sources_ready == {"openalex": 1, "pubmed": 1, "semantic_scholar": 1}
+    assert len(cached_files) == result.ready_shards
+    assert all(size > 0 for size in cached_sizes)
+    assert sum(cached_sizes) == result.bytes_ready
+    assert cached_sizes == [8, 9, 10]
+
+
 def test_discover_shard_paths_finds_nested_batch_shards(tmp_path: Path) -> None:
     nested = tmp_path / "batch_00001"
     nested.mkdir()
@@ -1551,6 +1602,137 @@ def test_server_auto_continues_sweep_until_receipt_is_sufficient(tmp_path: Path)
         results = final_body["results"]
         assert isinstance(results, list)
         assert len(results) == 3
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_server_async_sweep_uses_cache_fit_order_for_gate(tmp_path: Path) -> None:
+    specs = [
+        ("openalex", 28, ("management", "forecast")),
+        ("openalex", 8, ("adjacent",)),
+        ("pubmed", 9, ("management",)),
+        ("semantic_scholar", 29, ("management", "forecast")),
+        ("semantic_scholar", 10, ("adjacent",)),
+    ]
+    for index, (source, manifest_size, topic_terms) in enumerate(specs):
+        batch = tmp_path / f"batch_{index:05d}"
+        batch.mkdir()
+        shard = batch / "fullraw_shard_0000.sqlite"
+        raw_file = _raw_file(tmp_path, f"cache_fit_sweep_{index}", [{
+            "doi": f"https://doi.org/10.example/cache-fit-{index}",
+            "display_name": f"Management forecast disclosure cache fit {index}",
+            "abstract": "Management forecast disclosure cache fit evidence.",
+            "publication_year": 2024,
+            "cited_by_count": 100 if "forecast" in topic_terms else 1,
+        }])
+        index_db = FullRawFtsIndex(shard)
+        try:
+            index_db.index_files([raw_file], commit_interval=1)
+            profile = index_db.profile()
+        finally:
+            index_db.close()
+        shard_meta = {
+            **profile,
+            "shard_id": 0,
+            "files_completed": 1,
+            "papers_inserted": 1,
+            "bytes_used": manifest_size,
+            "topic_terms": list(topic_terms),
+        }
+        (batch / "complete.json").write_text(json.dumps({
+            "batch_id": index,
+            "files": [{"source": source}],
+            "shards": [shard_meta],
+        }))
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"files": []}))
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path.cwd() / "src"),
+        "V5_MEMO_FULL_RAW_INDEX_PORT": str(port),
+        "V5_MEMO_FULL_RAW_MANIFEST": str(manifest),
+        "V5_MEMO_FULL_RAW_SHARD_DIR": str(tmp_path),
+        "V5_MEMO_FULL_RAW_SHARD_TRUST_FILENAMES": "1",
+        "V5_MEMO_FULL_RAW_SHARD_MANIFEST_STATS": "1",
+        "V5_MEMO_FULL_RAW_ASYNC_SWEEP": "1",
+        "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR": str(tmp_path / "cache"),
+        "V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT": "5",
+        "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT": "1",
+        "V5_MEMO_FULL_RAW_SWEEP_MAX_PASSES": "3",
+        "V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED": "3",
+        "V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED": "3",
+        "V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES": "27",
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "v5_memo.fullraw_index", "serve"],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        base = f"http://127.0.0.1:{port}"
+        for _ in range(50):
+            try:
+                urllib.request.urlopen(base + "/health", timeout=1).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            _, stderr = proc.communicate(timeout=1)
+            raise AssertionError(f"server did not start: {stderr}")
+
+        def post_search(*, queue_if_missing: bool = False) -> tuple[int, dict[str, object]]:
+            request = urllib.request.Request(
+                base + "/search",
+                data=json.dumps({
+                    "query": "management forecast disclosure",
+                    "top_k": 5,
+                    "cache_only": True,
+                    "queue_if_missing": queue_if_missing,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    payload = json.loads(response.read().decode())
+                    assert isinstance(payload, dict)
+                    return response.status, payload
+            except urllib.error.HTTPError as exc:
+                payload = json.loads(exc.read().decode())
+                assert isinstance(payload, dict)
+                return exc.code, payload
+
+        status, _queued = post_search(queue_if_missing=True)
+        assert status == 200
+        final_body: dict[str, object] = {}
+        for _ in range(50):
+            status, body = post_search(queue_if_missing=True)
+            final_body = body
+            if status == 200 and body.get("results"):
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("cache-fit async sweep did not satisfy coverage")
+        meta = cast(dict[str, object], final_body["meta"])
+        receipt = cast(dict[str, object], meta["shard_receipt"])
+        raw_completed_paths = receipt["sweep_completed_paths"]
+        assert isinstance(raw_completed_paths, list)
+        completed_paths = tuple(str(path) for path in raw_completed_paths)
+
+        assert receipt["shards_searched"] == 3
+        assert receipt["sources_searched"] == {"openalex": 1, "pubmed": 1, "semantic_scholar": 1}
+        assert any("batch_00001" in path for path in completed_paths)
+        assert any("batch_00002" in path for path in completed_paths)
+        assert any("batch_00004" in path for path in completed_paths)
+        assert not any("batch_00000" in path for path in completed_paths)
+        assert not any("batch_00003" in path for path in completed_paths)
     finally:
         proc.terminate()
         proc.wait(timeout=10)

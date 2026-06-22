@@ -1033,6 +1033,58 @@ def test_fullraw_search_backfills_missing_doi_abstracts(monkeypatch: MonkeyPatch
     assert any("api.openalex.org/works/doi:" in url for url in seen_urls)
 
 
+def test_fullraw_search_drops_doi_title_mismatch(monkeypatch: MonkeyPatch) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        if "api.openalex.org/works/doi:" in request.full_url:
+            if "10.1016%2fs0008-6363%2895%2900018-6" in request.full_url.casefold():
+                return FakeResponse({
+                    "id": "https://openalex.org/W1000",
+                    "doi": "https://doi.org/10.1016/s0008-6363(95)00018-6",
+                    "display_name": "Reactive hyperaemia is impaired in hypertrophied guinea pig hearts",
+                    "publication_year": 1995,
+                    "abstract_inverted_index": {"Reactive": [0], "hyperaemia": [1]},
+                })
+            return FakeResponse({
+                "id": "https://openalex.org/W999",
+                "doi": "https://doi.org/10.1161/01.cir.0000129233.51320.92",
+                "display_name": "Omega-3 fatty acids and atrial fibrillation prevention",
+                "publication_year": 2004,
+                "abstract_inverted_index": {"Omega": [0], "prevention": [1]},
+            })
+        return FakeResponse({
+            "results": [
+                {
+                    "doi": "https://doi.org/10.1161/01.CIR.0000129233.51320.92",
+                    "title": "LVAD recovery correlates with sarcoplasmic reticulum calcium content",
+                    "abstract": "LVAD clinical recovery correlated with sarcoplasmic reticulum calcium content.",
+                    "year": 2004,
+                    "provider": "openalex",
+                },
+                {
+                    "doi": "https://doi.org/10.1016/s0008-6363(95)00018-6",
+                    "title": "Reactive hyperaemia is impaired in hypertrophied guinea pig hearts",
+                    "abstract": "Reactive hyperaemia was impaired in hypertrophied guinea pig hearts.",
+                    "year": 1995,
+                    "provider": "openalex",
+                },
+            ],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    client = FullRawCorpusSearchClient(
+        search_url="https://fullraw.example/search",
+        max_variants=1,
+        doi_abstract_backfill_limit=5,
+    )
+
+    hits = client.search("recovery hypertrophy", limit=2)
+
+    assert [hit.title for hit in hits] == [
+        "Reactive hyperaemia is impaired in hypertrophied guinea pig hearts"
+    ]
+
+
 def test_parse_openalex_response_reconstructs_abstract() -> None:
     hits = _parse_openalex_response(
         {

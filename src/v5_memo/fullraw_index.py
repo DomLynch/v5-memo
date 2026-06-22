@@ -1210,6 +1210,85 @@ def _prioritize_sweep_pass_entries(
     return ordered
 
 
+def _cache_fit_warm_entries(
+    entries: list[ShardCatalogEntry],
+    selected: list[ShardCatalogEntry],
+    *,
+    query: str,
+    target_ready: int,
+) -> list[ShardCatalogEntry]:
+    max_cache_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
+    if max_cache_bytes is None or max_cache_bytes <= 0 or target_ready <= 0:
+        return selected
+    target_ready = min(target_ready, len(entries))
+    if target_ready <= 0:
+        return selected
+    query_terms = set(_fts_terms(query))
+
+    def candidate_key(entry: ShardCatalogEntry) -> tuple[int, int, int, int, int, str]:
+        topic_hits = len(query_terms & set(entry.topic_terms))
+        return (
+            max(0, entry.bytes_used),
+            -topic_hits,
+            -entry.cited_by_max,
+            entry.batch_id,
+            entry.shard_id,
+            str(entry.path),
+        )
+
+    by_source: dict[str, list[ShardCatalogEntry]] = {}
+    for entry in entries:
+        source = entry.sources[0] if entry.sources else "unknown"
+        by_source.setdefault(source, []).append(entry)
+    sources = sorted(by_source, key=lambda source: (len(by_source[source]), source))
+    ordered_by_source = {source: sorted(by_source[source], key=candidate_key) for source in sources}
+    fit_prefix: list[ShardCatalogEntry] = []
+    fit_paths: set[Path] = set()
+    bytes_used = 0
+
+    while len(fit_prefix) < target_ready:
+        before = len(fit_prefix)
+        for source in sources:
+            source_entries = ordered_by_source[source]
+            while source_entries:
+                candidate = source_entries.pop(0)
+                if candidate.path in fit_paths:
+                    continue
+                candidate_bytes = max(0, candidate.bytes_used)
+                if bytes_used + candidate_bytes > max_cache_bytes:
+                    continue
+                fit_prefix.append(candidate)
+                fit_paths.add(candidate.path)
+                bytes_used += candidate_bytes
+                break
+            if len(fit_prefix) >= target_ready:
+                break
+        if len(fit_prefix) == before:
+            break
+
+    if len(fit_prefix) < target_ready:
+        remaining = sorted(
+            (entry for entry in entries if entry.path not in fit_paths),
+            key=candidate_key,
+        )
+        for candidate in remaining:
+            candidate_bytes = max(0, candidate.bytes_used)
+            if bytes_used + candidate_bytes > max_cache_bytes:
+                continue
+            fit_prefix.append(candidate)
+            fit_paths.add(candidate.path)
+            bytes_used += candidate_bytes
+            if len(fit_prefix) >= target_ready:
+                break
+
+    if not fit_prefix:
+        return selected
+    ordered = list(fit_prefix)
+    _extend_unique_entries(ordered, selected, max(len(selected), len(ordered)))
+    _extend_unique_entries(ordered, entries, max(len(selected), len(ordered)))
+    return ordered
+
+
 def _profile_relaxed_sweep_query(
     query: str,
     entries: list[ShardCatalogEntry],
@@ -1516,6 +1595,12 @@ def warm_shard_cache(
         query=query,
     )
     target_ready = max(0, min(target_ready, len(selected)))
+    selected = _cache_fit_warm_entries(
+        entries,
+        selected,
+        query=query,
+        target_ready=target_ready,
+    )
     max_shards = max_shards if max_shards is None else max(0, max_shards)
     max_seconds = max_seconds if max_seconds is None else max(0.0, max_seconds)
     warmed_paths: set[Path] = set()
@@ -2293,6 +2378,12 @@ def run_server() -> None:
                     sweep_entries,
                     sweep_pass_shard_limit,
                     query=query,
+                )
+                sweep_entries = _cache_fit_warm_entries(
+                    catalog,
+                    sweep_entries,
+                    query=query,
+                    target_ready=min_shards_searched,
                 )
                 planned_receipt = shard_coverage_receipt(catalog, sweep_entries)
                 sweep_query = _profile_relaxed_sweep_query(query, sweep_entries)

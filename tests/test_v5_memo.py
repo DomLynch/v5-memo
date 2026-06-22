@@ -386,6 +386,63 @@ def test_pipeline_applies_selector_to_existing_candidates() -> None:
     assert result.candidate.receipt_ids == chosen
 
 
+def test_pipeline_filters_to_requested_tier_before_selector(monkeypatch: pytest.MonkeyPatch) -> None:
+    hits = [
+        _hit("low-a", "Tool improves benchmark accuracy", "Tool improved benchmark accuracy."),
+        _hit("low-b", "Tool reduces deployment reliability", "Tool reduced reliability."),
+        _hit("elite-a", "Protocol expected tool augmentation", "Protocol expected tool augmentation."),
+        _hit("elite-b", "Outcome observed tool blunting", "Outcome observed tool blunting."),
+    ]
+    low = InsightCandidate(
+        topic="tool reliability",
+        thesis="Low candidate.",
+        bridge_terms=("tool",),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("low-a", "low-b"),
+        score=90,
+        novelty_score=90,
+        evidence_score=90,
+        reasons=("tier:publishable_alpha",),
+    )
+    elite = InsightCandidate(
+        topic="tool reliability",
+        thesis="Elite candidate.",
+        bridge_terms=("tool",),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("elite-a", "elite-b"),
+        score=90,
+        novelty_score=90,
+        evidence_score=90,
+        reasons=("tier:elite_alpha",),
+    )
+    seen: list[InsightCandidate] = []
+
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return hits
+
+    def fake_mine(*_args: object, **_kwargs: object) -> list[InsightCandidate]:
+        return [low, elite]
+
+    def selector(candidates: Sequence[InsightCandidate], _hits: Sequence[CorpusHit]) -> Sequence[InsightCandidate]:
+        seen.extend(candidates)
+        return list(candidates)
+
+    monkeypatch.setattr("v5_memo.pipeline.mine_insights", fake_mine)
+
+    result = build_alpha_memo(
+        topic="tool reliability",
+        seed_queries=["tool"],
+        searcher=FakeSearch(),
+        memo_selector=selector,
+        min_alpha_tier="elite_alpha",
+    )
+
+    assert seen == [elite]
+    assert result.candidate == elite
+
+
 def test_pipeline_selector_cannot_invent_receipt_pair() -> None:
     class FakeSearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:

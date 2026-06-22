@@ -627,24 +627,29 @@ def _backfill_missing_openalex_abstracts(
 ) -> list[CorpusHit]:
     if limit <= 0:
         return hits
-    out = list(hits)
+    out: list[CorpusHit | None] = list(hits)
     backfilled = 0
-    missing = [
+    eligible = [
         (index, hit)
         for index, hit in enumerate(hits)
-        if not hit.abstract and hit.doi
+        if hit.doi
     ]
-    missing.sort(key=lambda item: _doi_backfill_priority(item[1]), reverse=True)
-    for index, hit in missing:
+    eligible.sort(key=lambda item: _doi_backfill_priority(item[1]), reverse=True)
+    for index, hit in eligible:
         if backfilled >= limit:
             break
         doi = hit.doi
         if doi is None:
             continue
         enriched = _fetch_openalex_work_by_doi(doi)
-        if enriched is None or not enriched.abstract:
+        if enriched is None:
             continue
         backfilled += 1
+        if enriched.title and not _titles_match(hit.title, enriched.title):
+            out[index] = None
+            continue
+        if hit.abstract or not enriched.abstract:
+            continue
         out[index] = replace(
             hit,
             abstract=enriched.abstract,
@@ -652,7 +657,7 @@ def _backfill_missing_openalex_abstracts(
             venue=hit.venue or enriched.venue,
             metadata={**hit.metadata, "abstract_backfill": "openalex_doi"},
         )
-    return out
+    return [hit for hit in out if hit is not None]
 
 
 def _doi_backfill_priority(hit: CorpusHit) -> int:
@@ -674,6 +679,23 @@ def _fetch_openalex_work_by_doi(doi: str) -> CorpusHit | None:
     except (HTTPError, URLError, TimeoutError, ValueError):
         return None
     return _parse_openalex_work(data, match_count=None)
+
+
+def _titles_match(left: str, right: str) -> bool:
+    left_terms = _title_terms(left)
+    right_terms = _title_terms(right)
+    if not left_terms or not right_terms:
+        return True
+    return len(left_terms & right_terms) / min(len(left_terms), len(right_terms)) >= 0.45
+
+
+def _title_terms(title: str) -> set[str]:
+    stop = {"and", "for", "from", "into", "the", "with", "without", "study", "trial"}
+    return {
+        raw
+        for raw in re.findall(r"[a-z][a-z0-9]{2,}", title.casefold())
+        if raw not in stop
+    }
 
 
 def _parse_paper_hit(item: Any) -> CorpusHit | None:
