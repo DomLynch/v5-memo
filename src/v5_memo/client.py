@@ -45,6 +45,20 @@ _FULLRAW_CORE_DROP = {
     "result",
     "results",
 }
+_FULLRAW_PAIR_DROP = _FULLRAW_CORE_DROP | {
+    "adult",
+    "adults",
+    "augment",
+    "augmented",
+    "blunt",
+    "blunted",
+    "human",
+    "humans",
+    "older",
+    "supplement",
+    "supplementation",
+    "trained",
+}
 
 
 class OpenAlexFullCorpusSearchClient:
@@ -788,7 +802,7 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
     core_variant = _fullraw_core_variant(query)
     if core_variant and add("core", core_variant):
         return out
-    pair_limit = max(0, limit - len(out) - 2)
+    pair_limit = max(0, limit - len(out))
     for variant in _fullraw_pair_variants(query, limit=pair_limit):
         if add("broad", variant):
             return out
@@ -817,12 +831,32 @@ def _fullraw_core_variant(query: str) -> str:
 def _fullraw_pair_variants(query: str, *, limit: int) -> list[str]:
     if limit <= 0:
         return []
-    terms = tuple(term for term in dict.fromkeys(_query_terms(query)) if len(term) >= 6)
+    terms = tuple(
+        term
+        for term in dict.fromkeys(_query_terms(query))
+        if len(term) >= 3 and term not in _FULLRAW_PAIR_DROP
+    )
     out: list[str] = []
+    seen: set[str] = set()
+
+    def add(left: str, right: str) -> bool:
+        if left == right:
+            return False
+        pair = f"{left} {right}"
+        if pair in seen:
+            return False
+        seen.add(pair)
+        out.append(pair)
+        return len(out) >= limit
+
+    if len(terms) > 2:
+        anchor = terms[0]
+        for term in terms[1:]:
+            if add(anchor, term):
+                return out
     for gap in range(1, len(terms)):
         for start in range(0, len(terms) - gap):
-            out.append(f"{terms[start]} {terms[start + gap]}")
-            if len(out) >= limit:
+            if add(terms[start], terms[start + gap]):
                 return out
     return out
 
