@@ -32,7 +32,7 @@ _STOP = {
     "about", "above", "abstract", "after", "also", "among", "and", "are", "because", "been", "both",
     "but", "can", "could", "different", "does", "during", "for", "from", "had", "has", "have", "high",
     "into", "its",
-    "may", "no", "not", "off", "or", "our", "out", "over", "per", "such", "than", "that", "the",
+    "may", "most", "no", "not", "off", "or", "our", "out", "over", "per", "such", "than", "that", "the",
     "their", "these", "this", "those", "through", "was", "were", "with", "within",
     "without", "would", "all", "any", "between", "each", "other",
     "should", "there", "using", "which", "while", "who", "whose", "will", "you", "your",
@@ -45,7 +45,7 @@ _STOP = {
     "dan", "de", "di", "findings", "general", "however", "ini", "many", "merupakan",
     "process", "role", "specific", "therefore", "understanding", "well", "yang",
     "adalah", "analisis", "dengan", "dilakukan", "hasil", "including", "made",
-    "en", "la", "metode", "pada", "penelitian",
+    "el", "en", "la", "los", "metode", "pada", "penelitian",
 }
 _BACKEND = "v5-fullraw-indexed-fts5"
 _DEFAULT_TERM_MAP = (
@@ -2262,7 +2262,7 @@ def _fts_terms(query: str) -> tuple[str, ...]:
     terms: list[str] = []
     seen: set[str] = set()
     for token in _WORD.findall(query.casefold()):
-        if len(token) <= 1 or token in _STOP or token in seen:
+        if len(token) <= 1 or token.isdigit() or token in _STOP or token in seen:
             continue
         seen.add(token)
         terms.append(token)
