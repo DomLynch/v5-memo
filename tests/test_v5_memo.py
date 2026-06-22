@@ -602,6 +602,31 @@ def test_title_only_specific_anchor_can_support_elite_promise_outcome_pair() -> 
     assert meets_publish_bar(candidate, "elite_alpha")
 
 
+def test_title_only_augment_protocol_can_pair_with_blunted_outcome() -> None:
+    hits = [
+        _hit(
+            "protocol",
+            "Metformin to augment strength training effective response in seniors: The MASTERS trial",
+            "",
+        ),
+        _hit(
+            "outcome",
+            "Metformin blunts muscle hypertrophy in response to progressive resistance exercise training in older adults",
+            "The outcome trial observed metformin blunted resistance training hypertrophy.",
+        ),
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic="metformin resistance training adaptation",
+        required_anchor_terms=("metformin",),
+    )[0]
+
+    assert candidate.receipt_ids == ("protocol", "outcome")
+    assert "shape:promise_outcome_reversal" in candidate.reasons
+    assert candidate_alpha_tier(candidate) == "elite_alpha"
+
+
 def test_short_single_word_bridge_is_not_enough_for_elite_shape() -> None:
     hits = [
         _hit("a", "APR improves training", "APR improved training outcomes."),

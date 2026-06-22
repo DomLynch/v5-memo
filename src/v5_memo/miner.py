@@ -60,6 +60,7 @@ _INTENT = frozenset({"aim", "aimed", "designed", "expect", "expected", "hypothes
 _OBSERVED = frozenset({"found", "observed", "outcome", "outcomes", "reported", "result", "results", "showed"})
 _PROMISE = _INTENT | _ROLE_A | frozenset({
     "activate", "activated", "activates", "activating", "activation",
+    "augment",
     "mimetic", "mimetics", "mimic", "mimics",
 })
 _OUTCOME_ROLE = _OBSERVED | frozenset({
