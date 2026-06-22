@@ -976,15 +976,14 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
         out.append(FullRawSearchPass(name=name, query=clean, rank_mode=rank_mode))
         return len(out) >= limit
 
-    window_limit = max(1, min(4, limit - 4 if limit > 5 else 1))
-    for index, variant in enumerate(_query_variants(query, limit=window_limit)):
-        if add("focused" if index == 0 else "broad", variant):
-            return out
+    query_variants = _query_variants(query, limit=max(limit * 2, 8))
+    if query_variants and add("focused", query_variants[0]):
+        return out
     core_variant = _fullraw_core_variant(query)
     if core_variant and add("core", core_variant):
         return out
-    pair_limit = max(0, limit - len(out))
-    for variant in _fullraw_pair_variants(query, limit=pair_limit):
+    pair_variants = _fullraw_pair_variants(query, limit=max(limit * 2, 8))
+    for variant in pair_variants[:2]:
         if add("broad", variant):
             return out
     if add("adjacent", f"{query} mechanism outcome"):
@@ -995,6 +994,12 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
         return out
     if add("recency", query, "recency"):
         return out
+    for variant in pair_variants[2:]:
+        if add("broad", variant):
+            return out
+    for variant in query_variants[1:]:
+        if add("broad", variant):
+            return out
     for variant in _fullraw_query_variants(query, limit=limit * 2):
         if add("broad", variant):
             return out
@@ -1032,7 +1037,7 @@ def _fullraw_pair_variants(query: str, *, limit: int) -> list[str]:
 
     if len(terms) > 2:
         anchor = terms[0]
-        for term in terms[1:]:
+        for term in terms[1:3]:
             if add(anchor, term):
                 return out
     for gap in range(1, len(terms)):
@@ -1042,6 +1047,11 @@ def _fullraw_pair_variants(query: str, *, limit: int) -> list[str]:
             if left in _FULLRAW_WEAK_PAIR_TERMS and right in _FULLRAW_WEAK_PAIR_TERMS:
                 continue
             if add(left, right):
+                return out
+    if len(terms) > 3:
+        anchor = terms[0]
+        for term in terms[3:]:
+            if add(anchor, term):
                 return out
     return out
 

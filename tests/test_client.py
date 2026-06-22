@@ -481,11 +481,11 @@ def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None
         "focused",
         "broad",
         "broad",
-        "broad",
         "adjacent",
         "falsifier",
         "citation_heavy",
         "recency",
+        "broad",
     ]
     assert [payload["rank_mode"] for payload in requested] == [
         "relevance",
@@ -493,9 +493,9 @@ def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None
         "relevance",
         "relevance",
         "relevance",
-        "relevance",
         "citation",
         "recency",
+        "relevance",
     ]
     assert {hit.metadata["search_pass"] for hit in hits} >= {
         "focused",
@@ -530,7 +530,7 @@ def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: objec
     receipt = hits[0].metadata["fullraw_search_receipt"]
     assert isinstance(receipt, dict)
     assert receipt["duplicate_rate"] == 0.75
-    assert receipt["search_passes"] == ("focused", "broad")
+    assert receipt["search_passes"] == ("focused", "broad", "adjacent")
     assert receipt["rank_modes"] == ("relevance",)
 
 
@@ -990,13 +990,22 @@ def test_fullraw_search_passes_cover_breadth_depth_modes() -> None:
         "focused",
         "broad",
         "broad",
-        "broad",
-        "broad",
-        "broad",
-        "broad",
+        "adjacent",
+        "falsifier",
+        "citation_heavy",
+        "recency",
         "broad",
     ]
-    assert all(search_pass.rank_mode == "relevance" for search_pass in passes)
+    assert [search_pass.rank_mode for search_pass in passes] == [
+        "relevance",
+        "relevance",
+        "relevance",
+        "relevance",
+        "relevance",
+        "citation",
+        "recency",
+        "relevance",
+    ]
     assert "cold immersion" in [search_pass.query for search_pass in passes]
 
 
@@ -1008,7 +1017,7 @@ def test_fullraw_search_passes_include_core_variant_before_depth_modes() -> None
         "core",
         "broad",
         "broad",
-        "broad",
+        "adjacent",
     ]
     assert passes[1].query == "resveratrol exercise training"
     assert "resveratrol training" in [search_pass.query for search_pass in passes]
@@ -1020,13 +1029,14 @@ def test_fullraw_search_passes_prioritize_promise_pair_variants() -> None:
         limit=5,
     )
 
-    assert "resveratrol mitochondrial" in [search_pass.query for search_pass in passes]
+    assert {"adjacent", "falsifier"} <= {search_pass.name for search_pass in passes}
+    assert "resveratrol sirt1" in [search_pass.query for search_pass in passes]
 
 
 def test_fullraw_search_passes_prioritize_specific_short_anchor_pairs() -> None:
     metformin_passes = _fullraw_search_passes(
         "metformin augment strength training seniors",
-        limit=5,
+        limit=12,
     )
     nmn_passes = _fullraw_search_passes(
         "nmn supplementation vo2max adaptation trained cyclists",
