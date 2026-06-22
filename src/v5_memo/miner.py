@@ -234,9 +234,14 @@ def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 3) -> tuple[
         "mimetic",
         "pharmacology",
         "protocol",
+        "resistance",
         "response",
         "reversal",
         "stress",
+        "train",
+        "trained",
+        "training",
+        "water",
     }
     generic.update(
         _POSITIVE | _NEGATIVE | _OBSERVED | _INTENT | _PROMISE | _OUTCOME_ROLE

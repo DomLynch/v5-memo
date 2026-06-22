@@ -463,6 +463,29 @@ def test_miner_rejects_pairs_without_required_anchor_terms() -> None:
     assert mine_insights(hits, topic="NAD salvage exercise", required_anchor_terms=("nad", "salvage")) == []
 
 
+def test_miner_rejects_pairs_with_only_one_multiword_topic_anchor() -> None:
+    hits = [
+        _hit(
+            "water-a",
+            "Water balance improves training response",
+            "Water balance improved outcomes.",
+        ),
+        _hit(
+            "water-b",
+            "Water status blunts muscle recovery",
+            "Water status reduced recovery.",
+        ),
+    ]
+    anchors = query_anchor_terms(["cold water immersion resistance training adaptation"])
+
+    assert mine_insights(
+        hits,
+        topic="cold water immersion resistance training adaptation",
+        required_anchor_terms=anchors,
+    ) == []
+    assert "water" not in anchors
+
+
 def test_miner_rejects_asymmetric_anchor_pairs() -> None:
     hits = [
         _hit(

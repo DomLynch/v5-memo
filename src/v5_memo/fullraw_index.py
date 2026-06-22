@@ -268,32 +268,60 @@ class FullRawFtsIndex:
         with self._lock:
             if not self._read_only:
                 self.initialize()
-            row = self._conn.execute(
-                """
-                SELECT
-                  MIN(year) AS year_min,
-                  MAX(year) AS year_max,
-                  MIN(COALESCE(cited_by_count, 0)) AS cited_by_min,
-                  MAX(COALESCE(cited_by_count, 0)) AS cited_by_max,
-                  AVG(COALESCE(cited_by_count, 0)) AS cited_by_avg
-                FROM papers
-                """
+            year_min_row = self._conn.execute(
+                "SELECT year FROM papers WHERE year IS NOT NULL ORDER BY year ASC LIMIT 1"
             ).fetchone()
-            topic_rows = self._conn.execute(
-                """
-                SELECT title, abstract, journal
-                FROM papers
-                ORDER BY COALESCE(cited_by_count, 0) DESC
-                LIMIT ?
-                """,
-                (max(1, min(sample_limit, 1000)),),
-            ).fetchall()
+            year_max_row = self._conn.execute(
+                "SELECT year FROM papers WHERE year IS NOT NULL ORDER BY year DESC LIMIT 1"
+            ).fetchone()
+            sample_cap = max(1, min(sample_limit, 1000))
+            papers_indexed = _int_or_none(self._get_meta("papers_indexed")) or 0
+            if papers_indexed <= 0:
+                max_id_row = self._conn.execute("SELECT MAX(id) AS max_id FROM papers").fetchone()
+                papers_indexed = _int_or_none(max_id_row["max_id"]) or 0 if max_id_row is not None else 0
+            topic_rows: list[sqlite3.Row] = []
+            seen_ids: set[int] = set()
+            starts = _sample_row_starts(papers_indexed)
+            rows_per_start = max(1, -(-sample_cap // max(1, len(starts))))
+            for start in starts:
+                rows = self._conn.execute(
+                    """
+                    SELECT id, title, abstract, journal, cited_by_count
+                    FROM papers
+                    WHERE id >= ?
+                    ORDER BY id
+                    LIMIT ?
+                    """,
+                    (start, rows_per_start),
+                ).fetchall()
+                for sample_row in rows:
+                    row_id = int(sample_row["id"])
+                    if row_id in seen_ids:
+                        continue
+                    seen_ids.add(row_id)
+                    topic_rows.append(sample_row)
+                    if len(topic_rows) >= sample_cap:
+                        break
+                if len(topic_rows) >= sample_cap:
+                    break
+            if not topic_rows:
+                topic_rows = self._conn.execute(
+                    """
+                    SELECT id, title, abstract, journal, cited_by_count
+                    FROM papers
+                    ORDER BY id
+                    LIMIT ?
+                    """,
+                    (sample_cap,),
+                ).fetchall()
+        citation_counts = [_int_or_none(row["cited_by_count"]) or 0 for row in topic_rows]
         return {
-            "year_min": _int_or_none(row["year_min"]) if row is not None else None,
-            "year_max": _int_or_none(row["year_max"]) if row is not None else None,
-            "cited_by_min": _int_or_none(row["cited_by_min"]) or 0 if row is not None else 0,
-            "cited_by_max": _int_or_none(row["cited_by_max"]) or 0 if row is not None else 0,
-            "cited_by_avg": round(_float_or_none(row["cited_by_avg"]) or 0.0, 3) if row is not None else 0.0,
+            "year_min": _int_or_none(year_min_row["year"]) if year_min_row is not None else None,
+            "year_max": _int_or_none(year_max_row["year"]) if year_max_row is not None else None,
+            "cited_by_min": min(citation_counts) if citation_counts else 0,
+            "cited_by_max": max(citation_counts) if citation_counts else 0,
+            "cited_by_avg": round(sum(citation_counts) / len(citation_counts), 3) if citation_counts else 0.0,
+            "profile_sample_size": len(topic_rows),
             "topic_terms": _profile_topic_terms(topic_rows, limit=topic_limit),
         }
 
@@ -2251,6 +2279,16 @@ def _profile_topic_terms(rows: Iterable[sqlite3.Row], *, limit: int) -> tuple[st
         text = f"{row['title'] or ''} {row['abstract'] or ''} {row['journal'] or ''}"
         counts.update(_fts_terms(text))
     return tuple(term for term, _count in counts.most_common(max(1, limit)))
+
+
+def _sample_row_starts(total_rows: int, *, buckets: int = 5) -> tuple[int, ...]:
+    if total_rows <= 1:
+        return (1,)
+    bucket_count = max(2, buckets)
+    starts = {1, total_rows}
+    for index in range(1, bucket_count - 1):
+        starts.add(max(1, round(total_rows * index / (bucket_count - 1))))
+    return tuple(sorted(starts))
 
 
 def _search_order_by(rank_mode: str) -> str:
