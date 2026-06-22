@@ -335,6 +335,7 @@ def test_planned_cli_drops_queries_that_lose_specific_topic_anchor(
             del topic, seed_queries, limit
             return [
                 "post activation potentiation cryotherapy attenuate 1rm strength",
+                "cryotherapy resistance training hypertrophy blunted adaptation",
                 "cold water immersion blunts hypertrophy resistance trained men",
             ]
 
@@ -377,7 +378,7 @@ def test_planned_cli_drops_queries_that_lose_specific_topic_anchor(
     assert "Alpha memo" in capsys.readouterr().out
     assert seen == {
         "seed_queries": ["cold water immersion blunts hypertrophy resistance trained men"],
-        "anchor_queries": ["cold water immersion blunts hypertrophy resistance trained men"],
+        "anchor_queries": ["cold water immersion resistance training adaptation"],
     }
 
 

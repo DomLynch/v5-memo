@@ -144,6 +144,8 @@ def main() -> None:
             planned_queries = _topic_anchored_queries(planned_queries, args.topic)
             queries = planned_queries or base_queries
     anchor_queries = base_queries
+    if not explicit_queries and not query_anchor_terms(base_queries):
+        anchor_queries = queries
     wider_recall = planner_mode == "minimax" or selector_mode == "minimax"
     result = build_alpha_memo(
         topic=args.topic,
