@@ -1371,6 +1371,7 @@ def _materialized_shard_path(path: Path) -> Path:
         try:
             shutil.copy2(path, tmp_path)
             os.replace(tmp_path, cache_path)
+            os.utime(cache_path, None)
         finally:
             tmp_path.unlink(missing_ok=True)
         _evict_shard_cache(cache_dir, required_bytes=0, keep=cache_path)
