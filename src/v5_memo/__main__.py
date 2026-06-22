@@ -134,6 +134,9 @@ def main() -> None:
             seed_queries=base_queries,
             limit=args.planner_limit,
         )
+        if not explicit_queries:
+            planned_queries = [query for query in queries if query not in set(base_queries)]
+            queries = planned_queries or queries
     anchor_queries = base_queries if explicit_queries else queries
     wider_recall = planner_mode == "minimax" or selector_mode == "minimax"
     result = build_alpha_memo(
