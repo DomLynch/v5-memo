@@ -106,10 +106,15 @@ class ShardBatchResult:
 class FullRawFtsIndex:
     """SQLite FTS5 index over normalized raw-corpus records."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, read_only: bool = False) -> None:
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(path), timeout=60.0, check_same_thread=False)
+        self._read_only = read_only
+        if read_only:
+            uri = f"{path.resolve().as_uri()}?mode=ro&immutable=1"
+            self._conn = sqlite3.connect(uri, uri=True, timeout=60.0, check_same_thread=False)
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._conn = sqlite3.connect(str(path), timeout=60.0, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
 
@@ -117,6 +122,8 @@ class FullRawFtsIndex:
         self._conn.close()
 
     def initialize(self) -> None:
+        if self._read_only:
+            return
         with self._lock:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
@@ -317,7 +324,8 @@ class FullRawFtsIndex:
         year_max: int = 2100,
     ) -> list[dict[str, object]]:
         with self._lock:
-            self.initialize()
+            if not self._read_only:
+                self.initialize()
             terms = _fts_terms(query)
             if not terms:
                 return []
@@ -795,7 +803,7 @@ def search_shards(
 ) -> list[dict[str, object]]:
     """Search multiple shard DBs and merge ranked, deduped results."""
     merged: dict[str, dict[str, object]] = {}
-    paths = [path for path in index_paths if path.exists()]
+    paths = select_search_shard_paths([path for path in index_paths if path.exists()])
     workers = max(1, min(int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "8")), len(paths) or 1))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [
@@ -819,6 +827,19 @@ def search_shards(
     )[: max(1, min(limit, 200))]
 
 
+def select_search_shard_paths(paths: list[Path]) -> list[Path]:
+    limit = _positive_int_env("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT")
+    if limit is None or limit >= len(paths):
+        return paths
+    order = os.environ.get("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "newest").casefold()
+    if order in {"oldest", "first"}:
+        return paths[:limit]
+    if order == "spread" and limit > 1:
+        step = (len(paths) - 1) / (limit - 1)
+        return [paths[round(index * step)] for index in range(limit)]
+    return paths[-limit:]
+
+
 def _search_one_shard(
     path: Path,
     query: str,
@@ -826,23 +847,24 @@ def _search_one_shard(
     year_min: int,
     year_max: int,
 ) -> list[dict[str, object]]:
-    index = FullRawFtsIndex(path)
+    index = FullRawFtsIndex(path, read_only=True)
     try:
         return index.search(query, limit=limit, year_min=year_min, year_max=year_max)
     finally:
         index.close()
 
 
-def discover_shard_paths(shard_dir: Path) -> list[Path]:
-    return sorted(
-        path for path in shard_dir.rglob("*.sqlite")
-        if path.is_file() and _has_index_meta(path)
-    )
+def discover_shard_paths(shard_dir: Path, *, trust_filenames: bool = False) -> list[Path]:
+    paths = sorted(path for path in shard_dir.rglob("*.sqlite") if path.is_file())
+    if trust_filenames:
+        return paths
+    return [path for path in paths if _has_index_meta(path)]
 
 
 def _has_index_meta(path: Path) -> bool:
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=0.1) as conn:
+        uri = f"{path.resolve().as_uri()}?mode=ro&immutable=1"
+        with sqlite3.connect(uri, uri=True, timeout=10.0) as conn:
             row = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'index_meta'"
             ).fetchone()
@@ -858,7 +880,7 @@ def aggregate_shard_stats(index_paths: list[Path], *, files_total: int = 0) -> I
     for path in index_paths:
         if not path.exists():
             continue
-        index = FullRawFtsIndex(path)
+        index = FullRawFtsIndex(path, read_only=True)
         try:
             stats = index.stats(files_total=0)
         except sqlite3.Error:
@@ -868,6 +890,38 @@ def aggregate_shard_stats(index_paths: list[Path], *, files_total: int = 0) -> I
         papers_indexed += stats.papers_indexed
         files_indexed += stats.files_indexed
         bytes_used += stats.bytes_used
+    return IndexStats(
+        papers_indexed=papers_indexed,
+        files_indexed=files_indexed,
+        files_total=files_total,
+        bytes_used=bytes_used,
+    )
+
+
+def aggregate_shard_manifest_stats(shard_dir: Path, *, files_total: int = 0) -> IndexStats:
+    papers_indexed = 0
+    files_indexed = 0
+    bytes_used = 0
+    for manifest_path in sorted(shard_dir.rglob("complete.json")):
+        try:
+            payload = json.loads(manifest_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        totals = payload.get("totals", {})
+        if isinstance(totals, dict):
+            papers_indexed += int(totals.get("papers_inserted") or 0)
+            files_indexed += int(totals.get("files_completed") or 0)
+            bytes_used += int(totals.get("bytes_used") or 0)
+            continue
+        shards = payload.get("shards", [])
+        if not isinstance(shards, list):
+            continue
+        for shard in shards:
+            if not isinstance(shard, dict):
+                continue
+            papers_indexed += int(shard.get("papers_inserted") or 0)
+            files_indexed += int(shard.get("files_completed") or 0)
+            bytes_used += int(shard.get("bytes_used") or 0)
     return IndexStats(
         papers_indexed=papers_indexed,
         files_indexed=files_indexed,
@@ -977,6 +1031,12 @@ def run_server() -> None:
     )
     shard_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SHARD_DIR", "").strip()
     shard_dir = Path(shard_dir_config) if shard_dir_config else None
+    trust_shard_filenames = os.environ.get(
+        "V5_MEMO_FULL_RAW_SHARD_TRUST_FILENAMES", ""
+    ).casefold() in {"1", "true", "yes"}
+    shard_manifest_stats = os.environ.get(
+        "V5_MEMO_FULL_RAW_SHARD_MANIFEST_STATS", ""
+    ).casefold() in {"1", "true", "yes"}
     manifest_path = Path(
         os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json")
     )
@@ -993,14 +1053,19 @@ def run_server() -> None:
 
     def current_stats() -> IndexStats:
         if shard_dir is not None:
-            return aggregate_shard_stats(discover_shard_paths(shard_dir), files_total=len(files))
+            if shard_manifest_stats:
+                return aggregate_shard_manifest_stats(shard_dir, files_total=len(files))
+            return aggregate_shard_stats(
+                discover_shard_paths(shard_dir, trust_filenames=trust_shard_filenames),
+                files_total=len(files),
+            )
         assert index is not None
         return index.stats(files_total=len(files))
 
     def current_search(query: str, *, limit: int, year_min: int, year_max: int) -> list[dict[str, object]]:
         if shard_dir is not None:
             return search_shards(
-                discover_shard_paths(shard_dir),
+                discover_shard_paths(shard_dir, trust_filenames=trust_shard_filenames),
                 query,
                 limit=limit,
                 year_min=year_min,
@@ -1008,6 +1073,12 @@ def run_server() -> None:
             )
         assert index is not None
         return index.search(query, limit=limit, year_min=year_min, year_max=year_max)
+
+    def current_shard_counts() -> tuple[int, int]:
+        if shard_dir is None:
+            return (0, 0)
+        paths = discover_shard_paths(shard_dir, trust_filenames=trust_shard_filenames)
+        return (len(paths), len(select_search_shard_paths(paths)))
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -1050,6 +1121,7 @@ def run_server() -> None:
             started = time.monotonic()
             hits = current_search(query, limit=limit, year_min=year_min, year_max=year_max)
             stats = current_stats()
+            shards_total, shards_searched = current_shard_counts()
             explain = (
                 {"fts_match": query, "groups": []}
                 if shard_dir is not None
@@ -1066,6 +1138,9 @@ def run_server() -> None:
                     "backend": _BACKEND,
                     "expanded_query": explain["fts_match"],
                     "term_groups": explain["groups"],
+                    "shards_total": shards_total,
+                    "shards_searched": shards_searched,
+                    "partial_shard_search": shards_total > shards_searched,
                 },
                 "results": hits,
             })
@@ -1399,6 +1474,17 @@ def _int_or_none(value: object) -> int | None:
         return int(value) if value not in {"", None} else None
     except (TypeError, ValueError):
         return None
+
+
+def _positive_int_env(name: str) -> int | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 
 def _float_or_none(value: object) -> float | None:

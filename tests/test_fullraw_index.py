@@ -14,11 +14,13 @@ from v5_memo import fullraw_index
 from v5_memo.fullraw_index import (
     FullRawFtsIndex,
     ShardBatchResult,
+    aggregate_shard_manifest_stats,
     aggregate_shard_stats,
     build_shards,
     build_upload_shard_batches,
     discover_shard_paths,
     search_shards,
+    select_search_shard_paths,
 )
 from v5_memo.fullraw_service import RawFile
 
@@ -307,6 +309,81 @@ def test_discover_shard_paths_finds_nested_batch_shards(tmp_path: Path) -> None:
         index.close()
 
     assert discover_shard_paths(tmp_path) == [shard]
+
+
+def test_discover_shard_paths_can_trust_uploaded_filenames(tmp_path: Path) -> None:
+    nested = tmp_path / "batch_00001"
+    nested.mkdir()
+    incomplete = nested / "fullraw_shard_9999.sqlite"
+    incomplete.write_text("")
+
+    assert discover_shard_paths(tmp_path, trust_filenames=True) == [incomplete]
+
+
+def test_select_search_shard_paths_limits_newest_by_default(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    paths = [tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite" for index in range(5)]
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "2")
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", raising=False)
+
+    assert select_search_shard_paths(paths) == paths[-2:]
+
+
+def test_select_search_shard_paths_can_spread_across_corpus(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    paths = [tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite" for index in range(5)]
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "3")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "spread")
+
+    assert select_search_shard_paths(paths) == [paths[0], paths[2], paths[4]]
+
+
+def test_read_only_index_searches_existing_shard(tmp_path: Path) -> None:
+    shard = tmp_path / "fullraw_shard_0000.sqlite"
+    raw_file = _raw_file(tmp_path, "openalex_readonly", [{
+        "doi": "https://doi.org/10.example/read-only",
+        "display_name": "Management forecast disclosure read only",
+        "abstract": "Managers disclose forecasts and guidance.",
+        "publication_year": 2024,
+    }])
+    index = FullRawFtsIndex(shard)
+    try:
+        index.index_files([raw_file], commit_interval=1)
+    finally:
+        index.close()
+
+    read_only = FullRawFtsIndex(shard, read_only=True)
+    try:
+        hits = read_only.search("management forecast disclosure", limit=3)
+        stats = read_only.stats(files_total=1)
+    finally:
+        read_only.close()
+
+    assert [hit["doi"] for hit in hits] == ["10.example/read-only"]
+    assert stats.papers_indexed == 1
+
+
+def test_aggregate_shard_manifest_stats_reads_complete_json(tmp_path: Path) -> None:
+    batch = tmp_path / "batch_00001"
+    batch.mkdir()
+    (batch / "complete.json").write_text(json.dumps({
+        "totals": {
+            "files_completed": 3,
+            "papers_inserted": 42,
+            "bytes_used": 1234,
+        }
+    }))
+
+    stats = aggregate_shard_manifest_stats(tmp_path, files_total=10)
+
+    assert stats.files_indexed == 3
+    assert stats.papers_indexed == 42
+    assert stats.bytes_used == 1234
+    assert not stats.complete
 
 
 def test_build_upload_shard_batches_uploads_and_deletes_local_batches(tmp_path: Path) -> None:
