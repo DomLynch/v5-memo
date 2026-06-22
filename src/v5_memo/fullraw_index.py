@@ -2583,8 +2583,10 @@ def run_server() -> None:
                         receipt["sweep_original_query"] = query
                     merged_hits, result_metrics = _merge_hit_groups_with_receipt([merged_hits, hits], limit=limit)
                     receipt.update(result_metrics)
+                    required_pass_roles = min(len(sweep_passes), sweep_max_passes)
+                    pass_roles_sufficient = len(set(completed_pass_roles)) >= required_pass_roles
                     final = (
-                        receipt_is_sufficient(receipt)
+                        (receipt_is_sufficient(receipt) and pass_roles_sufficient)
                         or receipt["sweep_remaining_shards"] == 0
                         or pass_index + 1 >= sweep_max_passes
                     )

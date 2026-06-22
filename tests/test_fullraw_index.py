@@ -1628,6 +1628,117 @@ def test_server_auto_continues_sweep_until_receipt_is_sufficient(tmp_path: Path)
         proc.wait(timeout=10)
 
 
+def test_server_sweep_requires_pass_roles_after_shard_gate(tmp_path: Path) -> None:
+    for index in range(4):
+        batch = tmp_path / f"batch_{index:05d}"
+        batch.mkdir()
+        shard = batch / "fullraw_shard_0000.sqlite"
+        raw_file = _raw_file(tmp_path, f"pass_role_gate_{index}", [{
+            "doi": f"https://doi.org/10.example/pass-role-{index}",
+            "display_name": f"Management forecast disclosure pass role {index}",
+            "abstract": "Management forecast disclosure evidence with adjacent operations signal.",
+            "publication_year": 2024,
+            "cited_by_count": 10 + index,
+        }])
+        index_db = FullRawFtsIndex(shard)
+        try:
+            index_db.index_files([raw_file], commit_interval=1)
+            profile = index_db.profile()
+        finally:
+            index_db.close()
+        (batch / "complete.json").write_text(json.dumps({
+            "batch_id": index,
+            "files": [{"source": "openalex"}],
+            "shards": [{
+                "shard_id": 0,
+                "files_completed": 1,
+                "papers_inserted": 1,
+                "bytes_used": shard.stat().st_size,
+                **profile,
+            }],
+        }))
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"files": []}))
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path.cwd() / "src"),
+        "V5_MEMO_FULL_RAW_INDEX_PORT": str(port),
+        "V5_MEMO_FULL_RAW_MANIFEST": str(manifest),
+        "V5_MEMO_FULL_RAW_SHARD_DIR": str(tmp_path),
+        "V5_MEMO_FULL_RAW_SHARD_TRUST_FILENAMES": "1",
+        "V5_MEMO_FULL_RAW_SHARD_MANIFEST_STATS": "1",
+        "V5_MEMO_FULL_RAW_ASYNC_SWEEP": "1",
+        "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR": str(tmp_path / "cache"),
+        "V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT": "4",
+        "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT": "1",
+        "V5_MEMO_FULL_RAW_SWEEP_MAX_PASSES": "3",
+        "V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED": "2",
+        "V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED": "1",
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "v5_memo.fullraw_index", "serve"],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        base = f"http://127.0.0.1:{port}"
+        for _ in range(50):
+            try:
+                urllib.request.urlopen(base + "/health", timeout=1).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            _, stderr = proc.communicate(timeout=1)
+            raise AssertionError(f"server did not start: {stderr}")
+
+        def post_search(*, queue_if_missing: bool = False) -> dict[str, object]:
+            request = urllib.request.Request(
+                base + "/search",
+                data=json.dumps({
+                    "query": "management forecast disclosure",
+                    "top_k": 5,
+                    "cache_only": True,
+                    "queue_if_missing": queue_if_missing,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:
+                payload = json.loads(response.read().decode())
+            assert isinstance(payload, dict)
+            return payload
+
+        cached = post_search(queue_if_missing=True)
+        for _ in range(50):
+            meta = cached["meta"]
+            assert isinstance(meta, dict)
+            if meta["async_sweep"]["status"] == "hit":
+                break
+            time.sleep(0.1)
+            cached = post_search(queue_if_missing=True)
+        else:
+            raise AssertionError("sweep did not finish")
+        meta = cached["meta"]
+        assert isinstance(meta, dict)
+        receipt = meta["shard_receipt"]
+        assert isinstance(receipt, dict)
+
+        assert receipt["shards_searched"] == 3
+        assert receipt["sweep_passes"] == 3
+        assert receipt["sweep_completed_pass_roles"] == ["focused", "broad", "adjacent_field"]
+        assert receipt["sweep_remaining_shards"] == 1
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
 def test_server_async_sweep_uses_cache_fit_order_for_gate(tmp_path: Path) -> None:
     specs = [
         ("openalex", 28, ("management", "forecast")),
