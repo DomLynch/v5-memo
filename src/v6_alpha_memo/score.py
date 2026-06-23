@@ -23,7 +23,6 @@ _MECHANISM = frozenset({
     "animal", "cell", "cells", "in-vitro", "mechanism", "mechanistic", "mice",
     "model", "mouse", "pathway", "preclinical", "rat", "rats",
 })
-_ANIMAL = frozenset({"animal", "mice", "mouse", "rat", "rats"})
 _HUMAN_OUTCOME = frozenset({
     "adult", "adults", "employee", "employees", "field", "firm", "firms",
     "human", "humans", "participants", "patient", "patients", "randomized",
@@ -34,11 +33,6 @@ _RESULT = frozenset({"found", "observed", "result", "results", "showed", "shows"
 _BOUNDARY = frozenset({
     "context", "dose", "endpoint", "endpoints", "market", "modality", "program",
     "selection", "subgroup", "task", "timing",
-})
-_BROAD_TOPIC = frozenset({
-    "adaptation", "effect", "effects", "exercise", "failure", "human", "improved",
-    "intervention", "longevity", "mechanism", "model", "null", "outcome",
-    "protocol", "randomized", "result", "study", "training", "trial",
 })
 
 
@@ -83,7 +77,7 @@ def score_pair(pair: CandidatePair, *, topic_terms: frozenset[str] = frozenset()
         first, second = b, a
 
     ft, st = _tokens(first), _tokens(second)
-    if _has(ft, _MECHANISM) and _has(st, _HUMAN_OUTCOME) and not _has(st, _ANIMAL) and _has(st, _FAILURE):
+    if _has(ft, _MECHANISM) and _has(st, _HUMAN_OUTCOME) and _has(st, _FAILURE):
         score += 30
         shape = "mechanism_to_human_failure"
         reasons.append("mechanism_or_animal_to_human_failure")
@@ -105,10 +99,6 @@ def score_pair(pair: CandidatePair, *, topic_terms: frozenset[str] = frozenset()
     if shape != "shared_anchor" and not _role_matches_topic(first, second, topic_terms):
         score = 0
         reasons.append("role_mismatch:topic_construct")
-    if shape != "shared_anchor" and _animal_only(at, bt):
-        score = 0
-        reasons.append("role_mismatch:animal_only")
-
     update = _expectation_sentence(first, second, shape)
     return ScoredPair(
         pair=pair,
@@ -148,9 +138,6 @@ def _role_matches_topic(a: Paper, b: Paper, topic_terms: frozenset[str]) -> bool
     right = _loose_tokens(b) & topic_terms
     if not left or not right:
         return False
-    specific = topic_terms - _BROAD_TOPIC
-    if specific and not (left & right & specific):
-        return False
     return len(left & right) * 2 >= len(left | right)
 
 
@@ -161,11 +148,6 @@ def _loose_tokens(paper: Paper) -> set[str]:
 
 def _has(tokens: set[str], needles: frozenset[str]) -> bool:
     return bool(tokens & needles)
-
-
-def _animal_only(a_tokens: set[str], b_tokens: set[str]) -> bool:
-    combined = a_tokens | b_tokens
-    return _has(combined, _ANIMAL) and not _has(combined, _HUMAN_OUTCOME)
 
 
 def _short(text: str) -> str:
