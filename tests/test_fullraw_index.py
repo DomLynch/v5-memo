@@ -3573,6 +3573,37 @@ def test_build_upload_shard_batches_uploads_with_corrupt_file_quarantined(tmp_pa
     assert manifest["totals"]["file_errors"]
 
 
+def test_build_upload_shard_batches_rejects_zero_value_abstract_batches(tmp_path: Path) -> None:
+    abstract_file = _raw_file(tmp_path, "s2_abstract_only", [{
+        "corpusid": 12345,
+        "abstract": "Standalone abstract with no matching paper row.",
+    }])
+
+    results = build_upload_shard_batches(
+        [
+            RawFile(
+                source="semantic_scholar_abstracts",
+                format=abstract_file.format,
+                remote=abstract_file.remote,
+            )
+        ],
+        shard_dir=tmp_path / "local-build",
+        upload_remote=f"file://{tmp_path / 'remote'}",
+        batch_files=1,
+        shard_count=1,
+        workers=1,
+        commit_interval=1,
+        delete_local=False,
+    )
+
+    assert len(results) == 1
+    assert results[0].uploaded is False
+    assert results[0].files_completed == 1
+    assert results[0].papers_inserted == 0
+    assert "semantic_scholar_abstracts indexed zero papers" in results[0].error
+    assert not (tmp_path / "remote" / "batch_00000" / "complete.json").exists()
+
+
 def test_build_upload_shard_batches_keeps_all_failed_batch_fatal(tmp_path: Path) -> None:
     bad = _corrupt_raw_file(tmp_path, "all_bad")
 

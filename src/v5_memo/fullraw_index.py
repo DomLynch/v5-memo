@@ -1006,6 +1006,13 @@ def build_upload_shard_batches(
         stopped = any(result.stopped_for_budget for result in shard_results)
         if not error and files_failed and files_completed == 0:
             error = "all files failed; treating as fatal source or transport failure"
+        if (
+            not error
+            and files_completed > 0
+            and papers_inserted == 0
+            and any(raw_file.source == "semantic_scholar_abstracts" for raw_file in batch)
+        ):
+            error = "semantic_scholar_abstracts indexed zero papers; build matching paper shards first"
         if error or stopped or files_completed + files_failed < len(batch):
             results.append(
                 ShardBatchResult(
