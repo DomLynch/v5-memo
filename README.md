@@ -11,7 +11,7 @@ Prerequisites:
 
 - Python 3.11+
 - Optional `MINIMAX_API_KEY` or `V5_MEMO_MINIMAX_API_KEY` for MiniMax planning/writing
-- Optional `V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL` for the full raw indexed search endpoint
+- Required for default agent runs: `V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL` and `V5_MEMO_FULL_RAW_CORPUS_TOKEN`
 - Optional `RESEARKA_DATABASE_URL` and `RESEARKA_TOKENS` for the Researka corpus API
 
 Install and test:
@@ -31,29 +31,31 @@ Offline demo:
 PYTHONPATH=src python -m v5_memo --demo
 ```
 
-Current best memo path:
+Current default memo path:
 
 ```bash
+V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL=http://127.0.0.1:9903/search \
+V5_MEMO_FULL_RAW_CORPUS_TOKEN=... \
 MINIMAX_API_KEY=... \
 PYTHONPATH=src python -m v5_memo \
-  --searcher smart \
   --topic "longevity resilience" \
   --query "NAD salvage mitochondrial stress"
 ```
 
-`--searcher smart` means:
+Default V5 runs use `--searcher smart`, which means:
 
 1. MiniMax proposes better search angles.
-2. V5 searches hybrid corpus surfaces.
+2. V5 searches the fullraw 5TB corpus endpoint.
 3. V5 dedupes, scores, mines, and binds receipts deterministically.
 4. MiniMax rewrites only inside the locked receipts.
 
 ## Search Modes
 
-OpenAlex, no token:
+OpenAlex fallback, no token:
 
 ```bash
 PYTHONPATH=src python -m v5_memo \
+  --searcher openalex \
   --topic "longevity resilience" \
   --query "NAD salvage mitochondrial stress"
 ```
