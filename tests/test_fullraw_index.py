@@ -3473,6 +3473,46 @@ def test_build_upload_shard_batches_skips_completed_raw_remotes(tmp_path: Path) 
     assert [item["remote"] for item in manifest["files"]] == [files[0].remote, files[2].remote]
 
 
+def test_build_upload_shard_batches_preserves_ids_when_skipping_completed_remotes(tmp_path: Path) -> None:
+    files = [
+        _raw_file(tmp_path, "preserve_a", [{
+            "doi": "https://doi.org/10.example/preserve-a",
+            "display_name": "Preserve batch id evidence A",
+        }]),
+        _raw_file(tmp_path, "preserve_b", [{
+            "doi": "https://doi.org/10.example/preserve-b",
+            "display_name": "Preserve batch id evidence B",
+        }]),
+        _raw_file(tmp_path, "preserve_c", [{
+            "doi": "https://doi.org/10.example/preserve-c",
+            "display_name": "Preserve batch id evidence C",
+        }]),
+    ]
+    remote = tmp_path / "remote"
+    completed = remote
+    (remote / "batch_00000").mkdir(parents=True)
+    (remote / "batch_00000" / "complete.json").write_text(json.dumps({
+        "files": [{"remote": files[0].remote}],
+    }))
+
+    results = build_upload_shard_batches(
+        files,
+        shard_dir=tmp_path / "local-build",
+        upload_remote=f"file://{remote}",
+        batch_files=1,
+        shard_count=1,
+        workers=1,
+        commit_interval=1,
+        delete_local=True,
+        completed_shard_dir=completed,
+    )
+
+    first_new_manifest = json.loads((remote / "batch_00001" / "complete.json").read_text())
+    assert [result.batch_id for result in results] == [0, 1, 2]
+    assert results[0].skipped is True
+    assert first_new_manifest["files"][0]["remote"] == files[1].remote
+
+
 def test_build_upload_shard_batches_uploads_with_corrupt_file_quarantined(tmp_path: Path) -> None:
     good = _raw_file(tmp_path, "good_batch", [{
         "doi": "https://doi.org/10.example/good-batch",

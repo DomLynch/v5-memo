@@ -935,15 +935,13 @@ def build_upload_shard_batches(
     if not upload_remote.strip():
         raise ValueError("upload remote is required for build-upload-shards")
     selected_files = files[:max_files] if max_files is not None else files
-    if completed_shard_dir is not None:
-        completed_remotes = _completed_raw_remotes(completed_shard_dir)
-        if completed_remotes:
-            selected_files = [raw_file for raw_file in selected_files if raw_file.remote not in completed_remotes]
+    completed_remotes = _completed_raw_remotes(completed_shard_dir) if completed_shard_dir is not None else set()
     results: list[ShardBatchResult] = []
     for batch_index, start in enumerate(range(0, len(selected_files), max(1, batch_files))):
         batch_id = batch_id_offset + batch_index
         batch_started = time.monotonic()
-        batch = selected_files[start:start + max(1, batch_files)]
+        original_batch = selected_files[start:start + max(1, batch_files)]
+        batch = original_batch
         batch_name = f"batch_{batch_id:05d}"
         local_batch_dir = shard_dir / batch_name
         remote_batch_dir = f"{upload_remote.rstrip('/')}/{batch_name}"
@@ -965,6 +963,26 @@ def build_upload_shard_batches(
                 )
             )
             continue
+        if completed_remotes:
+            batch = [raw_file for raw_file in original_batch if raw_file.remote not in completed_remotes]
+            if not batch:
+                results.append(
+                    ShardBatchResult(
+                        batch_id=batch_id,
+                        batch_dir=str(local_batch_dir),
+                        remote_dir=remote_batch_dir,
+                        files_total=len(original_batch),
+                        files_completed=len(original_batch),
+                        files_failed=0,
+                        papers_inserted=0,
+                        bytes_used=0,
+                        uploaded=True,
+                        deleted_local=not local_batch_dir.exists(),
+                        skipped=True,
+                        elapsed_seconds=round(time.monotonic() - batch_started, 3),
+                    )
+                )
+                continue
         shard_results = build_shards(
             batch,
             shard_dir=local_batch_dir,
