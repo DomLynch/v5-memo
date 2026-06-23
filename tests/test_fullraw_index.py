@@ -3308,6 +3308,62 @@ def test_build_upload_shard_batches_uploads_and_deletes_local_batches(tmp_path: 
     assert all(result.skipped for result in repeated)
 
 
+def test_build_upload_shard_batches_resumes_partial_local_batch(tmp_path: Path) -> None:
+    raw_file = _raw_file(tmp_path, "resume_batch", [{
+        "doi": "https://doi.org/10.example/resume-batch",
+        "display_name": "Management forecast disclosure resume batch",
+        "abstract": "Managers disclose forecasts and guidance.",
+        "publication_year": 2024,
+    }])
+    local_build = tmp_path / "local-build"
+    remote = tmp_path / "remote"
+    shard_path = local_build / "batch_00000" / "fullraw_shard_0000.sqlite"
+    index = FullRawFtsIndex(shard_path)
+    try:
+        index.initialize()
+        assert index._insert_hit(
+            {
+                "doi": "https://doi.org/10.example/stale-partial",
+                "title": "Stale partial row",
+                "abstract": "This row should be removed before resume.",
+                "source": "openalex",
+            },
+            source_remote=raw_file.remote,
+        )
+        index._bump_papers(1)
+        index._mark_file(raw_file, status="running", docs_seen=1, docs_indexed=1)
+        index._conn.commit()
+    finally:
+        index.close()
+
+    results = build_upload_shard_batches(
+        [raw_file],
+        shard_dir=local_build,
+        upload_remote=f"file://{remote}",
+        batch_files=1,
+        shard_count=1,
+        workers=1,
+        commit_interval=1,
+        delete_local=False,
+    )
+
+    resumed = FullRawFtsIndex(shard_path, read_only=True)
+    try:
+        stats = resumed.stats(files_total=1)
+        hits = resumed.search("resume batch", limit=5)
+    finally:
+        resumed.close()
+
+    assert len(results) == 1
+    assert results[0].uploaded is True
+    assert results[0].files_completed == 1
+    assert results[0].papers_inserted == 1
+    assert stats.papers_indexed == 1
+    assert stats.files_indexed == 1
+    assert [hit["doi"] for hit in hits] == ["10.example/resume-batch"]
+    assert (remote / "batch_00000" / "complete.json").exists()
+
+
 def test_build_upload_shard_batches_uses_batch_id_offset(tmp_path: Path) -> None:
     files = [
         _raw_file(tmp_path, "offset_a", [{

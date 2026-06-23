@@ -606,6 +606,7 @@ class FullRawFtsIndex:
             self._ensure_identifier_indexes()
         self._conn.execute("BEGIN")
         try:
+            self._remove_file_papers(raw_file.remote)
             self._mark_file(raw_file, status="running", docs_seen=0, docs_indexed=0)
             for hit in iter_raw_file_hits(raw_file, rclone_bin=rclone_bin):
                 docs_seen += 1
@@ -959,8 +960,6 @@ def build_upload_shard_batches(
                 )
             )
             continue
-        if local_batch_dir.exists():
-            shutil.rmtree(local_batch_dir)
         shard_results = build_shards(
             batch,
             shard_dir=local_batch_dir,
