@@ -253,6 +253,7 @@ class FullRawFtsIndex:
             self._conn = sqlite3.connect(str(path), timeout=60.0, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
+        self._identifier_indexes_ready = False
 
     def close(self) -> None:
         self._conn.close()
@@ -319,18 +320,28 @@ class FullRawFtsIndex:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_papers_year ON papers(year);
-                CREATE INDEX IF NOT EXISTS idx_papers_doi ON papers(doi);
-                CREATE INDEX IF NOT EXISTS idx_papers_pmid ON papers(pmid);
-                CREATE INDEX IF NOT EXISTS idx_papers_pmcid ON papers(pmcid);
-                CREATE INDEX IF NOT EXISTS idx_papers_openalex_id ON papers(openalex_id);
-                CREATE INDEX IF NOT EXISTS idx_papers_semantic_scholar_id
-                  ON papers(semantic_scholar_id);
                 CREATE INDEX IF NOT EXISTS idx_indexed_files_status ON indexed_files(status);
                 """
             )
             self._ensure_source_remote_column()
             self._seed_default_term_map()
             self._conn.commit()
+
+    def _ensure_identifier_indexes(self) -> None:
+        if self._identifier_indexes_ready or self._read_only:
+            return
+        self._conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_papers_doi ON papers(doi);
+            CREATE INDEX IF NOT EXISTS idx_papers_pmid ON papers(pmid);
+            CREATE INDEX IF NOT EXISTS idx_papers_pmcid ON papers(pmcid);
+            CREATE INDEX IF NOT EXISTS idx_papers_openalex_id ON papers(openalex_id);
+            CREATE INDEX IF NOT EXISTS idx_papers_semantic_scholar_id
+              ON papers(semantic_scholar_id);
+            """
+        )
+        self._conn.commit()
+        self._identifier_indexes_ready = True
 
     def completed_remotes(self) -> set[str]:
         with self._lock:
@@ -705,6 +716,7 @@ class FullRawFtsIndex:
                 params.append(value)
         if not clauses:
             return False
+        self._ensure_identifier_indexes()
         row = self._conn.execute(
             f"SELECT id, title, abstract, journal FROM papers WHERE {' OR '.join(clauses)} LIMIT 1",
             params,

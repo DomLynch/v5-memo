@@ -148,7 +148,7 @@ def test_fullraw_index_enriches_semantic_scholar_abstract_rows(tmp_path: Path) -
         ("semantic_scholar_id", "idx_papers_semantic_scholar_id"),
     ],
 )
-def test_fullraw_index_indexes_identifier_columns_for_abstract_merges(
+def test_fullraw_index_delays_identifier_indexes_until_abstract_merge(
     tmp_path: Path,
     column: str,
     index_name: str,
@@ -156,6 +156,13 @@ def test_fullraw_index_indexes_identifier_columns_for_abstract_merges(
     index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
     try:
         index.initialize()
+        index_rows = index._conn.execute("PRAGMA index_list('papers')").fetchall()
+        index_names = {str(row["name"]) for row in index_rows}
+        assert index_name not in index_names
+        assert index._update_hit_abstract({
+            "abstract": "Identifier indexes should exist before this lookup.",
+            column: "identifier-value",
+        }) is False
         index_rows = index._conn.execute("PRAGMA index_list('papers')").fetchall()
         index_names = {str(row["name"]) for row in index_rows}
         plan_rows = index._conn.execute(
