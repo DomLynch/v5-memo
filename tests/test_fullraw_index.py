@@ -60,6 +60,53 @@ def _corrupt_raw_file(tmp_path: Path, name: str) -> RawFile:
     return RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")
 
 
+def _write_search_test_batch(
+    tmp_path: Path,
+    index: int,
+    *,
+    source: str = "openalex",
+    valid: bool = True,
+) -> None:
+    batch = tmp_path / f"batch_{index:05d}"
+    batch.mkdir()
+    shard = batch / "fullraw_shard_0000.sqlite"
+    profile: dict[str, object] = {
+        "year_min": 2024,
+        "year_max": 2024,
+        "cited_by_min": 10,
+        "cited_by_max": 10,
+        "cited_by_avg": 10.0,
+        "topic_terms": ["management", "forecast", "disclosure"],
+    }
+    if valid:
+        raw_file = _raw_file(tmp_path, f"complete_search_{index}", [{
+            "doi": f"https://doi.org/10.example/complete-search-{index}",
+            "display_name": f"Management forecast disclosure complete search {index}",
+            "abstract": "Management forecast disclosure evidence.",
+            "publication_year": 2024,
+            "cited_by_count": 10 + index,
+        }])
+        index_db = FullRawFtsIndex(shard)
+        try:
+            index_db.index_files([raw_file], commit_interval=1)
+            profile = index_db.profile()
+        finally:
+            index_db.close()
+    else:
+        shard.write_text("not sqlite")
+    (batch / "complete.json").write_text(json.dumps({
+        "batch_id": index,
+        "files": [{"source": source}],
+        "shards": [{
+            "shard_id": 0,
+            "files_completed": 1,
+            "papers_inserted": 1,
+            "bytes_used": shard.stat().st_size,
+            **profile,
+        }],
+    }))
+
+
 def test_fullraw_index_builds_ranked_queryable_index(tmp_path: Path) -> None:
     raw_file = _raw_file(tmp_path, "openalex", [
         {
@@ -1875,6 +1922,139 @@ def test_server_exhaustive_sweep_continues_after_minimum_receipt(tmp_path: Path)
         assert receipt["shards_searched"] == 3
         assert receipt["sweep_remaining_shards"] == 0
         assert len(receipt["sweep_completed_paths"]) == 3
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_server_complete_search_receipt_requires_completed_shards(tmp_path: Path) -> None:
+    _write_search_test_batch(tmp_path, 0, valid=True)
+    _write_search_test_batch(tmp_path, 1, valid=False)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"files": []}))
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path.cwd() / "src"),
+        "V5_MEMO_FULL_RAW_INDEX_PORT": str(port),
+        "V5_MEMO_FULL_RAW_MANIFEST": str(manifest),
+        "V5_MEMO_FULL_RAW_SHARD_DIR": str(tmp_path),
+        "V5_MEMO_FULL_RAW_SHARD_TRUST_FILENAMES": "1",
+        "V5_MEMO_FULL_RAW_SHARD_MANIFEST_STATS": "1",
+        "V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT": "2",
+        "V5_MEMO_FULL_RAW_REQUIRE_COMPLETE_SEARCH": "1",
+        "V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED": "1",
+        "V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED": "1",
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "v5_memo.fullraw_index", "serve"],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        base = f"http://127.0.0.1:{port}"
+        for _ in range(50):
+            try:
+                urllib.request.urlopen(base + "/health", timeout=1).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            _, stderr = proc.communicate(timeout=1)
+            raise AssertionError(f"server did not start: {stderr}")
+        request = urllib.request.Request(
+            base + "/search",
+            data=json.dumps({
+                "query": "management forecast disclosure",
+                "top_k": 5,
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as raised:
+            urllib.request.urlopen(request, timeout=10)
+        assert raised.value.code == 422
+        body = json.loads(raised.value.read().decode())
+        assert body["error"] == "shard coverage incomplete"
+        receipt = body["shard_receipt"]
+        assert receipt["shards_total"] == 2
+        assert receipt["shards_searched"] == 1
+        assert receipt["partial_shard_search"] is True
+        assert receipt["search_selected_shards"] == 2
+        assert receipt["search_completed_shards"] == 1
+        assert receipt["search_failed_shards"] == 1
+        assert body["coverage_requirements"]["require_complete_search"] is True
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_server_complete_search_receipt_passes_when_all_selected_shards_complete(tmp_path: Path) -> None:
+    _write_search_test_batch(tmp_path, 0, source="openalex")
+    _write_search_test_batch(tmp_path, 1, source="pubmed")
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"files": []}))
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path.cwd() / "src"),
+        "V5_MEMO_FULL_RAW_INDEX_PORT": str(port),
+        "V5_MEMO_FULL_RAW_MANIFEST": str(manifest),
+        "V5_MEMO_FULL_RAW_SHARD_DIR": str(tmp_path),
+        "V5_MEMO_FULL_RAW_SHARD_TRUST_FILENAMES": "1",
+        "V5_MEMO_FULL_RAW_SHARD_MANIFEST_STATS": "1",
+        "V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT": "2",
+        "V5_MEMO_FULL_RAW_REQUIRE_COMPLETE_SEARCH": "1",
+        "V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED": "2",
+        "V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED": "2",
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "v5_memo.fullraw_index", "serve"],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        base = f"http://127.0.0.1:{port}"
+        for _ in range(50):
+            try:
+                urllib.request.urlopen(base + "/health", timeout=1).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            _, stderr = proc.communicate(timeout=1)
+            raise AssertionError(f"server did not start: {stderr}")
+        request = urllib.request.Request(
+            base + "/search",
+            data=json.dumps({
+                "query": "management forecast disclosure",
+                "top_k": 5,
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = json.loads(response.read().decode())
+        assert response.status == 200
+        receipt = body["meta"]["shard_receipt"]
+        assert receipt["shards_total"] == 2
+        assert receipt["shards_searched"] == 2
+        assert receipt["partial_shard_search"] is False
+        assert receipt["sources_searched"] == {"openalex": 1, "pubmed": 1}
+        assert receipt["search_selected_shards"] == 2
+        assert receipt["search_completed_shards"] == 2
+        assert receipt["search_failed_shards"] == 0
+        assert body["meta"]["count"] == 2
     finally:
         proc.terminate()
         proc.wait(timeout=10)
