@@ -44,9 +44,10 @@ class ResveratrolOpenAlex:
 
 
 def _patch_smart_sources(monkeypatch: MonkeyPatch, openalex: ResveratrolOpenAlex) -> None:
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
     monkeypatch.setattr(
         "v5_memo.__main__.FullRawCorpusSearchClient.from_env",
-        lambda strict=False: EmptyFullRaw(),
+        lambda strict=False: openalex,
     )
     monkeypatch.setattr(
         "v5_memo.__main__.ResearkaSearchClient.from_env",
@@ -100,7 +101,7 @@ def test_fullraw_searcher_fails_closed_without_endpoint(
     assert "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL" in captured.err
 
 
-def test_smart_cli_skips_unconfigured_researka_when_openalex_available(
+def test_smart_cli_uses_fullraw_when_configured(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -130,6 +131,38 @@ def test_smart_cli_skips_unconfigured_researka_when_openalex_available(
     captured = capsys.readouterr()
     assert "Alpha memo" in captured.out
     assert "Resveratrol" in captured.out
+
+
+def test_default_cli_requires_fullraw_endpoint(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--planner",
+            "seed",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+            "--topic",
+            "longevity resilience",
+            "--query",
+            "metformin longevity",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Full local raw 450M+ corpus search is not configured" in captured.err
 
 
 def test_smart_cli_planner_surfaces_elite_pair_from_broad_seed(

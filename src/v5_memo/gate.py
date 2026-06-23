@@ -54,3 +54,59 @@ def no_alpha_failure(
             "min_alpha_tier": min_alpha_tier,
         },
     )
+
+
+def memo_coverage_summary(receipts: Sequence[CorpusHit]) -> dict[str, object]:
+    """Summarize fullraw/search coverage visible on bound receipts."""
+    years = [hit.year for hit in receipts if hit.year is not None]
+    sources_used = sorted({hit.source for hit in receipts if hit.source})
+    shard_receipts = [
+        receipt
+        for hit in receipts
+        for key in ("shard_receipt", "fullraw_search_receipt")
+        if isinstance((receipt := hit.metadata.get(key)), dict)
+    ]
+    sources_searched: set[str] = set()
+    search_passes: set[str] = set()
+    shards_searched = 0
+    result_duplicate_rate = 0.0
+    result_citation_diversity = 0
+    for receipt in shard_receipts:
+        shards_searched = max(shards_searched, _int(receipt.get("shards_searched")))
+        result_duplicate_rate = max(
+            result_duplicate_rate,
+            float(receipt.get("result_duplicate_rate") or receipt.get("duplicate_rate") or 0.0),
+        )
+        result_citation_diversity = max(
+            result_citation_diversity,
+            _int(receipt.get("result_citation_diversity")),
+        )
+        raw_sources = receipt.get("sources_searched")
+        if isinstance(raw_sources, dict):
+            sources_searched.update(str(key) for key, value in raw_sources.items() if _int(value))
+        raw_passes = receipt.get("search_passes")
+        if isinstance(raw_passes, tuple | list):
+            search_passes.update(str(item) for item in raw_passes)
+    return {
+        "shards_searched": shards_searched,
+        "sources_searched": sorted(sources_searched),
+        "sources_used": sources_used,
+        "year_range": {
+            "min": min(years) if years else None,
+            "max": max(years) if years else None,
+        },
+        "abstract_receipt_count": sum(1 for hit in receipts if hit.abstract.strip()),
+        "search_passes": sorted(search_passes),
+        "result_duplicate_rate": result_duplicate_rate,
+        "result_citation_diversity": result_citation_diversity,
+    }
+
+
+def _int(value: object) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return 0

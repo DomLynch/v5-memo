@@ -67,7 +67,7 @@ def main() -> None:
     parser.add_argument(
         "--searcher",
         choices=["openalex", "researka", "fullraw", "hybrid", "smart"],
-        default="openalex",
+        default="smart",
     )
     parser.add_argument("--writer", choices=["template", "minimax"])
     parser.add_argument("--selector", choices=["deterministic", "minimax"])
@@ -80,12 +80,13 @@ def main() -> None:
     if args.require_full_raw_corpus:
         _require_full_raw_or_exit()
 
-    searcher_mode = "hybrid" if args.searcher == "smart" else args.searcher
-    planner_mode = args.planner or ("minimax" if args.searcher == "smart" else "seed")
-    writer_mode = args.writer or ("minimax" if args.searcher == "smart" else "template")
+    smart_default = args.searcher == "smart" and not args.demo
+    searcher_mode = "fullraw" if smart_default else args.searcher
+    planner_mode = args.planner or ("minimax" if smart_default else "seed")
+    writer_mode = args.writer or ("minimax" if smart_default else "template")
     selector_mode = args.selector or ("minimax" if writer_mode == "minimax" else "deterministic")
     alpha_tier = args.min_alpha_tier or (
-        "elite" if args.searcher == "smart" or selector_mode == "minimax" else "publishable"
+        "elite" if smart_default or selector_mode == "minimax" else "publishable"
     )
     min_alpha_tier = "discovery_seed" if alpha_tier == "discovery" else f"{alpha_tier}_alpha"
 
