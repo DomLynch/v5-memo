@@ -138,27 +138,87 @@ def test_fullraw_index_enriches_semantic_scholar_abstract_rows(tmp_path: Path) -
     assert "blunted mitochondrial adaptation" in str(hits[0]["abstract"])
 
 
-def test_fullraw_index_indexes_identifier_columns_for_abstract_merges(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("column", "index_name"),
+    [
+        ("doi", "idx_papers_doi"),
+        ("pmid", "idx_papers_pmid"),
+        ("pmcid", "idx_papers_pmcid"),
+        ("openalex_id", "idx_papers_openalex_id"),
+        ("semantic_scholar_id", "idx_papers_semantic_scholar_id"),
+    ],
+)
+def test_fullraw_index_indexes_identifier_columns_for_abstract_merges(
+    tmp_path: Path,
+    column: str,
+    index_name: str,
+) -> None:
     index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
     try:
         index.initialize()
         index_rows = index._conn.execute("PRAGMA index_list('papers')").fetchall()
         index_names = {str(row["name"]) for row in index_rows}
         plan_rows = index._conn.execute(
-            "EXPLAIN QUERY PLAN SELECT id FROM papers WHERE semantic_scholar_id = ? LIMIT 1",
-            ("12345",),
+            f"EXPLAIN QUERY PLAN SELECT id FROM papers WHERE {column} = ? LIMIT 1",
+            ("identifier-value",),
         ).fetchall()
     finally:
         index.close()
 
-    assert {
-        "idx_papers_doi",
-        "idx_papers_pmid",
-        "idx_papers_pmcid",
-        "idx_papers_openalex_id",
-        "idx_papers_semantic_scholar_id",
-    } <= index_names
-    assert any("idx_papers_semantic_scholar_id" in str(row["detail"]) for row in plan_rows)
+    assert index_name in index_names
+    assert any(index_name in str(row["detail"]) for row in plan_rows)
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("doi", "10.example/abstract-merge"),
+        ("pmid", "123456"),
+        ("pmcid", "PMC123456"),
+        ("openalex_id", "https://openalex.org/W123456"),
+        ("semantic_scholar_id", "S2123456"),
+    ],
+)
+def test_fullraw_index_updates_empty_abstract_by_any_identifier(
+    tmp_path: Path,
+    column: str,
+    value: str,
+) -> None:
+    index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
+    try:
+        index.initialize()
+        hit: dict[str, object] = {
+            "title": f"Identifier merge paper {column}",
+            "abstract": "",
+            "source": "test",
+            column: value,
+        }
+        assert index._insert_hit(hit, source_remote=f"file://paper-{column}.jsonl.gz")
+        assert index._update_hit_abstract({
+            "abstract": f"Updated abstract through {column} lookup.",
+            column: value,
+        })
+        row = index._conn.execute(
+            f"SELECT abstract FROM papers WHERE {column} = ?",
+            (value,),
+        ).fetchone()
+    finally:
+        index.close()
+
+    assert row is not None
+    assert row["abstract"] == f"Updated abstract through {column} lookup."
+
+
+def test_fullraw_index_ignores_abstract_rows_without_identifiers(tmp_path: Path) -> None:
+    index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
+    try:
+        index.initialize()
+        assert not index._update_hit_abstract({"abstract": "No stable identifier."})
+        count = index._conn.execute("SELECT COUNT(*) AS count FROM papers").fetchone()["count"]
+    finally:
+        index.close()
+
+    assert count == 0
 
 
 def test_fullraw_index_uses_persisted_custom_term_map(tmp_path: Path) -> None:
