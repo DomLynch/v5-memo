@@ -138,6 +138,29 @@ def test_fullraw_index_enriches_semantic_scholar_abstract_rows(tmp_path: Path) -
     assert "blunted mitochondrial adaptation" in str(hits[0]["abstract"])
 
 
+def test_fullraw_index_indexes_identifier_columns_for_abstract_merges(tmp_path: Path) -> None:
+    index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
+    try:
+        index.initialize()
+        index_rows = index._conn.execute("PRAGMA index_list('papers')").fetchall()
+        index_names = {str(row["name"]) for row in index_rows}
+        plan_rows = index._conn.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM papers WHERE semantic_scholar_id = ? LIMIT 1",
+            ("12345",),
+        ).fetchall()
+    finally:
+        index.close()
+
+    assert {
+        "idx_papers_doi",
+        "idx_papers_pmid",
+        "idx_papers_pmcid",
+        "idx_papers_openalex_id",
+        "idx_papers_semantic_scholar_id",
+    } <= index_names
+    assert any("idx_papers_semantic_scholar_id" in str(row["detail"]) for row in plan_rows)
+
+
 def test_fullraw_index_uses_persisted_custom_term_map(tmp_path: Path) -> None:
     raw_file = _raw_file(tmp_path, "openalex", [{
         "doi": "https://doi.org/10.example/guidance",

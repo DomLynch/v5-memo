@@ -319,6 +319,12 @@ class FullRawFtsIndex:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_papers_year ON papers(year);
+                CREATE INDEX IF NOT EXISTS idx_papers_doi ON papers(doi);
+                CREATE INDEX IF NOT EXISTS idx_papers_pmid ON papers(pmid);
+                CREATE INDEX IF NOT EXISTS idx_papers_pmcid ON papers(pmcid);
+                CREATE INDEX IF NOT EXISTS idx_papers_openalex_id ON papers(openalex_id);
+                CREATE INDEX IF NOT EXISTS idx_papers_semantic_scholar_id
+                  ON papers(semantic_scholar_id);
                 CREATE INDEX IF NOT EXISTS idx_indexed_files_status ON indexed_files(status);
                 """
             )
