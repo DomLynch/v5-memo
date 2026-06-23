@@ -96,6 +96,15 @@ class FullrawSearchClient:
     def search(self, query: str, *, limit: int = 25) -> SearchResult:
         if not self.search_url:
             raise RuntimeError("V6_FULLRAW_SEARCH_URL or V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL is required")
+        last = SearchResult(query=query, papers=(), receipt=CoverageReceipt())
+        for variant in _query_variants(query):
+            result = self._search_once(variant, limit=limit)
+            last = result
+            if result.papers:
+                return result
+        return last
+
+    def _search_once(self, query: str, *, limit: int) -> SearchResult:
         payload = {
             "query": query[:1024],
             "limit": max(1, min(limit, 200)),
@@ -150,6 +159,24 @@ def merge_results(results: tuple[SearchResult, ...]) -> tuple[Paper, ...]:
                 seen.add(paper.key)
                 papers.append(paper)
     return tuple(papers)
+
+
+def _query_variants(query: str) -> tuple[str, ...]:
+    words = [word for word in re.findall(r"[a-z][a-z0-9-]{2,}", query.casefold()) if word not in _QUERY_DROP]
+    variants = [" ".join(query.split())]
+    if len(words) >= 2:
+        variants.append(" ".join(words[:2]))
+    if len(words) >= 3:
+        variants.append(" ".join(words[:3]))
+    return tuple(dict.fromkeys(variant for variant in variants if variant))
+
+
+_QUERY_DROP = frozenset({
+    "adaptation", "condition", "effect", "endpoint", "expected", "failure",
+    "human", "improved", "intervention", "mechanism", "mismatch", "model",
+    "modality", "null", "opposite", "outcome", "protocol", "randomized",
+    "result", "same", "subgroup", "translation", "trial",
+})
 
 
 def _items(data: object) -> list[object]:

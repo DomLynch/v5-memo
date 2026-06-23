@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 from urllib.request import Request
 
 from v6_alpha_memo import (
@@ -109,6 +110,41 @@ def test_fullraw_client_parses_hits_and_coverage_receipt() -> None:
     assert result.receipt.shards_searched == 965
     assert "openalex" in result.receipt.sources_searched
     assert result.papers[0].doi == "10.test/metformin"
+
+
+def test_fullraw_client_compacts_zero_hit_queries() -> None:
+    calls: list[str] = []
+    payload: dict[str, object] = {
+        "meta": {"shard_receipt": {"shards_searched": 50, "sources_searched": {"openalex": 1}}},
+        "results": [],
+    }
+    hit_payload: dict[str, object] = {
+        "meta": {"shard_receipt": {"shards_searched": 50, "sources_searched": {"openalex": 1}}},
+        "results": [
+            {
+                "id": "W1",
+                "title": "Metformin blunted exercise adaptation",
+                "abstract": "Metformin reduced exercise adaptation in humans.",
+                "source": "openalex",
+            }
+        ],
+    }
+
+    def opener(request: Request, timeout: float) -> _Response:
+        del timeout
+        raw = cast(bytes, request.data or b"{}")
+        body = json.loads(raw.decode())
+        calls.append(body["query"])
+        return _Response(hit_payload if body["query"] == "metformin exercise" else payload)
+
+    client = FullrawSearchClient(search_url="http://fullraw/search", opener=opener)
+    result = client.search("metformin exercise adaptation expected improved null outcome randomized trial")
+
+    assert calls[:2] == [
+        "metformin exercise adaptation expected improved null outcome randomized trial",
+        "metformin exercise",
+    ]
+    assert result.papers[0].title == "Metformin blunted exercise adaptation"
 
 
 def test_writer_stays_receipt_owned() -> None:

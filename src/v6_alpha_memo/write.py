@@ -45,6 +45,10 @@ def render_memo(scored: ScoredPair, *, receipt: CoverageReceipt | None = None) -
 
 
 def render_with_minimax(top_pairs: tuple[ScoredPair, ...], *, receipt: CoverageReceipt | None = None) -> str:
+    judged = judge_with_minimax(top_pairs)
+    if not judged:
+        raise RuntimeError("MiniMax rejected all receipt pairs")
+    top_pairs = judged
     api_key = _minimax_key()
     if not api_key:
         return render_memo(top_pairs[0], receipt=receipt)
@@ -71,6 +75,41 @@ def render_with_minimax(top_pairs: tuple[ScoredPair, ...], *, receipt: CoverageR
         data = json.loads(response.read().decode())
     text = _content_text(data).strip()
     return text + ("\n" if text else "")
+
+
+def judge_with_minimax(top_pairs: tuple[ScoredPair, ...]) -> tuple[ScoredPair, ...]:
+    """Return MiniMax-selected top pair, or empty tuple when it rejects all."""
+    api_key = _minimax_key()
+    if not api_key:
+        return top_pairs
+    payload = {
+        "model": os.environ.get("V5_MEMO_MINIMAX_MODEL", "MiniMax-M3"),
+        "max_tokens": 300,
+        "temperature": 0.0,
+        "system": (
+            "You are a strict alpha memo selector. Pick only one receipt pair if it has "
+            "sharp novelty and expectation-update geometry. Otherwise reject all. Return only JSON."
+        ),
+        "thinking": {"type": "disabled"},
+        "messages": [{"role": "user", "content": [{"type": "text", "text": _judge_prompt(top_pairs[:5])}]}],
+    }
+    base_url = os.environ.get("V5_MEMO_MINIMAX_BASE_URL", _MINIMAX_BASE_URL).rstrip("/")
+    request = Request(
+        f"{base_url}/v1/messages",
+        data=json.dumps(payload).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=float(os.environ.get("V5_MEMO_MINIMAX_TIMEOUT_SECONDS", "60"))) as response:
+        data = json.loads(response.read().decode())
+    choice = _parse_choice(_content_text(data))
+    if choice is None or choice < 1 or choice > len(top_pairs):
+        return ()
+    return (top_pairs[choice - 1],)
 
 
 def _title(scored: ScoredPair) -> str:
@@ -107,6 +146,40 @@ def _prompt(pairs: tuple[ScoredPair, ...]) -> str:
         "why surprising, caveats/falsifiers. No broad framing beyond receipts.\n"
         + json.dumps(rows, ensure_ascii=False)
     )
+
+
+def _judge_prompt(pairs: tuple[ScoredPair, ...]) -> str:
+    rows = []
+    for idx, scored in enumerate(pairs, start=1):
+        rows.append({
+            "id": idx,
+            "score": scored.score,
+            "shape": scored.shape,
+            "expectation_update": scored.expectation_update,
+            "anchors": scored.pair.anchors,
+            "receipt_1": _paper_json(scored.pair.a),
+            "receipt_2": _paper_json(scored.pair.b),
+        })
+    return (
+        "Choose the one pair that is most likely to make an 8.5/10+ novelty memo. "
+        "Reject all weak, obvious, review-like, keyword-only, or broad-title pairs. "
+        "Return JSON exactly like {\"choice\": 1, \"reason\": \"...\"} or "
+        "{\"choice\": null, \"reason\": \"...\"}.\n"
+        + json.dumps(rows, ensure_ascii=False)
+    )
+
+
+def _parse_choice(text: str) -> int | None:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end < start:
+        return None
+    try:
+        data = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    choice = data.get("choice") if isinstance(data, dict) else None
+    return choice if isinstance(choice, int) else None
 
 
 def _paper_json(paper: Paper) -> dict[str, object]:
