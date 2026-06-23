@@ -165,6 +165,58 @@ class SweepCacheEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class SweepTask:
+    key: str
+    query: str
+    limit: int
+    year_min: int
+    year_max: int
+    rank_mode: str
+    catalog: list[ShardCatalogEntry]
+
+
+class SweepScheduler:
+    def __init__(self, *, max_inflight: int, max_pending: int) -> None:
+        self.max_inflight = max(1, max_inflight)
+        self.max_pending = max(0, max_pending)
+        self.inflight: set[str] = set()
+        self.pending: dict[str, SweepTask] = {}
+
+    def enqueue(self, task: SweepTask) -> tuple[str, bool]:
+        if task.key in self.inflight:
+            return "running", False
+        if task.key in self.pending:
+            return "queued", False
+        if len(self.inflight) < self.max_inflight:
+            self.inflight.add(task.key)
+            return "queued", True
+        if len(self.pending) >= self.max_pending:
+            return "busy", False
+        self.pending[task.key] = task
+        return "queued", False
+
+    def finish(self, key: str) -> SweepTask | None:
+        self.inflight.discard(key)
+        if len(self.inflight) >= self.max_inflight:
+            return None
+        while self.pending:
+            pending_key = next(iter(self.pending))
+            task = self.pending.pop(pending_key)
+            if task.key in self.inflight:
+                continue
+            self.inflight.add(task.key)
+            return task
+        return None
+
+    def status(self, key: str) -> str:
+        if key in self.inflight:
+            return "running"
+        if key in self.pending:
+            return "queued"
+        return "miss"
+
+
+@dataclass(frozen=True, slots=True)
 class ShardCacheWarmResult:
     selected_shards: int
     target_ready: int
@@ -2456,6 +2508,7 @@ def run_server() -> None:
     sweep_ttl = _float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS", "")) or 86400.0
     sweep_workers = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKERS") or 1
     sweep_max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
+    sweep_max_pending = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_PENDING") or 32
     sweep_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT") or 128
     sweep_require_complete = os.environ.get(
         "V5_MEMO_FULL_RAW_SWEEP_REQUIRE_COMPLETE", ""
@@ -2487,7 +2540,10 @@ def run_server() -> None:
         index.initialize()
     catalog_cache: tuple[float, list[ShardCatalogEntry]] = (0.0, [])
     sweep_cache: dict[str, SweepCacheEntry] = {}
-    sweep_inflight: set[str] = set()
+    sweep_scheduler = SweepScheduler(
+        max_inflight=sweep_max_inflight,
+        max_pending=sweep_max_pending,
+    )
     sweep_lock = threading.RLock()
 
     def current_catalog() -> list[ShardCatalogEntry]:
@@ -2559,52 +2615,33 @@ def run_server() -> None:
         return entry
 
     def sweep_cache_put(key: str, entry: SweepCacheEntry, *, final: bool = True) -> None:
+        del final
         with sweep_lock:
             sweep_cache[key] = entry
-            if final:
-                sweep_inflight.discard(key)
         cache_path = _sweep_cache_path(sweep_cache_dir, key)
         if cache_path is not None:
             _write_sweep_cache(cache_path, entry)
 
-    def enqueue_sweep(
-        *,
-        key: str,
-        query: str,
-        limit: int,
-        year_min: int,
-        year_max: int,
-        rank_mode: str,
-        catalog: list[ShardCatalogEntry],
-    ) -> str:
-        if not sweep_enabled or shard_dir is None:
-            return "disabled"
-        existing = sweep_cache_get(key)
-        if existing is not None and receipt_is_sufficient(existing.receipt):
-            return "hit"
-        with sweep_lock:
-            if key in sweep_inflight:
-                return "running"
-            if len(sweep_inflight) >= sweep_max_inflight:
-                return "busy"
-            sweep_inflight.add(key)
-
+    def start_sweep_worker(task: SweepTask) -> None:
         def worker() -> None:
+            existing = sweep_cache_get(task.key)
             try:
-                sweep_entries = select_sweep_shard_entries(catalog, query=query, limit=sweep_shard_limit)
+                if existing is not None and receipt_is_sufficient(existing.receipt):
+                    return
+                sweep_entries = select_sweep_shard_entries(task.catalog, query=task.query, limit=sweep_shard_limit)
                 sweep_entries = _prioritize_sweep_pass_entries(
                     sweep_entries,
                     sweep_pass_shard_limit,
-                    query=query,
+                    query=task.query,
                 )
                 sweep_entries = _cache_fit_warm_entries(
-                    catalog,
+                    task.catalog,
                     sweep_entries,
-                    query=query,
+                    query=task.query,
                     target_ready=min_shards_searched,
                 )
-                planned_receipt = shard_coverage_receipt(catalog, sweep_entries)
-                sweep_passes = _sweep_search_passes(query, sweep_entries, rank_mode=rank_mode)
+                planned_receipt = shard_coverage_receipt(task.catalog, sweep_entries)
+                sweep_passes = _sweep_search_passes(task.query, sweep_entries, rank_mode=task.rank_mode)
                 completed_path_strings = _sweep_completed_path_strings(existing.receipt if existing else {})
                 failed_path_strings = (
                     set()
@@ -2624,7 +2661,7 @@ def run_server() -> None:
                     if min_shards_searched <= 0:
                         return
                     target_limit = min(
-                        len(catalog),
+                        len(task.catalog),
                         max(
                             sweep_shard_limit,
                             min_shards_searched + len(failed_path_strings) + sweep_pass_shard_limit,
@@ -2633,19 +2670,19 @@ def run_server() -> None:
                     if target_limit <= len(sweep_entries):
                         return
                     expanded_entries = select_sweep_shard_entries(
-                        catalog,
-                        query=query,
+                        task.catalog,
+                        query=task.query,
                         limit=target_limit,
                     )
                     expanded_entries = _prioritize_sweep_pass_entries(
                         expanded_entries,
                         sweep_pass_shard_limit,
-                        query=query,
+                        query=task.query,
                     )
                     expanded_entries = _cache_fit_warm_entries(
-                        catalog,
+                        task.catalog,
                         expanded_entries,
-                        query=query,
+                        query=task.query,
                         target_ready=min_shards_searched,
                     )
                     sweep_entries = _reorder_expanded_sweep_entries(
@@ -2654,8 +2691,8 @@ def run_server() -> None:
                         attempted_paths=completed_path_strings | failed_path_strings | deferred_path_strings,
                         limit=target_limit,
                     )
-                    planned_receipt = shard_coverage_receipt(catalog, sweep_entries)
-                    sweep_passes = _sweep_search_passes(query, sweep_entries, rank_mode=rank_mode)
+                    planned_receipt = shard_coverage_receipt(task.catalog, sweep_entries)
+                    sweep_passes = _sweep_search_passes(task.query, sweep_entries, rank_mode=task.rank_mode)
 
                 for pass_index in range(sweep_max_passes):
                     expand_sweep_entries_for_failures()
@@ -2672,9 +2709,9 @@ def run_server() -> None:
                     hits, completed_paths, timed_out, pass_metrics = _search_shard_paths_with_paths_and_receipt(
                         [entry.path for entry in pass_entries],
                         pass_plan.query,
-                        limit=limit,
-                        year_min=year_min,
-                        year_max=year_max,
+                        limit=task.limit,
+                        year_min=task.year_min,
+                        year_max=task.year_max,
                         rank_mode=pass_plan.rank_mode,
                         workers=sweep_workers,
                         timeout_seconds=sweep_timeout_seconds,
@@ -2691,7 +2728,7 @@ def run_server() -> None:
                         failed_path_strings.update(incomplete_path_strings)
                     expand_sweep_entries_for_failures()
                     searched_entries = [entry for entry in sweep_entries if str(entry.path) in completed_path_strings]
-                    receipt = shard_coverage_receipt(catalog, searched_entries)
+                    receipt = shard_coverage_receipt(task.catalog, searched_entries)
                     _add_planned_sweep_receipt(receipt, planned_receipt)
                     receipt["sweep_scope"] = "relevant"
                     receipt["sweep_shard_limit"] = sweep_shard_limit
@@ -2721,9 +2758,9 @@ def run_server() -> None:
                     receipt["sweep_query"] = pass_plan.query
                     receipt["sweep_passes"] = previous_passes + pass_index + 1
                     receipt["sweep_completed_paths"] = sorted(completed_path_strings)
-                    if pass_plan.query != query:
-                        receipt["sweep_original_query"] = query
-                    merged_hits, result_metrics = _merge_hit_groups_with_receipt([merged_hits, hits], limit=limit)
+                    if pass_plan.query != task.query:
+                        receipt["sweep_original_query"] = task.query
+                    merged_hits, result_metrics = _merge_hit_groups_with_receipt([merged_hits, hits], limit=task.limit)
                     receipt.update(result_metrics)
                     required_pass_roles = min(len(sweep_passes), sweep_max_passes)
                     pass_roles_sufficient = len(set(completed_pass_roles)) >= required_pass_roles
@@ -2737,17 +2774,48 @@ def run_server() -> None:
                         or exhaustive_complete
                         or (pass_budget_exhausted and not sweep_require_complete)
                     )
-                    sweep_cache_put(key, SweepCacheEntry(time.time(), merged_hits, receipt), final=final)
+                    sweep_cache_put(task.key, SweepCacheEntry(time.time(), merged_hits, receipt), final=final)
                     if final:
                         break
             except Exception:
                 pass
             finally:
                 with sweep_lock:
-                    sweep_inflight.discard(key)
+                    next_task = sweep_scheduler.finish(task.key)
+                if next_task is not None:
+                    start_sweep_worker(next_task)
 
         threading.Thread(target=worker, daemon=True).start()
-        return "queued"
+
+    def enqueue_sweep(
+        *,
+        key: str,
+        query: str,
+        limit: int,
+        year_min: int,
+        year_max: int,
+        rank_mode: str,
+        catalog: list[ShardCatalogEntry],
+    ) -> str:
+        if not sweep_enabled or shard_dir is None:
+            return "disabled"
+        existing = sweep_cache_get(key)
+        if existing is not None and receipt_is_sufficient(existing.receipt):
+            return "hit"
+        task = SweepTask(
+            key=key,
+            query=query,
+            limit=limit,
+            year_min=year_min,
+            year_max=year_max,
+            rank_mode=rank_mode,
+            catalog=catalog,
+        )
+        with sweep_lock:
+            status, should_start = sweep_scheduler.enqueue(task)
+        if should_start:
+            start_sweep_worker(task)
+        return status
 
     def current_receipt(query: str) -> dict[str, object]:
         if shard_dir is None:
@@ -2881,7 +2949,7 @@ def run_server() -> None:
                                 hits = cached.hits
                     else:
                         with sweep_lock:
-                            sweep_status = "running" if cache_key in sweep_inflight else "miss"
+                            sweep_status = sweep_scheduler.status(cache_key)
                     if receipt:
                         partial_progress = (
                             cache_only

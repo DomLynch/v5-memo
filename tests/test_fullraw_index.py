@@ -22,6 +22,8 @@ from v5_memo.fullraw_index import (
     FullRawFtsIndex,
     ShardBatchResult,
     ShardCatalogEntry,
+    SweepScheduler,
+    SweepTask,
     aggregate_shard_manifest_stats,
     aggregate_shard_stats,
     backfill_shard_profiles,
@@ -2895,6 +2897,44 @@ def test_sweep_pass_roles_sufficient_requires_planned_roles() -> None:
         "sweep_completed_pass_roles": ["focused", "broad", "adjacent_field"],
         "sweep_max_passes": 3,
     })
+
+
+def _sweep_task(key: str) -> SweepTask:
+    return SweepTask(
+        key=key,
+        query=key,
+        limit=5,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="default",
+        catalog=[],
+    )
+
+
+def test_sweep_scheduler_queues_when_inflight_full() -> None:
+    scheduler = SweepScheduler(max_inflight=1, max_pending=2)
+
+    assert scheduler.enqueue(_sweep_task("a")) == ("queued", True)
+    assert scheduler.status("a") == "running"
+    assert scheduler.enqueue(_sweep_task("b")) == ("queued", False)
+    assert scheduler.status("b") == "queued"
+    assert scheduler.enqueue(_sweep_task("b")) == ("queued", False)
+
+    next_task = scheduler.finish("a")
+
+    assert next_task is not None
+    assert next_task.key == "b"
+    assert scheduler.status("b") == "running"
+    assert scheduler.finish("b") is None
+    assert scheduler.status("b") == "miss"
+
+
+def test_sweep_scheduler_reports_busy_when_pending_full() -> None:
+    scheduler = SweepScheduler(max_inflight=1, max_pending=1)
+
+    assert scheduler.enqueue(_sweep_task("a")) == ("queued", True)
+    assert scheduler.enqueue(_sweep_task("b")) == ("queued", False)
+    assert scheduler.enqueue(_sweep_task("c")) == ("busy", False)
 
 
 def test_sweep_cache_key_includes_sweep_shard_limit() -> None:
