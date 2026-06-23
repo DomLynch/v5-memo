@@ -56,6 +56,7 @@ _STOP = {
 }
 _BACKEND = "v5-fullraw-indexed-fts5"
 _SWEEP_STRATEGY = "profile_relaxed_v8"
+_ENRICHMENT_ONLY_RAW_SOURCES = frozenset({"semantic_scholar_abstracts"})
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
@@ -2060,6 +2061,7 @@ def fullraw_readiness(
     *,
     completed_shard_dir: Path | None = None,
     completed_shard_remote: str = "",
+    require_enrichment: bool = False,
     rclone_bin: str = "rclone",
 ) -> dict[str, object]:
     completed = _completed_raw_remotes(
@@ -2069,19 +2071,46 @@ def fullraw_readiness(
     )
     completed_sources: Counter[str] = Counter()
     remaining_sources: Counter[str] = Counter()
+    searchable_completed_sources: Counter[str] = Counter()
+    searchable_remaining_sources: Counter[str] = Counter()
+    enrichment_completed_sources: Counter[str] = Counter()
+    enrichment_remaining_sources: Counter[str] = Counter()
     for raw_file in files:
         if raw_file.remote in completed:
             completed_sources[raw_file.source] += 1
+            if raw_file.source in _ENRICHMENT_ONLY_RAW_SOURCES:
+                enrichment_completed_sources[raw_file.source] += 1
+            else:
+                searchable_completed_sources[raw_file.source] += 1
         else:
             remaining_sources[raw_file.source] += 1
+            if raw_file.source in _ENRICHMENT_ONLY_RAW_SOURCES:
+                enrichment_remaining_sources[raw_file.source] += 1
+            else:
+                searchable_remaining_sources[raw_file.source] += 1
     remaining_files = sum(remaining_sources.values())
+    searchable_files_total = sum(searchable_completed_sources.values()) + sum(searchable_remaining_sources.values())
+    searchable_files_remaining = sum(searchable_remaining_sources.values())
+    enrichment_files_total = sum(enrichment_completed_sources.values()) + sum(enrichment_remaining_sources.values())
+    enrichment_files_remaining = sum(enrichment_remaining_sources.values())
     return {
-        "ready": remaining_files == 0,
+        "ready": searchable_files_remaining == 0 and (not require_enrichment or enrichment_files_remaining == 0),
+        "ready_scope": "all_files" if require_enrichment else "searchable_files",
         "files_total": len(files),
         "files_completed": len(files) - remaining_files,
         "files_remaining": remaining_files,
         "completed_by_source": dict(sorted(completed_sources.items())),
         "remaining_by_source": dict(sorted(remaining_sources.items())),
+        "searchable_files_total": searchable_files_total,
+        "searchable_files_completed": searchable_files_total - searchable_files_remaining,
+        "searchable_files_remaining": searchable_files_remaining,
+        "searchable_completed_by_source": dict(sorted(searchable_completed_sources.items())),
+        "searchable_remaining_by_source": dict(sorted(searchable_remaining_sources.items())),
+        "enrichment_files_total": enrichment_files_total,
+        "enrichment_files_completed": enrichment_files_total - enrichment_files_remaining,
+        "enrichment_files_remaining": enrichment_files_remaining,
+        "enrichment_completed_by_source": dict(sorted(enrichment_completed_sources.items())),
+        "enrichment_remaining_by_source": dict(sorted(enrichment_remaining_sources.items())),
     }
 
 
@@ -3320,6 +3349,7 @@ def main() -> None:
         ),
     )
     readiness.add_argument("--fail-if-not-ready", action="store_true")
+    readiness.add_argument("--require-enrichment", action="store_true")
 
     backfill_profiles = subparsers.add_parser("backfill-shard-profiles")
     backfill_profiles.add_argument("--shard-dir", default=shard_dir_default)
@@ -3526,6 +3556,7 @@ def main() -> None:
             files,
             completed_shard_dir=Path(args.completed_shard_dir) if str(args.completed_shard_dir).strip() else None,
             completed_shard_remote=str(args.completed_shard_remote),
+            require_enrichment=bool(args.require_enrichment),
             rclone_bin=str(args.rclone_bin),
         )
         print(json.dumps(payload, sort_keys=True))

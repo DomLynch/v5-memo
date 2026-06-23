@@ -3557,14 +3557,15 @@ def test_fullraw_readiness_counts_remaining_manifest_files(tmp_path: Path) -> No
 
     readiness = fullraw_index.fullraw_readiness(files, completed_shard_dir=tmp_path / "completed")
 
-    assert readiness == {
-        "ready": False,
-        "files_total": 4,
-        "files_completed": 2,
-        "files_remaining": 2,
-        "completed_by_source": {"openalex": 1, "pubmed": 1},
-        "remaining_by_source": {"pubmed": 1, "semantic_scholar": 1},
-    }
+    assert readiness["ready"] is False
+    assert readiness["ready_scope"] == "searchable_files"
+    assert readiness["files_total"] == 4
+    assert readiness["files_completed"] == 2
+    assert readiness["files_remaining"] == 2
+    assert readiness["completed_by_source"] == {"openalex": 1, "pubmed": 1}
+    assert readiness["remaining_by_source"] == {"pubmed": 1, "semantic_scholar": 1}
+    assert readiness["searchable_files_remaining"] == 2
+    assert readiness["enrichment_files_remaining"] == 0
 
 
 def test_fullraw_readiness_is_ready_when_all_manifest_files_are_completed(tmp_path: Path) -> None:
@@ -3588,6 +3589,44 @@ def test_fullraw_readiness_is_ready_when_all_manifest_files_are_completed(tmp_pa
     assert readiness["files_completed"] == 2
     assert readiness["files_remaining"] == 0
     assert readiness["remaining_by_source"] == {}
+
+
+def test_fullraw_readiness_reports_enrichment_backlog_without_blocking_searchable_ready(
+    tmp_path: Path,
+) -> None:
+    completed = tmp_path / "completed" / "batch_00000"
+    completed.mkdir(parents=True)
+    (completed / "complete.json").write_text(json.dumps({
+        "files": [{"remote": "sb:raw/semantic_scholar/paper-a.gz"}],
+    }))
+    files = [
+        RawFile(
+            source="semantic_scholar",
+            format="semantic_scholar_jsonl",
+            remote="sb:raw/semantic_scholar/paper-a.gz",
+        ),
+        RawFile(
+            source="semantic_scholar_abstracts",
+            format="semantic_scholar_jsonl",
+            remote="sb:raw/semantic_scholar/abstract-a.gz",
+        ),
+    ]
+
+    readiness = fullraw_index.fullraw_readiness(files, completed_shard_dir=tmp_path / "completed")
+    strict = fullraw_index.fullraw_readiness(
+        files,
+        completed_shard_dir=tmp_path / "completed",
+        require_enrichment=True,
+    )
+
+    assert readiness["ready"] is True
+    assert readiness["ready_scope"] == "searchable_files"
+    assert readiness["files_remaining"] == 1
+    assert readiness["searchable_files_remaining"] == 0
+    assert readiness["enrichment_files_remaining"] == 1
+    assert readiness["enrichment_remaining_by_source"] == {"semantic_scholar_abstracts": 1}
+    assert strict["ready"] is False
+    assert strict["ready_scope"] == "all_files"
 
 
 def test_readiness_cli_fails_closed_when_manifest_is_incomplete(
@@ -3630,6 +3669,57 @@ def test_readiness_cli_fails_closed_when_manifest_is_incomplete(
     assert payload["files_completed"] == 1
     assert payload["files_remaining"] == 1
     assert payload["remaining_by_source"] == {"pubmed": 1}
+
+
+def test_readiness_cli_can_require_enrichment_backlog(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({
+        "files": [
+            {
+                "source": "semantic_scholar",
+                "format": "semantic_scholar_jsonl",
+                "remote": "sb:raw/semantic_scholar/paper-a.gz",
+            },
+            {
+                "source": "semantic_scholar_abstracts",
+                "format": "semantic_scholar_jsonl",
+                "remote": "sb:raw/semantic_scholar/abstract-a.gz",
+            },
+        ],
+    }))
+    completed = tmp_path / "completed" / "batch_00000"
+    completed.mkdir(parents=True)
+    (completed / "complete.json").write_text(json.dumps({
+        "files": [{"remote": "sb:raw/semantic_scholar/paper-a.gz"}],
+    }))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fullraw_index.py",
+            "readiness",
+            "--manifest",
+            str(manifest),
+            "--completed-shard-dir",
+            str(tmp_path / "completed"),
+            "--require-enrichment",
+            "--fail-if-not-ready",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        fullraw_index.main()
+
+    assert exc.value.code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ready"] is False
+    assert payload["ready_scope"] == "all_files"
+    assert payload["searchable_files_remaining"] == 0
+    assert payload["enrichment_files_remaining"] == 1
 
 
 def test_build_upload_shard_batches_uploads_with_corrupt_file_quarantined(tmp_path: Path) -> None:
