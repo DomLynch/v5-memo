@@ -407,6 +407,10 @@ class FullRawCorpusSearchClient:
             "rank_mode": search_pass.rank_mode,
             "timeout_seconds": self._timeout,
         }
+        if self._sweep_wait_seconds:
+            cached = self._request_sweep_cache(payload, queue_if_missing=False)
+            if cached is not None and self._receipt_is_sufficient(_full_raw_shard_receipt(cached)):
+                return _parse_full_raw_search_response(cached)
         initial_error: SearchBackendError | None = None
         try:
             data = self._request_search(payload)
@@ -431,12 +435,22 @@ class FullRawCorpusSearchClient:
             return []
         return _parse_full_raw_search_response(data)
 
+    def _request_sweep_cache(self, payload: dict[str, object], *, queue_if_missing: bool) -> Any | None:
+        cache_payload = {
+            **payload,
+            "cache_only": True,
+            "queue_if_missing": queue_if_missing,
+        }
+        data = self._request_search(cache_payload)
+        if _full_raw_async_sweep_status(data) == "hit":
+            return data
+        return None
+
     def _wait_for_sweep_hit(self, payload: dict[str, object]) -> Any | None:
         deadline = time.monotonic() + self._sweep_wait_seconds
-        cache_payload = {**payload, "cache_only": True, "queue_if_missing": True}
         while True:
             try:
-                data = self._request_search(cache_payload)
+                data = self._request_sweep_cache(payload, queue_if_missing=True)
                 status = _full_raw_async_sweep_status(data)
             except SearchBackendError:
                 data = {}
