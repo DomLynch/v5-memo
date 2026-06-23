@@ -929,11 +929,16 @@ def build_upload_shard_batches(
     min_free_bytes: int = 0,
     delete_local: bool = True,
     batch_id_offset: int = 0,
+    completed_shard_dir: Path | None = None,
 ) -> list[ShardBatchResult]:
     """Build local shard batches, upload completed batches, then free local disk."""
     if not upload_remote.strip():
         raise ValueError("upload remote is required for build-upload-shards")
     selected_files = files[:max_files] if max_files is not None else files
+    if completed_shard_dir is not None:
+        completed_remotes = _completed_raw_remotes(completed_shard_dir)
+        if completed_remotes:
+            selected_files = [raw_file for raw_file in selected_files if raw_file.remote not in completed_remotes]
     results: list[ShardBatchResult] = []
     for batch_index, start in enumerate(range(0, len(selected_files), max(1, batch_files))):
         batch_id = batch_id_offset + batch_index
@@ -2420,6 +2425,18 @@ def _filter_raw_files_by_source(files: list[RawFile], source_filter: str) -> lis
     return [raw_file for raw_file in files if raw_file.source.casefold() in allowed]
 
 
+def _completed_raw_remotes(shard_dir: Path) -> set[str]:
+    remotes: set[str] = set()
+    for manifest in _read_batch_manifests(shard_dir).values():
+        files = manifest.get("files", [])
+        if not isinstance(files, list):
+            continue
+        for item in files:
+            if isinstance(item, dict) and (remote := str(item.get("remote") or "").strip()):
+                remotes.add(remote)
+    return remotes
+
+
 def _remote_complete_exists(remote_dir: str, *, rclone_bin: str) -> bool:
     if remote_dir.startswith("file://"):
         return (Path(remote_dir.removeprefix("file://")) / "complete.json").exists()
@@ -3148,6 +3165,10 @@ def main() -> None:
     build_upload_parser.add_argument("--max-files", type=int)
     build_upload_parser.add_argument("--source-filter", default=os.environ.get("V5_MEMO_FULL_RAW_SOURCE_FILTER", ""))
     build_upload_parser.add_argument("--batch-id-offset", type=int, default=int(os.environ.get("V5_MEMO_FULL_RAW_BATCH_ID_OFFSET", "0")))
+    build_upload_parser.add_argument(
+        "--completed-shard-dir",
+        default=os.environ.get("V5_MEMO_FULL_RAW_COMPLETED_SHARD_DIR", ""),
+    )
     build_upload_parser.add_argument("--commit-interval", type=int, default=1000)
     build_upload_parser.add_argument(
         "--min-free-gb",
@@ -3303,6 +3324,7 @@ def main() -> None:
             min_free_bytes=int(max(0.0, args.min_free_gb) * 1024**3),
             delete_local=not bool(args.keep_local),
             batch_id_offset=max(0, int(args.batch_id_offset)),
+            completed_shard_dir=Path(args.completed_shard_dir) if str(args.completed_shard_dir).strip() else None,
         )
         print(json.dumps({
             "batches": [asdict(result) for result in batch_results],

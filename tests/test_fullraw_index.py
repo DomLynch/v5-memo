@@ -3433,6 +3433,46 @@ def test_build_upload_shard_batches_uses_batch_id_offset(tmp_path: Path) -> None
     assert not (remote / "batch_00000").exists()
 
 
+def test_build_upload_shard_batches_skips_completed_raw_remotes(tmp_path: Path) -> None:
+    files = [
+        _raw_file(tmp_path, "skip_a", [{
+            "doi": "https://doi.org/10.example/skip-a",
+            "display_name": "Skip completed remote evidence A",
+        }]),
+        _raw_file(tmp_path, "skip_b", [{
+            "doi": "https://doi.org/10.example/skip-b",
+            "display_name": "Skip completed remote evidence B",
+        }]),
+        _raw_file(tmp_path, "skip_c", [{
+            "doi": "https://doi.org/10.example/skip-c",
+            "display_name": "Skip completed remote evidence C",
+        }]),
+    ]
+    completed = tmp_path / "completed"
+    (completed / "batch_90000").mkdir(parents=True)
+    (completed / "batch_90000" / "complete.json").write_text(json.dumps({
+        "files": [{"remote": files[1].remote}],
+    }))
+    remote = tmp_path / "remote"
+
+    results = build_upload_shard_batches(
+        files,
+        shard_dir=tmp_path / "local-build",
+        upload_remote=f"file://{remote}",
+        batch_files=10,
+        shard_count=1,
+        workers=1,
+        commit_interval=1,
+        delete_local=True,
+        completed_shard_dir=completed,
+    )
+
+    manifest = json.loads((remote / "batch_00000" / "complete.json").read_text())
+    assert len(results) == 1
+    assert results[0].files_completed == 2
+    assert [item["remote"] for item in manifest["files"]] == [files[0].remote, files[2].remote]
+
+
 def test_build_upload_shard_batches_uploads_with_corrupt_file_quarantined(tmp_path: Path) -> None:
     good = _raw_file(tmp_path, "good_batch", [{
         "doi": "https://doi.org/10.example/good-batch",
@@ -3553,6 +3593,8 @@ def test_build_upload_shards_cli_filters_source_and_offsets_batches(
             "pubmed",
             "--batch-id-offset",
             "90000",
+            "--completed-shard-dir",
+            str(tmp_path / "completed"),
             "--upload-remote",
             f"file://{tmp_path / 'remote'}",
         ],
@@ -3568,3 +3610,4 @@ def test_build_upload_shards_cli_filters_source_and_offsets_batches(
         "file:///pubmed-b.gz",
     ]
     assert seen["batch_id_offset"] == 90000
+    assert seen["completed_shard_dir"] == tmp_path / "completed"
