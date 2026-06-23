@@ -2060,6 +2060,31 @@ def test_server_complete_search_receipt_passes_when_all_selected_shards_complete
         proc.wait(timeout=10)
 
 
+def test_search_shard_paths_can_use_subprocess_timeouts(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    _write_search_test_batch(tmp_path, 0)
+    path = tmp_path / "batch_00000" / "fullraw_shard_0000.sqlite"
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SUBPROCESS_TIMEOUT", "1")
+
+    hits, completed_paths, timed_out, metrics = fullraw_index._search_shard_paths_with_paths_and_receipt(
+        [path],
+        "management forecast disclosure",
+        limit=5,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        timeout_seconds=10,
+        shard_timeout_seconds=10,
+    )
+
+    assert completed_paths == [path]
+    assert timed_out is False
+    assert len(hits) == 1
+    assert metrics["result_count_returned"] == 1
+
+
 def test_server_exhaustive_sweep_defers_failed_paths_without_final_hit(tmp_path: Path) -> None:
     invalid_batch = tmp_path / "batch_00000"
     invalid_batch.mkdir()

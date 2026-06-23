@@ -1182,11 +1182,15 @@ def _search_shard_paths_with_paths_and_receipt(
     timed_out = False
     worker_count = workers if workers is not None else int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "8"))
     worker_count = max(1, min(worker_count, len(paths) or 1))
+    use_subprocess_timeout = os.environ.get(
+        "V5_MEMO_FULL_RAW_SEARCH_SUBPROCESS_TIMEOUT", ""
+    ).casefold() in {"1", "true", "yes", "on"}
+    search_one = _search_one_shard_subprocess if use_subprocess_timeout else _search_one_shard
     pool = ThreadPoolExecutor(max_workers=worker_count)
     try:
         futures = {
             pool.submit(
-                _search_one_shard,
+                search_one,
                 path,
                 query,
                 limit,
@@ -1202,7 +1206,7 @@ def _search_shard_paths_with_paths_and_receipt(
             path = futures[future]
             try:
                 hits = future.result()
-            except (OSError, sqlite3.Error):
+            except (OSError, RuntimeError, sqlite3.Error, subprocess.SubprocessError, json.JSONDecodeError):
                 continue
             completed_paths.append(path)
             hit_groups.append(hits)
@@ -1806,6 +1810,68 @@ def _search_one_shard(
         )
     finally:
         index.close()
+
+
+_SEARCH_ONE_SHARD_SUBPROCESS_CODE = """
+import json
+import sys
+from pathlib import Path
+
+from v5_memo.fullraw_index import _search_one_shard
+
+payload = json.load(sys.stdin)
+hits = _search_one_shard(
+    Path(payload["path"]),
+    str(payload["query"]),
+    int(payload["limit"]),
+    int(payload["year_min"]),
+    int(payload["year_max"]),
+    str(payload["rank_mode"]),
+    payload["timeout_seconds"],
+)
+json.dump(hits, sys.stdout)
+"""
+
+
+def _search_one_shard_subprocess(
+    path: Path,
+    query: str,
+    limit: int,
+    year_min: int,
+    year_max: int,
+    rank_mode: str,
+    timeout_seconds: float | None = None,
+) -> list[dict[str, object]]:
+    payload = {
+        "path": str(path),
+        "query": query,
+        "limit": limit,
+        "year_min": year_min,
+        "year_max": year_max,
+        "rank_mode": rank_mode,
+        "timeout_seconds": timeout_seconds,
+    }
+    hard_timeout = (timeout_seconds + 5.0) if timeout_seconds is not None else None
+    env = os.environ.copy()
+    src_root = str(Path(__file__).resolve().parents[1])
+    env["PYTHONPATH"] = (
+        src_root
+        if not env.get("PYTHONPATH")
+        else f"{src_root}{os.pathsep}{env['PYTHONPATH']}"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", _SEARCH_ONE_SHARD_SUBPROCESS_CODE],
+        input=json.dumps(payload),
+        text=True,
+        capture_output=True,
+        timeout=hard_timeout,
+        env=env,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError((completed.stderr or completed.stdout or "shard subprocess failed")[:500])
+    loaded = json.loads(completed.stdout or "[]")
+    return loaded if isinstance(loaded, list) else []
 
 
 def _materialized_shard_path(path: Path, *, preserve: set[Path] | None = None) -> Path:
