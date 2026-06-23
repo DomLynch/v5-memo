@@ -330,17 +330,20 @@ class FullRawFtsIndex:
     def _ensure_identifier_indexes(self) -> None:
         if self._identifier_indexes_ready or self._read_only:
             return
-        self._conn.executescript(
-            """
-            CREATE INDEX IF NOT EXISTS idx_papers_doi ON papers(doi);
-            CREATE INDEX IF NOT EXISTS idx_papers_pmid ON papers(pmid);
-            CREATE INDEX IF NOT EXISTS idx_papers_pmcid ON papers(pmcid);
-            CREATE INDEX IF NOT EXISTS idx_papers_openalex_id ON papers(openalex_id);
-            CREATE INDEX IF NOT EXISTS idx_papers_semantic_scholar_id
-              ON papers(semantic_scholar_id);
-            """
-        )
-        self._conn.commit()
+        was_in_transaction = self._conn.in_transaction
+        for statement in (
+            "CREATE INDEX IF NOT EXISTS idx_papers_doi ON papers(doi)",
+            "CREATE INDEX IF NOT EXISTS idx_papers_pmid ON papers(pmid)",
+            "CREATE INDEX IF NOT EXISTS idx_papers_pmcid ON papers(pmcid)",
+            "CREATE INDEX IF NOT EXISTS idx_papers_openalex_id ON papers(openalex_id)",
+            (
+                "CREATE INDEX IF NOT EXISTS idx_papers_semantic_scholar_id "
+                "ON papers(semantic_scholar_id)"
+            ),
+        ):
+            self._conn.execute(statement)
+        if not was_in_transaction:
+            self._conn.commit()
         self._identifier_indexes_ready = True
 
     def completed_remotes(self) -> set[str]:
@@ -599,6 +602,8 @@ class FullRawFtsIndex:
         inserted_total = 0
         inserted_since_commit = 0
         complete = True
+        if raw_file.source == "semantic_scholar_abstracts":
+            self._ensure_identifier_indexes()
         self._conn.execute("BEGIN")
         try:
             self._mark_file(raw_file, status="running", docs_seen=0, docs_indexed=0)
