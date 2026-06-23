@@ -1801,3 +1801,10 @@ def test_pipeline_accepts_deep_fullraw_memo_coverage() -> None:
     )
 
     assert [hit.doi for hit in result.receipts] == ["10.deep/1", "10.deep/2"]
+    assert "**Coverage receipt:**" in result.markdown
+    assert "shards searched: `48`" in result.markdown
+    assert "shard sources: `openalex, semantic_scholar`" in result.markdown
+    assert "receipt sources: `openalex, semantic_scholar`" in result.markdown
+    assert "years: `1990-2024`" in result.markdown
+    assert "duplicate rate: `0.05`" in result.markdown
+    assert "citation diversity: `3`" in result.markdown
