@@ -100,6 +100,104 @@ def test_anchors_drop_generic_connector_words() -> None:
     assert "dashboard" in run.top_pairs[0].pair.anchors
 
 
+def test_live_section_method_words_are_not_anchors() -> None:
+    papers = (
+        Paper(
+            "a",
+            "Resveratrol improved muscle regeneration in mice",
+            "Background mice were divided into control groups. Conclusion resveratrol improved MyoD by ELISA.",
+            "openalex",
+        ),
+        Paper(
+            "b",
+            "Resveratrol reduced apoptotic biomarkers in male rats",
+            "Background rats were divided into control groups. Conclusion combined therapy reduced biomarker levels by ELISA.",
+            "pubmed",
+        ),
+    )
+
+    pairs = mine_pairs(papers)
+
+    assert not pairs or "background" not in pairs[0].anchors
+    assert not pairs or "elisa" not in pairs[0].anchors
+    assert not pairs or "compared" not in pairs[0].anchors
+    assert not pairs or "increased" not in pairs[0].anchors
+
+
+def test_animal_update_is_not_human_failure_shape() -> None:
+    papers = (
+        Paper(
+            "a",
+            "Resveratrol improved muscle regeneration in mice",
+            "A mouse model showed resveratrol improved muscle regeneration.",
+            "openalex",
+        ),
+        Paper(
+            "b",
+            "Resveratrol reduced apoptotic biomarkers in rats",
+            "Male rats had reduced apoptotic biomarkers after resveratrol therapy.",
+            "pubmed",
+        ),
+    )
+
+    scored = score_pairs(mine_pairs(papers), topic_terms={"resveratrol", "exercise", "adaptation"})
+
+    assert not scored or scored[0].shape != "mechanism_to_human_failure"
+
+
+def test_specific_topic_term_must_be_shared_by_elite_pair() -> None:
+    papers = (
+        Paper(
+            "a",
+            "Resveratrol improves exercise adaptation in mice",
+            "Resveratrol improved exercise adaptation in a mouse model.",
+            "openalex",
+        ),
+        Paper(
+            "b",
+            "Continuous exercise training changed liver proteins in rats",
+            "Exercise training reduced protein levels in male rats.",
+            "pubmed",
+        ),
+    )
+
+    scored = score_pairs(mine_pairs(papers), topic_terms={"resveratrol", "exercise", "adaptation"})
+
+    assert scored == ()
+
+
+def test_animal_only_pair_is_not_elite_alpha_shape() -> None:
+    papers = (
+        Paper(
+            "a",
+            "Resveratrol exercise protocol improved muscle regeneration in mice",
+            "Resveratrol and exercise improved muscle regeneration in mice.",
+            "openalex",
+        ),
+        Paper(
+            "b",
+            "Resveratrol exercise result reduced liver proteins in rats",
+            "Resveratrol and exercise reduced protein levels in male rats.",
+            "pubmed",
+        ),
+    )
+
+    scored = score_pairs(mine_pairs(papers), topic_terms={"resveratrol", "exercise", "adaptation"})
+
+    assert scored == ()
+
+
+def test_anchor_order_keeps_specific_terms_before_short_generic_terms() -> None:
+    papers = (
+        Paper("a", "Resveratrol exercise signal", "resveratrol exercise alpha beta gamma delta", "openalex"),
+        Paper("b", "Resveratrol exercise update", "resveratrol exercise alpha beta gamma delta", "pubmed"),
+    )
+
+    pairs = mine_pairs(papers)
+
+    assert pairs[0].anchors[0] == "resveratrol"
+
+
 def test_fullraw_client_parses_hits_and_coverage_receipt() -> None:
     payload: dict[str, object] = {
         "meta": {

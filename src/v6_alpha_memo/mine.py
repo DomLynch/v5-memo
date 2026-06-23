@@ -10,15 +10,25 @@ from v6_alpha_memo.search import Paper
 
 _WORD_RE = re.compile(r"[a-z][a-z0-9]{2,}")
 _STOP = frozenset({
-    "about", "after", "again", "against", "among", "and", "are", "based",
-    "between", "both", "but", "case", "cases", "data", "effect", "effects",
-    "evidence", "for", "from", "finding", "findings", "has", "have", "human",
-    "humans", "impact", "into", "method", "methods", "model", "models", "not",
+    "about", "after", "again", "against", "among", "and", "are", "background",
+    "based", "between", "both", "but", "case", "cases", "conclusion",
+    "conclusions", "control", "controls", "data", "divided", "effect",
+    "effects", "elisa", "evidence", "for", "from", "finding", "findings",
+    "group", "groups", "has", "have", "human", "humans", "impact", "into",
+    "body", "compared", "consumption", "continuous", "day", "days",
+    "difference", "end", "exercises", "four", "however", "indices", "level",
+    "levels", "male", "may", "measured", "method", "methods", "model",
+    "models", "not", "old", "other", "per", "performed",
     "outcome", "outcomes", "paper", "patients", "power", "review", "response",
+    "progressive", "protein", "proteins", "received", "recommended",
     "responses", "result", "results", "study", "studies", "system", "systems",
-    "the", "this", "through", "trial", "trials", "using", "with", "within",
+    "the", "therapy", "this", "through", "tissue", "trial", "trials", "using",
+    "significant", "significantly", "week", "weeks", "were", "wistar", "with", "within",
 })
-_BAD_SHARED = _STOP | {"association", "analysis", "clinical", "different", "mechanism"}
+_BAD_SHARED = _STOP | {
+    "association", "analysis", "clinical", "combination", "decreased", "different",
+    "increase", "increased", "mechanism", "reduced",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +45,7 @@ def mine_pairs(papers: tuple[Paper, ...], *, limit: int = 80) -> tuple[Candidate
         reject = _pair_rejects(a, b)
         if reject:
             continue
-        anchors = tuple(sorted((_terms(a) & _terms(b)) - _BAD_SHARED))
+        anchors = tuple(sorted((_terms(a) & _terms(b)) - _BAD_SHARED, key=lambda word: (-len(word), word)))
         if not anchors:
             continue
         pairs.append(CandidatePair(a=a, b=b, anchors=anchors[:6]))
