@@ -2055,6 +2055,36 @@ def aggregate_shard_manifest_stats(shard_dir: Path, *, files_total: int = 0) -> 
     )
 
 
+def fullraw_readiness(
+    files: list[RawFile],
+    *,
+    completed_shard_dir: Path | None = None,
+    completed_shard_remote: str = "",
+    rclone_bin: str = "rclone",
+) -> dict[str, object]:
+    completed = _completed_raw_remotes(
+        completed_shard_dir,
+        shard_remote=completed_shard_remote,
+        rclone_bin=rclone_bin,
+    )
+    completed_sources: Counter[str] = Counter()
+    remaining_sources: Counter[str] = Counter()
+    for raw_file in files:
+        if raw_file.remote in completed:
+            completed_sources[raw_file.source] += 1
+        else:
+            remaining_sources[raw_file.source] += 1
+    remaining_files = sum(remaining_sources.values())
+    return {
+        "ready": remaining_files == 0,
+        "files_total": len(files),
+        "files_completed": len(files) - remaining_files,
+        "files_remaining": remaining_files,
+        "completed_by_source": dict(sorted(completed_sources.items())),
+        "remaining_by_source": dict(sorted(remaining_sources.items())),
+    }
+
+
 def backfill_shard_profiles(
     shard_dir: Path,
     *,
@@ -3274,6 +3304,23 @@ def main() -> None:
     stats_shards.add_argument("--shard-dir", default=shard_dir_default)
     stats_shards.add_argument("--manifest", default=os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
 
+    readiness = subparsers.add_parser("readiness")
+    readiness.add_argument("--manifest", default=os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
+    readiness.add_argument("--refresh-manifest", action="store_true")
+    readiness.add_argument("--rclone-bin", default=os.environ.get("V5_MEMO_FULL_RAW_RCLONE", "rclone"))
+    readiness.add_argument(
+        "--completed-shard-dir",
+        default=os.environ.get("V5_MEMO_FULL_RAW_COMPLETED_SHARD_DIR", ""),
+    )
+    readiness.add_argument(
+        "--completed-shard-remote",
+        default=os.environ.get(
+            "V5_MEMO_FULL_RAW_COMPLETED_SHARD_REMOTE",
+            os.environ.get("V5_MEMO_FULL_RAW_SHARD_REMOTE", ""),
+        ),
+    )
+    readiness.add_argument("--fail-if-not-ready", action="store_true")
+
     backfill_profiles = subparsers.add_parser("backfill-shard-profiles")
     backfill_profiles.add_argument("--shard-dir", default=shard_dir_default)
     backfill_profiles.add_argument("--max-shards", type=int)
@@ -3467,6 +3514,23 @@ def main() -> None:
         stats_payload["shards"] = len(shard_paths)
         stats_payload["shard_dir"] = str(args.shard_dir)
         print(json.dumps(stats_payload, sort_keys=True))
+        return
+
+    if args.command == "readiness":
+        files = load_or_build_manifest(
+            Path(args.manifest),
+            refresh=bool(args.refresh_manifest),
+            rclone_bin=str(args.rclone_bin),
+        )
+        payload = fullraw_readiness(
+            files,
+            completed_shard_dir=Path(args.completed_shard_dir) if str(args.completed_shard_dir).strip() else None,
+            completed_shard_remote=str(args.completed_shard_remote),
+            rclone_bin=str(args.rclone_bin),
+        )
+        print(json.dumps(payload, sort_keys=True))
+        if args.fail_if_not_ready and not payload["ready"]:
+            raise SystemExit(2)
         return
 
     if args.command == "backfill-shard-profiles":

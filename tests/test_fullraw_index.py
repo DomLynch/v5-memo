@@ -3539,6 +3539,99 @@ def test_completed_raw_remotes_reads_rclone_remote(monkeypatch: MonkeyPatch) -> 
     ]
 
 
+def test_fullraw_readiness_counts_remaining_manifest_files(tmp_path: Path) -> None:
+    completed = tmp_path / "completed" / "batch_00000"
+    completed.mkdir(parents=True)
+    (completed / "complete.json").write_text(json.dumps({
+        "files": [
+            {"remote": "sb:raw/openalex/a.gz"},
+            {"remote": "sb:raw/pubmed/a.gz"},
+        ],
+    }))
+    files = [
+        RawFile(source="openalex", format="openalex_jsonl", remote="sb:raw/openalex/a.gz"),
+        RawFile(source="pubmed", format="pubmed_xml", remote="sb:raw/pubmed/a.gz"),
+        RawFile(source="pubmed", format="pubmed_xml", remote="sb:raw/pubmed/b.gz"),
+        RawFile(source="semantic_scholar", format="semantic_scholar_jsonl", remote="sb:raw/s2/a.gz"),
+    ]
+
+    readiness = fullraw_index.fullraw_readiness(files, completed_shard_dir=tmp_path / "completed")
+
+    assert readiness == {
+        "ready": False,
+        "files_total": 4,
+        "files_completed": 2,
+        "files_remaining": 2,
+        "completed_by_source": {"openalex": 1, "pubmed": 1},
+        "remaining_by_source": {"pubmed": 1, "semantic_scholar": 1},
+    }
+
+
+def test_fullraw_readiness_is_ready_when_all_manifest_files_are_completed(tmp_path: Path) -> None:
+    completed = tmp_path / "completed" / "batch_00000"
+    completed.mkdir(parents=True)
+    (completed / "complete.json").write_text(json.dumps({
+        "files": [
+            {"remote": "sb:raw/openalex/a.gz"},
+            {"remote": "sb:raw/pubmed/a.gz"},
+        ],
+    }))
+    files = [
+        RawFile(source="openalex", format="openalex_jsonl", remote="sb:raw/openalex/a.gz"),
+        RawFile(source="pubmed", format="pubmed_xml", remote="sb:raw/pubmed/a.gz"),
+    ]
+
+    readiness = fullraw_index.fullraw_readiness(files, completed_shard_dir=tmp_path / "completed")
+
+    assert readiness["ready"] is True
+    assert readiness["files_total"] == 2
+    assert readiness["files_completed"] == 2
+    assert readiness["files_remaining"] == 0
+    assert readiness["remaining_by_source"] == {}
+
+
+def test_readiness_cli_fails_closed_when_manifest_is_incomplete(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({
+        "files": [
+            {"source": "openalex", "format": "openalex_jsonl", "remote": "sb:raw/openalex/a.gz"},
+            {"source": "pubmed", "format": "pubmed_xml", "remote": "sb:raw/pubmed/a.gz"},
+        ],
+    }))
+    completed = tmp_path / "completed" / "batch_00000"
+    completed.mkdir(parents=True)
+    (completed / "complete.json").write_text(json.dumps({
+        "files": [{"remote": "sb:raw/openalex/a.gz"}],
+    }))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fullraw_index.py",
+            "readiness",
+            "--manifest",
+            str(manifest),
+            "--completed-shard-dir",
+            str(tmp_path / "completed"),
+            "--fail-if-not-ready",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        fullraw_index.main()
+
+    assert exc.value.code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ready"] is False
+    assert payload["files_completed"] == 1
+    assert payload["files_remaining"] == 1
+    assert payload["remaining_by_source"] == {"pubmed": 1}
+
+
 def test_build_upload_shard_batches_uploads_with_corrupt_file_quarantined(tmp_path: Path) -> None:
     good = _raw_file(tmp_path, "good_batch", [{
         "doi": "https://doi.org/10.example/good-batch",
