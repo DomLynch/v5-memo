@@ -38,6 +38,7 @@ class V6Run:
                     "sources_searched": result.receipt.sources_searched,
                     "papers_searched": result.receipt.papers_searched,
                     "partial": result.receipt.partial,
+                    "error": result.receipt.error,
                 }
                 for result in self.results
             ],

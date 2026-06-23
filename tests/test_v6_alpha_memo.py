@@ -172,6 +172,70 @@ def test_fullraw_client_compacts_zero_hit_queries() -> None:
     assert result.papers[0].title == "Metformin blunted exercise adaptation"
 
 
+def test_fullraw_client_skips_timeout_and_uses_next_variant() -> None:
+    calls: list[str] = []
+    hit_payload: dict[str, object] = {
+        "meta": {"shard_receipt": {"shards_searched": 50, "sources_searched": {"openalex": 1}}},
+        "results": [
+            {
+                "id": "W1",
+                "title": "Metformin blunted exercise adaptation",
+                "abstract": "Metformin reduced exercise adaptation in humans.",
+                "source": "openalex",
+            }
+        ],
+    }
+
+    def opener(request: Request, timeout: float) -> _Response:
+        del timeout
+        raw = cast(bytes, request.data or b"{}")
+        body = json.loads(raw.decode())
+        calls.append(body["query"])
+        if len(calls) == 1:
+            raise TimeoutError("slow shard sweep")
+        return _Response(hit_payload)
+
+    client = FullrawSearchClient(search_url="http://fullraw/search", opener=opener)
+    result = client.search("metformin exercise adaptation expected improved null outcome randomized trial")
+
+    assert calls[:2] == [
+        "metformin exercise adaptation expected improved null outcome randomized trial",
+        "metformin exercise",
+    ]
+    assert result.papers[0].title == "Metformin blunted exercise adaptation"
+
+
+def test_fullraw_client_falls_back_to_second_endpoint() -> None:
+    urls: list[str] = []
+    hit_payload: dict[str, object] = {
+        "meta": {"shard_receipt": {"shards_searched": 50, "sources_searched": {"openalex": 1}}},
+        "results": [
+            {
+                "id": "W1",
+                "title": "Metformin blunted exercise adaptation",
+                "abstract": "Metformin reduced exercise adaptation in humans.",
+                "source": "openalex",
+            }
+        ],
+    }
+
+    def opener(request: Request, timeout: float) -> _Response:
+        del timeout
+        urls.append(request.full_url)
+        if request.full_url == "http://primary/search":
+            raise ConnectionResetError("reset")
+        return _Response(hit_payload)
+
+    client = FullrawSearchClient(
+        search_url="http://primary/search,http://fallback/search",
+        opener=opener,
+    )
+    result = client.search("metformin exercise adaptation")
+
+    assert urls[:2] == ["http://primary/search", "http://fallback/search"]
+    assert result.papers[0].title == "Metformin blunted exercise adaptation"
+
+
 def test_writer_stays_receipt_owned() -> None:
     run = build_memo("longevity exercise adaptation", client=DemoClient())
     memo = render_memo(run.top_pairs[0])

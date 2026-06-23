@@ -7,7 +7,9 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from http.client import RemoteDisconnected
 from typing import Protocol, cast
+from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 
@@ -54,6 +56,7 @@ class CoverageReceipt:
     papers_total: int = 0
     sources_searched: tuple[str, ...] = ()
     partial: bool = False
+    error: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +78,7 @@ class FullrawSearchClient:
         opener: RequestOpener | None = None,
     ) -> None:
         self.search_url = search_url.strip()
+        self.search_urls = _search_urls(search_url)
         self.token = token.strip()
         self.timeout = timeout
         self._opener = opener or cast(RequestOpener, urlopen)
@@ -94,17 +98,26 @@ class FullrawSearchClient:
         )
 
     def search(self, query: str, *, limit: int = 25) -> SearchResult:
-        if not self.search_url:
+        if not self.search_urls:
             raise RuntimeError("V6_FULLRAW_SEARCH_URL or V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL is required")
         last = SearchResult(query=query, papers=(), receipt=CoverageReceipt())
         for variant in _query_variants(query):
-            result = self._search_once(variant, limit=limit)
-            last = result
-            if result.papers:
-                return result
+            for search_url in self.search_urls:
+                try:
+                    result = self._search_once(variant, limit=limit, search_url=search_url)
+                except (OSError, RemoteDisconnected, TimeoutError, URLError) as exc:
+                    last = SearchResult(
+                        query=variant,
+                        papers=(),
+                        receipt=CoverageReceipt(error=f"{type(exc).__name__}: {exc}"),
+                    )
+                    continue
+                last = result
+                if result.papers:
+                    return result
         return last
 
-    def _search_once(self, query: str, *, limit: int) -> SearchResult:
+    def _search_once(self, query: str, *, limit: int, search_url: str) -> SearchResult:
         payload = {
             "query": query[:1024],
             "limit": max(1, min(limit, 200)),
@@ -117,7 +130,7 @@ class FullrawSearchClient:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         request = Request(
-            self.search_url,
+            search_url,
             data=json.dumps(payload).encode(),
             headers=headers,
             method="POST",
@@ -169,6 +182,10 @@ def _query_variants(query: str) -> tuple[str, ...]:
     if len(words) >= 3:
         variants.append(" ".join(words[:3]))
     return tuple(dict.fromkeys(variant for variant in variants if variant))
+
+
+def _search_urls(value: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(url.strip() for url in value.split(",") if url.strip()))
 
 
 _QUERY_DROP = frozenset({
