@@ -3576,6 +3576,29 @@ def test_sweep_pass_roles_sufficient_requires_planned_roles() -> None:
     })
 
 
+def test_sweep_receipt_exhaustive_complete_ignores_missing_pass_roles_only_when_done() -> None:
+    planned = [
+        {"role": "focused"},
+        {"role": "broad"},
+        {"role": "adjacent_field"},
+    ]
+    receipt = {
+        "sweep_search_passes": planned,
+        "sweep_completed_pass_roles": ["focused"],
+        "sweep_max_passes": 3,
+        "sweep_remaining_shards": 0,
+        "sweep_failed_shards": 0,
+        "sweep_deferred_shards": 0,
+    }
+
+    assert not fullraw_index._sweep_pass_roles_sufficient(receipt)
+    assert fullraw_index._sweep_receipt_exhaustive_complete(receipt)
+    assert not fullraw_index._sweep_receipt_exhaustive_complete({
+        **receipt,
+        "sweep_deferred_shards": 1,
+    })
+
+
 def _sweep_task(key: str) -> SweepTask:
     return SweepTask(
         key=key,

@@ -2427,6 +2427,15 @@ def _sweep_pass_roles_sufficient(receipt: dict[str, object]) -> bool:
     return len(completed_roles & planned_roles) >= required_roles
 
 
+def _sweep_receipt_exhaustive_complete(receipt: dict[str, object]) -> bool:
+    if "sweep_remaining_shards" not in receipt:
+        return False
+    remaining = _int_or_none(receipt.get("sweep_remaining_shards"))
+    failed = _int_or_none(receipt.get("sweep_failed_shards")) or 0
+    deferred = _int_or_none(receipt.get("sweep_deferred_shards")) or 0
+    return remaining == 0 and failed == 0 and deferred == 0
+
+
 def shard_coverage_gate_response(
     receipt: dict[str, object],
     *,
@@ -3233,16 +3242,9 @@ def run_server() -> None:
     def receipt_is_sufficient(receipt: dict[str, object]) -> bool:
         if coverage_response(receipt) is not None:
             return False
-        if not _sweep_pass_roles_sufficient(receipt):
-            return False
         if sweep_require_complete and "sweep_remaining_shards" in receipt:
-            remaining = _int_or_none(receipt.get("sweep_remaining_shards"))
-            if remaining is None or remaining > 0:
-                return False
-            failed = _int_or_none(receipt.get("sweep_failed_shards")) or 0
-            if failed > 0:
-                return False
-        return True
+            return _sweep_receipt_exhaustive_complete(receipt)
+        return _sweep_pass_roles_sufficient(receipt)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
