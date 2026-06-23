@@ -2519,6 +2519,56 @@ def _source_counts(entries: list[ShardCatalogEntry]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def _parse_source_scope(source_filter: str) -> tuple[str, ...]:
+    return tuple(sorted({
+        source.strip().casefold()
+        for source in source_filter.split(",")
+        if source.strip()
+    }))
+
+
+def _filter_shard_catalog_by_source(
+    entries: list[ShardCatalogEntry],
+    source_scope: tuple[str, ...],
+) -> list[ShardCatalogEntry]:
+    if not source_scope:
+        return entries
+    allowed = set(source_scope)
+    return [
+        entry
+        for entry in entries
+        if any(source.casefold() in allowed for source in (entry.sources or ("unknown",)))
+    ]
+
+
+def _add_source_scope_receipt(
+    receipt: dict[str, object],
+    *,
+    all_entries: list[ShardCatalogEntry],
+    scoped_entries: list[ShardCatalogEntry],
+    source_scope: tuple[str, ...],
+) -> None:
+    if not source_scope:
+        return
+    all_sources = _source_counts(all_entries)
+    scoped_sources = _source_counts(scoped_entries)
+    receipt["source_scope"] = source_scope
+    receipt["source_scope_applied"] = True
+    receipt["all_shards_total"] = len(all_entries)
+    receipt["all_sources_total"] = all_sources
+    receipt["scope_shards_total"] = len(scoped_entries)
+    receipt["scope_sources_total"] = scoped_sources
+    receipt["sources_excluded_by_scope"] = tuple(
+        source for source in sorted(all_sources) if source not in scoped_sources
+    )
+    receipt["shards_excluded_by_scope"] = max(0, len(all_entries) - len(scoped_entries))
+    receipt["papers_excluded_by_scope"] = max(
+        0,
+        sum(entry.papers_inserted for entry in all_entries)
+        - sum(entry.papers_inserted for entry in scoped_entries),
+    )
+
+
 def _batch_range(entries: list[ShardCatalogEntry]) -> dict[str, int | None]:
     if not entries:
         return {"min": None, "max": None}
@@ -2765,6 +2815,7 @@ def run_server() -> None:
     require_complete_search = os.environ.get(
         "V5_MEMO_FULL_RAW_REQUIRE_COMPLETE_SEARCH", ""
     ).casefold() in {"1", "true", "yes", "on"}
+    search_source_scope = _parse_source_scope(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_SOURCE_FILTER", ""))
     sweep_cache_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR", "").strip()
     sweep_cache_dir = Path(sweep_cache_dir_config) if sweep_cache_dir_config else None
     manifest_path = Path(
@@ -2799,6 +2850,17 @@ def run_server() -> None:
         catalog_cache = (now, catalog)
         return catalog
 
+    def current_search_catalog() -> list[ShardCatalogEntry]:
+        return _filter_shard_catalog_by_source(current_catalog(), search_source_scope)
+
+    def add_source_scope(receipt: dict[str, object], scoped_catalog: list[ShardCatalogEntry]) -> None:
+        _add_source_scope_receipt(
+            receipt,
+            all_entries=current_catalog(),
+            scoped_entries=scoped_catalog,
+            source_scope=search_source_scope,
+        )
+
     def stats_from_catalog(catalog: list[ShardCatalogEntry]) -> IndexStats:
         return IndexStats(
             papers_indexed=sum(entry.papers_inserted for entry in catalog),
@@ -2828,7 +2890,7 @@ def run_server() -> None:
         timeout_seconds: float | None,
     ) -> list[dict[str, object]]:
         if shard_dir is not None:
-            catalog = current_catalog()
+            catalog = current_search_catalog()
             return search_shards(
                 [entry.path for entry in catalog],
                 query,
@@ -2876,6 +2938,7 @@ def run_server() -> None:
         completed_path_strings = {str(path) for path in completed_paths}
         searched_entries = [entry for entry in selected if str(entry.path) in completed_path_strings]
         receipt = shard_coverage_receipt(catalog, searched_entries)
+        add_source_scope(receipt, catalog)
         failed_paths = [str(entry.path) for entry in selected if str(entry.path) not in completed_path_strings]
         receipt.update(result_metrics)
         receipt["search_selected_shards"] = len(selected)
@@ -2926,6 +2989,7 @@ def run_server() -> None:
                     target_ready=min_shards_searched,
                 )
                 planned_receipt = shard_coverage_receipt(task.catalog, sweep_entries)
+                add_source_scope(planned_receipt, task.catalog)
                 sweep_passes = _sweep_search_passes(task.query, sweep_entries, rank_mode=task.rank_mode)
                 completed_path_strings = _sweep_completed_path_strings(existing.receipt if existing else {})
                 failed_path_strings = (
@@ -2977,6 +3041,7 @@ def run_server() -> None:
                         limit=target_limit,
                     )
                     planned_receipt = shard_coverage_receipt(task.catalog, sweep_entries)
+                    add_source_scope(planned_receipt, task.catalog)
                     sweep_passes = _sweep_search_passes(task.query, sweep_entries, rank_mode=task.rank_mode)
 
                 for pass_index in range(sweep_max_passes):
@@ -3014,6 +3079,7 @@ def run_server() -> None:
                     expand_sweep_entries_for_failures()
                     searched_entries = [entry for entry in sweep_entries if str(entry.path) in completed_path_strings]
                     receipt = shard_coverage_receipt(task.catalog, searched_entries)
+                    add_source_scope(receipt, task.catalog)
                     _add_planned_sweep_receipt(receipt, planned_receipt)
                     receipt["sweep_scope"] = "relevant"
                     receipt["sweep_shard_limit"] = sweep_shard_limit
@@ -3105,14 +3171,17 @@ def run_server() -> None:
     def current_receipt(query: str) -> dict[str, object]:
         if shard_dir is None:
             return {}
-        catalog = current_catalog()
-        return shard_coverage_receipt(catalog, select_search_shard_entries(catalog, query=query))
+        catalog = current_search_catalog()
+        receipt = shard_coverage_receipt(catalog, select_search_shard_entries(catalog, query=query))
+        add_source_scope(receipt, catalog)
+        return receipt
 
     def coverage_requirements() -> dict[str, object]:
         return {
             "min_shards_searched": min_shards_searched,
             "min_sources_searched": min_sources_searched,
             "require_complete_search": require_complete_search,
+            "source_scope": search_source_scope,
         }
 
     def coverage_response(receipt: dict[str, object]) -> tuple[int, dict[str, object]] | None:
@@ -3200,7 +3269,7 @@ def run_server() -> None:
                 _write_json(self, 400, {"error": "query is required"})
                 return
             started = time.monotonic()
-            catalog = current_catalog() if shard_dir is not None else []
+            catalog = current_search_catalog() if shard_dir is not None else []
             cache_key = _sweep_cache_key(
                 query,
                 limit=limit,
@@ -3209,6 +3278,7 @@ def run_server() -> None:
                 rank_mode=rank_mode,
                 sweep_shard_limit=sweep_shard_limit,
                 sweep_strategy=_SWEEP_STRATEGY,
+                source_scope=search_source_scope,
             )
             cached = sweep_cache_get(cache_key) if catalog else None
             resume_cached = (
@@ -3288,6 +3358,7 @@ def run_server() -> None:
                         if catalog
                         else {}
                     )
+                    add_source_scope(receipt, catalog)
                     coverage_gate = coverage_response(receipt)
                     if coverage_gate is not None:
                         status, body = coverage_gate
@@ -3750,17 +3821,21 @@ def _sweep_cache_key(
     rank_mode: str,
     sweep_shard_limit: int,
     sweep_strategy: str = _SWEEP_STRATEGY,
+    source_scope: tuple[str, ...] = (),
 ) -> str:
+    payload_data: dict[str, object] = {
+        "query": query,
+        "limit": limit,
+        "year_min": year_min,
+        "year_max": year_max,
+        "rank_mode": _rank_mode(rank_mode),
+        "sweep_shard_limit": sweep_shard_limit,
+        "sweep_strategy": sweep_strategy,
+    }
+    if source_scope:
+        payload_data["source_scope"] = source_scope
     payload = json.dumps(
-        {
-            "query": query,
-            "limit": limit,
-            "year_min": year_min,
-            "year_max": year_max,
-            "rank_mode": _rank_mode(rank_mode),
-            "sweep_shard_limit": sweep_shard_limit,
-            "sweep_strategy": sweep_strategy,
-        },
+        payload_data,
         sort_keys=True,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

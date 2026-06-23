@@ -48,10 +48,16 @@ def _write_jsonl_gzip(path: Path, rows: list[dict[str, object]]) -> None:
             fh.write((json.dumps(row) + "\n").encode("utf-8"))
 
 
-def _raw_file(tmp_path: Path, name: str, rows: list[dict[str, object]]) -> RawFile:
-    source = tmp_path / f"{name}.jsonl.gz"
-    _write_jsonl_gzip(source, rows)
-    return RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{source}")
+def _raw_file(
+    tmp_path: Path,
+    name: str,
+    rows: list[dict[str, object]],
+    *,
+    source: str = "openalex",
+) -> RawFile:
+    path = tmp_path / f"{name}.jsonl.gz"
+    _write_jsonl_gzip(path, rows)
+    return RawFile(source=source, format="openalex_jsonl", remote=f"file://{path}")
 
 
 def _corrupt_raw_file(tmp_path: Path, name: str) -> RawFile:
@@ -85,7 +91,7 @@ def _write_search_test_batch(
             "abstract": "Management forecast disclosure evidence.",
             "publication_year": 2024,
             "cited_by_count": 10 + index,
-        }])
+        }], source=source)
         index_db = FullRawFtsIndex(shard)
         try:
             index_db.index_files([raw_file], commit_interval=1)
@@ -1927,6 +1933,108 @@ def test_server_exhaustive_sweep_continues_after_minimum_receipt(tmp_path: Path)
         proc.wait(timeout=10)
 
 
+def test_server_source_scoped_exhaustive_sweep_reports_excluded_sources(tmp_path: Path) -> None:
+    _write_search_test_batch(tmp_path, 0, source="openalex")
+    _write_search_test_batch(tmp_path, 1, source="pubmed")
+    _write_search_test_batch(tmp_path, 2, source="semantic_scholar")
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"files": []}))
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path.cwd() / "src"),
+        "V5_MEMO_FULL_RAW_INDEX_PORT": str(port),
+        "V5_MEMO_FULL_RAW_MANIFEST": str(manifest),
+        "V5_MEMO_FULL_RAW_SHARD_DIR": str(tmp_path),
+        "V5_MEMO_FULL_RAW_SHARD_TRUST_FILENAMES": "1",
+        "V5_MEMO_FULL_RAW_SHARD_MANIFEST_STATS": "1",
+        "V5_MEMO_FULL_RAW_ASYNC_SWEEP": "1",
+        "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR": str(tmp_path / "cache"),
+        "V5_MEMO_FULL_RAW_SEARCH_SOURCE_FILTER": "openalex,pubmed",
+        "V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT": "10",
+        "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT": "1",
+        "V5_MEMO_FULL_RAW_SWEEP_MAX_PASSES": "2",
+        "V5_MEMO_FULL_RAW_SWEEP_REQUIRE_COMPLETE": "1",
+        "V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED": "2",
+        "V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED": "2",
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "v5_memo.fullraw_index", "serve"],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        base = f"http://127.0.0.1:{port}"
+        for _ in range(50):
+            try:
+                urllib.request.urlopen(base + "/health", timeout=1).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            _, stderr = proc.communicate(timeout=1)
+            raise AssertionError(f"server did not start: {stderr}")
+
+        def post_search() -> tuple[int, dict[str, object]]:
+            request = urllib.request.Request(
+                base + "/search",
+                data=json.dumps({
+                    "query": "management forecast disclosure",
+                    "top_k": 5,
+                    "cache_only": True,
+                    "queue_if_missing": True,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:
+                payload = json.loads(response.read().decode())
+                assert isinstance(payload, dict)
+                return response.status, payload
+
+        final_body: dict[str, object] = {}
+        for _ in range(80):
+            status, body = post_search()
+            final_body = body
+            meta = body.get("meta")
+            receipt = meta.get("shard_receipt") if isinstance(meta, dict) else None
+            if status == 200 and isinstance(receipt, dict) and receipt.get("sweep_remaining_shards") == 0:
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("source-scoped sweep did not complete selected shards")
+        meta = final_body["meta"]
+        assert isinstance(meta, dict)
+        receipt = meta["shard_receipt"]
+        assert isinstance(receipt, dict)
+        assert receipt["source_scope"] == ["openalex", "pubmed"]
+        assert receipt["shards_total"] == 2
+        assert receipt["shards_searched"] == 2
+        assert receipt["partial_shard_search"] is False
+        assert receipt["sources_total"] == {"openalex": 1, "pubmed": 1}
+        assert receipt["sources_searched"] == {"openalex": 1, "pubmed": 1}
+        assert receipt["all_shards_total"] == 3
+        assert receipt["all_sources_total"] == {
+            "openalex": 1,
+            "pubmed": 1,
+            "semantic_scholar": 1,
+        }
+        assert receipt["sources_excluded_by_scope"] == ["semantic_scholar"]
+        assert receipt["shards_excluded_by_scope"] == 1
+        assert receipt["sweep_remaining_shards"] == 0
+        results = final_body["results"]
+        assert isinstance(results, list)
+        assert {result["source"] for result in results} == {"openalex", "pubmed"}
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
 def test_server_complete_search_receipt_requires_completed_shards(tmp_path: Path) -> None:
     _write_search_test_batch(tmp_path, 0, valid=True)
     _write_search_test_batch(tmp_path, 1, valid=False)
@@ -3460,6 +3568,29 @@ def test_sweep_cache_key_includes_sweep_strategy() -> None:
     )
 
     assert old_strategy != current_strategy
+
+
+def test_sweep_cache_key_includes_source_scope() -> None:
+    all_sources = fullraw_index._sweep_cache_key(
+        "management forecast disclosure",
+        limit=5,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="citation",
+        sweep_shard_limit=128,
+        source_scope=(),
+    )
+    scoped = fullraw_index._sweep_cache_key(
+        "management forecast disclosure",
+        limit=5,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="citation",
+        sweep_shard_limit=128,
+        source_scope=("openalex", "pubmed"),
+    )
+
+    assert all_sources != scoped
 
 
 def test_shard_coverage_gate_response_rejects_too_narrow_search() -> None:
