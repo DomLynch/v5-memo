@@ -13,7 +13,12 @@ from v5_memo.client import (
     OpenAlexFullCorpusSearchClient,
     ResearkaSearchClient,
 )
-from v5_memo.coverage import current_search_coverage, require_full_raw_corpus
+from v5_memo.coverage import (
+    FullRawCorpusReadiness,
+    current_search_coverage,
+    full_raw_corpus_readiness,
+    require_full_raw_corpus,
+)
 from v5_memo.miner import query_anchor_terms
 from v5_memo.minimax_writer import (
     MiniMaxM3CandidateSelector,
@@ -98,6 +103,8 @@ def main() -> None:
     parser.add_argument("--query", action="append", default=[])
     parser.add_argument("--coverage-report", action="store_true")
     parser.add_argument("--require-full-raw-corpus", action="store_true")
+    parser.add_argument("--full-raw-readiness-report", action="store_true")
+    parser.add_argument("--require-full-raw-ready", action="store_true")
     parser.add_argument("--planner", choices=["seed", "minimax"])
     parser.add_argument("--planner-limit", type=int, default=4)
     parser.add_argument(
@@ -143,8 +150,15 @@ def main() -> None:
     if args.coverage_report:
         print(current_search_coverage().summary)
         return
+    if args.full_raw_readiness_report:
+        print(_full_raw_readiness(args).summary)
+        return
     if args.require_full_raw_corpus:
         _require_full_raw_or_exit()
+    if args.require_full_raw_ready or (
+        fullraw_backed and _bool_env("V5_MEMO_FULL_RAW_REQUIRE_READY")
+    ):
+        _require_full_raw_ready_or_exit(args)
 
     searcher_mode = "hybrid" if args.searcher == "smart" else args.searcher
     planner_mode = args.planner or ("minimax" if args.searcher == "smart" else "seed")
@@ -241,6 +255,23 @@ def _require_full_raw_or_exit() -> None:
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(2) from exc
+
+
+def _require_full_raw_ready_or_exit(args: argparse.Namespace) -> None:
+    try:
+        readiness = _full_raw_readiness(args)
+        if not readiness.ready:
+            raise RuntimeError(readiness.summary)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
+def _full_raw_readiness(args: argparse.Namespace) -> FullRawCorpusReadiness:
+    return full_raw_corpus_readiness(
+        min_shards_searched=args.min_shards_searched,
+        min_sources_searched=args.min_sources_searched,
+    )
 
 
 def _topic_anchored_queries(queries: Sequence[str], topic: str) -> list[str]:
@@ -341,6 +372,10 @@ def _optional_int_env(name: str) -> int | None:
         return max(0, int(raw))
     except ValueError:
         return None
+
+
+def _bool_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
 if __name__ == "__main__":

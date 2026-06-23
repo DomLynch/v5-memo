@@ -11,6 +11,7 @@ from pytest import MonkeyPatch
 from v5_memo import CorpusHit
 from v5_memo.__main__ import _alpha_shape_queries, _topic_anchored_queries, main
 from v5_memo.client import ResearkaSearchClient
+from v5_memo.coverage import FullRawCorpusReadiness
 from v5_memo.schemas import MemoBuildError
 
 
@@ -118,6 +119,29 @@ def test_alpha_shape_queries_add_universal_promise_and_outcome_probes() -> None:
         "metformin expected augment resistance training protocol",
         "metformin blunted impaired attenuated resistance training outcome",
     ]
+
+
+def test_cli_prints_full_raw_readiness_report(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_readiness(**_kwargs: object) -> FullRawCorpusReadiness:
+        return FullRawCorpusReadiness(
+            ready=False,
+            reason="full raw index incomplete",
+            health={},
+            probe_receipt={},
+            summary="fullraw readiness: not ready; reason=full raw index incomplete",
+        )
+
+    monkeypatch.setattr("v5_memo.__main__.full_raw_corpus_readiness", fake_readiness)
+    monkeypatch.setattr(sys, "argv", ["v5_memo", "--full-raw-readiness-report"])
+
+    main()
+
+    captured = capsys.readouterr()
+    assert captured.out == "fullraw readiness: not ready; reason=full raw index incomplete\n"
+    assert captured.err == ""
 
 
 def test_cli_forwards_memo_coverage_thresholds_from_env(
