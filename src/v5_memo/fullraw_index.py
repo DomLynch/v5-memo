@@ -2537,7 +2537,7 @@ def _filter_shard_catalog_by_source(
     return [
         entry
         for entry in entries
-        if any(source.casefold() in allowed for source in (entry.sources or ("unknown",)))
+        if all(source.casefold() in allowed for source in (entry.sources or ("unknown",)))
     ]
 
 

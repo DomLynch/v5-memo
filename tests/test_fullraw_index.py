@@ -2942,6 +2942,52 @@ def test_select_search_shard_entries_uses_profile_diversity(
     assert "forecast" in topic_terms_searched
 
 
+def test_source_scope_excludes_mixed_disallowed_source_shards(tmp_path: Path) -> None:
+    entries = [
+        ShardCatalogEntry(
+            path=tmp_path / "batch_00000" / "fullraw_shard_0000.sqlite",
+            batch_id=0,
+            shard_id=0,
+            sources=("openalex",),
+            files_completed=1,
+            papers_inserted=100,
+            bytes_used=1000,
+        ),
+        ShardCatalogEntry(
+            path=tmp_path / "batch_00001" / "fullraw_shard_0000.sqlite",
+            batch_id=1,
+            shard_id=0,
+            sources=("openalex", "semantic_scholar"),
+            files_completed=2,
+            papers_inserted=200,
+            bytes_used=2000,
+        ),
+        ShardCatalogEntry(
+            path=tmp_path / "batch_00002" / "fullraw_shard_0000.sqlite",
+            batch_id=2,
+            shard_id=0,
+            sources=("pubmed",),
+            files_completed=1,
+            papers_inserted=300,
+            bytes_used=3000,
+        ),
+    ]
+
+    scoped = fullraw_index._filter_shard_catalog_by_source(entries, ("openalex", "pubmed"))
+    receipt = shard_coverage_receipt(scoped, scoped)
+    fullraw_index._add_source_scope_receipt(
+        receipt,
+        all_entries=entries,
+        scoped_entries=scoped,
+        source_scope=("openalex", "pubmed"),
+    )
+
+    assert [entry.batch_id for entry in scoped] == [0, 2]
+    assert receipt["sources_total"] == {"openalex": 1, "pubmed": 1}
+    assert receipt["sources_excluded_by_scope"] == ("semantic_scholar",)
+    assert receipt["all_sources_total"] == {"openalex": 2, "pubmed": 1, "semantic_scholar": 1}
+
+
 def test_select_search_shard_entries_prefers_ready_cache_with_source_diversity(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
