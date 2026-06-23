@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from v5_memo.gate import candidate_alpha_tier
+from v5_memo.gate import candidate_alpha_tier, memo_coverage_summary
 from v5_memo.schemas import CorpusHit, InsightCandidate
 
 
@@ -51,6 +51,7 @@ def render_alpha_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]
         "**Receipts:**",
     ]
     lines.extend(_receipt_line(index, hit) for index, hit in enumerate(receipts, start=1))
+    lines.extend(_coverage_receipt_lines(receipts))
     lines.extend([
         "",
         "**Safety note:** This memo is an alpha hypothesis. A later LLM writer may sharpen prose, "
@@ -76,6 +77,7 @@ def render_discovery_seed(candidate: InsightCandidate, receipts: Sequence[Corpus
         "**Receipts:**",
     ]
     lines.extend(_receipt_line(index, hit) for index, hit in enumerate(receipts, start=1))
+    lines.extend(_coverage_receipt_lines(receipts))
     return "\n".join(lines).strip() + "\n"
 
 
@@ -84,6 +86,37 @@ def _receipt_line(index: int, hit: CorpusHit) -> str:
     venue = f", {hit.venue}" if hit.venue else ""
     locator = hit.doi or hit.url or hit.hit_id
     return f"{index}. `{hit.hit_id}` {hit.title}{year}{venue}. Source: {hit.source}. ID: {locator}"
+
+
+def _coverage_receipt_lines(receipts: Sequence[CorpusHit]) -> list[str]:
+    summary = memo_coverage_summary(receipts)
+    years = summary["year_range"]
+    year_text = "n/a"
+    if isinstance(years, dict) and years.get("min") is not None and years.get("max") is not None:
+        year_text = f"{years['min']}-{years['max']}"
+    return [
+        "",
+        "**Coverage receipt:**",
+        (
+            f"- shards searched: `{summary['shards_searched']}`; "
+            f"shard sources: `{_join(summary['sources_searched'])}`"
+        ),
+        (
+            f"- receipt sources: `{_join(summary['sources_used'])}`; "
+            f"years: `{year_text}`; abstract receipts: `{summary['abstract_receipt_count']}`"
+        ),
+        (
+            f"- search passes: `{_join(summary['search_passes'])}`; "
+            f"duplicate rate: `{summary['result_duplicate_rate']}`; "
+            f"citation diversity: `{summary['result_citation_diversity']}`"
+        ),
+    ]
+
+
+def _join(value: object) -> str:
+    if isinstance(value, list | tuple):
+        return ", ".join(str(item) for item in value) or "n/a"
+    return str(value) if value else "n/a"
 
 
 def _memo_title(candidate: InsightCandidate) -> str:
