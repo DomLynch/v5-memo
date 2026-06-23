@@ -3513,6 +3513,32 @@ def test_build_upload_shard_batches_preserves_ids_when_skipping_completed_remote
     assert first_new_manifest["files"][0]["remote"] == files[1].remote
 
 
+def test_completed_raw_remotes_reads_rclone_remote(monkeypatch: MonkeyPatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(args: list[str], **_kwargs: object) -> SimpleNamespace:
+        calls.append(tuple(args))
+        if args[:3] == ["rclone", "lsf", "-R"]:
+            return SimpleNamespace(returncode=0, stdout="batch_91000/complete.json\n", stderr="")
+        if args[:2] == ["rclone", "cat"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"files": [{"remote": "sb:raw/pubmed26n1336.xml.gz"}]}),
+                stderr="",
+            )
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr("v5_memo.fullraw_index.subprocess.run", fake_run)
+
+    remotes = fullraw_index._completed_raw_remotes(None, shard_remote="sb:index/fullraw-fts")
+
+    assert remotes == {"sb:raw/pubmed26n1336.xml.gz"}
+    assert calls == [
+        ("rclone", "lsf", "-R", "sb:index/fullraw-fts"),
+        ("rclone", "cat", "sb:index/fullraw-fts/batch_91000/complete.json"),
+    ]
+
+
 def test_build_upload_shard_batches_uploads_with_corrupt_file_quarantined(tmp_path: Path) -> None:
     good = _raw_file(tmp_path, "good_batch", [{
         "doi": "https://doi.org/10.example/good-batch",
@@ -3635,6 +3661,8 @@ def test_build_upload_shards_cli_filters_source_and_offsets_batches(
             "90000",
             "--completed-shard-dir",
             str(tmp_path / "completed"),
+            "--completed-shard-remote",
+            "sb:index/fullraw-fts",
             "--upload-remote",
             f"file://{tmp_path / 'remote'}",
         ],
@@ -3651,3 +3679,4 @@ def test_build_upload_shards_cli_filters_source_and_offsets_batches(
     ]
     assert seen["batch_id_offset"] == 90000
     assert seen["completed_shard_dir"] == tmp_path / "completed"
+    assert seen["completed_shard_remote"] == "sb:index/fullraw-fts"

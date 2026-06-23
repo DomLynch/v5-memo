@@ -930,12 +930,17 @@ def build_upload_shard_batches(
     delete_local: bool = True,
     batch_id_offset: int = 0,
     completed_shard_dir: Path | None = None,
+    completed_shard_remote: str = "",
 ) -> list[ShardBatchResult]:
     """Build local shard batches, upload completed batches, then free local disk."""
     if not upload_remote.strip():
         raise ValueError("upload remote is required for build-upload-shards")
     selected_files = files[:max_files] if max_files is not None else files
-    completed_remotes = _completed_raw_remotes(completed_shard_dir) if completed_shard_dir is not None else set()
+    completed_remotes = _completed_raw_remotes(
+        completed_shard_dir,
+        shard_remote=completed_shard_remote,
+        rclone_bin=rclone_bin,
+    )
     results: list[ShardBatchResult] = []
     for batch_index, start in enumerate(range(0, len(selected_files), max(1, batch_files))):
         batch_id = batch_id_offset + batch_index
@@ -2443,15 +2448,54 @@ def _filter_raw_files_by_source(files: list[RawFile], source_filter: str) -> lis
     return [raw_file for raw_file in files if raw_file.source.casefold() in allowed]
 
 
-def _completed_raw_remotes(shard_dir: Path) -> set[str]:
+def _completed_raw_remotes(
+    shard_dir: Path | None,
+    *,
+    shard_remote: str = "",
+    rclone_bin: str = "rclone",
+) -> set[str]:
     remotes: set[str] = set()
-    for manifest in _read_batch_manifests(shard_dir).values():
+    manifests = _read_batch_manifests(shard_dir).values() if shard_dir is not None else ()
+    for manifest in manifests:
         files = manifest.get("files", [])
         if not isinstance(files, list):
             continue
         for item in files:
             if isinstance(item, dict) and (remote := str(item.get("remote") or "").strip()):
                 remotes.add(remote)
+    remote_root = shard_remote.strip().rstrip("/")
+    if remote_root:
+        listed = subprocess.run(
+            [rclone_bin, "lsf", "-R", remote_root],
+            text=True,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+        if listed.returncode == 0:
+            for relative in listed.stdout.splitlines():
+                if not relative.endswith("complete.json"):
+                    continue
+                manifest_path = f"{remote_root}/{relative.lstrip('/')}"
+                payload = subprocess.run(
+                    [rclone_bin, "cat", manifest_path],
+                    text=True,
+                    capture_output=True,
+                    timeout=60,
+                    check=False,
+                )
+                if payload.returncode != 0:
+                    continue
+                try:
+                    manifest = json.loads(payload.stdout)
+                except json.JSONDecodeError:
+                    continue
+                files = manifest.get("files", []) if isinstance(manifest, dict) else []
+                if not isinstance(files, list):
+                    continue
+                for item in files:
+                    if isinstance(item, dict) and (remote := str(item.get("remote") or "").strip()):
+                        remotes.add(remote)
     return remotes
 
 
@@ -3187,6 +3231,10 @@ def main() -> None:
         "--completed-shard-dir",
         default=os.environ.get("V5_MEMO_FULL_RAW_COMPLETED_SHARD_DIR", ""),
     )
+    build_upload_parser.add_argument(
+        "--completed-shard-remote",
+        default=os.environ.get("V5_MEMO_FULL_RAW_COMPLETED_SHARD_REMOTE", ""),
+    )
     build_upload_parser.add_argument("--commit-interval", type=int, default=1000)
     build_upload_parser.add_argument(
         "--min-free-gb",
@@ -3343,6 +3391,7 @@ def main() -> None:
             delete_local=not bool(args.keep_local),
             batch_id_offset=max(0, int(args.batch_id_offset)),
             completed_shard_dir=Path(args.completed_shard_dir) if str(args.completed_shard_dir).strip() else None,
+            completed_shard_remote=str(args.completed_shard_remote),
         )
         print(json.dumps({
             "batches": [asdict(result) for result in batch_results],
