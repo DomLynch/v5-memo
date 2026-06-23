@@ -4,6 +4,8 @@ import json
 from typing import cast
 from urllib.request import Request
 
+import pytest
+
 from v6_alpha_memo import (
     FullrawSearchClient,
     Paper,
@@ -12,8 +14,10 @@ from v6_alpha_memo import (
     render_memo,
     score_pairs,
 )
+from v6_alpha_memo import write as v6_write
 from v6_alpha_memo.run import DemoClient, build_memo
 from v6_alpha_memo.search import CoverageReceipt, RequestOpener, SearchResult
+from v6_alpha_memo.write import judge_with_minimax
 
 
 def test_query_shapes_are_targeted_but_not_topic_whitelisted() -> None:
@@ -47,6 +51,27 @@ def test_scores_elite_reversal_geometry_without_topic_hardcoding() -> None:
     assert scored[0].score >= 85
     assert scored[0].shape in {"promise_reversal", "mechanism_to_human_failure"}
     assert "made us expect" in scored[0].expectation_update
+
+
+def test_rejects_background_efficacy_as_promise_receipt() -> None:
+    papers = (
+        Paper(
+            paper_id="a",
+            title="Efficacy of glyburide/metformin tablets compared with initial monotherapy in type 2 diabetes",
+            abstract="The combination improved glycemic control and A1C in drug-naive type 2 diabetes.",
+            source="openalex",
+        ),
+        Paper(
+            paper_id="b",
+            title="Skeletal muscle transcriptomic differences underlie blunted mitochondrial adaptations following combined aerobic exercise and metformin",
+            abstract="Metformin blunted mitochondrial adaptations following aerobic exercise training.",
+            source="pubmed",
+        ),
+    )
+
+    scored = score_pairs(mine_pairs(papers), topic_terms={"metformin", "exercise", "adaptation"})
+
+    assert scored == ()
 
 
 def test_rejects_review_keyword_overlap_before_writing() -> None:
@@ -153,6 +178,36 @@ def test_writer_stays_receipt_owned() -> None:
 
     assert "longevity/business/AI" not in memo
     assert "Resveratrol" in memo
+
+
+def test_minimax_judge_selects_one_pair(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = build_memo("management dashboard forecast accuracy", client=DemoClient())
+    top_pair = run.top_pairs[0]
+
+    def fake_urlopen(request: Request, timeout: float) -> _Response:
+        assert timeout > 0
+        raw = cast(bytes, request.data or b"{}")
+        payload = json.loads(raw.decode())
+        assert "strict alpha memo selector" in payload["system"]
+        return _Response({"content": [{"type": "text", "text": '{"choice": 1, "reason": "sharp"}'}]})
+
+    monkeypatch.setenv("V6_MINIMAX_API_KEY", "test-key")
+    monkeypatch.setattr(v6_write, "urlopen", fake_urlopen)
+
+    assert judge_with_minimax(run.top_pairs[:1]) == (top_pair,)
+
+
+def test_minimax_judge_rejects_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = build_memo("management dashboard forecast accuracy", client=DemoClient())
+
+    def fake_urlopen(request: Request, timeout: float) -> _Response:
+        del request, timeout
+        return _Response({"content": [{"type": "text", "text": '{"choice": null, "reason": "weak"}'}]})
+
+    monkeypatch.setenv("V6_MINIMAX_API_KEY", "test-key")
+    monkeypatch.setattr(v6_write, "urlopen", fake_urlopen)
+
+    assert judge_with_minimax(run.top_pairs[:1]) == ()
 
 
 def test_build_memo_rejects_topic_irrelevant_search_noise() -> None:

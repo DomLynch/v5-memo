@@ -45,14 +45,20 @@ class ScoredPair:
     reasons: tuple[str, ...]
 
 
-def score_pairs(pairs: tuple[CandidatePair, ...], *, min_score: int = 55) -> tuple[ScoredPair, ...]:
-    scored = [score_pair(pair) for pair in pairs]
+def score_pairs(
+    pairs: tuple[CandidatePair, ...],
+    *,
+    min_score: int = 55,
+    topic_terms: set[str] | frozenset[str] = frozenset(),
+) -> tuple[ScoredPair, ...]:
+    scoped_terms = frozenset(topic_terms)
+    scored = [score_pair(pair, topic_terms=scoped_terms) for pair in pairs]
     kept = [item for item in scored if item.score >= min_score and item.expectation_update]
     kept.sort(key=lambda item: item.score, reverse=True)
     return tuple(kept)
 
 
-def score_pair(pair: CandidatePair) -> ScoredPair:
+def score_pair(pair: CandidatePair, *, topic_terms: frozenset[str] = frozenset()) -> ScoredPair:
     a, b = pair.a, pair.b
     at, bt = _tokens(a), _tokens(b)
     reasons: list[str] = [f"shared_anchor:{anchor}" for anchor in pair.anchors[:3]]
@@ -90,6 +96,9 @@ def score_pair(pair: CandidatePair) -> ScoredPair:
     if a.source.casefold() != b.source.casefold():
         score += 5
         reasons.append("source_diverse")
+    if shape == "promise_reversal" and not _role_matches_topic(first, second, pair.anchors, topic_terms):
+        score -= 50
+        reasons.append("role_mismatch:topic_construct")
 
     update = _expectation_sentence(first, second, shape)
     return ScoredPair(
@@ -121,6 +130,17 @@ def _best_anchor(a: Paper, b: Paper) -> str:
 
 def _tokens(paper: Paper) -> set[str]:
     return set(_WORD_RE.findall(paper.text.casefold()))
+
+
+def _role_matches_topic(a: Paper, b: Paper, anchors: tuple[str, ...], topic_terms: frozenset[str]) -> bool:
+    constructs = topic_terms - set(anchors)
+    if not constructs:
+        return True
+    return bool(_loose_tokens(a) & constructs) and bool(_loose_tokens(b) & constructs)
+
+
+def _loose_tokens(paper: Paper) -> set[str]:
+    return set(re.findall(r"[a-z][a-z0-9]{2,}", paper.text.casefold()))
 
 
 def _has(tokens: set[str], needles: frozenset[str]) -> bool:

@@ -75,7 +75,7 @@ def build_memo(
     papers = merge_results(results)
     pairs = mine_pairs(papers)
     topic_terms = _topic_terms(topic)
-    scored = tuple(pair for pair in score_pairs(pairs) if _topic_fit(pair, topic_terms))
+    scored = tuple(pair for pair in score_pairs(pairs, topic_terms=topic_terms) if _topic_fit(pair, topic_terms))
     if not scored:
         raise RuntimeError("no elite receipt-geometry pair found; inspect search/mine/score trace")
     receipt = _best_receipt(results)
