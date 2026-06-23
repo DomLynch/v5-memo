@@ -2629,6 +2629,154 @@ def test_select_search_shard_entries_uses_profile_diversity(
     assert "forecast" in topic_terms_searched
 
 
+def test_fullraw_search_contract_preserves_breadth_and_depth_requirements(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    entries: list[ShardCatalogEntry] = []
+    sources = ("openalex", "pubmed", "semantic_scholar")
+    for source_index, source in enumerate(sources):
+        entries.append(ShardCatalogEntry(
+            path=tmp_path / f"batch_{source_index:05d}" / "fullraw_shard_0000.sqlite",
+            batch_id=source_index,
+            shard_id=0,
+            sources=(source,),
+            files_completed=1,
+            papers_inserted=1_000,
+            bytes_used=1_000,
+            year_min=1975,
+            year_max=1985,
+            cited_by_min=0,
+            cited_by_max=5,
+            topic_terms=("management", "forecast"),
+        ))
+        entries.append(ShardCatalogEntry(
+            path=tmp_path / f"batch_{source_index + 10:05d}" / "fullraw_shard_0000.sqlite",
+            batch_id=source_index + 10,
+            shard_id=0,
+            sources=(source,),
+            files_completed=1,
+            papers_inserted=2_000,
+            bytes_used=1_000,
+            year_min=2022,
+            year_max=2026,
+            cited_by_min=250,
+            cited_by_max=5_000,
+            topic_terms=("forecast", "disclosure"),
+        ))
+    entries.extend([
+        ShardCatalogEntry(
+            path=tmp_path / "batch_00050" / "fullraw_shard_0000.sqlite",
+            batch_id=50,
+            shard_id=0,
+            sources=("openalex",),
+            files_completed=1,
+            papers_inserted=500,
+            bytes_used=1_000,
+            year_min=2010,
+            year_max=2015,
+            cited_by_min=10,
+            cited_by_max=100,
+            topic_terms=("supply", "chain"),
+        ),
+        ShardCatalogEntry(
+            path=tmp_path / "batch_00051" / "fullraw_shard_0000.sqlite",
+            batch_id=51,
+            shard_id=0,
+            sources=("semantic_scholar",),
+            files_completed=1,
+            papers_inserted=500,
+            bytes_used=1_000,
+            year_min=2016,
+            year_max=2020,
+            cited_by_min=10,
+            cited_by_max=100,
+            topic_terms=("longevity", "exercise"),
+        ),
+    ])
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "6")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "balanced")
+
+    foreground = select_search_shard_entries(entries, query="management forecast disclosure")
+    foreground_receipt = shard_coverage_receipt(entries, foreground)
+    sweep = select_sweep_shard_entries(entries, query="management forecast disclosure", limit=8)
+    passes = fullraw_index._sweep_search_passes(
+        "management forecast disclosure",
+        sweep,
+        rank_mode="relevance",
+    )
+    _hits, result_receipt = fullraw_index._merge_hit_groups_with_receipt(
+        [
+            [
+                {
+                    "doi": "10.example/openalex-zero",
+                    "source": "openalex",
+                    "cited_by_count": 0,
+                    "score": 1.0,
+                },
+                {
+                    "doi": "10.example/pubmed-mid",
+                    "source": "pubmed",
+                    "cited_by_count": 50,
+                    "score": 1.0,
+                },
+                {
+                    "doi": "10.example/duplicate",
+                    "source": "openalex",
+                    "cited_by_count": 10,
+                    "score": 1.0,
+                },
+            ],
+            [
+                {
+                    "doi": "10.example/duplicate",
+                    "source": "openalex",
+                    "cited_by_count": 5_000,
+                    "score": 2.0,
+                },
+                {
+                    "doi": "10.example/s2-high",
+                    "source": "semantic_scholar",
+                    "cited_by_count": 5_000,
+                    "score": 1.0,
+                },
+            ],
+        ],
+        limit=5,
+    )
+
+    assert foreground_receipt["sources_searched"] == {
+        "openalex": 2,
+        "pubmed": 2,
+        "semantic_scholar": 2,
+    }
+    assert foreground_receipt["year_range_searched"] == {"min": 1975, "max": 2026}
+    assert foreground_receipt["cited_by_range_searched"] == {"min": 0, "max": 5000}
+    assert foreground_receipt["papers_searched"] == sum(
+        entry.papers_inserted for entry in foreground
+    )
+    assert foreground_receipt["sources_missing_from_search"] == ()
+    assert [pass_item.role for pass_item in passes] == [
+        "focused",
+        "broad",
+        "adjacent_field",
+        "falsifier",
+        "citation_heavy",
+        "recency",
+    ]
+    assert passes[4].rank_mode == "citation"
+    assert passes[5].rank_mode == "recency"
+    duplicate_rate = result_receipt["result_duplicate_rate"]
+    citation_diversity = result_receipt["result_citation_diversity"]
+    assert isinstance(duplicate_rate, float)
+    assert isinstance(citation_diversity, int)
+    assert duplicate_rate > 0
+    assert citation_diversity >= 3
+    returned_sources = result_receipt["result_sources_returned"]
+    assert isinstance(returned_sources, dict)
+    assert set(returned_sources) == {"openalex", "pubmed", "semantic_scholar"}
+
+
 def test_select_sweep_shard_entries_expands_relevant_scope(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
