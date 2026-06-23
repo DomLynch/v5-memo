@@ -21,12 +21,12 @@ import time
 from collections import Counter
 from collections.abc import Iterable
 from concurrent.futures import (
+    FIRST_COMPLETED,
+    Future,
     ProcessPoolExecutor,
     ThreadPoolExecutor,
     as_completed,
-)
-from concurrent.futures import (
-    TimeoutError as FuturesTimeoutError,
+    wait,
 )
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1187,32 +1187,62 @@ def _search_shard_paths_with_paths_and_receipt(
     ).casefold() in {"1", "true", "yes", "on"}
     search_one = _search_one_shard_subprocess if use_subprocess_timeout else _search_one_shard
     pool = ThreadPoolExecutor(max_workers=worker_count)
+    future_to_path: dict[Future[list[dict[str, object]]], Path] = {}
+    next_path_index = 0
+    deadline = time.monotonic() + timeout_seconds if timeout_seconds else None
+
+    def submit_next_path() -> bool:
+        nonlocal next_path_index
+        if next_path_index >= len(paths):
+            return False
+        path = paths[next_path_index]
+        next_path_index += 1
+        future = pool.submit(
+            search_one,
+            path,
+            query,
+            limit,
+            year_min,
+            year_max,
+            rank_mode,
+            shard_timeout_seconds,
+        )
+        future_to_path[future] = path
+        return True
+
     try:
-        futures = {
-            pool.submit(
-                search_one,
-                path,
-                query,
-                limit,
-                year_min,
-                year_max,
-                rank_mode,
-                shard_timeout_seconds,
-            ): path
-            for path in paths
-        }
-        completed = as_completed(futures, timeout=timeout_seconds) if timeout_seconds else as_completed(futures)
-        for future in completed:
-            path = futures[future]
-            try:
-                hits = future.result()
-            except (OSError, RuntimeError, sqlite3.Error, subprocess.SubprocessError, json.JSONDecodeError):
-                continue
-            completed_paths.append(path)
-            hit_groups.append(hits)
-    except FuturesTimeoutError:
-        timed_out = True
+        while len(future_to_path) < worker_count and submit_next_path():
+            pass
+        while future_to_path:
+            wait_timeout = None
+            if deadline is not None:
+                wait_timeout = deadline - time.monotonic()
+                if wait_timeout <= 0:
+                    timed_out = True
+                    break
+            done, _pending = wait(
+                future_to_path,
+                timeout=wait_timeout,
+                return_when=FIRST_COMPLETED,
+            )
+            if not done:
+                timed_out = True
+                break
+            for future in done:
+                path = future_to_path.pop(future)
+                try:
+                    hits = future.result()
+                except (OSError, RuntimeError, sqlite3.Error, subprocess.SubprocessError, json.JSONDecodeError):
+                    continue
+                completed_paths.append(path)
+                hit_groups.append(hits)
+                if deadline is not None and time.monotonic() >= deadline:
+                    timed_out = True
+                    continue
+                submit_next_path()
     finally:
+        if next_path_index < len(paths):
+            timed_out = True
         pool.shutdown(wait=False, cancel_futures=True)
     hits, metrics = _merge_hit_groups_with_receipt(hit_groups, limit=limit)
     return hits, completed_paths, timed_out, metrics

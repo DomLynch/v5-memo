@@ -545,6 +545,48 @@ def test_fullraw_shard_search_reports_completed_paths_on_timeout(
     assert [hit["doi"] for hit in hits] == ["10.example/fast"]
 
 
+def test_fullraw_shard_search_timeout_stops_launching_new_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = [tmp_path / f"shard_{index}.sqlite" for index in range(6)]
+    for path in paths:
+        path.touch()
+    launched: list[Path] = []
+
+    def slow_search_one_shard(
+        path: Path,
+        query: str,
+        limit: int,
+        year_min: int,
+        year_max: int,
+        rank_mode: str,
+        timeout_seconds: float | None = None,
+    ) -> list[dict[str, object]]:
+        del query, limit, year_min, year_max, rank_mode, timeout_seconds
+        launched.append(path)
+        time.sleep(0.05)
+        return []
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "1")
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_SEARCH_SUBPROCESS_TIMEOUT", raising=False)
+    monkeypatch.setattr(fullraw_index, "_search_one_shard", slow_search_one_shard)
+
+    _hits, _completed_paths, timed_out, _metrics = fullraw_index._search_shard_paths_with_paths_and_receipt(
+        paths,
+        "management forecast disclosure",
+        limit=5,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        timeout_seconds=0.12,
+    )
+    time.sleep(0.1)
+
+    assert timed_out is True
+    assert len(launched) < len(paths)
+
+
 def test_fullraw_shard_search_passes_per_shard_timeout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
