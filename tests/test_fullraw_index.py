@@ -2629,6 +2629,44 @@ def test_select_search_shard_entries_uses_profile_diversity(
     assert "forecast" in topic_terms_searched
 
 
+def test_select_search_shard_entries_prefers_ready_cache_with_source_diversity(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    entries: list[ShardCatalogEntry] = []
+    for index, source in enumerate(("openalex", "openalex", "pubmed", "pubmed", "semantic_scholar", "semantic_scholar")):
+        path = tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite"
+        path.parent.mkdir()
+        path.write_bytes((f"shard-{index}").encode())
+        entries.append(ShardCatalogEntry(
+            path=path,
+            batch_id=index,
+            shard_id=0,
+            sources=(source,),
+            files_completed=1,
+            papers_inserted=100,
+            bytes_used=path.stat().st_size,
+            topic_terms=("management", "forecast"),
+        ))
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "3")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "balanced")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "1000000")
+    cached_entry = entries[1]
+    cached_path = fullraw_index._shard_cache_path(cached_entry.path)
+    assert cached_path is not None
+    cached_path.parent.mkdir()
+    cached_path.write_bytes(cached_entry.path.read_bytes())
+
+    selected = select_search_shard_entries(entries, query="management forecast")
+    receipt = shard_coverage_receipt(entries, selected)
+
+    assert selected[0] == cached_entry
+    assert receipt["sources_searched"] == {"openalex": 1, "pubmed": 1, "semantic_scholar": 1}
+    assert receipt["sources_missing_from_search"] == ()
+
+
 def test_fullraw_search_contract_preserves_breadth_and_depth_requirements(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

@@ -1329,8 +1329,12 @@ def select_search_shard_entries(
     if order in {"oldest", "first", "newest", "spread"}:
         paths = select_search_shard_paths([entry.path for entry in entries])
         by_path = {entry.path: entry for entry in entries}
-        return [by_path[path] for path in paths if path in by_path]
-    return _select_balanced_shard_entries(entries, limit, query=query)
+        selected = [by_path[path] for path in paths if path in by_path]
+    else:
+        selected = _select_balanced_shard_entries(entries, limit, query=query)
+    if any(_cached_materialized_shard_path(entry.path) is not None for entry in entries):
+        return _cache_fit_warm_entries(entries, selected, query=query, target_ready=len(selected))
+    return selected
 
 
 def select_sweep_shard_entries(
@@ -1418,6 +1422,8 @@ def _cache_fit_warm_entries(
     query: str,
     target_ready: int,
 ) -> list[ShardCatalogEntry]:
+    if not os.environ.get("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", "").strip():
+        return selected
     max_cache_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
     if max_cache_bytes is None or max_cache_bytes <= 0 or target_ready <= 0:
         return selected
@@ -1426,9 +1432,10 @@ def _cache_fit_warm_entries(
         return selected
     query_terms = set(_fts_terms(query))
 
-    def candidate_key(entry: ShardCatalogEntry) -> tuple[int, int, int, int, int, str]:
+    def candidate_key(entry: ShardCatalogEntry) -> tuple[int, int, int, int, int, int, str]:
         topic_hits = len(query_terms & set(entry.topic_terms))
         return (
+            0 if _cached_materialized_shard_path(entry.path) is not None else 1,
             max(0, entry.bytes_used),
             -topic_hits,
             -entry.cited_by_max,
