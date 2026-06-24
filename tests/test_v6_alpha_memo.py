@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+from email.message import Message
+from io import BytesIO
 from typing import cast
+from urllib.error import HTTPError
 from urllib.request import Request
 
 import pytest
@@ -255,6 +258,49 @@ def test_fullraw_client_falls_back_to_second_endpoint() -> None:
 
     assert urls[:2] == ["http://primary/search", "http://fallback/search"]
     assert result.papers[0].title == "Metformin blunted exercise adaptation"
+
+
+def test_fullraw_client_waits_for_async_sweep_after_incomplete_coverage() -> None:
+    payloads: list[dict[str, object]] = []
+    hit_payload: dict[str, object] = {
+        "meta": {
+            "async_sweep": {"status": "hit"},
+            "shard_receipt": {"shards_searched": 1514, "shards_total": 1514},
+        },
+        "results": [
+            {
+                "id": "W1",
+                "title": "Calcium alpha ketoglutarate blunted human aging biomarker response",
+                "abstract": "Human trial results reduced the expected aging biomarker response.",
+                "source": "openalex",
+            }
+        ],
+    }
+
+    def opener(request: Request, timeout: float) -> _Response:
+        assert timeout > 0
+        raw = cast(bytes, request.data or b"{}")
+        payload = json.loads(raw.decode())
+        payloads.append(payload)
+        if len(payloads) == 1:
+            body = json.dumps({"error": "shard coverage incomplete"}).encode()
+            raise HTTPError(request.full_url, 422, "Unprocessable Entity", Message(), BytesIO(body))
+        if len(payloads) == 2:
+            return _Response({"meta": {"async_sweep": {"status": "busy"}}, "results": []})
+        return _Response(hit_payload)
+
+    client = FullrawSearchClient(
+        search_url="http://fullraw/search",
+        opener=opener,
+        sweep_wait_seconds=1,
+        sweep_poll_seconds=0.01,
+    )
+    result = client.search("calcium alpha ketoglutarate aging", limit=3)
+
+    assert payloads[0].get("cache_only") is None
+    assert payloads[1].get("cache_only") is True
+    assert result.receipt.shards_searched == 1514
+    assert result.papers[0].title.startswith("Calcium alpha ketoglutarate")
 
 
 def test_writer_stays_receipt_owned() -> None:

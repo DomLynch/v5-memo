@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from http.client import RemoteDisconnected
 from typing import Protocol, cast
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
@@ -75,12 +76,16 @@ class FullrawSearchClient:
         search_url: str,
         token: str = "",
         timeout: float = 180.0,
+        sweep_wait_seconds: float = 0.0,
+        sweep_poll_seconds: float = 10.0,
         opener: RequestOpener | None = None,
     ) -> None:
         self.search_url = search_url.strip()
         self.search_urls = _search_urls(search_url)
         self.token = token.strip()
         self.timeout = timeout
+        self.sweep_wait_seconds = sweep_wait_seconds
+        self.sweep_poll_seconds = sweep_poll_seconds
         self._opener = opener or cast(RequestOpener, urlopen)
 
     @classmethod
@@ -95,6 +100,14 @@ class FullrawSearchClient:
                 os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", ""),
             ),
             timeout=float(os.environ.get("V6_FULLRAW_TIMEOUT", "180")),
+            sweep_wait_seconds=float(os.environ.get(
+                "V6_FULLRAW_SWEEP_WAIT_SECONDS",
+                os.environ.get("V5_MEMO_FULL_RAW_SWEEP_WAIT_SECONDS", "0"),
+            )),
+            sweep_poll_seconds=float(os.environ.get(
+                "V6_FULLRAW_SWEEP_POLL_SECONDS",
+                os.environ.get("V5_MEMO_FULL_RAW_SWEEP_POLL_SECONDS", "10"),
+            )),
         )
 
     def search(self, query: str, *, limit: int = 25) -> SearchResult:
@@ -129,14 +142,16 @@ class FullrawSearchClient:
         headers = {"Content-Type": "application/json", "User-Agent": "v6-alpha-memo/0.1"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        request = Request(
-            search_url,
-            data=json.dumps(payload).encode(),
-            headers=headers,
-            method="POST",
-        )
-        with self._opener(request, timeout=self.timeout + 5) as response:
-            data = json.loads(response.read().decode())
+        try:
+            data = self._post(search_url, payload, headers)
+        except HTTPError as exc:
+            data = _http_error_json(exc)
+            if not _is_incomplete_coverage(data) or not self.sweep_wait_seconds:
+                raise
+            cached = self._wait_for_sweep_hit(search_url, payload, headers)
+            if cached is None:
+                raise
+            data = cached
         parsed: list[Paper] = []
         for item in _items(data):
             paper = _parse_paper(item)
@@ -144,6 +159,34 @@ class FullrawSearchClient:
                 parsed.append(paper)
         papers = tuple(parsed)
         return SearchResult(query=query, papers=papers, receipt=_receipt(data, hits=len(papers)))
+
+    def _post(self, search_url: str, payload: dict[str, object], headers: dict[str, str]) -> object:
+        request = Request(
+            search_url,
+            data=json.dumps(payload).encode(),
+            headers=headers,
+            method="POST",
+        )
+        with self._opener(request, timeout=self.timeout + 5) as response:
+            return json.loads(response.read().decode())
+
+    def _wait_for_sweep_hit(
+        self,
+        search_url: str,
+        payload: dict[str, object],
+        headers: dict[str, str],
+    ) -> object | None:
+        deadline = time.monotonic() + self.sweep_wait_seconds
+        cache_payload = {**payload, "cache_only": True, "queue_if_missing": True}
+        while time.monotonic() < deadline:
+            data = self._post(search_url, cache_payload, headers)
+            status = _async_status(data)
+            if status == "hit":
+                return data
+            if status in {"disabled", "error", "failed"}:
+                return None
+            time.sleep(min(max(self.sweep_poll_seconds, 0.1), max(deadline - time.monotonic(), 0.1)))
+        return None
 
 
 def query_shapes(seed: str, *, limit: int = 8) -> tuple[str, ...]:
@@ -161,6 +204,29 @@ def query_shapes(seed: str, *, limit: int = 8) -> tuple[str, ...]:
     )
     queries = [template.format(seed=seed) for template in templates if seed]
     return tuple(dict.fromkeys(queries))[: max(1, limit)]
+
+
+def _http_error_json(exc: HTTPError) -> object:
+    try:
+        return json.loads(exc.read().decode())
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+
+
+def _is_incomplete_coverage(data: object) -> bool:
+    return isinstance(data, dict) and data.get("error") == "shard coverage incomplete"
+
+
+def _async_status(data: object) -> str:
+    if not isinstance(data, dict):
+        return ""
+    meta = data.get("meta")
+    if not isinstance(meta, dict):
+        return ""
+    sweep = meta.get("async_sweep")
+    if not isinstance(sweep, dict):
+        return ""
+    return str(sweep.get("status") or "")
 
 
 def merge_results(results: tuple[SearchResult, ...]) -> tuple[Paper, ...]:
