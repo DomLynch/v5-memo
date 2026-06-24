@@ -183,13 +183,13 @@ def _demo_papers(query: str) -> tuple[Paper, ...]:
             ),
         )
     return (
-        Paper(
-            "promise",
-            "Resveratrol activates mitochondrial exercise-mimetic pathways in mice",
-            "A mouse model showed resveratrol improved endurance and activated mitochondrial pathways.",
-            "openalex",
-            2012,
-            "10.demo/promise",
+            Paper(
+                "promise",
+                "Resveratrol activates mitochondrial exercise-mimetic pathways in mice",
+                "A mouse model showed resveratrol improved exercise adaptation and activated mitochondrial pathways.",
+                "openalex",
+                2012,
+                "10.demo/promise",
         ),
         Paper(
             "update",

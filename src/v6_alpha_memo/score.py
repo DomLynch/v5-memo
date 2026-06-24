@@ -34,6 +34,15 @@ _BOUNDARY = frozenset({
     "context", "dose", "endpoint", "endpoints", "market", "modality", "program",
     "selection", "subgroup", "task", "timing",
 })
+_BAD_ANCHOR = frozenset({
+    "associated", "background", "combination", "conclusion", "control", "divided",
+    "elisa", "significant", "significantly",
+})
+_ANIMAL = frozenset({"mice", "mouse", "rat", "rats"})
+_HUMAN_TOPIC = frozenset({
+    "adult", "adults", "employee", "employees", "field", "firm", "firms",
+    "human", "humans", "men", "participants", "people", "trial", "women", "workers",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,31 +70,34 @@ def score_pairs(
 def score_pair(pair: CandidatePair, *, topic_terms: frozenset[str] = frozenset()) -> ScoredPair:
     a, b = pair.a, pair.b
     at, bt = _tokens(a), _tokens(b)
-    reasons: list[str] = [f"shared_anchor:{anchor}" for anchor in pair.anchors[:3]]
-    score = 20 + min(len(pair.anchors), 4) * 5
+    anchors = _real_anchors(pair, topic_terms)
+    clean_pair = CandidatePair(a=a, b=b, anchors=anchors, reject_reasons=pair.reject_reasons)
+    reasons: list[str] = [f"shared_anchor:{anchor}" for anchor in anchors[:3]]
+    if not anchors:
+        return ScoredPair(clean_pair, 0, "shared_anchor", "", ("reject:no_real_anchor",))
+    score = 20 + min(len(anchors), 4) * 5
     shape = "shared_anchor"
     first, second = a, b
 
-    if _has(at, _PROMISE) and _has(bt, _FAILURE):
+    if _has(at, _PROMISE) and _has(bt, _FAILURE) and _roles_fit("promise_reversal", a, b, topic_terms):
         score += 40
         shape = "promise_reversal"
         reasons.append("promise_to_negative_or_null")
-    elif _has(bt, _PROMISE) and _has(at, _FAILURE):
+    elif _has(bt, _PROMISE) and _has(at, _FAILURE) and _roles_fit("promise_reversal", b, a, topic_terms):
         score += 40
         shape = "promise_reversal"
         reasons.append("promise_to_negative_or_null")
         first, second = b, a
 
-    ft, st = _tokens(first), _tokens(second)
-    if _has(ft, _MECHANISM) and _has(st, _HUMAN_OUTCOME) and _has(st, _FAILURE):
+    if _roles_fit("mechanism_to_human_failure", first, second, topic_terms):
         score += 30
         shape = "mechanism_to_human_failure"
         reasons.append("mechanism_or_animal_to_human_failure")
-    if _has(at, _PROTOCOL) and _has(bt, _RESULT | _FAILURE):
+    if _has(at, _PROTOCOL) and _has(bt, _RESULT | _FAILURE) and _roles_fit("protocol_result_mismatch", a, b, topic_terms):
         score += 20
         shape = "protocol_result_mismatch"
         reasons.append("protocol_result_mismatch")
-    elif _has(bt, _PROTOCOL) and _has(at, _RESULT | _FAILURE):
+    elif _has(bt, _PROTOCOL) and _has(at, _RESULT | _FAILURE) and _roles_fit("protocol_result_mismatch", b, a, topic_terms):
         score += 20
         shape = "protocol_result_mismatch"
         reasons.append("protocol_result_mismatch")
@@ -101,7 +113,7 @@ def score_pair(pair: CandidatePair, *, topic_terms: frozenset[str] = frozenset()
         reasons.append("role_mismatch:topic_construct")
     update = _expectation_sentence(first, second, shape)
     return ScoredPair(
-        pair=pair,
+        pair=clean_pair,
         score=min(score, 100),
         shape=shape,
         expectation_update=update,
@@ -127,8 +139,37 @@ def _best_anchor(a: Paper, b: Paper) -> str:
     return "the shared intervention"
 
 
+def _real_anchors(pair: CandidatePair, topic_terms: frozenset[str]) -> tuple[str, ...]:
+    title_a = set(_WORD_RE.findall(pair.a.title.casefold()))
+    title_b = set(_WORD_RE.findall(pair.b.title.casefold()))
+    kept = []
+    for anchor in pair.anchors:
+        if anchor in _BAD_ANCHOR:
+            continue
+        if (topic_terms and anchor in topic_terms) or (anchor in title_a and anchor in title_b):
+            kept.append(anchor)
+    return tuple(dict.fromkeys(kept))[:6]
+
+
 def _tokens(paper: Paper) -> set[str]:
     return set(_WORD_RE.findall(paper.text.casefold()))
+
+
+def _roles_fit(shape: str, first: Paper, second: Paper, topic_terms: frozenset[str]) -> bool:
+    ft, st = _tokens(first), _tokens(second)
+    if not _role_matches_topic(first, second, topic_terms):
+        return False
+    if _human_topic(topic_terms) and not _is_human(second):
+        return False
+    if shape == "mechanism_to_human_failure":
+        return _has(ft, _MECHANISM) and _is_human(second) and _has(st, _FAILURE)
+    if shape == "protocol_result_mismatch":
+        return _has(ft, _PROTOCOL) and _has(st, _RESULT | _FAILURE)
+    if shape == "promise_reversal":
+        if _animal_only(second) and (_human_topic(topic_terms) or _is_human(first)):
+            return False
+        return _has(ft, _PROMISE) and _has(st, _FAILURE)
+    return False
 
 
 def _role_matches_topic(a: Paper, b: Paper, topic_terms: frozenset[str]) -> bool:
@@ -138,7 +179,9 @@ def _role_matches_topic(a: Paper, b: Paper, topic_terms: frozenset[str]) -> bool
     right = _loose_tokens(b) & topic_terms
     if not left or not right:
         return False
-    return len(left & right) * 2 >= len(left | right)
+    shared = left & right
+    required = 2 if len(topic_terms) >= 3 else 1
+    return len(shared) >= required or len(shared) * 2 >= len(left | right)
 
 
 def _loose_tokens(paper: Paper) -> set[str]:
@@ -148,6 +191,20 @@ def _loose_tokens(paper: Paper) -> set[str]:
 
 def _has(tokens: set[str], needles: frozenset[str]) -> bool:
     return bool(tokens & needles)
+
+
+def _human_topic(topic_terms: frozenset[str]) -> bool:
+    return bool(topic_terms & _HUMAN_TOPIC)
+
+
+def _is_human(paper: Paper) -> bool:
+    tokens = _tokens(paper)
+    return _has(tokens, _HUMAN_OUTCOME) and not _animal_only(paper)
+
+
+def _animal_only(paper: Paper) -> bool:
+    tokens = _tokens(paper)
+    return _has(tokens, _ANIMAL) and not _has(tokens, _HUMAN_OUTCOME)
 
 
 def _short(text: str) -> str:
