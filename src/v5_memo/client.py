@@ -419,7 +419,7 @@ class FullRawCorpusSearchClient:
             "corpus": "full_raw_450m_plus",
             "search_pass": search_pass.name,
             "rank_mode": search_pass.rank_mode,
-            "timeout_seconds": self._timeout,
+            "timeout_seconds": max(1.0, self._timeout - 5.0),
         }
         initial_error: SearchBackendError | None = None
         try:

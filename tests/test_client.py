@@ -157,7 +157,7 @@ def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object)
         "corpus": "full_raw_450m_plus",
         "search_pass": "focused",
         "rank_mode": "relevance",
-        "timeout_seconds": 7.0,
+        "timeout_seconds": 2.0,
     }
     assert any(payload["query"] == "nad exercise" for payload in payloads)
     assert hits[0].source == "fullraw:semantic_scholar"
