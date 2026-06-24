@@ -150,8 +150,8 @@ def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object)
     assert headers["Authorization"] == "Bearer raw-token"
     assert payloads[0] == {
         "query": ("nad exercise " * 200)[:1024],
-        "limit": 50,
-        "top_k": 50,
+        "limit": 5,
+        "top_k": 5,
         "year_min": 1950,
         "year_max": 2026,
         "corpus": "full_raw_450m_plus",

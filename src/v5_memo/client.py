@@ -329,7 +329,7 @@ class FullRawCorpusSearchClient:
         if not self._search_url or not search_passes:
             return []
         seed_terms = _query_terms(query)
-        per_variant_limit = max(5, min(limit, 50))
+        per_variant_limit = max(1, min(limit, 5))
         best: dict[str, tuple[float, CorpusHit]] = {}
         total_seen = 0
         duplicate_seen = 0
