@@ -34,6 +34,10 @@ _BOUNDARY = frozenset({
     "context", "dose", "endpoint", "endpoints", "market", "modality", "program",
     "selection", "subgroup", "task", "timing",
 })
+_LIMITED_HUMAN = frozenset({
+    "association", "biomarker", "disease", "open-label", "observational", "patient",
+    "patients", "pilot", "preliminary", "subgroup", "surrogate",
+})
 _BAD_ANCHOR = frozenset({
     "associated", "background", "combination", "conclusion", "control", "divided",
     "elisa", "significant", "significantly",
@@ -105,6 +109,15 @@ def score_pair(pair: CandidatePair, *, topic_terms: frozenset[str] = frozenset()
         score += 30
         shape = "mechanism_to_human_failure"
         reasons.append("mechanism_or_animal_to_human_failure")
+    if shape == "shared_anchor" and _roles_fit("translation_boundary", a, b, topic_terms):
+        score += 30
+        shape = "translation_boundary"
+        reasons.append("animal_or_mechanism_to_bounded_human_evidence")
+    elif shape == "shared_anchor" and _roles_fit("translation_boundary", b, a, topic_terms):
+        score += 30
+        shape = "translation_boundary"
+        reasons.append("animal_or_mechanism_to_bounded_human_evidence")
+        first, second = b, a
     if _has(at, _PROTOCOL) and _has(bt, _RESULT | _FAILURE) and _roles_fit("protocol_result_mismatch", a, b, topic_terms):
         score += 20
         shape = "protocol_result_mismatch"
@@ -137,6 +150,11 @@ def _expectation_sentence(a: Paper, b: Paper, shape: str) -> str:
     if shape == "shared_anchor":
         return ""
     anchor = _short(_best_anchor(a, b))
+    if shape == "translation_boundary":
+        return (
+            f"{a.title} made us expect {anchor} had biology-level promise; "
+            f"{b.title} forces the update that the human evidence is bounded by population or endpoint."
+        )
     return (
         f"{a.title} made us expect {anchor} would travel cleanly as a positive signal; "
         f"{b.title} forces the update that the same anchor can fail, reverse, or split by context."
@@ -190,6 +208,13 @@ def _roles_fit(shape: str, first: Paper, second: Paper, topic_terms: frozenset[s
         return False
     if shape == "mechanism_to_human_failure":
         return _has(ft, _MECHANISM) and _is_human(second) and _has(st, _FAILURE)
+    if shape == "translation_boundary":
+        return (
+            _has(ft, _ANIMAL | _MECHANISM)
+            and _has(ft | st, _PROMISE)
+            and _is_human(second)
+            and _has(st, _LIMITED_HUMAN | _BOUNDARY)
+        )
     if shape == "protocol_result_mismatch":
         return _has(ft, _PROTOCOL) and _has(st, _RESULT | _FAILURE)
     if shape == "promise_reversal":

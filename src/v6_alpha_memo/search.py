@@ -195,9 +195,9 @@ def query_shapes(seed: str, *, limit: int = 8) -> tuple[str, ...]:
     templates = (
         "{seed} expected improved null outcome randomized trial",
         "{seed} mechanism model human failed translation",
+        "{seed} animal model human open-label trial",
         "{seed} intervention opposite endpoint boundary condition",
         "{seed} protocol expected result mismatch",
-        "{seed} subgroup selection reversal outcome",
         "{seed} field experiment intervention null effect",
         "{seed} benchmark improvement replication failure",
         "{seed} same intervention different modality adaptation",

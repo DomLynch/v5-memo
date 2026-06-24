@@ -31,7 +31,7 @@ def render_memo(scored: ScoredPair, *, receipt: CoverageReceipt | None = None) -
         "**Caveats/falsifiers:**",
         "- Reject if the shared anchor is not the same construct/intervention in the full text.",
         "- Reject if later receipts show the apparent reversal is only population, dose, or measurement noise.",
-        "- Downgrade to discovery seed if either receipt is a review, case-only report, or keyword-only match.",
+        "- Reject if either receipt is a review, case-only report, or keyword-only match.",
     ]
     if receipt is not None:
         lines.extend([
@@ -41,26 +41,6 @@ def render_memo(scored: ScoredPair, *, receipt: CoverageReceipt | None = None) -
             f"sources={','.join(receipt.sources_searched) or 'unknown'}; "
             f"papers_searched={receipt.papers_searched}; partial={receipt.partial}.",
         ])
-    return "\n".join(lines).strip() + "\n"
-
-
-def render_discovery_seed(scored: ScoredPair, *, receipt: CoverageReceipt | None = None) -> str:
-    pair = scored.pair
-    lines = [
-        f"# Discovery seed: {' / '.join(pair.anchors[:2]) or 'receipt pair'}",
-        "",
-        "**Status:** Not alpha. The agent found receipt overlap, but no sharp reversal/update pair.",
-        "",
-        f"**Receipt 1:** {_receipt_line(pair.a)}",
-        "",
-        f"**Receipt 2:** {_receipt_line(pair.b)}",
-        "",
-        f"**Why it is only a seed:** The best pair stayed `{scored.shape}` over "
-        f"`{', '.join(pair.anchors[:3])}`; it needs a second receipt that forces a real update.",
-        "",
-        "**Next falsifier/search target:** find a null, failed, endpoint-split, or human-translation receipt on the same intervention/construct.",
-    ]
-    del receipt
     return "\n".join(lines).strip() + "\n"
 
 
