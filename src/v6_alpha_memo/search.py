@@ -234,6 +234,7 @@ def query_shapes(seed: str, *, limit: int = 8) -> tuple[str, ...]:
         " ".join(words[:4]),
         " ".join((words[0], "supplementation", "improves", words[-3], "deficiency", "oxidative", "stress")) if len(words) > 4 else seed,
         " ".join(("healthy", "older", "adults", *words[1:3], words[-3], "redox")) if len(words) > 5 else seed,
+        " ".join(("determine", "efficacy", *words[1:3], "supplementation", words[-3], "redox", "oxidative", "damage")) if len(words) > 5 else seed,
     )
     queries = [*base, *(template.format(seed=seed) for template in templates if seed)]
     return tuple(dict.fromkeys(queries))[: max(1, limit)]
