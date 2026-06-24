@@ -192,6 +192,7 @@ class FullrawSearchClient:
 def query_shapes(seed: str, *, limit: int = 8) -> tuple[str, ...]:
     """Turn a domain/topic seed into targeted novelty-search shapes."""
     seed = " ".join(seed.split())
+    words = seed.split()
     templates = (
         "{seed} randomized placebo no effect primary endpoint",
         "{seed} baseline subgroup high low response",
@@ -202,7 +203,8 @@ def query_shapes(seed: str, *, limit: int = 8) -> tuple[str, ...]:
         "{seed} mechanism model human failed translation",
         "{seed} same intervention different modality adaptation",
     )
-    queries = [" ".join(seed.split()[:4]), *(template.format(seed=seed) for template in templates if seed)]
+    base = (" ".join(words[:4]), " ".join(words[1:]) if len(words) > 4 else seed)
+    queries = [*base, *(template.format(seed=seed) for template in templates if seed)]
     return tuple(dict.fromkeys(queries))[: max(1, limit)]
 
 

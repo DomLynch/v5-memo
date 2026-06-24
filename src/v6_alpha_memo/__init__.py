@@ -1,9 +1,5 @@
-from v6_alpha_memo.mine import CandidatePair as CandidatePair
 from v6_alpha_memo.mine import mine_pairs as mine_pairs
-from v6_alpha_memo.run import build_memo as build_memo
-from v6_alpha_memo.score import ScoredPair as ScoredPair
 from v6_alpha_memo.score import score_pairs as score_pairs
-from v6_alpha_memo.search import CoverageReceipt as CoverageReceipt
 from v6_alpha_memo.search import FullrawSearchClient as FullrawSearchClient
 from v6_alpha_memo.search import Paper as Paper
 from v6_alpha_memo.search import query_shapes as query_shapes

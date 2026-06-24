@@ -42,13 +42,15 @@ _GATED = frozenset({
     "baseline", "deficiency", "deficient", "healthy", "high", "low", "post-hoc", "posthoc",
 })
 _BAD_ANCHOR = frozenset({
-    "associated", "background", "combination", "conclusion", "control", "divided",
-    "elisa", "significant", "significantly",
+    "adult", "adults", "associated", "background", "care", "cohort", "combination",
+    "conclusion", "control", "divided", "elisa", "older", "primary", "retrospective",
+    "significant", "significantly",
 })
 _CONTEXT_ANCHOR = frozenset({
-    "aging", "biomarker", "biomarkers", "biology", "cell", "cells", "disease", "function",
-    "functions", "gene", "genes", "health", "human", "humans", "model", "models", "outcome",
-    "outcomes", "pathway", "pathways", "protein", "proteins", "trial", "trials",
+    "adult", "adults", "aging", "biomarker", "biomarkers", "biology", "care", "cell",
+    "cells", "disease", "function", "functions", "gene", "genes", "health", "human",
+    "humans", "model", "models", "older", "outcome", "outcomes", "pathway", "pathways",
+    "primary", "protein", "proteins", "trial", "trials",
 })
 _NONPRIMARY_PHRASES = (
     "case report", "commentary", "dispatch", "editorial", "in brief", "meta-analysis",

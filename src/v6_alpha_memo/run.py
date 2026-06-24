@@ -145,7 +145,7 @@ def _topic_fit(scored: ScoredPair, topic_terms: set[str]) -> bool:
     return bool((left & right) & strong_terms)
 
 
-_GENERIC_TOPIC_TERMS = frozenset({"aging", "adult", "adults", "function", "human", "humans", "mitochondrial", "trial", "trials"})
+_GENERIC_TOPIC_TERMS = frozenset({"aging", "adult", "adults", "function", "human", "humans", "mitochondrial", "older", "primary", "trial", "trials"})
 
 
 def _demo_papers(query: str) -> tuple[Paper, ...]:

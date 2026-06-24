@@ -25,10 +25,12 @@ from v6_alpha_memo.write import judge_with_minimax
 
 def test_query_shapes_are_targeted_but_not_topic_whitelisted() -> None:
     queries = query_shapes("marketing attribution incrementality")
+    long_queries = query_shapes("glynac glycine n-acetylcysteine aging glutathione older adults", limit=3)
 
     assert len(queries) >= 6
     assert queries[0] == "marketing attribution incrementality"
     assert all("marketing attribution incrementality" in query for query in queries)
+    assert "glycine n-acetylcysteine aging glutathione older adults" in long_queries
     assert any("randomized placebo no effect primary endpoint" in query for query in queries)
     assert any("baseline subgroup high low response" in query for query in queries)
     assert any("replication failure" in query for query in queries)
@@ -180,6 +182,27 @@ def test_positive_only_human_overlap_does_not_publish_as_alpha() -> None:
 
     with pytest.raises(RuntimeError, match="no elite receipt-geometry pair"):
         build_memo("glynac aging glutathione", client=PositiveOnlyClient())
+
+
+def test_generic_older_adult_primary_care_overlap_does_not_publish() -> None:
+    papers = (
+        Paper(
+            "a",
+            "Primary care associated with improved life expectancy in older adults",
+            "Older adults in primary care showed improved outcomes in a retrospective cohort.",
+            "openalex",
+        ),
+        Paper(
+            "b",
+            "Physical therapy mobility checkup is feasible with annual wellness visits in primary care",
+            "Older adults had limited primary care mobility endpoint evidence.",
+            "pubmed",
+        ),
+    )
+
+    scored = score_pairs(mine_pairs(papers), topic_terms={"glynac", "aging", "glutathione", "older", "adults"})
+
+    assert scored == ()
 
 
 def test_anchors_drop_generic_connector_words() -> None:
