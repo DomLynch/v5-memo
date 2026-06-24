@@ -110,11 +110,11 @@ def score_pair(pair: CandidatePair, *, topic_terms: frozenset[str] = frozenset()
         shape = "mechanism_to_human_failure"
         reasons.append("mechanism_or_animal_to_human_failure")
     if shape == "shared_anchor" and _roles_fit("translation_boundary", a, b, topic_terms):
-        score += 30
+        score += 35
         shape = "translation_boundary"
         reasons.append("animal_or_mechanism_to_bounded_human_evidence")
     elif shape == "shared_anchor" and _roles_fit("translation_boundary", b, a, topic_terms):
-        score += 30
+        score += 35
         shape = "translation_boundary"
         reasons.append("animal_or_mechanism_to_bounded_human_evidence")
         first, second = b, a

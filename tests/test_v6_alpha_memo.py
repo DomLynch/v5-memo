@@ -29,6 +29,7 @@ def test_query_shapes_are_targeted_but_not_topic_whitelisted() -> None:
     assert len(queries) >= 6
     assert queries[0] == "marketing attribution incrementality"
     assert all("marketing attribution incrementality" in query for query in queries)
+    assert any("animal model human open-label trial" in query for query in queries)
     assert any("protocol expected result mismatch" in query for query in queries)
     assert any("replication failure" in query for query in queries)
 
@@ -97,7 +98,35 @@ def test_demo_run_outputs_required_memo_and_trace() -> None:
     assert run.trace["top_pairs"]
 
 
-def test_discovery_tier_outputs_seed_without_relaxing_alpha() -> None:
+def test_scores_translation_boundary_without_reversal() -> None:
+    papers = (
+        Paper(
+            "a",
+            "GlyNAC supplementation in mice increases length of life and corrects mitochondrial dysfunction",
+            "A mouse model showed GlyNAC improved glutathione and mitochondrial function.",
+            "openalex",
+            2022,
+            "10.test/glynac-mouse",
+        ),
+        Paper(
+            "b",
+            "GlyNAC improves glutathione deficiency in aging HIV patients in an open-label clinical trial",
+            "The human patient trial improved biomarker endpoints in a bounded disease population.",
+            "pubmed",
+            2020,
+            "10.test/glynac-human",
+        ),
+    )
+
+    scored = score_pairs(mine_pairs(papers), topic_terms={"glynac", "aging", "human", "glutathione"})
+
+    assert scored
+    assert scored[0].shape == "translation_boundary"
+    assert scored[0].score >= 70
+    assert "bounded by population or endpoint" in scored[0].expectation_update
+
+
+def test_positive_only_human_overlap_does_not_publish_as_alpha() -> None:
     class PositiveOnlyClient:
         def search(self, query: str, *, limit: int = 25) -> SearchResult:
             del query, limit
@@ -123,12 +152,6 @@ def test_discovery_tier_outputs_seed_without_relaxing_alpha() -> None:
 
     with pytest.raises(RuntimeError, match="no elite receipt-geometry pair"):
         build_memo("glynac aging glutathione", client=PositiveOnlyClient())
-
-    run = build_memo("glynac aging glutathione", client=PositiveOnlyClient(), tier="discovery")
-
-    assert run.memo.startswith("# Discovery seed:")
-    assert "Not alpha" in run.memo
-    assert run.top_pairs[0].shape == "shared_anchor"
 
 
 def test_anchors_drop_generic_connector_words() -> None:
@@ -471,7 +494,6 @@ def test_build_memo_rejects_generic_topic_word_overlap() -> None:
         build_memo(
             "glynac aging human trial glutathione mitochondrial function",
             client=GenericOverlapClient(),
-            tier="discovery",
         )
 
 
