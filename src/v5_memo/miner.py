@@ -112,25 +112,26 @@ def mine_insights(
 
     full_token_sets = {hit.hit_id: _tokens(hit.text) for hit in clean_hits}
     title_token_sets = {hit.hit_id: _tokens(hit.title) for hit in clean_hits}
-    anchor_terms = frozenset(required_anchor_terms)
+    anchor_terms = tuple(dict.fromkeys(required_anchor_terms))
+    anchor_term_set = frozenset(anchor_terms)
     doc_counts = Counter(term for terms in full_token_sets.values() for term in terms)
 
     candidates: list[InsightCandidate] = []
     for left, right in combinations(clean_hits, 2):
         if not anchor_terms and not _shares_seed_query(left, right):
             continue
-        if anchor_terms and not _pair_has_anchor(
+        if anchor_term_set and not _pair_has_anchor(
             full_token_sets[left.hit_id],
             full_token_sets[right.hit_id],
-            anchor_terms,
+            anchor_term_set,
         ):
             continue
-        pair_anchor_terms = anchor_terms or _shared_seed_anchor_terms(left, right)
+        pair_anchor_terms = anchor_terms or tuple(_shared_seed_anchor_terms(left, right))
         title_shared = title_token_sets[left.hit_id] & title_token_sets[right.hit_id]
         anchor_bridge = _anchor_bridge_terms(
             full_token_sets[left.hit_id],
             full_token_sets[right.hit_id],
-            pair_anchor_terms,
+            frozenset(pair_anchor_terms),
             title_shared,
         )
         title_bridge = _title_bridge_terms(title_shared, doc_counts)
@@ -173,7 +174,7 @@ def mine_insights(
             continue
         elite_anchor_bridge = _has_elite_anchor_bridge(
             anchor_bridge,
-            pair_anchor_terms,
+            frozenset(pair_anchor_terms),
             shape_reasons,
             tension_terms,
         )
@@ -497,13 +498,16 @@ def _has_role_split(left_words: frozenset[str], right_words: frozenset[str]) -> 
 def _pair_topic_supported(
     left: frozenset[str],
     right: frozenset[str],
-    anchor_terms: frozenset[str],
+    anchor_terms: Sequence[str],
     shape_reasons: tuple[str, ...],
 ) -> bool:
-    required = anchor_terms - _BRIDGE_STOP
+    required = tuple(term for term in dict.fromkeys(anchor_terms) if term not in _BRIDGE_STOP)
     if len(required) < 2:
         return True
-    if len(left & right & required) >= 2:
+    shared = left & right & set(required)
+    if len(required) >= 3 and len(shared) >= 2 and required[-1] in shared:
+        return True
+    if len(required) == 2 and len(shared) >= 2:
         return True
     return bool(set(shape_reasons) & _ELITE_SHAPES) and _translation_reversal(left, right)
 

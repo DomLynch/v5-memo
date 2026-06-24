@@ -83,7 +83,7 @@ def _anchor_terms_for_queries(queries: Sequence[str]) -> tuple[str, ...]:
     out: list[str] = []
     seen: set[str] = set()
     for query in queries:
-        for term in query_anchor_terms([query], limit=2):
+        for term in query_anchor_terms([query], limit=5):
             if term not in seen:
                 seen.add(term)
                 out.append(term)
