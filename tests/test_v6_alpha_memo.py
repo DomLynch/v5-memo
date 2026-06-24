@@ -378,16 +378,17 @@ def test_fullraw_client_skips_noisy_results_for_rare_query_variant() -> None:
         del timeout
         query = json.loads(cast(bytes, request.data or b"{}").decode())["query"]
         calls.append(query)
-        return _Response(hit_payload if query == "glycine acetylcysteine glutathione redox" else noise_payload)
+        return _Response(hit_payload if query == "healthy acetylcysteine" else noise_payload)
 
     result = FullrawSearchClient(search_url="http://fullraw/search", opener=opener).search(
         "randomized controlled clinical trial healthy older adults glycine n-acetylcysteine glutathione redox",
         limit=3,
     )
 
-    assert calls[:2] == [
+    assert calls[:3] == [
         "randomized controlled clinical trial healthy older adults glycine n-acetylcysteine glutathione redox",
         "healthy older adults glycine acetylcysteine glutathione redox",
+        "healthy acetylcysteine",
     ]
     assert result.papers[0].title.startswith("Glycine")
 
