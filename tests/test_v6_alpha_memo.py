@@ -628,6 +628,30 @@ def test_build_memo_rejects_generic_topic_word_overlap() -> None:
         )
 
 
+def test_build_memo_rejects_single_component_protocol_bridge() -> None:
+    class ComponentOnlyClient:
+        def search(self, query: str, *, limit: int = 25) -> SearchResult:
+            del query, limit
+            papers = (
+                Paper(
+                    "frontiers",
+                    "A Randomized Controlled Clinical Trial in Healthy Older Adults to Determine Efficacy of Glycine and N-Acetylcysteine Supplementation on Glutathione Redox Status and Oxidative Damage",
+                    "GlyNAC did not increase total glutathione overall, with post-hoc benefit only in high oxidative stress low baseline glutathione subjects.",
+                    "semantic_scholar",
+                ),
+                Paper(
+                    "protocol",
+                    "A Randomized Controlled Trial of N-Acetylcysteine in the Treatment of Early-Onset Preeclampsia: Study Protocol",
+                    "The protocol planned a randomized controlled treatment trial of N-acetylcysteine in preeclampsia.",
+                    "openalex",
+                ),
+            )
+            return SearchResult("glynac", papers, CoverageReceipt(hits=2))
+
+    with pytest.raises(RuntimeError):
+        build_memo("glynac glycine n-acetylcysteine aging glutathione older adults", client=ComponentOnlyClient())
+
+
 class _Response:
     def __init__(self, payload: dict[str, object]) -> None:
         self.payload = payload
