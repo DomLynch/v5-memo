@@ -27,6 +27,7 @@ def test_query_shapes_are_targeted_but_not_topic_whitelisted() -> None:
     queries = query_shapes("marketing attribution incrementality")
 
     assert len(queries) >= 6
+    assert queries[0] == "marketing attribution incrementality"
     assert all("marketing attribution incrementality" in query for query in queries)
     assert any("protocol expected result mismatch" in query for query in queries)
     assert any("replication failure" in query for query in queries)
