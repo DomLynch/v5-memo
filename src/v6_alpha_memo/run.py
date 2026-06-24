@@ -157,9 +157,15 @@ def _topic_terms(topic: str) -> set[str]:
 def _topic_fit(scored: ScoredPair, topic_terms: set[str]) -> bool:
     if not topic_terms:
         return True
-    text = f"{scored.pair.a.text} {scored.pair.b.text}".casefold()
-    tokens = set(re.findall(r"[a-z][a-z0-9]{2,}", text))
-    return bool(tokens & topic_terms)
+    strong_terms = topic_terms - _GENERIC_TOPIC_TERMS
+    if not strong_terms:
+        strong_terms = topic_terms
+    left = set(re.findall(r"[a-z][a-z0-9]{2,}", scored.pair.a.text.casefold()))
+    right = set(re.findall(r"[a-z][a-z0-9]{2,}", scored.pair.b.text.casefold()))
+    return bool((left & right) & strong_terms)
+
+
+_GENERIC_TOPIC_TERMS = frozenset({"aging", "adult", "adults", "function", "human", "humans", "mitochondrial", "trial", "trials"})
 
 
 def _demo_papers(query: str) -> tuple[Paper, ...]:

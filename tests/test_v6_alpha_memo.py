@@ -446,6 +446,34 @@ def test_build_memo_rejects_topic_irrelevant_search_noise() -> None:
         raise AssertionError("irrelevant receipt pair should not pass")
 
 
+def test_build_memo_rejects_generic_topic_word_overlap() -> None:
+    class GenericOverlapClient:
+        def search(self, query: str, *, limit: int = 25) -> SearchResult:
+            del query, limit
+            papers = (
+                Paper(
+                    "a",
+                    "Growth hormone improves clinical outcome in a human trial",
+                    "Growth hormone improved a human clinical function outcome.",
+                    "openalex",
+                ),
+                Paper(
+                    "b",
+                    "Growth hormone suppression protects human heart function",
+                    "Human heart failure showed reduced growth hormone signaling.",
+                    "pubmed",
+                ),
+            )
+            return SearchResult("noise", papers, CoverageReceipt(hits=2))
+
+    with pytest.raises(RuntimeError):
+        build_memo(
+            "glynac aging human trial glutathione mitochondrial function",
+            client=GenericOverlapClient(),
+            tier="discovery",
+        )
+
+
 class _Response:
     def __init__(self, payload: dict[str, object]) -> None:
         self.payload = payload
