@@ -152,67 +152,18 @@ def _demo_papers(query: str) -> tuple[Paper, ...]:
     q = query.casefold()
     if any(term in q for term in ("ai", "retrieval", "factuality", "benchmark")):
         return (
-            Paper(
-                "ai-promise",
-                "Retrieval augmented generation improves factuality on a benchmark",
-                "The model improved answer factuality when retrieval augmented generation supplied citations.",
-                "openalex",
-                2023,
-                "10.demo/ai-promise",
-            ),
-            Paper(
-                "ai-update",
-                "Retrieval augmented generation failed to reduce human citation errors in field use",
-                "In a human task study, retrieval augmented generation produced null gains and reduced citation accuracy.",
-                "semantic_scholar",
-                2024,
-                "10.demo/ai-update",
-            ),
+            Paper("ai-promise", "Retrieval augmented generation improves factuality on a benchmark", "The model improved answer factuality when retrieval augmented generation supplied citations.", "openalex", 2023, "10.demo/ai-promise"),
+            Paper("ai-update", "Retrieval augmented generation failed to reduce human citation errors in field use", "In a human task study, retrieval augmented generation produced null gains and reduced citation accuracy.", "semantic_scholar", 2024, "10.demo/ai-update"),
         )
     if any(term in q for term in ("business", "management", "marketing")):
         return (
-            Paper(
-                "biz-promise",
-                "Management dashboard intervention improved forecast accuracy in a pilot",
-                "A pilot program showed the dashboard improved forecast accuracy and analyst confidence.",
-                "openalex",
-                2021,
-                "10.demo/biz-promise",
-            ),
-            Paper(
-                "biz-update",
-                "Management dashboard intervention failed in a randomized field experiment",
-                "A field experiment found null productivity gains and reduced forecast accuracy for dashboard users.",
-                "pubmed",
-                2022,
-                "10.demo/biz-update",
-            ),
+            Paper("biz-promise", "Management dashboard intervention improved forecast accuracy in a pilot", "A pilot program showed the dashboard improved forecast accuracy and analyst confidence.", "openalex", 2021, "10.demo/biz-promise"),
+            Paper("biz-update", "Management dashboard intervention failed in a randomized field experiment", "A field experiment found null productivity gains and reduced forecast accuracy for dashboard users.", "pubmed", 2022, "10.demo/biz-update"),
         )
     return (
-            Paper(
-                "promise",
-                "Resveratrol activates mitochondrial exercise-mimetic pathways in mice",
-                "A mouse model showed resveratrol improved exercise adaptation and activated mitochondrial pathways.",
-                "openalex",
-                2012,
-                "10.demo/promise",
-        ),
-        Paper(
-            "update",
-            "Resveratrol blunted human exercise training adaptation in a randomized trial",
-            "In older human participants, resveratrol supplementation reduced training-induced improvements.",
-            "pubmed",
-            2014,
-            "10.demo/update",
-        ),
-        Paper(
-            "bad",
-            "Systematic review of resveratrol and health outcomes",
-            "A review summarized heterogeneous evidence across many outcomes.",
-            "openalex",
-            2020,
-            "10.demo/review",
-        ),
+        Paper("promise", "Resveratrol activates mitochondrial exercise-mimetic pathways in mice", "A mouse model showed resveratrol improved exercise adaptation and activated mitochondrial pathways.", "openalex", 2012, "10.demo/promise"),
+        Paper("update", "Resveratrol blunted human exercise training adaptation in a randomized trial", "In older human participants, resveratrol supplementation reduced training-induced improvements.", "pubmed", 2014, "10.demo/update"),
+        Paper("bad", "Systematic review of resveratrol and health outcomes", "A review summarized heterogeneous evidence across many outcomes.", "openalex", 2020, "10.demo/review"),
     )
 
 

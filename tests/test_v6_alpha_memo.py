@@ -9,6 +9,7 @@ from urllib.request import Request
 
 import pytest
 
+import v6_alpha_memo.search as v6_search
 from v6_alpha_memo import (
     FullrawSearchClient,
     Paper,
@@ -312,6 +313,50 @@ def test_fullraw_client_parses_hits_and_coverage_receipt() -> None:
     assert result.receipt.shards_searched == 965
     assert "openalex" in result.receipt.sources_searched
     assert result.papers[0].doi == "10.test/metformin"
+
+
+def test_fullraw_client_backfills_pubmed_abstract_for_endpoint_split(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload: dict[str, object] = {
+        "meta": {"shard_receipt": {"shards_searched": 50, "sources_searched": {"semantic_scholar": 1}}},
+        "results": [
+            {
+                "id": "S2",
+                "title": (
+                    "A Randomized Controlled Clinical Trial in Healthy Older Adults to Determine Efficacy "
+                    "of Glycine and N-Acetylcysteine Supplementation on Glutathione Redox Status and Oxidative Damage"
+                ),
+                "source": "semantic_scholar",
+                "year": 2022,
+                "doi": "10.3389/fragi.2022.852569",
+                "pmid": "35821844",
+            }
+        ],
+    }
+
+    monkeypatch.setattr(
+        v6_search,
+        "_pubmed_abstract",
+        lambda pmid: (
+            "GlyNAC supplementation was safe but did not increase GSH-F:GSSG or total glutathione, "
+            "the primary endpoint. Post-hoc analyses showed benefit only in high oxidative stress low baseline "
+            f"glutathione subjects. PMID {pmid}."
+        ),
+    )
+    result = FullrawSearchClient(search_url="http://fullraw/search", token="token", opener=_fake_opener(payload)).search("glynac", limit=1)
+    papers = (
+        Paper(
+            "positive",
+            "GlyNAC Supplementation Improves Glutathione Deficiency and Oxidative Stress in Healthy Aging",
+            "A randomized human trial showed GlyNAC improved glutathione deficiency and mitochondrial dysfunction.",
+            "openalex",
+        ),
+        result.papers[0],
+    )
+
+    scored = score_pairs(mine_pairs(papers), topic_terms={"glynac", "glycine", "acetylcysteine", "glutathione"})
+
+    assert "did not increase" in result.papers[0].abstract
+    assert scored and scored[0].shape == "subgroup_endpoint_split"
 
 
 def test_fullraw_client_compacts_zero_hit_queries() -> None:
