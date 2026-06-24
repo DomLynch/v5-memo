@@ -359,6 +359,39 @@ def test_fullraw_client_backfills_pubmed_abstract_for_endpoint_split(monkeypatch
     assert scored and scored[0].shape == "subgroup_endpoint_split"
 
 
+def test_fullraw_client_skips_noisy_results_for_rare_query_variant() -> None:
+    calls: list[str] = []
+    noise_payload: dict[str, object] = {
+        "meta": {"shard_receipt": {"shards_searched": 8, "sources_searched": {"openalex": 1}}},
+        "results": [{"title": "Clinical outcomes in older adults", "abstract": "Older adults had clinical outcomes.", "source": "openalex"}],
+    }
+    hit_payload: dict[str, object] = {
+        "meta": {"shard_receipt": {"shards_searched": 8, "sources_searched": {"semantic_scholar": 1}}},
+        "results": [{
+            "title": "Glycine and N-Acetylcysteine Supplementation on Glutathione Redox Status",
+            "abstract": "GlyNAC did not increase total glutathione in healthy older adults.",
+            "source": "semantic_scholar",
+        }],
+    }
+
+    def opener(request: Request, timeout: float) -> _Response:
+        del timeout
+        query = json.loads(cast(bytes, request.data or b"{}").decode())["query"]
+        calls.append(query)
+        return _Response(hit_payload if query == "glycine acetylcysteine glutathione redox" else noise_payload)
+
+    result = FullrawSearchClient(search_url="http://fullraw/search", opener=opener).search(
+        "randomized controlled clinical trial healthy older adults glycine n-acetylcysteine glutathione redox",
+        limit=3,
+    )
+
+    assert calls[:2] == [
+        "randomized controlled clinical trial healthy older adults glycine n-acetylcysteine glutathione redox",
+        "glycine acetylcysteine glutathione redox",
+    ]
+    assert result.papers[0].title.startswith("Glycine")
+
+
 def test_fullraw_client_compacts_zero_hit_queries() -> None:
     calls: list[str] = []
     payload: dict[str, object] = {

@@ -128,7 +128,7 @@ class FullrawSearchClient:
                     )
                     continue
                 last = result
-                if result.papers:
+                if result.papers and _result_matches_query(result, variant):
                     return result
         return last
 
@@ -272,8 +272,10 @@ def _paper_rank(paper: Paper) -> int:
 
 
 def _query_variants(query: str) -> tuple[str, ...]:
-    words = [word for word in re.findall(r"[a-z][a-z0-9-]{2,}", query.casefold()) if word not in _QUERY_DROP]
+    words = [word for word in re.findall(r"[a-z][a-z0-9]{2,}", query.casefold().replace("-", " ")) if word not in _QUERY_DROP]
     variants = [" ".join(query.split())]
+    if words:
+        variants.append(" ".join(words))
     if len(words) >= 2:
         variants.append(" ".join(words[:2]))
     if len(words) >= 3:
@@ -286,12 +288,25 @@ def _search_urls(value: str) -> tuple[str, ...]:
 
 
 _QUERY_DROP = frozenset({
-    "adaptation", "condition", "effect", "endpoint", "expected", "failure",
-    "human", "improved", "intervention", "mechanism", "mismatch", "model",
-    "modality", "null", "opposite", "outcome", "protocol", "randomized",
-    "result", "same", "subgroup", "translation", "trial",
+    "adaptation", "adult", "adults", "aging", "clinical", "condition", "controlled",
+    "effect", "endpoint", "expected", "failure", "healthy", "human", "improved",
+    "intervention", "mechanism", "mismatch", "model", "modality", "null", "older",
+    "opposite", "outcome", "placebo", "protocol", "randomized", "result", "same",
+    "subgroup", "translation", "trial",
 })
 _PUBMED_BACKFILL_LIMIT = 4
+
+
+def _result_matches_query(result: SearchResult, query: str) -> bool:
+    anchors = frozenset(
+        word for word in re.findall(r"[a-z][a-z0-9]{2,}", query.casefold().replace("-", " ")) if word not in _QUERY_DROP
+    )
+    needed = 1 if len(anchors) < 3 else 2
+    return not anchors or any(len(_paper_query_terms(paper) & anchors) >= needed for paper in result.papers[:5])
+
+
+def _paper_query_terms(paper: Paper) -> set[str]:
+    return set(re.findall(r"[a-z][a-z0-9]{2,}", paper.text.casefold().replace("-", " ")))
 
 
 def _items(data: object) -> list[object]:
