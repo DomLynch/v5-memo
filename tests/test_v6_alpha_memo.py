@@ -96,6 +96,40 @@ def test_demo_run_outputs_required_memo_and_trace() -> None:
     assert run.trace["top_pairs"]
 
 
+def test_discovery_tier_outputs_seed_without_relaxing_alpha() -> None:
+    class PositiveOnlyClient:
+        def search(self, query: str, *, limit: int = 25) -> SearchResult:
+            del query, limit
+            papers = (
+                Paper(
+                    "a",
+                    "GlyNAC improves glutathione and mitochondrial dysfunction in aging adults",
+                    "GlyNAC improved glutathione and mitochondrial dysfunction in older humans.",
+                    "openalex",
+                    2021,
+                    "10.test/glynac-positive",
+                ),
+                Paper(
+                    "b",
+                    "GlyNAC supplementation improves glutathione redox status in older adults",
+                    "GlyNAC supplementation improved glutathione redox status in a randomized trial.",
+                    "pubmed",
+                    2022,
+                    "10.test/glynac-rct",
+                ),
+            )
+            return SearchResult("glynac", papers, CoverageReceipt(hits=2))
+
+    with pytest.raises(RuntimeError, match="no elite receipt-geometry pair"):
+        build_memo("glynac aging glutathione", client=PositiveOnlyClient())
+
+    run = build_memo("glynac aging glutathione", client=PositiveOnlyClient(), tier="discovery")
+
+    assert run.memo.startswith("# Discovery seed:")
+    assert "Not alpha" in run.memo
+    assert run.top_pairs[0].shape == "shared_anchor"
+
+
 def test_anchors_drop_generic_connector_words() -> None:
     run = build_memo("management dashboard forecast accuracy", client=DemoClient())
 

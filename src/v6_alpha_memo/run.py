@@ -8,8 +8,8 @@ import re
 from dataclasses import dataclass
 from typing import Protocol
 
-from v6_alpha_memo.mine import mine_pairs
-from v6_alpha_memo.score import ScoredPair, score_pairs
+from v6_alpha_memo.mine import CandidatePair, mine_pairs
+from v6_alpha_memo.score import ScoredPair, score_pair, score_pairs
 from v6_alpha_memo.search import (
     CoverageReceipt,
     FullrawSearchClient,
@@ -18,7 +18,7 @@ from v6_alpha_memo.search import (
     merge_results,
     query_shapes,
 )
-from v6_alpha_memo.write import render_memo, render_with_minimax
+from v6_alpha_memo.write import render_discovery_seed, render_memo, render_with_minimax
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +68,7 @@ def build_memo(
     query_limit: int = 8,
     per_query_limit: int = 20,
     writer: str = "template",
+    tier: str = "alpha",
 ) -> V6Run:
     results = tuple(
         client.search(query, limit=per_query_limit)
@@ -78,9 +79,16 @@ def build_memo(
     topic_terms = _topic_terms(topic)
     scored = tuple(pair for pair in score_pairs(pairs, topic_terms=topic_terms) if _topic_fit(pair, topic_terms))
     if not scored:
-        raise RuntimeError("no elite receipt-geometry pair found; inspect search/mine/score trace")
+        if tier != "discovery":
+            raise RuntimeError("no elite receipt-geometry pair found; inspect search/mine/score trace")
+        scored = _discovery_pairs(pairs, topic_terms)
+        if not scored:
+            raise RuntimeError("no receipt-owned discovery seed found; inspect search/mine/score trace")
     receipt = _best_receipt(results)
-    memo = render_with_minimax(scored, receipt=receipt) if writer == "minimax" else render_memo(scored[0], receipt=receipt)
+    if scored[0].expectation_update:
+        memo = render_with_minimax(scored, receipt=receipt) if writer == "minimax" else render_memo(scored[0], receipt=receipt)
+    else:
+        memo = render_discovery_seed(scored[0], receipt=receipt)
     return V6Run(memo=memo, top_pairs=scored, results=results)
 
 
@@ -89,6 +97,7 @@ def main() -> None:
     parser.add_argument("--topic", required=True)
     parser.add_argument("--demo", action="store_true")
     parser.add_argument("--writer", choices=["template", "minimax"], default="template")
+    parser.add_argument("--tier", choices=["alpha", "discovery"], default="alpha")
     parser.add_argument("--queries", type=int, default=8)
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--trace", action="store_true")
@@ -101,6 +110,7 @@ def main() -> None:
         query_limit=args.queries,
         per_query_limit=args.limit,
         writer=args.writer,
+        tier=args.tier,
     )
     print(run.memo)
     if args.trace:
@@ -127,6 +137,16 @@ def _best_receipt(results: tuple[SearchResult, ...]) -> CoverageReceipt:
     if not results:
         return CoverageReceipt()
     return max(results, key=lambda result: result.receipt.papers_searched).receipt
+
+
+def _discovery_pairs(pairs: tuple[CandidatePair, ...], topic_terms: set[str]) -> tuple[ScoredPair, ...]:
+    scored = [
+        item
+        for item in (score_pair(pair, topic_terms=frozenset(topic_terms)) for pair in pairs)
+        if item.score >= 35 and _topic_fit(item, topic_terms)
+    ]
+    scored.sort(key=lambda item: item.score, reverse=True)
+    return tuple(scored)
 
 
 def _topic_terms(topic: str) -> set[str]:
