@@ -354,6 +354,28 @@ def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) ->
     }
 
 
+def test_full_raw_client_does_not_poll_cache_for_unknown_sweep_status(
+    monkeypatch: object,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payloads.append(json.loads(cast(bytes, request.data).decode("utf-8")))
+        return FakeResponse({})
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        sweep_wait_seconds=20.0,
+        require_complete_search=True,
+    )
+
+    assert client.search("management forecast disclosure", limit=3) == []
+    assert [payload.get("cache_only") for payload in payloads] == [None]
+
+
 def test_full_raw_client_uses_sufficient_foreground_sweep_result(monkeypatch: object) -> None:
     payloads: list[dict[str, object]] = []
 
