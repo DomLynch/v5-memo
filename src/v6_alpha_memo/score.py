@@ -38,6 +38,15 @@ _BAD_ANCHOR = frozenset({
     "associated", "background", "combination", "conclusion", "control", "divided",
     "elisa", "significant", "significantly",
 })
+_CONTEXT_ANCHOR = frozenset({
+    "aging", "biomarker", "biomarkers", "biology", "cell", "cells", "disease", "function",
+    "functions", "gene", "genes", "health", "human", "humans", "model", "models", "outcome",
+    "outcomes", "pathway", "pathways", "protein", "proteins", "trial", "trials",
+})
+_NONPRIMARY_PHRASES = (
+    "case report", "commentary", "dispatch", "editorial", "in brief", "meta-analysis",
+    "news and views", "news & views", "perspective", "research highlight", "systematic review",
+)
 _ANIMAL = frozenset({"mice", "mouse", "rat", "rats"})
 _HUMAN_TOPIC = frozenset({
     "adult", "adults", "employee", "employees", "field", "firm", "firms",
@@ -75,6 +84,9 @@ def score_pair(pair: CandidatePair, *, topic_terms: frozenset[str] = frozenset()
     reasons: list[str] = [f"shared_anchor:{anchor}" for anchor in anchors[:3]]
     if not anchors:
         return ScoredPair(clean_pair, 0, "shared_anchor", "", ("reject:no_real_anchor",))
+    hygiene_reject = _receipt_hygiene_reject(a, b, anchors)
+    if hygiene_reject:
+        return ScoredPair(clean_pair, 0, "shared_anchor", "", (*reasons, hygiene_reject))
     score = 20 + min(len(anchors), 4) * 5
     shape = "shared_anchor"
     first, second = a, b
@@ -149,6 +161,21 @@ def _real_anchors(pair: CandidatePair, topic_terms: frozenset[str]) -> tuple[str
         if (topic_terms and anchor in topic_terms) or (anchor in title_a and anchor in title_b):
             kept.append(anchor)
     return tuple(dict.fromkeys(kept))[:6]
+
+
+def _receipt_hygiene_reject(a: Paper, b: Paper, anchors: tuple[str, ...]) -> str:
+    if _nonprimary(a) or _nonprimary(b):
+        return "reject:non_primary_receipt"
+    title_a = set(_WORD_RE.findall(a.title.casefold()))
+    title_b = set(_WORD_RE.findall(b.title.casefold()))
+    if not any(anchor not in _CONTEXT_ANCHOR and anchor in title_a and anchor in title_b for anchor in anchors):
+        return "reject:name_or_context_only_anchor"
+    return ""
+
+
+def _nonprimary(paper: Paper) -> bool:
+    text = paper.text.casefold()
+    return any(phrase in text for phrase in _NONPRIMARY_PHRASES)
 
 
 def _tokens(paper: Paper) -> set[str]:

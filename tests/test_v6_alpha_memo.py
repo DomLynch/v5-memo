@@ -19,7 +19,7 @@ from v6_alpha_memo import (
 )
 from v6_alpha_memo import write as v6_write
 from v6_alpha_memo.run import DemoClient, build_memo
-from v6_alpha_memo.search import CoverageReceipt, RequestOpener, SearchResult
+from v6_alpha_memo.search import CoverageReceipt, RequestOpener, SearchResult, merge_results
 from v6_alpha_memo.write import judge_with_minimax
 
 
@@ -122,6 +122,49 @@ def test_specific_topic_term_must_be_shared_by_elite_pair() -> None:
     scored = score_pairs(mine_pairs(papers), topic_terms={"resveratrol", "exercise", "adaptation"})
 
     assert scored == ()
+
+
+def test_rejects_secondary_source_and_name_only_bridge() -> None:
+    papers = (
+        Paper(
+            "a",
+            "Systemic taurine decline drives aging",
+            "In Brief on Singh et al. Science: taurine supplementation improved lifespan in model organisms.",
+            "openalex",
+            2023,
+            "10.1038/s41684-023-01226-w",
+            venue="Lab Animal",
+        ),
+        Paper(
+            "b",
+            "Aging-regulated TUG1 is dispensable for endothelial cell function",
+            "Taurine Upregulated Gene 1 decreases in aging human endothelial cells, but knockdown produced null basal phenotype changes.",
+            "semantic_scholar",
+            2022,
+            "10.1101/2022.02.482212",
+        ),
+    )
+
+    scored = score_pairs(mine_pairs(papers), topic_terms={"taurine", "aging", "human"})
+
+    assert scored == ()
+
+
+def test_merge_results_prefers_published_duplicate_over_preprint() -> None:
+    title = "Aging-regulated TUG1 is dispensable for endothelial cell function"
+    result = SearchResult(
+        "tug1",
+        (
+            Paper("preprint", title, "bioRxiv preprint", "semantic_scholar", doi="10.1101/2022.02.482212"),
+            Paper("published", title, "Published journal article", "openalex", 2022, "10.1371/journal.pone.0265160"),
+        ),
+        CoverageReceipt(hits=2),
+    )
+
+    merged = merge_results((result,))
+
+    assert len(merged) == 1
+    assert merged[0].paper_id == "published"
 
 
 def test_fullraw_client_parses_hits_and_coverage_receipt() -> None:

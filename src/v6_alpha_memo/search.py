@@ -231,13 +231,33 @@ def _async_status(data: object) -> str:
 
 def merge_results(results: tuple[SearchResult, ...]) -> tuple[Paper, ...]:
     seen: set[str] = set()
+    title_index: dict[str, int] = {}
     papers: list[Paper] = []
     for result in results:
         for paper in result.papers:
             if paper.key not in seen:
+                title_key = _norm_title(paper.title)
+                if title_key in title_index:
+                    idx = title_index[title_key]
+                    if _paper_rank(paper) > _paper_rank(papers[idx]):
+                        seen.discard(papers[idx].key)
+                        papers[idx] = paper
+                        seen.add(paper.key)
+                    continue
                 seen.add(paper.key)
+                title_index[title_key] = len(papers)
                 papers.append(paper)
     return tuple(papers)
+
+
+def _paper_rank(paper: Paper) -> int:
+    text = f"{paper.title} {paper.abstract} {paper.source} {paper.venue} {paper.doi}".casefold()
+    score = int(bool(paper.doi)) + int(bool(paper.year)) * 2
+    if any(marker in text for marker in ("10.1101/", "arxiv", "biorxiv", "medrxiv", "preprint")):
+        score -= 5
+    if any(marker in text for marker in ("commentary", "editorial", "in brief", "research highlight")):
+        score -= 3
+    return score
 
 
 def _query_variants(query: str) -> tuple[str, ...]:
