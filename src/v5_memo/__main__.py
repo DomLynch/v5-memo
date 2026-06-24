@@ -130,14 +130,16 @@ def main() -> None:
         ]
     queries = base_queries
     if planner_mode == "minimax":
-        queries = MiniMaxM3SearchPlanner.from_env().plan(
+        planned = MiniMaxM3SearchPlanner.from_env().plan(
             topic=args.topic,
             seed_queries=base_queries,
             limit=args.planner_limit,
         )
-        if not explicit_queries:
-            planned_queries = [query for query in queries if query not in set(base_queries)]
-            queries = planned_queries or queries
+        if explicit_queries:
+            queries = _dedupe_queries((*base_queries, *planned))
+        else:
+            planned_queries = [query for query in planned if query not in set(base_queries)]
+            queries = planned_queries or planned
     anchor_queries = base_queries if explicit_queries else queries
     wider_recall = planner_mode == "minimax" or selector_mode == "minimax"
     result = build_alpha_memo(
@@ -160,6 +162,18 @@ def _require_full_raw_or_exit() -> None:
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(2) from exc
+
+
+def _dedupe_queries(queries: Sequence[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for query in queries:
+        normalized = " ".join(query.split()).casefold()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(query)
+    return out
 
 
 if __name__ == "__main__":
