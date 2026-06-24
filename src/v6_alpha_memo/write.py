@@ -60,14 +60,7 @@ def render_discovery_seed(scored: ScoredPair, *, receipt: CoverageReceipt | None
         "",
         "**Next falsifier/search target:** find a null, failed, endpoint-split, or human-translation receipt on the same intervention/construct.",
     ]
-    if receipt is not None:
-        lines.extend([
-            "",
-            "**Search receipt:** "
-            f"hits={receipt.hits}; shards={receipt.shards_searched}/{receipt.shards_total}; "
-            f"sources={','.join(receipt.sources_searched) or 'unknown'}; "
-            f"papers_searched={receipt.papers_searched}; partial={receipt.partial}.",
-        ])
+    del receipt
     return "\n".join(lines).strip() + "\n"
 
 
