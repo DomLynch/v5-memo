@@ -20,6 +20,7 @@ from v5_memo import (
     render_discovery_seed,
     render_memo,
 )
+from v5_memo.client import SearchBackendError
 from v5_memo.schemas import InsightCandidate
 from v5_memo.scorer import score_connection
 
@@ -188,6 +189,20 @@ def test_collect_seed_hits_balances_planned_query_budget() -> None:
     )
 
     assert any(hit.hit_id.startswith("later-reversal-query") for hit in hits)
+
+
+def test_collect_seed_hits_skips_failed_seed_queries() -> None:
+    class FlakySearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del limit
+            if query == "bad":
+                raise SearchBackendError("fullraw 422")
+            return _hits()[:2]
+
+    hits = collect_seed_hits(FlakySearch(), ["bad", "good"], per_query_limit=2)
+
+    assert len(hits) == 2
+    assert hits[0].metadata["seed_queries"] == ("good",)
 
 
 def test_pipeline_builds_best_memo() -> None:
