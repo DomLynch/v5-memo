@@ -330,6 +330,17 @@ class FullRawCorpusSearchClient:
                     f"after {elapsed:.1f}s; variants={variant_index - 1}/{len(search_passes)}"
                 )
                 break
+            expected_variant_seconds = self._timeout + self._sweep_wait_seconds
+            if (
+                self._search_budget_seconds
+                and variant_index > 1
+                and elapsed + expected_variant_seconds > self._search_budget_seconds
+            ):
+                self._log_progress(
+                    "fullraw search budget would be exceeded "
+                    f"after {elapsed:.1f}s; variants={variant_index - 1}/{len(search_passes)}"
+                )
+                break
             passes_run.append(search_pass.name)
             rank_modes_run.append(search_pass.rank_mode)
             self._log_progress(
@@ -422,7 +433,11 @@ class FullRawCorpusSearchClient:
         cache_payload = {**payload, "cache_only": True, "queue_if_missing": True}
         while True:
             try:
-                data = self._request_search(cache_payload)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._log_progress("fullraw async sweep wait expired; status=unknown")
+                    return None
+                data = self._request_search(cache_payload, timeout=min(self._timeout, remaining))
                 status = _full_raw_async_sweep_status(data)
             except SearchBackendError:
                 data = {}
@@ -438,7 +453,7 @@ class FullRawCorpusSearchClient:
                 return None
             time.sleep(min(max(self._sweep_poll_seconds, 0.05), remaining))
 
-    def _request_search(self, payload: dict[str, object]) -> Any:
+    def _request_search(self, payload: dict[str, object], *, timeout: float | None = None) -> Any:
         headers = {
             "Content-Type": "application/json",
             "User-Agent": "v5-memo/0.1",
@@ -453,7 +468,7 @@ class FullRawCorpusSearchClient:
         )
         for attempt in range(2):
             try:
-                with urlopen(request, timeout=self._timeout) as response:
+                with urlopen(request, timeout=self._timeout if timeout is None else max(0.05, timeout)) as response:
                     return json.loads(response.read().decode("utf-8"))
             except (ConnectionResetError, RemoteDisconnected) as exc:
                 if attempt == 0:

@@ -228,9 +228,10 @@ def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
 
 def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) -> None:
     payloads: list[dict[str, object]] = []
+    timeouts: list[float] = []
 
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
-        del timeout
+        timeouts.append(timeout)
         payload = json.loads(cast(bytes, request.data).decode("utf-8"))
         payloads.append(payload)
         if payload.get("cache_only") is True:
@@ -281,6 +282,7 @@ def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) ->
     assert payloads[0].get("cache_only") is None
     assert payloads[1].get("cache_only") is True
     assert payloads[1].get("queue_if_missing") is True
+    assert timeouts[1] <= 1.0
     assert hits[0].doi == "10.123/deep"
     assert hits[0].metadata["shard_receipt"] == {
         "shards_total": 100,
