@@ -85,4 +85,9 @@ class MemoBuildError(ValueError):
 
     def __init__(self, failure: SearchFailure) -> None:
         self.failure = failure
-        super().__init__(failure.message)
+        detail = ", ".join(
+            f"{key}={value}"
+            for key, value in failure.details.items()
+            if key in {"hit_count", "candidate_count", "min_alpha_tier"}
+        )
+        super().__init__(f"{failure.message} ({detail})" if detail else failure.message)
