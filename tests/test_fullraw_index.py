@@ -365,6 +365,23 @@ def test_select_search_shard_paths_treats_balanced_as_spread(
     assert select_search_shard_paths(paths) == [paths[0], paths[2], paths[4]]
 
 
+def test_select_search_shard_paths_rotates_spread_by_query(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    paths = [tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite" for index in range(12)]
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "4")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "balanced")
+
+    first = select_search_shard_paths(paths, seed="resveratrol training")
+    second = select_search_shard_paths(paths, seed="metformin training")
+
+    assert len(first) == len(second) == 4
+    assert first != second
+    assert set(first) <= set(paths)
+    assert set(second) <= set(paths)
+
+
 def test_source_counts_normalizes_search_result_sources() -> None:
     assert fullraw_index._source_counts([
         {"source": "OpenAlex"},

@@ -7,6 +7,7 @@ can rank by relevance instead of archive order.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -817,7 +818,7 @@ def search_shards(
 ) -> list[dict[str, object]]:
     """Search multiple shard DBs and merge ranked, deduped results."""
     merged: dict[str, dict[str, object]] = {}
-    paths = select_search_shard_paths([path for path in index_paths if path.exists()])
+    paths = select_search_shard_paths([path for path in index_paths if path.exists()], seed=query)
     workers = max(1, min(int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "8")), len(paths) or 1))
     pool = ThreadPoolExecutor(max_workers=workers)
     futures = [
@@ -849,7 +850,7 @@ def search_shards(
     )[: max(1, min(limit, 200))]
 
 
-def select_search_shard_paths(paths: list[Path]) -> list[Path]:
+def select_search_shard_paths(paths: list[Path], *, seed: str = "") -> list[Path]:
     limit = _positive_int_env("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT")
     if limit is None or limit >= len(paths):
         return paths
@@ -857,9 +858,18 @@ def select_search_shard_paths(paths: list[Path]) -> list[Path]:
     if order in {"oldest", "first"}:
         return paths[:limit]
     if order in {"spread", "balanced"} and limit > 1:
-        step = (len(paths) - 1) / (limit - 1)
-        return [paths[round(index * step)] for index in range(limit)]
+        ordered = _rotate_paths(paths, seed)
+        step = (len(ordered) - 1) / (limit - 1)
+        return [ordered[round(index * step)] for index in range(limit)]
     return paths[-limit:]
+
+
+def _rotate_paths(paths: list[Path], seed: str) -> list[Path]:
+    if not seed or len(paths) < 2:
+        return paths
+    digest = hashlib.blake2s(seed.encode("utf-8"), digest_size=4).digest()
+    offset = int.from_bytes(digest, "big") % len(paths)
+    return [*paths[offset:], *paths[:offset]]
 
 
 def _search_one_shard(
