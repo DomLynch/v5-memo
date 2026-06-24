@@ -6,14 +6,14 @@ import json
 import os
 import re
 import time
-import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from dataclasses import dataclass
-from functools import lru_cache
 from http.client import RemoteDisconnected
 from typing import Protocol, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from v5_memo.client import FullRawCorpusSearchClient
 
 
 class HttpResponse(Protocol):
@@ -69,6 +69,29 @@ class SearchResult:
     receipt: CoverageReceipt
 
 
+class V5FullrawSearchClient:
+    """Adapter over the proven V5 fullraw search/rerank client."""
+
+    def __init__(self, client: FullRawCorpusSearchClient) -> None:
+        self._client = client
+
+    @classmethod
+    def from_env(cls) -> V5FullrawSearchClient:
+        return cls(FullRawCorpusSearchClient.from_env(strict=False))
+
+    def search(self, query: str, *, limit: int = 25) -> SearchResult:
+        hits = self._client.search(query, limit=limit)
+        papers = tuple(
+            Paper(str(hit.hit_id), hit.title, hit.abstract, hit.source, hit.year, hit.doi or "", hit.url, hit.venue or "")
+            for hit in hits
+        )
+        return SearchResult(
+            query=query,
+            papers=papers,
+            receipt=CoverageReceipt(hits=len(papers), sources_searched=tuple(sorted({hit.source for hit in hits}))),
+        )
+
+
 class FullrawSearchClient:
     """Tiny POST client for the 5TB-backed fullraw search endpoint."""
 
@@ -91,7 +114,9 @@ class FullrawSearchClient:
         self._opener = opener or cast(RequestOpener, urlopen)
 
     @classmethod
-    def from_env(cls) -> FullrawSearchClient:
+    def from_env(cls) -> FullrawSearchClient | V5FullrawSearchClient:
+        if os.environ.get("V6_FULLRAW_NATIVE") != "1":
+            return V5FullrawSearchClient.from_env()
         return cls(
             search_url=os.environ.get(
                 "V6_FULLRAW_SEARCH_URL",
@@ -155,13 +180,10 @@ class FullrawSearchClient:
                 raise
             data = cached
         parsed: list[Paper] = []
-        pubmed_backfills = 0
         for item in _items(data):
-            backfill = pubmed_backfills < _PUBMED_BACKFILL_LIMIT and _missing_abstract_with_pmid(item)
-            paper = _parse_paper(item, pubmed_backfill=backfill)
+            paper = _parse_paper(item)
             if paper is not None:
                 parsed.append(paper)
-            pubmed_backfills += int(backfill)
         papers = tuple(parsed)
         return SearchResult(query=query, papers=papers, receipt=_receipt(data, hits=len(papers)))
 
@@ -324,7 +346,7 @@ def _items(data: object) -> list[object]:
     return raw if isinstance(raw, list) else []
 
 
-def _parse_paper(item: object, *, pubmed_backfill: bool = False) -> Paper | None:
+def _parse_paper(item: object) -> Paper | None:
     if not isinstance(item, dict):
         return None
     title = _clean(item.get("title") or item.get("display_name") or item.get("name"))
@@ -333,8 +355,6 @@ def _parse_paper(item: object, *, pubmed_backfill: bool = False) -> Paper | None
     doi = _doi(item.get("doi"))
     paper_id = _clean(item.get("id") or item.get("openalex_id") or doi or title)
     abstract = _clean(item.get("abstract") or item.get("abstract_text") or item.get("description"), limit=4000) or _inverted_abstract(item.get("abstract_inverted_index"))
-    if not abstract and pubmed_backfill:
-        abstract = _pubmed_abstract(_clean(item.get("pmid")))
     return Paper(
         paper_id=paper_id,
         title=title,
@@ -345,27 +365,6 @@ def _parse_paper(item: object, *, pubmed_backfill: bool = False) -> Paper | None
         url=_clean(item.get("url")) or (f"https://doi.org/{doi}" if doi else ""),
         venue=_clean(item.get("venue") or item.get("journal") or item.get("source_name")),
     )
-
-
-def _missing_abstract_with_pmid(item: object) -> bool:
-    return isinstance(item, dict) and bool(item.get("pmid")) and not any(
-        item.get(key) for key in ("abstract", "abstract_text", "description", "abstract_inverted_index")
-    )
-
-
-@lru_cache(maxsize=128)
-def _pubmed_abstract(pmid: str) -> str:
-    clean_pmid = re.sub(r"\D", "", pmid)[:16]
-    if not clean_pmid:
-        return ""
-    url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id={clean_pmid}&retmode=xml"
-    try:
-        with urlopen(url, timeout=8) as response:
-            root = ET.fromstring(response.read())
-    except (OSError, ET.ParseError):
-        return ""
-    parts = [" ".join("".join(node.itertext()).split()) for node in root.findall(".//AbstractText")]
-    return " ".join(part for part in parts if part)[:4000]
 
 
 def _receipt(data: object, *, hits: int) -> CoverageReceipt:

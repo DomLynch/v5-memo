@@ -10,6 +10,7 @@ from urllib.request import Request
 import pytest
 
 import v6_alpha_memo.search as v6_search
+from v5_memo.schemas import CorpusHit
 from v6_alpha_memo import (
     FullrawSearchClient,
     Paper,
@@ -315,34 +316,37 @@ def test_fullraw_client_parses_hits_and_coverage_receipt() -> None:
     assert result.papers[0].doi == "10.test/metformin"
 
 
-def test_fullraw_client_backfills_pubmed_abstract_for_endpoint_split(monkeypatch: pytest.MonkeyPatch) -> None:
-    payload: dict[str, object] = {
-        "meta": {"shard_receipt": {"shards_searched": 50, "sources_searched": {"semantic_scholar": 1}}},
-        "results": [
-            {
-                "id": "S2",
-                "title": (
-                    "A Randomized Controlled Clinical Trial in Healthy Older Adults to Determine Efficacy "
-                    "of Glycine and N-Acetylcysteine Supplementation on Glutathione Redox Status and Oxidative Damage"
-                ),
-                "source": "semantic_scholar",
-                "year": 2022,
-                "doi": "10.3389/fragi.2022.852569",
-                "pmid": "35821844",
-            }
-        ],
-    }
+def test_fullraw_from_env_uses_stable_v5_search(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeV5Client:
+        @classmethod
+        def from_env(cls, *, strict: bool = False) -> FakeV5Client:
+            assert strict is False
+            return cls()
 
-    monkeypatch.setattr(
-        v6_search,
-        "_pubmed_abstract",
-        lambda pmid: (
-            "GlyNAC supplementation was safe but did not increase GSH-F:GSSG or total glutathione, "
-            "the primary endpoint. Post-hoc analyses showed benefit only in high oxidative stress low baseline "
-            f"glutathione subjects. PMID {pmid}."
-        ),
-    )
-    result = FullrawSearchClient(search_url="http://fullraw/search", token="token", opener=_fake_opener(payload)).search("glynac", limit=1)
+        def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
+            assert query == "glynac"
+            assert limit == 1
+            return [
+                CorpusHit(
+                    "S2",
+                    (
+                        "A Randomized Controlled Clinical Trial in Healthy Older Adults to Determine Efficacy "
+                        "of Glycine and N-Acetylcysteine Supplementation on Glutathione Redox Status and Oxidative Damage"
+                    ),
+                    (
+                        "GlyNAC supplementation was safe but did not increase GSH-F:GSSG or total glutathione, "
+                        "the primary endpoint. Post-hoc analyses showed benefit only in high oxidative stress low baseline "
+                        "glutathione subjects."
+                    ),
+                    "semantic_scholar",
+                    2022,
+                    doi="10.3389/fragi.2022.852569",
+                )
+            ]
+
+    monkeypatch.setattr(v6_search, "FullRawCorpusSearchClient", FakeV5Client)
+    monkeypatch.delenv("V6_FULLRAW_NATIVE", raising=False)
+    result = FullrawSearchClient.from_env().search("glynac", limit=1)
     papers = (
         Paper(
             "positive",
