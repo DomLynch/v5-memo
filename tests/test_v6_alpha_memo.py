@@ -33,7 +33,7 @@ def test_query_shapes_are_targeted_but_not_topic_whitelisted() -> None:
     assert queries[0] == "marketing attribution incrementality"
     assert all("marketing attribution incrementality" in query for query in queries)
     assert "glynac supplementation improves glutathione deficiency oxidative stress" in long_queries
-    assert "randomized controlled clinical trial healthy older adults glycine n-acetylcysteine glutathione redox" in long_queries
+    assert "healthy older adults glycine n-acetylcysteine glutathione redox" in long_queries
     assert any("randomized placebo no effect primary endpoint" in query for query in queries)
     assert any("baseline subgroup high low response" in query for query in queries)
     assert any("replication failure" in query for query in queries)
