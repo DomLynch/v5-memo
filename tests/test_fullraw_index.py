@@ -431,6 +431,52 @@ def test_build_upload_shard_batches_uploads_and_deletes_local_batches(tmp_path: 
     assert all(result.skipped for result in repeated)
 
 
+def test_build_upload_shard_batches_filters_sources_and_offsets_batch_ids(tmp_path: Path) -> None:
+    openalex = _raw_file(tmp_path, "openalex_filtered_out", [{
+        "doi": "https://doi.org/10.example/openalex-filtered-out",
+        "display_name": "OpenAlex paper outside source filter",
+        "abstract": "This file should not be included in the filtered build.",
+    }])
+    pubmed_source = tmp_path / "pubmed.xml.gz"
+    pubmed_source.write_bytes(gzip.compress(b"""
+    <PubmedArticleSet>
+      <PubmedArticle>
+        <MedlineCitation>
+          <PMID>123456</PMID>
+          <Article>
+            <ArticleTitle>Metformin longevity filtered batch</ArticleTitle>
+            <Abstract><AbstractText>Metformin and longevity biology.</AbstractText></Abstract>
+            <Journal><Title>PubMed Test Journal</Title></Journal>
+          </Article>
+        </MedlineCitation>
+      </PubmedArticle>
+    </PubmedArticleSet>
+    """))
+    pubmed = RawFile(source="pubmed", format="pubmed_xml", remote=f"file://{pubmed_source}")
+    local_build = tmp_path / "local-build"
+    remote = tmp_path / "remote"
+
+    results = build_upload_shard_batches(
+        [openalex, pubmed],
+        shard_dir=local_build,
+        upload_remote=f"file://{remote}",
+        batch_files=1,
+        shard_count=1,
+        workers=1,
+        commit_interval=1,
+        delete_local=True,
+        source_filter={"pubmed"},
+        batch_id_offset=91000,
+    )
+
+    manifest = json.loads((remote / "batch_91000" / "complete.json").read_text())
+    assert [result.batch_id for result in results] == [91000]
+    assert results[0].files_completed == 1
+    assert results[0].papers_inserted == 1
+    assert not (remote / "batch_00000").exists()
+    assert manifest["files"][0]["source"] == "pubmed"
+
+
 def test_build_upload_shard_batches_uploads_with_corrupt_file_quarantined(tmp_path: Path) -> None:
     good = _raw_file(tmp_path, "good_batch", [{
         "doi": "https://doi.org/10.example/good-batch",

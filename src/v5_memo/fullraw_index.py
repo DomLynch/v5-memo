@@ -35,6 +35,11 @@ _DEFAULT_TERM_MAP = (
 )
 
 
+def _parse_source_filter(value: str | None) -> set[str] | None:
+    sources = {item.strip() for item in (value or "").split(",") if item.strip()}
+    return sources or None
+
+
 @dataclass(frozen=True, slots=True)
 class IndexStats:
     papers_indexed: int
@@ -697,13 +702,17 @@ def build_upload_shard_batches(
     commit_interval: int = 1000,
     min_free_bytes: int = 0,
     delete_local: bool = True,
+    source_filter: set[str] | None = None,
+    batch_id_offset: int = 0,
 ) -> list[ShardBatchResult]:
     """Build local shard batches, upload completed batches, then free local disk."""
     if not upload_remote.strip():
         raise ValueError("upload remote is required for build-upload-shards")
-    selected_files = files[:max_files] if max_files is not None else files
+    filtered_files = [file for file in files if source_filter is None or file.source in source_filter]
+    selected_files = filtered_files[:max_files] if max_files is not None else filtered_files
     results: list[ShardBatchResult] = []
-    for batch_id, start in enumerate(range(0, len(selected_files), max(1, batch_files))):
+    for relative_batch_id, start in enumerate(range(0, len(selected_files), max(1, batch_files))):
+        batch_id = max(0, batch_id_offset) + relative_batch_id
         batch_started = time.monotonic()
         batch = selected_files[start:start + max(1, batch_files)]
         batch_name = f"batch_{batch_id:05d}"
@@ -1199,6 +1208,8 @@ def main() -> None:
     build_upload_parser.add_argument("--shards", type=int, default=int(os.environ.get("V5_MEMO_FULL_RAW_SHARDS", "4")))
     build_upload_parser.add_argument("--workers", type=int, default=int(os.environ.get("V5_MEMO_FULL_RAW_SHARD_WORKERS", "4")))
     build_upload_parser.add_argument("--max-files", type=int)
+    build_upload_parser.add_argument("--source-filter", default=os.environ.get("V5_MEMO_FULL_RAW_SOURCE_FILTER", ""))
+    build_upload_parser.add_argument("--batch-id-offset", type=int, default=0)
     build_upload_parser.add_argument("--commit-interval", type=int, default=1000)
     build_upload_parser.add_argument(
         "--min-free-gb",
@@ -1313,6 +1324,8 @@ def main() -> None:
             commit_interval=args.commit_interval,
             min_free_bytes=int(max(0.0, args.min_free_gb) * 1024**3),
             delete_local=not bool(args.keep_local),
+            source_filter=_parse_source_filter(str(args.source_filter)),
+            batch_id_offset=max(0, int(args.batch_id_offset)),
         )
         print(json.dumps({
             "batches": [asdict(result) for result in batch_results],
