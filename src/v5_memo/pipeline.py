@@ -33,15 +33,14 @@ def build_alpha_memo(
         per_query_limit=per_query_limit,
         max_hits=max_hits,
     )
-    if anchor_queries is None:
-        anchor_terms = _anchor_terms_for_queries(seed_queries)
-    else:
-        anchor_terms = _anchor_terms_for_queries(anchor_queries)
+    anchor_source = seed_queries if anchor_queries is None else anchor_queries
+    anchor_terms = _anchor_terms_for_queries(anchor_source)
     candidates: Sequence[InsightCandidate] = mine_insights(
         hits,
         topic=topic,
         required_anchor_terms=anchor_terms,
         include_discovery=min_alpha_tier == "discovery_seed",
+        strict_anchor_support=len(anchor_source) == 1,
     )
     candidates = _apply_selector(candidates, hits, memo_selector)
     for candidate in candidates:

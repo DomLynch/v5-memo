@@ -91,8 +91,8 @@ _MECHANISM_CONTEXT = frozenset({
     "model", "mouse", "pathway", "preclinical", "rat", "rats",
 })
 _HUMAN_CONTEXT = frozenset({
-    "adult", "adults", "human", "humans", "men", "participants", "patient",
-    "patients", "placebo", "randomized", "trial", "women",
+    "adult", "adults", "human", "humans", "men", "outcome", "outcomes",
+    "participants", "patient", "patients", "placebo", "randomized", "trial", "women",
 })
 
 
@@ -103,6 +103,7 @@ def mine_insights(
     required_anchor_terms: Sequence[str] = (),
     include_discovery: bool = False,
     max_candidates: int = 5,
+    strict_anchor_support: bool = False,
 ) -> list[InsightCandidate]:
     """Return ranked alpha candidates from source-diverse hit pairs."""
     clean_hits = _dedupe_hits(hits)
@@ -150,6 +151,17 @@ def mine_insights(
             continue
         if (
             len(bridge) == 1
+            and set(shape_reasons) & _ELITE_SHAPES
+            and not _pair_topic_supported(
+                full_token_sets[left.hit_id],
+                full_token_sets[right.hit_id],
+                pair_anchor_terms,
+                shape_reasons,
+            )
+        ):
+            continue
+        if (
+            strict_anchor_support
             and set(shape_reasons) & _ELITE_SHAPES
             and not _pair_topic_supported(
                 full_token_sets[left.hit_id],

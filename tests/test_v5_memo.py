@@ -1045,6 +1045,28 @@ def test_miner_rejects_recommendation_receipts_for_alpha() -> None:
     ) == []
 
 
+def test_miner_rejects_elite_pair_without_topic_context() -> None:
+    hits = [
+        _hit(
+            "lead",
+            "Metformin alleviates lead-induced mitochondrial fragmentation via AMPK activation",
+            "Metformin activated AMPK and improved mitochondrial stress in SH-SY5Y cells.",
+        ),
+        _hit(
+            "vascular",
+            "Metformin reduces vascular assembly in high glucose-treated endothelial cells",
+            "Metformin reduced vascular assembly in cells in an AMPK-independent manner.",
+        ),
+    ]
+
+    assert mine_insights(
+        hits,
+        topic="metformin resistance training adaptation",
+        required_anchor_terms=("metformin", "training"),
+        strict_anchor_support=True,
+    ) == []
+
+
 def test_miner_rejects_pairs_from_unrelated_seed_queries() -> None:
     hits = [
         CorpusHit(
