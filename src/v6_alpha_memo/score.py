@@ -34,13 +34,9 @@ _BOUNDARY = frozenset({
     "context", "dose", "endpoint", "endpoints", "market", "modality", "program",
     "selection", "subgroup", "task", "timing",
 })
-_LIMITED_HUMAN = frozenset({
-    "association", "biomarker", "disease", "open-label", "observational", "patient",
-    "patients", "pilot", "placebo", "preliminary", "primary", "subgroup", "surrogate",
-})
-_GATED = frozenset({
-    "baseline", "deficiency", "deficient", "healthy", "high", "low", "post-hoc", "posthoc",
-})
+_LIMITED_HUMAN = frozenset({"association", "biomarker", "disease", "open-label", "observational", "patient",
+                            "patients", "pilot", "placebo", "preliminary", "primary", "subgroup", "surrogate"})
+_GATED = frozenset({"baseline", "deficiency", "deficient", "healthy", "high", "low", "post-hoc", "posthoc"})
 _BAD_ANCHOR = frozenset({
     "adult", "adults", "associated", "background", "care", "cohort", "combination",
     "conclusion", "control", "divided", "elisa", "older", "primary", "retrospective",
