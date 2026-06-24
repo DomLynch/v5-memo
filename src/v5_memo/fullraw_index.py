@@ -840,10 +840,10 @@ def select_search_shard_paths(paths: list[Path]) -> list[Path]:
     limit = _positive_int_env("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT")
     if limit is None or limit >= len(paths):
         return paths
-    order = os.environ.get("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "newest").casefold()
+    order = os.environ.get("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "spread").casefold()
     if order in {"oldest", "first"}:
         return paths[:limit]
-    if order == "spread" and limit > 1:
+    if order in {"spread", "balanced"} and limit > 1:
         step = (len(paths) - 1) / (limit - 1)
         return [paths[round(index * step)] for index in range(limit)]
     return paths[-limit:]

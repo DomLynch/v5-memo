@@ -320,13 +320,24 @@ def test_discover_shard_paths_can_trust_uploaded_filenames(tmp_path: Path) -> No
     assert discover_shard_paths(tmp_path, trust_filenames=True) == [incomplete]
 
 
-def test_select_search_shard_paths_limits_newest_by_default(
+def test_select_search_shard_paths_spreads_by_default(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    paths = [tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite" for index in range(5)]
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "3")
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", raising=False)
+
+    assert select_search_shard_paths(paths) == [paths[0], paths[2], paths[4]]
+
+
+def test_select_search_shard_paths_can_limit_newest(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
     paths = [tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite" for index in range(5)]
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "2")
-    monkeypatch.delenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", raising=False)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "newest")
 
     assert select_search_shard_paths(paths) == paths[-2:]
 
@@ -338,6 +349,17 @@ def test_select_search_shard_paths_can_spread_across_corpus(
     paths = [tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite" for index in range(5)]
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "3")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "spread")
+
+    assert select_search_shard_paths(paths) == [paths[0], paths[2], paths[4]]
+
+
+def test_select_search_shard_paths_treats_balanced_as_spread(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    paths = [tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite" for index in range(5)]
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "3")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "balanced")
 
     assert select_search_shard_paths(paths) == [paths[0], paths[2], paths[4]]
 
