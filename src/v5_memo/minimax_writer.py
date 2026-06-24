@@ -407,6 +407,8 @@ Rules:
 - Strong: same intervention/construct/program, direct reversal, endpoint split, or negative/null boundary.
 - Strongest: one promise/mechanism receipt plus one observed outcome receipt sharing the same core construct.
 - Weak: adjacent papers, broad survey plus case study, unsupported domain jump, or generic "evidence is mixed".
+- Reject pairs that change intervention, population/species, and endpoint/marker at the same time.
+- Reject pairs whose only payoff is "this untested head-to-head experiment should be run"; classify those as discovery_seed.
 - Reject shared-vocabulary bridges where the only commonality is a broad endpoint,
   sample size, method word, or generic intervention class.
 - Reject review/position-stand/meta-analysis/survey plus one trial as alpha unless

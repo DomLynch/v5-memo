@@ -623,6 +623,8 @@ def test_minimax_selection_prompt_names_weak_bridge_failures() -> None:
     prompt = build_minimax_selection_prompt([_candidate()], _receipts())
 
     assert "unsupported domain jump" in prompt
+    assert "change intervention, population/species, and endpoint/marker" in prompt
+    assert "untested head-to-head experiment" in prompt
     assert "generic \"evidence is mixed\"" in prompt
     assert "promise/mechanism receipt plus one observed outcome receipt" in prompt
     assert "only commonality is a broad endpoint" in prompt
