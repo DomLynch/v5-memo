@@ -272,8 +272,12 @@ def _paper_rank(paper: Paper) -> int:
 
 
 def _query_variants(query: str) -> tuple[str, ...]:
-    words = [word for word in re.findall(r"[a-z][a-z0-9]{2,}", query.casefold().replace("-", " ")) if word not in _QUERY_DROP]
+    raw_words = re.findall(r"[a-z][a-z0-9]{2,}", query.casefold().replace("-", " "))
+    words = [word for word in raw_words if word not in _QUERY_DROP]
+    context_words = [word for word in raw_words if word in _QUERY_CONTEXT_KEEP or word not in _QUERY_DROP]
     variants = [" ".join(query.split())]
+    if context_words:
+        variants.append(" ".join(context_words))
     if words:
         variants.append(" ".join(words))
     if len(words) >= 2:
@@ -294,6 +298,7 @@ _QUERY_DROP = frozenset({
     "opposite", "outcome", "placebo", "protocol", "randomized", "result", "same",
     "subgroup", "translation", "trial",
 })
+_QUERY_CONTEXT_KEEP = frozenset({"adult", "adults", "healthy", "human", "humans", "older", "participants", "patient", "patients", "workers"})
 _PUBMED_BACKFILL_LIMIT = 4
 
 

@@ -387,7 +387,7 @@ def test_fullraw_client_skips_noisy_results_for_rare_query_variant() -> None:
 
     assert calls[:2] == [
         "randomized controlled clinical trial healthy older adults glycine n-acetylcysteine glutathione redox",
-        "glycine acetylcysteine glutathione redox",
+        "healthy older adults glycine acetylcysteine glutathione redox",
     ]
     assert result.papers[0].title.startswith("Glycine")
 
