@@ -193,16 +193,16 @@ def query_shapes(seed: str, *, limit: int = 8) -> tuple[str, ...]:
     """Turn a domain/topic seed into targeted novelty-search shapes."""
     seed = " ".join(seed.split())
     templates = (
-        "{seed} expected improved null outcome randomized trial",
-        "{seed} mechanism model human failed translation",
-        "{seed} animal model human open-label trial",
+        "{seed} randomized placebo no effect primary endpoint",
+        "{seed} baseline subgroup high low response",
+        "{seed} endpoint split randomized trial placebo",
         "{seed} intervention opposite endpoint boundary condition",
-        "{seed} protocol expected result mismatch",
         "{seed} field experiment intervention null effect",
         "{seed} benchmark improvement replication failure",
+        "{seed} mechanism model human failed translation",
         "{seed} same intervention different modality adaptation",
     )
-    queries = [" ".join(seed.split()[:4]), seed, *(template.format(seed=seed) for template in templates if seed)]
+    queries = [" ".join(seed.split()[:4]), *(template.format(seed=seed) for template in templates if seed)]
     return tuple(dict.fromkeys(queries))[: max(1, limit)]
 
 

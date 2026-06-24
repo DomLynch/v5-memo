@@ -16,8 +16,8 @@ _PROMISE = frozenset({
 })
 _FAILURE = frozenset({
     "attenuate", "attenuated", "blunt", "blunted", "decrease", "decreased",
-    "failed", "failure", "impair", "impaired", "lower", "lowered", "null",
-    "reduce", "reduced", "worse", "worsened",
+    "failed", "failure", "impair", "impaired", "limited", "lower", "lowered",
+    "null", "reduce", "reduced", "unchanged", "worse", "worsened",
 })
 _MECHANISM = frozenset({
     "animal", "cell", "cells", "in-vitro", "mechanism", "mechanistic", "mice",
@@ -36,7 +36,10 @@ _BOUNDARY = frozenset({
 })
 _LIMITED_HUMAN = frozenset({
     "association", "biomarker", "disease", "open-label", "observational", "patient",
-    "patients", "pilot", "preliminary", "subgroup", "surrogate",
+    "patients", "pilot", "placebo", "preliminary", "primary", "subgroup", "surrogate",
+})
+_GATED = frozenset({
+    "baseline", "deficiency", "deficient", "healthy", "high", "low", "post-hoc", "posthoc",
 })
 _BAD_ANCHOR = frozenset({
     "associated", "background", "combination", "conclusion", "control", "divided",
@@ -95,11 +98,21 @@ def score_pair(pair: CandidatePair, *, topic_terms: frozenset[str] = frozenset()
     shape = "shared_anchor"
     first, second = a, b
 
-    if _has(at, _PROMISE) and _has(bt, _FAILURE) and _roles_fit("promise_reversal", a, b, topic_terms):
+    if _roles_fit("subgroup_endpoint_split", a, b, topic_terms):
+        score += 40
+        shape = "subgroup_endpoint_split"
+        reasons.append("primary_endpoint_or_subgroup_split")
+    elif _roles_fit("subgroup_endpoint_split", b, a, topic_terms):
+        score += 40
+        shape = "subgroup_endpoint_split"
+        reasons.append("primary_endpoint_or_subgroup_split")
+        first, second = b, a
+
+    if shape == "shared_anchor" and _has(at, _PROMISE) and _has(bt, _FAILURE) and _roles_fit("promise_reversal", a, b, topic_terms):
         score += 40
         shape = "promise_reversal"
         reasons.append("promise_to_negative_or_null")
-    elif _has(bt, _PROMISE) and _has(at, _FAILURE) and _roles_fit("promise_reversal", b, a, topic_terms):
+    elif shape == "shared_anchor" and _has(bt, _PROMISE) and _has(at, _FAILURE) and _roles_fit("promise_reversal", b, a, topic_terms):
         score += 40
         shape = "promise_reversal"
         reasons.append("promise_to_negative_or_null")
@@ -154,6 +167,11 @@ def _expectation_sentence(a: Paper, b: Paper, shape: str) -> str:
         return (
             f"{a.title} made us expect {anchor} had biology-level promise; "
             f"{b.title} forces the update that the human evidence is bounded by population or endpoint."
+        )
+    if shape == "subgroup_endpoint_split":
+        return (
+            f"{a.title} made us expect {anchor} would generalize across the target population; "
+            f"{b.title} forces the update that the response may be baseline-, subgroup-, or endpoint-gated."
         )
     return (
         f"{a.title} made us expect {anchor} would travel cleanly as a positive signal; "
@@ -215,6 +233,8 @@ def _roles_fit(shape: str, first: Paper, second: Paper, topic_terms: frozenset[s
             and _is_human(second)
             and _has(st, _LIMITED_HUMAN | _BOUNDARY)
         )
+    if shape == "subgroup_endpoint_split":
+        return _is_human(first) and _is_human(second) and _has(ft, _PROMISE) and _negative(st) and _has(st, _LIMITED_HUMAN | _GATED | _BOUNDARY)
     if shape == "protocol_result_mismatch":
         return _has(ft, _PROTOCOL) and _has(st, _RESULT | _FAILURE)
     if shape == "promise_reversal":
@@ -243,6 +263,10 @@ def _loose_tokens(paper: Paper) -> set[str]:
 
 def _has(tokens: set[str], needles: frozenset[str]) -> bool:
     return bool(tokens & needles)
+
+
+def _negative(tokens: set[str]) -> bool:
+    return _has(tokens, _FAILURE) or ("not" in tokens and _has(tokens, _PROMISE))
 
 
 def _human_topic(topic_terms: frozenset[str]) -> bool:

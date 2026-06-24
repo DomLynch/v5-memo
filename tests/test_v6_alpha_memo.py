@@ -29,8 +29,8 @@ def test_query_shapes_are_targeted_but_not_topic_whitelisted() -> None:
     assert len(queries) >= 6
     assert queries[0] == "marketing attribution incrementality"
     assert all("marketing attribution incrementality" in query for query in queries)
-    assert any("animal model human open-label trial" in query for query in queries)
-    assert any("protocol expected result mismatch" in query for query in queries)
+    assert any("randomized placebo no effect primary endpoint" in query for query in queries)
+    assert any("baseline subgroup high low response" in query for query in queries)
     assert any("replication failure" in query for query in queries)
 
 
@@ -124,6 +124,34 @@ def test_scores_translation_boundary_without_reversal() -> None:
     assert scored[0].shape == "translation_boundary"
     assert scored[0].score >= 70
     assert "bounded by population or endpoint" in scored[0].expectation_update
+
+
+def test_scores_subgroup_endpoint_split_without_manual_topic_fix() -> None:
+    papers = (
+        Paper(
+            "a",
+            "GlyNAC supplementation improves glutathione deficiency and mitochondrial dysfunction in older adults",
+            "A randomized human trial showed GlyNAC improved oxidative stress, mitochondrial dysfunction, and physical function.",
+            "openalex",
+            2023,
+            "10.test/glynac-positive-rct",
+        ),
+        Paper(
+            "b",
+            "GlyNAC did not improve primary glutathione endpoints in healthy older adults overall",
+            "Placebo-controlled trial results found total glutathione unchanged overall, with benefit only in a high oxidative stress low glutathione subgroup.",
+            "pubmed",
+            2022,
+            "10.test/glynac-null-rct",
+        ),
+    )
+
+    scored = score_pairs(mine_pairs(papers), topic_terms={"glynac", "aging", "human", "glutathione"})
+
+    assert scored
+    assert scored[0].shape == "subgroup_endpoint_split"
+    assert scored[0].score >= 75
+    assert "baseline-, subgroup-, or endpoint-gated" in scored[0].expectation_update
 
 
 def test_positive_only_human_overlap_does_not_publish_as_alpha() -> None:
