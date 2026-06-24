@@ -81,6 +81,18 @@ _ELITE_SHAPES = frozenset({
 _SYNTHESIS_TITLE_TERMS = frozenset({
     "consensus", "guideline", "meta", "position", "review", "stand", "systematic",
 })
+_NONPRIMARY_TITLE_TERMS = frozenset({
+    "abstract", "commentary", "corrigendum", "correction", "editorial", "erratum",
+    "retracted", "retraction", "supplement",
+})
+_MECHANISM_CONTEXT = frozenset({
+    "animal", "cell", "cells", "mechanism", "mechanistic", "mice", "mitochondrial",
+    "model", "mouse", "pathway", "preclinical", "rat", "rats",
+})
+_HUMAN_CONTEXT = frozenset({
+    "adult", "adults", "human", "humans", "men", "participants", "patient",
+    "patients", "placebo", "randomized", "trial", "women",
+})
 
 
 def mine_insights(
@@ -134,6 +146,17 @@ def mine_insights(
             tension_terms=tension_terms,
         )
         if not shape_reasons:
+            continue
+        if (
+            len(bridge) == 1
+            and set(shape_reasons) & _ELITE_SHAPES
+            and not _pair_topic_supported(
+                full_token_sets[left.hit_id],
+                full_token_sets[right.hit_id],
+                pair_anchor_terms,
+                shape_reasons,
+            )
+        ):
             continue
         elite_anchor_bridge = _has_elite_anchor_bridge(
             anchor_bridge,
@@ -340,6 +363,8 @@ def _shape_reasons(
     bridge_terms: tuple[str, ...],
     tension_terms: tuple[str, ...],
 ) -> tuple[str, ...]:
+    if _is_nonprimary_hit(left) or _is_nonprimary_hit(right):
+        return ()
     left_tokens = _tokens(left.text)
     right_tokens = _tokens(right.text)
     all_tokens = left_tokens | right_tokens
@@ -444,10 +469,36 @@ def _is_synthesis_hit(hit: CorpusHit) -> bool:
     return bool({_norm_token(raw) for raw in _WORD.findall(hit.title.casefold())} & _SYNTHESIS_TITLE_TERMS)
 
 
+def _is_nonprimary_hit(hit: CorpusHit) -> bool:
+    title_terms = {_norm_token(raw) for raw in _WORD.findall(hit.title.casefold())}
+    return bool(title_terms & _NONPRIMARY_TITLE_TERMS)
+
+
 def _has_role_split(left_words: frozenset[str], right_words: frozenset[str]) -> bool:
     return (
         bool(left_words & _PROMISE and right_words & _OUTCOME_ROLE)
         or bool(right_words & _PROMISE and left_words & _OUTCOME_ROLE)
+    )
+
+
+def _pair_topic_supported(
+    left: frozenset[str],
+    right: frozenset[str],
+    anchor_terms: frozenset[str],
+    shape_reasons: tuple[str, ...],
+) -> bool:
+    required = anchor_terms - _BRIDGE_STOP
+    if len(required) < 2:
+        return True
+    if len(left & right & required) >= 2:
+        return True
+    return bool(set(shape_reasons) & _ELITE_SHAPES) and _translation_reversal(left, right)
+
+
+def _translation_reversal(left: frozenset[str], right: frozenset[str]) -> bool:
+    return (
+        bool(left & _PROMISE and left & _MECHANISM_CONTEXT and right & _HUMAN_CONTEXT and right & (_NEGATIVE | _NULL))
+        or bool(right & _PROMISE and right & _MECHANISM_CONTEXT and left & _HUMAN_CONTEXT and left & (_NEGATIVE | _NULL))
     )
 
 

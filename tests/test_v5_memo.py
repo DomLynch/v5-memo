@@ -982,6 +982,48 @@ def test_miner_rejects_abstract_only_bridge_words_as_alpha() -> None:
     assert mine_insights(hits, topic="longevity skeletal muscle adaptation") == []
 
 
+def test_miner_rejects_single_name_bridge_when_topic_anchor_is_missing() -> None:
+    hits = [
+        _hit(
+            "pcos",
+            "Metformin activates SIRT2 to improve insulin resistance in polycystic ovary syndrome",
+            "Metformin improved granulosa cell glycolysis in a rat model of polycystic ovary syndrome.",
+        ),
+        _hit(
+            "fibrosis",
+            "Metformin suppresses oxidative stress in type 2 diabetic osteoporosis",
+            "Metformin reduced oxidative stress through Nrf2 signaling in diabetic osteoporosis.",
+        ),
+    ]
+
+    assert mine_insights(
+        hits,
+        topic="metformin resistance training adaptation",
+        required_anchor_terms=("metformin", "resistance"),
+    ) == []
+
+
+def test_miner_rejects_nonprimary_receipts_for_alpha() -> None:
+    hits = [
+        _hit(
+            "mechanism",
+            "Resveratrol activates mitochondrial exercise biology",
+            "Resveratrol improved mitochondrial function in an animal mechanism model.",
+        ),
+        _hit(
+            "corrigendum",
+            "Corrigendum: Resveratrol improves neurological outcome",
+            "Correction notice says resveratrol reduced inflammation.",
+        ),
+    ]
+
+    assert mine_insights(
+        hits,
+        topic="resveratrol exercise training adaptation",
+        required_anchor_terms=("resveratrol",),
+    ) == []
+
+
 def test_miner_rejects_pairs_from_unrelated_seed_queries() -> None:
     hits = [
         CorpusHit(
