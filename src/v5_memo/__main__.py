@@ -136,7 +136,7 @@ def main() -> None:
             limit=args.planner_limit,
         )
         if explicit_queries:
-            queries = _dedupe_queries((*base_queries, *planned))
+            queries = _dedupe_queries((*base_queries, *_alpha_shape_queries(base_queries), *planned))
         else:
             planned_queries = [query for query in planned if query not in set(base_queries)]
             queries = planned_queries or planned
@@ -174,6 +174,26 @@ def _dedupe_queries(queries: Sequence[str]) -> list[str]:
         seen.add(normalized)
         out.append(query)
     return out
+
+
+def _alpha_shape_queries(queries: Sequence[str]) -> list[str]:
+    out: list[str] = []
+    for query in queries:
+        clean = " ".join(query.split())
+        if not clean:
+            continue
+        out.extend([
+            f"no improvement {clean}",
+            f"blunted {clean}",
+            f"attenuated {clean}",
+        ])
+        tokens = [token.casefold() for token in clean.split() if len(token) > 2]
+        if "training" in tokens and {"adaptation", "adaptations"} & set(tokens):
+            core = [token for token in tokens if token not in {"adaptation", "adaptations", "resistance"}]
+            context = [token for token in core if token != "training"]
+            if context:
+                out.append(" ".join(("adaptations", *context, "training")))
+    return _dedupe_queries(out)
 
 
 if __name__ == "__main__":
