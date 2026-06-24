@@ -1131,6 +1131,7 @@ def run_server() -> None:
             hits = current_search(query, limit=limit, year_min=year_min, year_max=year_max)
             stats = current_stats()
             shards_total, shards_searched = current_shard_counts()
+            sources_searched = _source_counts(hits)
             explain = (
                 {"fts_match": query, "groups": []}
                 if shard_dir is not None
@@ -1150,6 +1151,7 @@ def run_server() -> None:
                     "shards_total": shards_total,
                     "shards_searched": shards_searched,
                     "partial_shard_search": shards_total > shards_searched,
+                    "sources_searched": sources_searched,
                 },
                 "results": hits,
             })
@@ -1158,6 +1160,16 @@ def run_server() -> None:
             return
 
     ThreadingHTTPServer((host, port), Handler).serve_forever()
+
+
+def _source_counts(hits: list[dict[str, object]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for hit in hits:
+        source = str(hit.get("source") or hit.get("raw_source") or hit.get("provider") or "").strip()
+        if source:
+            source = source.casefold()
+            counts[source] = counts.get(source, 0) + 1
+    return counts
 
 
 def main() -> None:

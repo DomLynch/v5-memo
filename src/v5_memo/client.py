@@ -592,7 +592,13 @@ def _full_raw_shard_receipt(data: Any) -> dict[str, object]:
         return {}
     receipt = meta.get("shard_receipt")
     if not isinstance(receipt, dict):
-        return {}
+        direct_keys = (
+            "shards_total",
+            "shards_searched",
+            "partial_shard_search",
+            "sources_searched",
+        )
+        receipt = {key: meta[key] for key in direct_keys if key in meta}
     return dict(receipt)
 
 

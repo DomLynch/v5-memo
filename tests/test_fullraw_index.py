@@ -364,6 +364,15 @@ def test_select_search_shard_paths_treats_balanced_as_spread(
     assert select_search_shard_paths(paths) == [paths[0], paths[2], paths[4]]
 
 
+def test_source_counts_normalizes_search_result_sources() -> None:
+    assert fullraw_index._source_counts([
+        {"source": "OpenAlex"},
+        {"raw_source": "semantic_scholar"},
+        {"provider": "pubmed"},
+        {"source": ""},
+    ]) == {"openalex": 1, "semantic_scholar": 1, "pubmed": 1}
+
+
 def test_read_only_index_searches_existing_shard(tmp_path: Path) -> None:
     shard = tmp_path / "fullraw_shard_0000.sqlite"
     raw_file = _raw_file(tmp_path, "openalex_readonly", [{

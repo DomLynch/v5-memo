@@ -226,6 +226,42 @@ def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
     assert hits[0].metadata["shard_receipt"] == receipt
 
 
+def test_full_raw_client_accepts_direct_meta_shard_receipt(monkeypatch: object) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del request, timeout
+        return FakeResponse({
+            "meta": {
+                "count": 1,
+                "shards_total": 100,
+                "shards_searched": 24,
+                "partial_shard_search": True,
+                "sources_searched": {"openalex": 1},
+            },
+            "results": [{
+                "doi": "10.123/direct-meta",
+                "title": "Metformin resistance training adaptation",
+                "abstract": "Metformin resistance training adaptation evidence.",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        min_shards_searched=12,
+        min_sources_searched=1,
+    )
+
+    hits = client.search("metformin resistance training adaptation", limit=3)
+
+    assert len(hits) == 1
+    receipt = cast(dict[str, object], hits[0].metadata["shard_receipt"])
+    assert receipt["shards_searched"] == 24
+    assert receipt["sources_searched"] == {"openalex": 1}
+
+
 def test_full_raw_client_preserves_source_diversity_after_rerank(monkeypatch: object) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del request, timeout
