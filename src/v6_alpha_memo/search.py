@@ -278,6 +278,9 @@ def _query_variants(query: str) -> tuple[str, ...]:
     variants = [" ".join(query.split())]
     if context_words:
         variants.append(" ".join(context_words))
+    context = [word for word in raw_words if word in _QUERY_CONTEXT_KEEP]
+    if context and words:
+        variants.append(f"{context[0]} {max(words, key=len)}")
     if words:
         variants.append(" ".join(words))
     if len(words) >= 2:
