@@ -606,6 +606,37 @@ def test_full_raw_client_can_fail_closed_on_narrow_shard_receipt(monkeypatch: ob
     assert client.search("management forecast disclosure", limit=3) == []
 
 
+def test_full_raw_client_can_require_complete_shard_receipt(monkeypatch: object) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del request, timeout
+        return FakeResponse({
+            "meta": {
+                "count": 1,
+                "shard_receipt": {
+                    "shards_total": 100,
+                    "shards_searched": 100,
+                    "partial_shard_search": True,
+                    "sources_searched": {"openalex": 50, "semantic_scholar": 50},
+                },
+            },
+            "results": [{
+                "doi": "10.123/partial",
+                "title": "Partial pull",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        require_complete_search=True,
+    )
+
+    assert client.search("management forecast disclosure", limit=3) == []
+
+
 def test_full_raw_client_strict_mode_continues_after_one_variant_error(
     monkeypatch: MonkeyPatch,
 ) -> None:

@@ -268,6 +268,7 @@ class FullRawCorpusSearchClient:
         doi_abstract_backfill_limit: int = 0,
         min_shards_searched: int = 0,
         min_sources_searched: int = 0,
+        require_complete_search: bool = False,
         progress: bool = False,
         strict: bool = False,
     ) -> None:
@@ -283,6 +284,7 @@ class FullRawCorpusSearchClient:
         self._doi_abstract_backfill_limit = max(0, doi_abstract_backfill_limit)
         self._min_shards_searched = max(0, min_shards_searched)
         self._min_sources_searched = max(0, min_sources_searched)
+        self._require_complete_search = require_complete_search
         self._progress = progress
         self._strict = strict
 
@@ -306,6 +308,7 @@ class FullRawCorpusSearchClient:
             ),
             min_shards_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", 0),
             min_sources_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", 0),
+            require_complete_search=_bool_env("V5_MEMO_FULL_RAW_REQUIRE_COMPLETE_SEARCH", False),
             progress=_bool_env("V5_MEMO_FULL_RAW_PROGRESS", False),
             strict=strict,
         )
@@ -492,7 +495,9 @@ class FullRawCorpusSearchClient:
 
     def _receipt_is_sufficient(self, receipt: dict[str, object]) -> bool:
         if not receipt:
-            return True
+            return not self._require_complete_search
+        if self._require_complete_search and receipt.get("partial_shard_search") is True:
+            return False
         shards = _int_or_none(receipt.get("shards_searched")) or 0
         if self._min_shards_searched and shards < self._min_shards_searched:
             return False
