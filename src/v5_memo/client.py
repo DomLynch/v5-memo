@@ -291,15 +291,22 @@ class FullRawCorpusSearchClient:
     @classmethod
     def from_env(cls, *, strict: bool = False) -> FullRawCorpusSearchClient:
         sweep_wait_seconds = _float_env("V5_MEMO_FULL_RAW_SWEEP_WAIT_SECONDS", 0.0)
-        sweep_wait_cap_seconds = _float_env("V5_MEMO_FULL_RAW_SWEEP_WAIT_CAP_SECONDS", 60.0)
+        sweep_wait_cap_seconds = min(
+            _float_env("V5_MEMO_FULL_RAW_SWEEP_WAIT_CAP_SECONDS", 20.0),
+            20.0,
+        )
         if sweep_wait_cap_seconds > 0:
             sweep_wait_seconds = min(sweep_wait_seconds, sweep_wait_cap_seconds)
+        search_budget_seconds = min(
+            _float_env("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", 180.0),
+            240.0,
+        )
         return cls(
             search_url=os.environ.get("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", ""),
             token=os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", ""),
             timeout=_float_env("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", 45.0),
             max_variants=_int_env("V5_MEMO_FULL_RAW_MAX_VARIANTS", 16),
-            search_budget_seconds=_float_env("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", 180.0),
+            search_budget_seconds=search_budget_seconds,
             sweep_wait_seconds=sweep_wait_seconds,
             sweep_poll_seconds=_float_env("V5_MEMO_FULL_RAW_SWEEP_POLL_SECONDS", 1.0),
             doi_abstract_backfill_limit=_int_env(

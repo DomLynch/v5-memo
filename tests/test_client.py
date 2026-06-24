@@ -700,19 +700,21 @@ def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> Non
     assert client._timeout == 120.0
     assert client._max_variants == 7
     assert client._search_budget_seconds == 30.0
-    assert client._sweep_wait_seconds == 60.0
+    assert client._sweep_wait_seconds == 20.0
     assert client._sweep_poll_seconds == 2.0
     assert client._progress is True
 
 
-def test_full_raw_client_allows_explicit_sweep_wait_cap(monkeypatch: MonkeyPatch) -> None:
+def test_full_raw_client_caps_stale_long_sweep_wait(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
-    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_WAIT_SECONDS", "120")
-    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_WAIT_CAP_SECONDS", "180")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", "7200")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_WAIT_SECONDS", "7200")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_WAIT_CAP_SECONDS", "7200")
 
     client = FullRawCorpusSearchClient.from_env()
 
-    assert client._sweep_wait_seconds == 120.0
+    assert client._search_budget_seconds == 240.0
+    assert client._sweep_wait_seconds == 20.0
 
 
 def test_full_raw_client_budget_stops_variant_fanout(
