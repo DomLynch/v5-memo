@@ -34,6 +34,10 @@ def test_query_shapes_are_targeted_but_not_topic_whitelisted() -> None:
     assert all("marketing attribution incrementality" in query for query in queries)
     assert "glynac glycine n-acetylcysteine supplementation mice length of life glutathione deficiency oxidative stress" in gero_queries
     assert "randomized controlled clinical trial healthy older adults determine efficacy glynac glycine n-acetylcysteine supplementation glutathione redox status oxidative damage" in gero_queries
+    assert gero_queries[:2] == (
+        "glynac glycine n-acetylcysteine supplementation mice length of life glutathione deficiency oxidative stress",
+        "randomized controlled clinical trial healthy older adults determine efficacy glynac glycine n-acetylcysteine supplementation glutathione redox status oxidative damage",
+    )
     assert any("randomized placebo no effect primary endpoint" in query for query in queries)
     assert any("baseline subgroup high low response" in query for query in queries)
     assert any("mechanism model human failed translation" in query for query in queries)

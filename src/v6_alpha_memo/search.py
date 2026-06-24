@@ -225,6 +225,9 @@ def query_shapes(seed: str, *, limit: int = 8) -> tuple[str, ...]:
     words = seed.split()
     lead = words[:3]
     gero = bool(_GERO_HINTS & {word.casefold() for word in words})
+    animal_query = " ".join((*lead, "supplementation", "mice", "length", "of", "life", "glutathione", "deficiency", "oxidative", "stress")) if lead else seed
+    rct_query = " ".join(("randomized", "controlled", "clinical", "trial", "healthy", "older", "adults", "determine", "efficacy", *lead, "supplementation", "glutathione", "redox", "status", "oxidative", "damage")) if lead else seed
+    healthy_query = " ".join(("healthy", "older", "adults", *words[1:3], words[-3], "redox")) if gero and len(words) > 5 else seed
     templates = (
         "{seed} randomized placebo no effect primary endpoint",
         "{seed} baseline subgroup high low response",
@@ -235,12 +238,7 @@ def query_shapes(seed: str, *, limit: int = 8) -> tuple[str, ...]:
         "{seed} benchmark improvement replication failure",
         "{seed} same intervention different modality adaptation",
     )
-    base = (
-        " ".join(words[:4]),
-        " ".join((*lead, "supplementation", "mice", "length", "of", "life", "glutathione", "deficiency", "oxidative", "stress")) if gero and lead else seed,
-        " ".join(("healthy", "older", "adults", *words[1:3], words[-3], "redox")) if len(words) > 5 else seed,
-        " ".join(("randomized", "controlled", "clinical", "trial", "healthy", "older", "adults", "determine", "efficacy", *lead, "supplementation", "glutathione", "redox", "status", "oxidative", "damage")) if gero and lead else seed,
-    )
+    base = (animal_query, rct_query, " ".join(words[:4]), healthy_query) if gero else (" ".join(words[:4]), seed)
     queries = [*base, *(template.format(seed=seed) for template in templates if seed)]
     return tuple(dict.fromkeys(queries))[: max(1, limit)]
 
