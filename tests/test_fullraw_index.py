@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import json
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -371,6 +372,26 @@ def test_source_counts_normalizes_search_result_sources() -> None:
         {"provider": "pubmed"},
         {"source": ""},
     ]) == {"openalex": 1, "semantic_scholar": 1, "pubmed": 1}
+
+
+def test_search_shards_respects_deadline(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    shard = tmp_path / "fullraw_shard_0000.sqlite"
+    shard.write_text("")
+
+    def slow_search(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+        time.sleep(1)
+        return [{"doi": "10.example/slow"}]
+
+    monkeypatch.setattr(fullraw_index, "_search_one_shard", slow_search)
+    started = time.monotonic()
+
+    hits = search_shards([shard], "slow query", deadline_seconds=0.01)
+
+    assert hits == []
+    assert time.monotonic() - started < 0.5
 
 
 def test_read_only_index_searches_existing_shard(tmp_path: Path) -> None:

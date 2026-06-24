@@ -16,7 +16,11 @@ import subprocess
 import threading
 import time
 from collections.abc import Iterable
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    as_completed,
+)
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -809,17 +813,20 @@ def search_shards(
     limit: int = 25,
     year_min: int = 1900,
     year_max: int = 2100,
+    deadline_seconds: float | None = None,
 ) -> list[dict[str, object]]:
     """Search multiple shard DBs and merge ranked, deduped results."""
     merged: dict[str, dict[str, object]] = {}
     paths = select_search_shard_paths([path for path in index_paths if path.exists()])
     workers = max(1, min(int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "8")), len(paths) or 1))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [
-            pool.submit(_search_one_shard, path, query, limit, year_min, year_max)
-            for path in paths
-        ]
-        for future in as_completed(futures):
+    pool = ThreadPoolExecutor(max_workers=workers)
+    futures = [
+        pool.submit(_search_one_shard, path, query, limit, year_min, year_max)
+        for path in paths
+    ]
+    try:
+        completed = as_completed(futures, timeout=deadline_seconds) if deadline_seconds else as_completed(futures)
+        for future in completed:
             try:
                 hits = future.result()
             except sqlite3.Error:
@@ -829,6 +836,12 @@ def search_shards(
                 existing = merged.get(key)
                 if existing is None or _hit_score(hit) > _hit_score(existing):
                     merged[key] = hit
+    except TimeoutError:
+        pass
+    finally:
+        for future in futures:
+            future.cancel()
+        pool.shutdown(wait=False, cancel_futures=True)
     return sorted(
         merged.values(),
         key=lambda hit: (_hit_score(hit), _int_or_none(hit.get("cited_by_count")) or 0),
@@ -1098,7 +1111,14 @@ def run_server() -> None:
             bytes_used=0,
         )
 
-    def current_search(query: str, *, limit: int, year_min: int, year_max: int) -> list[dict[str, object]]:
+    def current_search(
+        query: str,
+        *,
+        limit: int,
+        year_min: int,
+        year_max: int,
+        deadline_seconds: float | None = None,
+    ) -> list[dict[str, object]]:
         if shard_dir is not None:
             return search_shards(
                 current_shard_paths(),
@@ -1106,6 +1126,7 @@ def run_server() -> None:
                 limit=limit,
                 year_min=year_min,
                 year_max=year_max,
+                deadline_seconds=deadline_seconds,
             )
         assert index is not None
         return index.search(query, limit=limit, year_min=year_min, year_max=year_max)
@@ -1148,6 +1169,7 @@ def run_server() -> None:
                 limit = max(1, min(int(payload.get("limit") or payload.get("top_k") or 25), 200))
                 year_min = int(payload.get("year_min") or 1900)
                 year_max = int(payload.get("year_max") or 2100)
+                deadline_seconds = _float_or_none(payload.get("timeout_seconds"))
             except (TypeError, ValueError, json.JSONDecodeError):
                 _write_json(self, 400, {"error": "bad request"})
                 return
@@ -1155,7 +1177,13 @@ def run_server() -> None:
                 _write_json(self, 400, {"error": "query is required"})
                 return
             started = time.monotonic()
-            hits = current_search(query, limit=limit, year_min=year_min, year_max=year_max)
+            hits = current_search(
+                query,
+                limit=limit,
+                year_min=year_min,
+                year_max=year_max,
+                deadline_seconds=deadline_seconds,
+            )
             shards_total, shards_searched = current_shard_counts()
             stats = search_stats(shards_searched)
             sources_searched = _source_counts(hits)
