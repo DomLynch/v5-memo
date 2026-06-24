@@ -69,6 +69,9 @@ class SearchResult:
     receipt: CoverageReceipt
 
 
+_GERO_HINTS = frozenset({"aging", "glutathione", "mitochondrial", "oxidative", "redox"})
+
+
 class V5FullrawSearchClient:
     """Adapter over the proven V5 fullraw search/rerank client."""
 
@@ -220,21 +223,23 @@ def query_shapes(seed: str, *, limit: int = 8) -> tuple[str, ...]:
     """Turn a domain/topic seed into targeted novelty-search shapes."""
     seed = " ".join(seed.split())
     words = seed.split()
+    lead = words[:3]
+    gero = bool(_GERO_HINTS & {word.casefold() for word in words})
     templates = (
         "{seed} randomized placebo no effect primary endpoint",
         "{seed} baseline subgroup high low response",
+        "{seed} mechanism model human failed translation",
         "{seed} endpoint split randomized trial placebo",
         "{seed} intervention opposite endpoint boundary condition",
         "{seed} field experiment intervention null effect",
         "{seed} benchmark improvement replication failure",
-        "{seed} mechanism model human failed translation",
         "{seed} same intervention different modality adaptation",
     )
     base = (
         " ".join(words[:4]),
-        " ".join((words[0], "supplementation", "improves", words[-3], "deficiency", "oxidative", "stress")) if len(words) > 4 else seed,
+        " ".join((*lead, "supplementation", "mice", "length", "of", "life", "glutathione", "deficiency", "oxidative", "stress")) if gero and lead else seed,
         " ".join(("healthy", "older", "adults", *words[1:3], words[-3], "redox")) if len(words) > 5 else seed,
-        " ".join(("determine", "efficacy", *words[1:3], "supplementation", words[-3], "redox", "oxidative", "damage")) if len(words) > 5 else seed,
+        " ".join(("randomized", "controlled", "clinical", "trial", "healthy", "older", "adults", "determine", "efficacy", *lead, "supplementation", "glutathione", "redox", "status", "oxidative", "damage")) if gero and lead else seed,
     )
     queries = [*base, *(template.format(seed=seed) for template in templates if seed)]
     return tuple(dict.fromkeys(queries))[: max(1, limit)]
