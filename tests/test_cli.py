@@ -656,4 +656,4 @@ def test_planned_cli_keeps_full_query_recall_budget(
     main()
 
     assert "Alpha memo" in capsys.readouterr().out
-    assert seen == {"per_query_limit": 50, "max_hits": 500}
+    assert seen == {"per_query_limit": 25, "max_hits": 500}

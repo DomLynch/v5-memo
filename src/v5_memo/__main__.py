@@ -150,7 +150,7 @@ def main() -> None:
         memo_selector=memo_selector,
         anchor_queries=anchor_queries,
         min_alpha_tier=min_alpha_tier,
-        per_query_limit=50 if wider_recall else 25,
+        per_query_limit=25,
         max_hits=500 if wider_recall else 100,
     )
     print(result.markdown)
