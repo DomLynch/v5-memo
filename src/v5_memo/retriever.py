@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from typing import Protocol
 
+from v5_memo.client import SearchBackendError
 from v5_memo.schemas import CorpusHit
 
 
@@ -24,7 +25,11 @@ def collect_seed_hits(
     out: list[CorpusHit] = []
     query_limit = min(per_query_limit, max(1, -(-max_hits // max(1, len(seed_queries)))))
     for query in seed_queries:
-        for hit in searcher.search(query, limit=query_limit):
+        try:
+            query_hits = searcher.search(query, limit=query_limit)
+        except SearchBackendError:
+            continue
+        for hit in query_hits:
             key = hit.source_key
             if key in seen:
                 existing = out[seen[key]]
