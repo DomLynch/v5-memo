@@ -1024,6 +1024,27 @@ def test_miner_rejects_nonprimary_receipts_for_alpha() -> None:
     ) == []
 
 
+def test_miner_rejects_recommendation_receipts_for_alpha() -> None:
+    hits = [
+        _hit(
+            "pcos",
+            "Metformin activates SIRT2 to improve insulin resistance in polycystic ovary syndrome",
+            "Metformin improved granulosa cell glycolysis in a rat model of polycystic ovary syndrome.",
+        ),
+        _hit(
+            "recommendation",
+            "Faculty Opinions recommendation of Metformin blunts muscle hypertrophy",
+            "Faculty Opinions recommendation of the MASTERS trial in older adults.",
+        ),
+    ]
+
+    assert mine_insights(
+        hits,
+        topic="metformin resistance training adaptation",
+        required_anchor_terms=("metformin", "training"),
+    ) == []
+
+
 def test_miner_rejects_pairs_from_unrelated_seed_queries() -> None:
     hits = [
         CorpusHit(

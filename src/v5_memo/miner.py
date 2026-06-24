@@ -83,7 +83,8 @@ _SYNTHESIS_TITLE_TERMS = frozenset({
 })
 _NONPRIMARY_TITLE_TERMS = frozenset({
     "abstract", "commentary", "corrigendum", "correction", "editorial", "erratum",
-    "retracted", "retraction", "supplement",
+    "opinion", "opinions", "recommendation", "recommendations", "retracted",
+    "retraction", "supplement",
 })
 _MECHANISM_CONTEXT = frozenset({
     "animal", "cell", "cells", "mechanism", "mechanistic", "mice", "mitochondrial",
