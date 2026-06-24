@@ -1059,22 +1059,49 @@ def run_server() -> None:
     index = None if shard_dir else FullRawFtsIndex(index_path)
     if index is not None:
         index.initialize()
+    shard_catalog_ttl = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_CATALOG_TTL_SECONDS") or 0
+    shard_paths_cache: list[Path] = []
+    shard_paths_cached_at = 0.0
+
+    def current_shard_paths() -> list[Path]:
+        nonlocal shard_paths_cache, shard_paths_cached_at
+        if shard_dir is None:
+            return []
+        now = time.monotonic()
+        if shard_catalog_ttl and shard_paths_cache and now - shard_paths_cached_at < shard_catalog_ttl:
+            return shard_paths_cache
+        shard_paths_cache = discover_shard_paths(
+            shard_dir,
+            trust_filenames=trust_shard_filenames,
+        )
+        shard_paths_cached_at = now
+        return shard_paths_cache
 
     def current_stats() -> IndexStats:
         if shard_dir is not None:
             if shard_manifest_stats:
                 return aggregate_shard_manifest_stats(shard_dir, files_total=len(files))
             return aggregate_shard_stats(
-                discover_shard_paths(shard_dir, trust_filenames=trust_shard_filenames),
+                current_shard_paths(),
                 files_total=len(files),
             )
         assert index is not None
         return index.stats(files_total=len(files))
 
+    def search_stats(shards_searched: int) -> IndexStats:
+        if shard_dir is None:
+            return current_stats()
+        return IndexStats(
+            papers_indexed=0,
+            files_indexed=shards_searched,
+            files_total=len(files),
+            bytes_used=0,
+        )
+
     def current_search(query: str, *, limit: int, year_min: int, year_max: int) -> list[dict[str, object]]:
         if shard_dir is not None:
             return search_shards(
-                discover_shard_paths(shard_dir, trust_filenames=trust_shard_filenames),
+                current_shard_paths(),
                 query,
                 limit=limit,
                 year_min=year_min,
@@ -1086,7 +1113,7 @@ def run_server() -> None:
     def current_shard_counts() -> tuple[int, int]:
         if shard_dir is None:
             return (0, 0)
-        paths = discover_shard_paths(shard_dir, trust_filenames=trust_shard_filenames)
+        paths = current_shard_paths()
         return (len(paths), len(select_search_shard_paths(paths)))
 
     class Handler(BaseHTTPRequestHandler):
@@ -1129,8 +1156,8 @@ def run_server() -> None:
                 return
             started = time.monotonic()
             hits = current_search(query, limit=limit, year_min=year_min, year_max=year_max)
-            stats = current_stats()
             shards_total, shards_searched = current_shard_counts()
+            stats = search_stats(shards_searched)
             sources_searched = _source_counts(hits)
             explain = (
                 {"fts_match": query, "groups": []}
