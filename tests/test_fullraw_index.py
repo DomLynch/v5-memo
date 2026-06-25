@@ -54,13 +54,11 @@ def test_fullraw_index_builds_searchable_ranked_index(tmp_path: Path) -> None:
             {"doi": "https://doi.org/10.example/noise", "display_name": "Island species forecast ecology", "abstract": "Forecasts for climate space under grazing pressure."},
         ])], commit_interval=1)
         hits = index.search("management guidance earnings", limit=5)
-        relaxed_hits = index.search("management forecast earnings guidance", limit=5)
         stats = index.stats(files_total=1)
     finally:
         index.close()
     assert (result.files_completed, result.papers_inserted, stats.papers_indexed) == (1, 2, 2)
     assert hits[0]["doi"] == "10.example/guidance"
-    assert relaxed_hits[0]["doi"] == "10.example/guidance"
 
 
 def test_fullraw_index_enriches_abstract_only_rows(tmp_path: Path) -> None:

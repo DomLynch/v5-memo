@@ -273,6 +273,11 @@ def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) ->
                     "source": "semantic_scholar",
                 }],
             })
+        if len(payloads) == 3:
+            return FakeResponse({
+                "meta": {"count": 0, "async_sweep": {"status": "queued"}},
+                "results": [],
+            })
         return FakeResponse({
             "meta": {
                 "count": 1,
