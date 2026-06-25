@@ -991,6 +991,40 @@ def search_shard_entries(
     )
 
 
+def search_shard_entries_with_receipt(
+    entries: list[ShardCatalogEntry],
+    query: str,
+    *,
+    limit: int = 25,
+    year_min: int = 1900,
+    year_max: int = 2100,
+    rank_mode: str = "relevance",
+    workers: int | None = None,
+    timeout_seconds: float | None = None,
+    shard_timeout_seconds: float | None = None,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    selected = select_search_shard_entries(entries, query=query)
+    hits, completed_paths, timed_out, result_metrics = _search_shard_paths_with_paths_and_receipt(
+        [entry.path for entry in selected],
+        query,
+        limit=limit,
+        year_min=year_min,
+        year_max=year_max,
+        rank_mode=rank_mode,
+        workers=workers,
+        timeout_seconds=timeout_seconds,
+        shard_timeout_seconds=shard_timeout_seconds,
+    )
+    completed = set(completed_paths)
+    searched_entries = [entry for entry in selected if entry.path in completed]
+    receipt = shard_coverage_receipt(entries, searched_entries)
+    receipt["foreground_selected_shards"] = len(selected)
+    receipt["foreground_completed_shards"] = len(searched_entries)
+    receipt["foreground_timed_out"] = timed_out
+    receipt.update(result_metrics)
+    return hits, receipt
+
+
 def _search_shard_paths(
     paths: list[Path],
     query: str,
@@ -2439,7 +2473,7 @@ def run_server() -> None:
         assert index is not None
         return index.stats(files_total=len(files))
 
-    def current_search(
+    def current_search_with_receipt(
         query: str,
         *,
         limit: int,
@@ -2447,21 +2481,23 @@ def run_server() -> None:
         year_max: int,
         rank_mode: str,
         timeout_seconds: float | None,
-    ) -> list[dict[str, object]]:
+        ) -> tuple[list[dict[str, object]], dict[str, object]]:
         if shard_dir is not None:
-            catalog = current_catalog()
-            return search_shards(
-                [entry.path for entry in catalog],
+            return search_shard_entries_with_receipt(
+                current_catalog(),
                 query,
                 limit=limit,
                 year_min=year_min,
                 year_max=year_max,
                 rank_mode=rank_mode,
-                catalog=catalog,
                 timeout_seconds=timeout_seconds,
+                shard_timeout_seconds=timeout_seconds,
             )
         assert index is not None
-        return index.search(query, limit=limit, year_min=year_min, year_max=year_max, rank_mode=rank_mode)
+        return (
+            index.search(query, limit=limit, year_min=year_min, year_max=year_max, rank_mode=rank_mode),
+            {},
+        )
 
     def sweep_cache_get(key: str) -> SweepCacheEntry | None:
         with sweep_lock:
@@ -2804,7 +2840,7 @@ def run_server() -> None:
                         status, body = coverage_gate
                         _write_json(self, status, body)
                         return
-                    hits = current_search(
+                    hits, receipt = current_search_with_receipt(
                         query,
                         limit=limit,
                         year_min=year_min,

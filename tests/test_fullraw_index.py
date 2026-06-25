@@ -135,6 +135,33 @@ def test_shard_search_returns_partial_hits_on_timeout(tmp_path: Path, monkeypatc
     assert len(called) <= fullraw_index._FULL_COVERAGE_PREFIX_SHARDS
     assert many_paths[-1] not in called
 
+
+def test_foreground_receipt_counts_only_completed_shards(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    entries = [_entry(tmp_path, idx, "openalex") for idx in range(4)]
+
+    def partial_search(path: Path, *args: object, **kwargs: object) -> list[dict[str, object]]:
+        del args, kwargs
+        if path in {entries[0].path, entries[1].path}:
+            return [{"title": "Metformin diabetes", "source": "openalex"}]
+        raise OSError("timed out")
+
+    monkeypatch.setattr(fullraw_index, "_search_one_shard", partial_search)
+    hits, receipt = fullraw_index.search_shard_entries_with_receipt(
+        entries,
+        "metformin",
+        limit=5,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+    )
+
+    assert hits
+    assert receipt["foreground_selected_shards"] == 4
+    assert receipt["foreground_completed_shards"] == 2
+    assert receipt["shards_searched"] == 2
+    assert receipt["partial_shard_search"] is True
+
+
 def test_select_search_shard_entries_balances_sources_and_rotates_by_query(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     entries = [_entry(tmp_path, idx, "openalex" if idx < 4 else "pubmed") for idx in range(8)]
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "4")
