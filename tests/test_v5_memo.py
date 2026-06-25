@@ -629,27 +629,17 @@ def test_mechanism_promise_without_shared_axis_is_not_elite() -> None:
     assert candidate_alpha_tier(candidate) == "publishable_alpha"
 
 
-def test_single_anchor_drug_pair_is_not_elite_without_shared_axis() -> None:
+def test_metformin_resistance_pair_is_not_elite_without_training_context() -> None:
     hits = [
-        _hit(
-            "promise",
-            "Metformin activates SIRT2 in ovarian syndrome",
-            "Metformin activates SIRT2 and improves insulin resistance in an ovarian syndrome model.",
-        ),
-        _hit(
-            "outcome",
-            "Metformin blunts blood pressure adaptation during exercise training",
-            "Metformin blunted exercise training blood pressure adaptation in adults.",
-        ),
+        _hit("masters", "Metformin blunts muscle hypertrophy in response to progressive resistance exercise training", "Metformin reduced the hypertrophic response to resistance training."),
+        _hit("bipolar", "Metformin reversal of insulin resistance improves outcomes in bipolar disorder", "Metformin reversal of insulin resistance improved outcomes in bipolar disorder."),
     ]
-
     candidate = mine_insights(
         hits,
         topic="metformin resistance training adaptation",
         required_anchor_terms=("metformin",),
     )[0]
-
-    assert candidate.bridge_terms == ("metformin",)
+    assert candidate.bridge_terms == ("metformin", "resistance")
     assert candidate_alpha_tier(candidate) == "publishable_alpha"
     assert not meets_publish_bar(candidate, "elite_alpha")
 

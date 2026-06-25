@@ -152,6 +152,11 @@ def mine_insights(
             continue
         if not _pair_has_topic_context(left, right, topic_context_terms, shape_reasons):
             continue
+        incomplete_elite_context = bool(
+            set(shape_reasons) & _ELITE_SHAPES
+            and topic_context_terms
+            and not _pair_has_full_topic_context(left, right, topic_context_terms)
+        )
         if anchor_terms and set(shape_reasons) & _ELITE_SHAPES and not anchor_bridge:
             continue
         coupling_reasons = _coupling_reasons(
@@ -177,7 +182,9 @@ def mine_insights(
         if set(shape_reasons) == {"shape:directional_reversal"} and len(bridge) < 2:
             continue
         tier = _alpha_tier(shape_reasons)
-        if tier == "elite_alpha" and _is_anchor_only_bridge(bridge, pair_anchor_terms):
+        if tier == "elite_alpha" and (
+            incomplete_elite_context or _is_anchor_only_bridge(bridge, pair_anchor_terms)
+        ):
             tier = "publishable_alpha"
         if tier == "elite_alpha" and (
             _is_weak_elite_receipt(left) or _is_weak_elite_receipt(right)
@@ -261,8 +268,28 @@ def _has_topic_context(hit: CorpusHit, context_terms: frozenset[str]) -> bool:
     if _tokens(hit.title) & context_terms:
         return True
     hit_terms = _tokens(hit.text)
+    hit_terms = _expanded_context_terms(hit_terms)
     required = 1 if len(context_terms) == 1 else 2
     return len(hit_terms & context_terms) >= required
+
+
+def _pair_has_full_topic_context(
+    left: CorpusHit,
+    right: CorpusHit,
+    context_terms: frozenset[str],
+) -> bool:
+    return _has_topic_context(left, context_terms) and _has_topic_context(right, context_terms)
+
+
+def _expanded_context_terms(terms: frozenset[str]) -> frozenset[str]:
+    expanded = set(terms)
+    if "strength" in terms:
+        expanded.add("resistance")
+    if terms & {"aerobic", "running"}:
+        expanded.update({"exercise", "training"})
+    if "exercise" in terms:
+        expanded.add("training")
+    return frozenset(expanded)
 
 
 def _coupling_reasons(
