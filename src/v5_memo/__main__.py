@@ -26,36 +26,15 @@ from v5_memo.schemas import CorpusHit
 from v5_memo.writer import render_memo
 
 _TOPIC_TERM_RE = re.compile(r"[a-z][a-z0-9]{2,}")
-_TOPIC_FILTER_DROP = frozenset({
-    "adaptation",
-    "adaptations",
-    "adult",
-    "adults",
-    "aging",
-    "effect",
-    "effects",
-    "evidence",
-    "healthspan",
-    "human",
-    "humans",
-    "intervention",
-    "longevity",
-    "mechanism",
-    "mechanisms",
-    "older",
-    "outcome",
-    "outcomes",
-    "pharmacology",
-    "response",
-    "responses",
-    "reversal",
-    "study",
-    "studies",
-    "supplement",
-    "supplementation",
-    "trial",
-    "trials",
-})
+_TOPIC_FILTER_DROP = frozenset(
+    (
+        "adaptation", "adaptations", "adult", "adults", "aging", "effect", "effects",
+        "evidence", "healthspan", "human", "humans", "intervention", "longevity",
+        "mechanism", "mechanisms", "older", "outcome", "outcomes", "pharmacology",
+        "response", "responses", "reversal", "study", "studies", "supplement",
+        "supplementation", "trial", "trials",
+    )
+)
 _SHAPE_CONTEXT_TERMS = frozenset({"exercise", "resistance", "strength", "training"})
 
 
