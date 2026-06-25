@@ -212,6 +212,42 @@ def test_sweep_cache_entry_ready_rejects_insufficient_partial_hits() -> None:
     )
 
 
+def test_sweep_cache_can_answer_normal_agent_request() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Metformin for Longevity and Sarcopenia"}],
+        receipt={
+            "shards_searched": 169,
+            "shards_total": 1525,
+            "partial_shard_search": True,
+            "sources_searched": {
+                "biorxiv": 13,
+                "openalex": 64,
+                "pubmed": 44,
+                "semantic_scholar": 56,
+                "semantic_scholar_abstracts": 5,
+            },
+        },
+    )
+
+    assert fullraw_index.sweep_cache_entry_can_answer_request(
+        entry,
+        min_shards_searched=150,
+        min_sources_searched=5,
+    )
+    assert not fullraw_index.sweep_cache_entry_can_answer_request(
+        entry,
+        resume_cached=True,
+        min_shards_searched=150,
+        min_sources_searched=5,
+    )
+    assert not fullraw_index.sweep_cache_entry_can_answer_request(
+        entry,
+        min_shards_searched=512,
+        min_sources_searched=5,
+    )
+
+
 def test_select_search_shard_entries_balances_sources_and_rotates_by_query(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     entries = [_entry(tmp_path, idx, "openalex" if idx < 4 else "pubmed") for idx in range(8)]
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "4")
