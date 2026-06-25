@@ -1002,9 +1002,19 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
     if not anchor and len(terms) > 3 and add("broad", " ".join(terms[:3])):
         return out
     pair_limit = max(0, limit - len(out) - (1 if anchor and limit <= 5 else 0))
-    for variant in _fullraw_pair_variants(query, limit=pair_limit):
+    pair_added = False
+    for variant in _fullraw_pair_variants(query, limit=limit * 2 if anchor else pair_limit):
+        if anchor and anchor not in _query_terms(variant):
+            continue
+        before = len(out)
         if add("broad", variant):
             return out
+        if len(out) > before:
+            pair_added = True
+        if pair_added and anchor:
+            break
+    if pair_added:
+        return out
     if anchor and add("anchor", anchor):
         return out
     if add("adjacent", f"{query} mechanism outcome"):
