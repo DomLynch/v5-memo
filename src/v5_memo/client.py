@@ -989,13 +989,13 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
         out.append(FullRawSearchPass(name=name, query=clean, rank_mode=rank_mode))
         return len(out) >= limit
 
+    core_variant = _fullraw_core_variant(query)
+    if core_variant and add("core", core_variant):
+        return out
     window_limit = max(1, min(4, limit - 4 if limit > 5 else 1))
     for index, variant in enumerate(_query_variants(query, limit=window_limit)):
         if add("focused" if index == 0 else "broad", variant):
             return out
-    core_variant = _fullraw_core_variant(query)
-    if core_variant and add("core", core_variant):
-        return out
     terms = _query_terms(query)
     first = (terms or ("",))[0]
     anchor = first if (len(first) <= 3 or len(first) >= 6) and first not in _FULLRAW_PAIR_DROP and not first.endswith(("tion", "sion", "ity", "ary", "acy", "ness")) else ""

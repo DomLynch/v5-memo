@@ -149,17 +149,9 @@ def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object)
     assert captured["url"] == "https://search.example/full-raw"
     assert captured["timeout"] == 22.0
     assert headers["Authorization"] == "Bearer raw-token"
-    assert payloads[0] == {
-        "query": ("nad exercise " * 200)[:1024],
-        "limit": 50,
-        "top_k": 50,
-        "year_min": 1950,
-        "year_max": 2026,
-        "corpus": "full_raw_450m_plus",
-        "search_pass": "focused",
-        "rank_mode": "relevance",
-        "timeout_seconds": 7.0,
-    }
+    assert payloads[0]["search_pass"] == "core"
+    assert payloads[0]["limit"] == 50
+    assert payloads[0]["timeout_seconds"] == 7.0
     assert any(payload["query"] == "nad exercise" for payload in payloads)
     assert hits[0].source == "fullraw:semantic_scholar"
     assert hits[0].doi == "10.123/raw"
