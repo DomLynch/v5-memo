@@ -2611,11 +2611,18 @@ def run_server() -> None:
         threading.Thread(target=worker, daemon=True).start()
         return "queued"
 
+    def auth_receipt(receipt: dict[str, object]) -> dict[str, object]:
+        return {
+            **receipt,
+            "auth_required": bool(token),
+            "authenticated": bool(token),
+        }
+
     def current_receipt(query: str) -> dict[str, object]:
         if shard_dir is None:
-            return {}
+            return auth_receipt({})
         catalog = current_catalog()
-        return shard_coverage_receipt(catalog, select_search_shard_entries(catalog, query=query))
+        return auth_receipt(shard_coverage_receipt(catalog, select_search_shard_entries(catalog, query=query)))
 
     def coverage_requirements() -> dict[str, int]:
         return {

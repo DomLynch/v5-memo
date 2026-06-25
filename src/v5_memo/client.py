@@ -269,6 +269,7 @@ class FullRawCorpusSearchClient:
         doi_abstract_backfill_limit: int = 0,
         min_shards_searched: int = 0,
         min_sources_searched: int = 0,
+        require_auth: bool = False,
         progress: bool = False,
         strict: bool = False,
     ) -> None:
@@ -284,14 +285,16 @@ class FullRawCorpusSearchClient:
         self._doi_abstract_backfill_limit = max(0, doi_abstract_backfill_limit)
         self._min_shards_searched = max(0, min_shards_searched)
         self._min_sources_searched = max(0, min_sources_searched)
+        self._require_auth = require_auth
         self._progress = progress
         self._strict = strict
 
     @classmethod
     def from_env(cls, *, strict: bool = False) -> FullRawCorpusSearchClient:
+        token = os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "").strip()
         return cls(
             search_url=os.environ.get("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", ""),
-            token=os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", ""),
+            token=token,
             timeout=min(_float_env("V5_MEMO_FULL_RAW_QUERY_TIMEOUT", _float_env("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", 15.0)), 30.0),
             max_variants=min(_int_env("V5_MEMO_FULL_RAW_MAX_VARIANTS", 16), 4),
             search_budget_seconds=min(_float_env("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", 180.0), 900.0),
@@ -303,6 +306,7 @@ class FullRawCorpusSearchClient:
             ),
             min_shards_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", 0),
             min_sources_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", 0),
+            require_auth=_bool_env("V5_MEMO_FULL_RAW_REQUIRE_AUTH", bool(token)),
             progress=_bool_env("V5_MEMO_FULL_RAW_PROGRESS", False),
             strict=strict,
         )
@@ -378,10 +382,17 @@ class FullRawCorpusSearchClient:
                     best[scored.source_key] = (score, scored)
         self._log_progress(f"fullraw query done in {time.monotonic() - started:.1f}s; hits={len(best)}")
         duplicate_rate = round(duplicate_seen / total_seen, 4) if total_seen else 0.0
+        auth_receipts: list[dict[str, object]] = []
+        for _, hit in best.values():
+            raw_receipt = hit.metadata.get("shard_receipt")
+            if isinstance(raw_receipt, dict):
+                auth_receipts.append(raw_receipt)
         receipt = {
             "duplicate_rate": duplicate_rate,
             "search_passes": tuple(dict.fromkeys(passes_run)),
             "rank_modes": tuple(dict.fromkeys(rank_modes_run)),
+            "auth_required": any(receipt.get("auth_required") is True for receipt in auth_receipts),
+            "authenticated": any(receipt.get("authenticated") is True for receipt in auth_receipts),
         }
         ranked_hits = [
             replace(hit, metadata={**hit.metadata, "fullraw_search_receipt": receipt})
@@ -494,6 +505,8 @@ class FullRawCorpusSearchClient:
         return {}
 
     def _receipt_is_sufficient(self, receipt: dict[str, object]) -> bool:
+        if self._require_auth and receipt.get("authenticated") is not True:
+            return False
         if not receipt:
             return True
         shards = _int_or_none(receipt.get("shards_searched")) or 0
