@@ -236,7 +236,7 @@ def _alpha_shape_queries(topic: str) -> list[str]:
     rest = " ".join(terms[split_at:])
     return [
         f"{anchor} augment {rest} protocol",
-        f"{anchor} blunted impaired attenuated {rest}",
+        f"{anchor} blunts {rest}",
     ]
 
 
