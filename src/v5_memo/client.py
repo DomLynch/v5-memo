@@ -58,7 +58,6 @@ _FULLRAW_PAIR_DROP = _FULLRAW_CORE_DROP | {
     "trained",
     "expected",
 }
-_FULLRAW_WEAK_PAIR_TERMS = {"resistance", "strength", "training"}
 _DOI_BACKFILL_PRIORITY_TERMS = {
     "attenuate",
     "attenuated",
@@ -316,7 +315,7 @@ class FullRawCorpusSearchClient:
         if not self._search_url or not search_passes:
             return []
         seed_terms = _query_terms(query)
-        anchor_terms = tuple(term for term in seed_terms if len(term) >= 4 and term not in _FULLRAW_PAIR_DROP and term not in _FULLRAW_WEAK_PAIR_TERMS)
+        anchor_terms = tuple(term for term in seed_terms if len(term) >= 4 and term not in _FULLRAW_PAIR_DROP)
         per_variant_limit = max(5, min(limit, 50))
         best: dict[str, tuple[float, CorpusHit]] = {}
         total_seen = 0
@@ -953,7 +952,7 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
         return out
     anchor = ""
     for term in _query_terms(query):
-        if len(term) >= 6 and term not in _FULLRAW_PAIR_DROP and term not in _FULLRAW_WEAK_PAIR_TERMS:
+        if len(term) >= 6 and term not in _FULLRAW_PAIR_DROP:
             anchor = term
             break
     pair_limit = max(0, limit - len(out) - (1 if anchor and limit <= 5 else 0))
@@ -1005,19 +1004,16 @@ def _fullraw_pair_variants(query: str, *, limit: int) -> list[str]:
         out.append(pair)
         return len(out) >= limit
 
-    if len(terms) > 2:
-        anchor = terms[0]
-        for term in terms[1:]:
-            if add(anchor, term):
-                return out
-    for gap in range(1, len(terms)):
-        for start in range(0, len(terms) - gap):
-            left = terms[start]
-            right = terms[start + gap]
-            if left in _FULLRAW_WEAK_PAIR_TERMS and right in _FULLRAW_WEAK_PAIR_TERMS:
-                continue
-            if add(left, right):
-                return out
+    first = terms[0] if terms else ""
+    pairs: list[tuple[int, int, int, str, str]] = []
+    for left_idx, left in enumerate(terms):
+        for right_idx in range(left_idx + 1, len(terms)):
+            right = terms[right_idx]
+            first_bonus = 8 if left == first and (len(first) <= 3 or len(first) >= 6) else 0
+            pairs.append((len(left) + len(right) + first_bonus, left_idx - right_idx, -left_idx, left, right))
+    for *_score, left, right in sorted(pairs, reverse=True):
+        if add(left, right):
+            return out
     return out
 
 
