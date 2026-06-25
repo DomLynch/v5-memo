@@ -531,7 +531,7 @@ def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) ->
 
 def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
-    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", "120")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", "999")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_MAX_VARIANTS", "7")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", "7200")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_WAIT_SECONDS", "7200")
@@ -540,7 +540,7 @@ def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> Non
 
     client = FullRawCorpusSearchClient.from_env()
 
-    assert client._timeout == 120.0
+    assert client._timeout == 240.0
     assert client._max_variants == 4
     assert client._search_budget_seconds == 900.0
     assert client._sweep_wait_seconds == 120.0
