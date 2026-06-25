@@ -291,10 +291,10 @@ class FullRawCorpusSearchClient:
         return cls(
             search_url=os.environ.get("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", ""),
             token=os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", ""),
-            timeout=min(_float_env("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", 45.0), 45.0),
+            timeout=min(_float_env("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", 45.0), 120.0),
             max_variants=min(_int_env("V5_MEMO_FULL_RAW_MAX_VARIANTS", 16), 4),
-            search_budget_seconds=min(_float_env("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", 180.0), 240.0),
-            sweep_wait_seconds=min(_float_env("V5_MEMO_FULL_RAW_SWEEP_WAIT_SECONDS", 0.0), 20.0),
+            search_budget_seconds=min(_float_env("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", 180.0), 900.0),
+            sweep_wait_seconds=min(_float_env("V5_MEMO_FULL_RAW_SWEEP_WAIT_SECONDS", 0.0), 120.0),
             sweep_poll_seconds=_float_env("V5_MEMO_FULL_RAW_SWEEP_POLL_SECONDS", 1.0),
             doi_abstract_backfill_limit=_int_env(
                 "V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT",
