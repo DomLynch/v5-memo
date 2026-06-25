@@ -230,6 +230,36 @@ def test_full_raw_rerank_prefers_title_owned_hits_over_abstract_only_hits() -> N
         rank=1,
     )
 
+def test_full_raw_client_filters_hits_without_rare_query_anchor(monkeypatch: object) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del request, timeout
+        return FakeResponse({
+            "meta": {"count": 2},
+            "results": [
+                {
+                    "doi": "10.123/generic",
+                    "title": "Resistance training adaptation",
+                    "abstract": "Resistance training adaptation in older adults.",
+                    "year": 2024,
+                    "source": "openalex",
+                },
+                {
+                    "doi": "10.123/metformin",
+                    "title": "Metformin blunts resistance training adaptation",
+                    "abstract": "Metformin altered resistance training adaptation.",
+                    "year": 2024,
+                    "source": "openalex",
+                },
+            ],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=1)
+
+    hits = client.search("metformin resistance training adaptation", limit=5)
+
+    assert [hit.doi for hit in hits] == ["10.123/metformin"]
+
 def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) -> None:
     payloads: list[dict[str, object]] = []
     timeouts: list[float] = []

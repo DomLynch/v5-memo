@@ -44,6 +44,8 @@ _FULLRAW_CORE_DROP = {
     "responses",
     "result",
     "results",
+    "recovery",
+    "hypertrophy",
 }
 _FULLRAW_PAIR_DROP = _FULLRAW_CORE_DROP | {
     "adult",
@@ -315,6 +317,11 @@ class FullRawCorpusSearchClient:
         if not self._search_url or not search_passes:
             return []
         seed_terms = _query_terms(query)
+        anchor_terms = tuple(
+            term
+            for term in seed_terms
+            if len(term) >= 4 and term not in _FULLRAW_PAIR_DROP and term not in _FULLRAW_WEAK_PAIR_TERMS
+        )
         per_variant_limit = max(5, min(limit, 50))
         best: dict[str, tuple[float, CorpusHit]] = {}
         total_seen = 0
@@ -355,6 +362,8 @@ class FullRawCorpusSearchClient:
             )
             variant_terms = _query_terms(search_pass.query)
             for rank, hit in enumerate(hits, start=1):
+                if anchor_terms and not any(term in hit.text.casefold() for term in anchor_terms):
+                    continue
                 total_seen += 1
                 if hit.source_key in best:
                     duplicate_seen += 1
