@@ -51,7 +51,7 @@ _STOP = frozenset(
     ).split()
 )
 _BACKEND = "v5-fullraw-indexed-fts5"
-_FULL_COVERAGE_PREFIX_SHARDS = 128
+_FULL_COVERAGE_PREFIX_SHARDS = max(1, int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS") or os.environ.get("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "128")))
 _SWEEP_STRATEGY = "profile_relaxed_v5"
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _DEFAULT_TERM_MAP = (
