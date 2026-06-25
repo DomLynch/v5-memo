@@ -1496,6 +1496,8 @@ def _profiled_spread_entries(
         return _spread_entries(rotated, limit)
     selected: list[ShardCatalogEntry] = []
     query_terms = set(_fts_terms(query))
+    if query_terms and not any(query_terms & set(entry.topic_terms) for entry in entries):
+        return _spread_entries(rotated, limit)
     if query_terms:
         relevant = sorted(
             rotated,

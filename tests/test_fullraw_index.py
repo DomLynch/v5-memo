@@ -135,10 +135,7 @@ def test_shard_search_returns_partial_hits_on_timeout(tmp_path: Path, monkeypatc
     assert len(called) <= fullraw_index._FULL_COVERAGE_PREFIX_SHARDS
     assert many_paths[-1] not in called
 
-def test_select_search_shard_entries_balances_sources_and_rotates_by_query(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_select_search_shard_entries_balances_sources_and_rotates_by_query(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     entries = [_entry(tmp_path, idx, "openalex" if idx < 4 else "pubmed") for idx in range(8)]
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "4")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "balanced")
@@ -146,6 +143,7 @@ def test_select_search_shard_entries_balances_sources_and_rotates_by_query(
     resveratrol = select_search_shard_entries(entries, query="resveratrol exercise")
     assert {entry.sources[0] for entry in metformin} == {"openalex", "pubmed"}
     assert [entry.path for entry in metformin] != [entry.path for entry in resveratrol]
+    assert fullraw_index._profiled_spread_entries(entries, 4, query="cold immersion") == fullraw_index._spread_entries(fullraw_index._rotate_entries(entries, fullraw_index._query_offset("cold immersion", len(entries))), 4)
 
 
 def test_search_shard_selection_honors_minimum_coverage(
