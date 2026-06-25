@@ -2715,7 +2715,7 @@ def run_server() -> None:
                 and not (cached.hits or _int_or_none(cached.receipt.get("sweep_remaining_shards")) == 0)
             )
             sweep_status = "disabled"
-            if cached is not None and (cached.hits or _int_or_none(cached.receipt.get("sweep_remaining_shards")) == 0) and not resume_cached:
+            if cached is not None and cached.hits and not resume_cached:
                 hits = cached.hits
                 receipt = cached.receipt
                 sweep_status = "hit"
@@ -2815,7 +2815,7 @@ def run_server() -> None:
                         rank_mode=rank_mode,
                         catalog=catalog,
                     )
-                    if sweep_status == "hit" and (cached := sweep_cache_get(cache_key)) is not None:
+                    if sweep_status == "hit" and (cached := sweep_cache_get(cache_key)) is not None and cached.hits:
                         hits = cached.hits
                         receipt = cached.receipt
             coverage_gate = shard_coverage_gate_response(
