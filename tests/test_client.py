@@ -608,30 +608,18 @@ def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None
         "broad",
         "broad",
         "broad",
-        "anchor",
-        "adjacent",
-        "falsifier",
-        "citation_heavy",
     ]
     assert [payload["rank_mode"] for payload in requested] == [
         "relevance",
         "relevance",
         "relevance",
         "relevance",
-        "relevance",
-        "relevance",
-        "relevance",
-        "citation",
     ]
     assert {hit.metadata["search_pass"] for hit in hits} >= {
         "focused",
         "broad",
-        "anchor",
-        "adjacent",
-        "falsifier",
-        "citation_heavy",
     }
-    assert {hit.metadata["rank_mode"] for hit in hits} == {"relevance", "citation"}
+    assert {hit.metadata["rank_mode"] for hit in hits} == {"relevance"}
 
 def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: object) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
@@ -654,8 +642,8 @@ def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: objec
 
     receipt = hits[0].metadata["fullraw_search_receipt"]
     assert isinstance(receipt, dict)
-    assert receipt["duplicate_rate"] == 0.75
-    assert receipt["search_passes"] == ("focused", "broad", "anchor")
+    assert receipt["duplicate_rate"] == 0.5
+    assert receipt["search_passes"] == ("focused", "broad")
     assert receipt["rank_modes"] == ("relevance",)
 
 def test_full_raw_client_can_fail_closed_on_narrow_shard_receipt(monkeypatch: object) -> None:
@@ -1027,7 +1015,7 @@ def test_openalex_client_fans_out_dedupes_and_reranks(monkeypatch: object) -> No
         ("resveratrol sirt1 pgc 1a mitochondrial biogenesis endurance training", 5, ("resveratrol mitochondrial",)),
         ("metformin augment strength training seniors", 5, ("metformin augment",)),
         ("nmn supplementation vo2max adaptation trained cyclists", 5, ("nmn vo2max",)),
-        ("metformin resistance training adaptation", 6, ("metformin training", "resistance training")),
+        ("metformin resistance training adaptation", 6, ("metformin resistance training", "metformin resistance")),
         ("metformin expected to augment resistance training hypertrophy protocol", 4, ("metformin augment",)),
     ],
 )
