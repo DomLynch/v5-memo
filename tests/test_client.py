@@ -2,6 +2,7 @@ import json
 import urllib.parse
 from email.message import Message
 from http.client import RemoteDisconnected
+from io import BytesIO
 from typing import cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
@@ -424,6 +425,51 @@ def test_full_raw_client_does_not_wait_on_unknown_non_strict_empty_response(
 
     assert client.search("resveratrol exercise training", limit=3) == []
     assert [payload.get("cache_only") for payload in payloads] == [None]
+
+
+def test_full_raw_client_recovers_non_strict_coverage_error_from_sweep(
+    monkeypatch: object,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        payloads.append(payload)
+        if payload.get("cache_only") is True:
+            return FakeResponse({
+                "meta": {
+                    "count": 1,
+                    "shard_receipt": {"shards_searched": 32, "sources_searched": {"openalex": 32}},
+                    "async_sweep": {"status": "hit"},
+                },
+                "results": [{"doi": "10.123/metformin", "title": "Metformin longevity evidence", "source": "openalex"}],
+            })
+        body = json.dumps({
+            "error": "coverage_too_narrow",
+            "shard_receipt": {"shards_searched": 0, "sources_searched": {}},
+        }).encode("utf-8")
+        raise HTTPError(
+            url="https://search.example/full-raw",
+            code=422,
+            msg="coverage_too_narrow",
+            hdrs=Message(),
+            fp=BytesIO(body),
+        )
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        sweep_wait_seconds=1.0,
+        min_shards_searched=1,
+        min_sources_searched=1,
+    )
+
+    hits = client.search("metformin longevity", limit=3)
+
+    assert [payload.get("cache_only") for payload in payloads] == [None, True]
+    assert hits[0].doi == "10.123/metformin"
 
 
 def test_full_raw_client_keeps_prior_hits_when_later_strict_variant_fails(monkeypatch: object) -> None:

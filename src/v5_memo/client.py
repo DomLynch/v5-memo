@@ -435,11 +435,12 @@ class FullRawCorpusSearchClient:
         receipt = _full_raw_shard_receipt(data)
         sweep_status = _full_raw_async_sweep_status(data)
         can_wait_for_sweep = initial_error is not None or sweep_status in {"miss", "queued", "running"}
+        coverage_error = isinstance(data, dict) and data.get("error") == "coverage_too_narrow"
         if (
             self._sweep_wait_seconds
             and search_pass.name in {"focused", "core"}
             and (not _parse_full_raw_search_response(data) or not self._receipt_is_sufficient(receipt))
-            and can_wait_for_sweep
+            and (can_wait_for_sweep or coverage_error)
         ):
             cached = self._wait_for_sweep_hit(payload)
             if cached is not None:
@@ -505,7 +506,14 @@ class FullRawCorpusSearchClient:
                 if self._strict:
                     raise SearchBackendError(f"Full raw corpus search failed: {exc}") from exc
                 return {}
-            except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+            except HTTPError as exc:
+                body = _read_http_error_json(exc)
+                if isinstance(body, dict) and body.get("error") == "coverage_too_narrow":
+                    return body
+                if self._strict:
+                    raise SearchBackendError(f"Full raw corpus search failed: {exc}") from exc
+                return {}
+            except (URLError, TimeoutError, ValueError) as exc:
                 if self._strict:
                     raise SearchBackendError(f"Full raw corpus search failed: {exc}") from exc
                 return {}
@@ -597,6 +605,9 @@ def _parse_full_raw_search_response(data: Any) -> list[CorpusHit]:
 def _full_raw_shard_receipt(data: Any) -> dict[str, object]:
     if not isinstance(data, dict):
         return {}
+    direct_receipt = data.get("shard_receipt")
+    if isinstance(direct_receipt, dict):
+        return dict(direct_receipt)
     meta = data.get("meta")
     if not isinstance(meta, dict):
         return {}
@@ -617,6 +628,13 @@ def _full_raw_async_sweep_status(data: Any) -> str:
         return ""
     status = async_sweep.get("status")
     return status if isinstance(status, str) else ""
+
+
+def _read_http_error_json(exc: HTTPError) -> Any:
+    try:
+        return json.loads(exc.read().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return {}
 
 
 def _parse_openalex_response(data: Any) -> list[CorpusHit]:

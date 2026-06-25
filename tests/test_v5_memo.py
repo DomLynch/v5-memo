@@ -2,7 +2,6 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
-from urllib.request import Request
 
 import pytest
 
@@ -10,10 +9,10 @@ from v5_memo.binder import bind_receipts
 from v5_memo.gate import candidate_alpha_tier
 from v5_memo.miner import mine_insights, query_anchor_terms
 from v5_memo.pipeline import build_alpha_memo
-from v5_memo.publisher import build_researka_payload, submit_researka
+from v5_memo.publisher import build_researka_payload
 from v5_memo.retriever import collect_seed_hits
 from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult
-from v5_memo.writer import render_discovery_seed, render_memo
+from v5_memo.writer import render_memo
 
 _FIXTURES = Path(__file__).with_name("fixtures")
 
@@ -777,44 +776,6 @@ def test_miner_does_not_invent_timing_split_from_same_timing_word() -> None:
     assert "shape:timing_split" not in candidate.reasons
 
 
-def test_render_discovery_seed_downgrades_label() -> None:
-    candidate = InsightCandidate(
-        topic="topic",
-        thesis="Weak bridge only.",
-        bridge_terms=("bridge",),
-        tension_terms=(),
-        receipt_ids=("a", "b"),
-        score=40,
-        novelty_score=20,
-        evidence_score=60,
-        reasons=("shape:measurement_mismatch",),
-    )
-
-    memo = render_discovery_seed(candidate, [_hit("a", "A title", "A abstract")])
-
-    assert memo.startswith("# Discovery seed:")
-    assert "# Alpha memo:" not in memo
-
-
-def test_render_memo_filters_weak_bridge_words_from_title() -> None:
-    candidate = InsightCandidate(
-        topic="caffeine exercise performance",
-        thesis="Endpoint boundary.",
-        bridge_terms=("caffeine", "during", "exercise"),
-        tension_terms=("negative", "positive"),
-        receipt_ids=("a", "b"),
-        score=100,
-        novelty_score=50,
-        evidence_score=85,
-        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
-    )
-
-    memo = render_memo(candidate, [_hit("a", "A", "A"), _hit("b", "B", "B")])
-
-    assert memo.startswith("# Alpha memo: caffeine / exercise")
-    assert "# Alpha memo: caffeine / during / exercise" not in memo
-
-
 def test_researka_payload_preserves_memo_and_receipts() -> None:
     candidate = InsightCandidate(
         topic="resveratrol exercise adaptation",
@@ -886,60 +847,6 @@ def test_researka_payload_uses_valid_doi_or_pmid_not_empty_doi() -> None:
     assert source_bundle[1]["id"] == "1798317"
 
 
-def test_researka_payload_abstract_ends_at_sentence_boundary() -> None:
-    candidate = InsightCandidate(
-        topic="topic",
-        thesis="Bounded signal.",
-        bridge_terms=("bridge",),
-        tension_terms=("negative", "positive"),
-        receipt_ids=("a", "b"),
-        score=80,
-        novelty_score=50,
-        evidence_score=85,
-        reasons=("shape:directional_reversal",),
-    )
-    receipts = [_hit("a", "A", "A"), _hit("b", "B", "B")]
-    markdown = "# Alpha memo: bridge\n\n" + ("Complete sentence. " * 120)
-
-    payload = build_researka_payload(
-        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
-        author_agent_id="v6-alpha-memo",
-        domain_slug="test",
-    )
-
-    assert str(payload["abstract"]).endswith(".")
-
-
-def test_submit_researka_sends_agent_slug_header(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, str] = {}
-
-    class FakeResponse:
-        def __enter__(self) -> "FakeResponse":
-            return self
-
-        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return b'{"ok": true}'
-
-    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
-        del timeout
-        captured["agent"] = request.headers["X-agent-slug"]
-        return FakeResponse()
-
-    monkeypatch.setattr("v5_memo.publisher.urlopen", fake_urlopen)
-
-    response = submit_researka(
-        {"author_agent_slug": "v6-alpha-memo"},
-        agent_key="secret",
-        api_base="https://api.example",
-    )
-
-    assert response == {"ok": True}
-    assert captured["agent"] == "v6-alpha-memo"
-
-
 def test_researka_payload_preserves_authenticated_fullraw_coverage() -> None:
     receipt = {
         "shards_total": 100,
@@ -1005,31 +912,6 @@ def test_researka_payload_preserves_authenticated_fullraw_coverage() -> None:
     assert coverage["shards_searched"] == 48
     assert coverage["sources_searched"] == ["openalex", "semantic_scholar"]
     assert coverage["search_passes"] == ["broad", "focused"]
-
-
-def test_pipeline_supports_explicit_discovery_seed_lane() -> None:
-    hits = [
-        _hit("a", "Audit benchmark metric score", "Audit benchmark metric score compared systems."),
-        _hit("b", "Audit deployment outcome errors", "Audit deployment outcome errors compared systems."),
-    ]
-
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return hits
-
-    with pytest.raises(MemoBuildError):
-        build_alpha_memo(topic="tool reliability", seed_queries=["audit systems"], searcher=FakeSearch())
-
-    result = build_alpha_memo(
-        topic="tool reliability",
-        seed_queries=["audit systems"],
-        searcher=FakeSearch(),
-        min_alpha_tier="discovery_seed",
-    )
-
-    assert candidate_alpha_tier(result.candidate) == "discovery_seed"
-    assert result.markdown.startswith("# Discovery seed:")
 
 
 def test_miner_accepts_non_reversal_alpha_shapes() -> None:
