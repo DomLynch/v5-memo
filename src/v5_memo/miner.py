@@ -23,8 +23,9 @@ _BRIDGE_STOP = _STOP | frozenset({
     "action", "compare", "compared", "comparing", "comparative", "comparison",
     "functional", "horse", "impairment", "intermittent", "learning",
     "men", "muscle", "power", "protein", "synthesi", "women",
-    "case", "cases", "individual", "individuals", "patient", "people", "per", "person",
-    "persons", "such", "thus", "when", "following", "matched",
+    "case", "cases", "disease", "disorder", "disorders", "individual",
+    "individuals", "patient", "people", "per", "person", "persons", "risk",
+    "such", "syndrome", "thus", "when", "following", "matched",
     "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
     "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
     "eighteen", "nineteen", "twenty",
@@ -176,6 +177,8 @@ def mine_insights(
         if set(shape_reasons) == {"shape:directional_reversal"} and len(bridge) < 2:
             continue
         tier = _alpha_tier(shape_reasons)
+        if tier == "elite_alpha" and _is_anchor_only_bridge(bridge, pair_anchor_terms):
+            tier = "publishable_alpha"
         if tier == "elite_alpha" and (
             _is_weak_elite_receipt(left) or _is_weak_elite_receipt(right)
         ):
@@ -535,6 +538,13 @@ def _has_elite_anchor_bridge(
         and anchor_bridge[0] in pair_anchor_terms
         and len(anchor_bridge[0]) >= 8
     )
+
+
+def _is_anchor_only_bridge(
+    bridge_terms: tuple[str, ...],
+    pair_anchor_terms: frozenset[str],
+) -> bool:
+    return len(bridge_terms) == 1 and bridge_terms[0] in pair_anchor_terms
 
 
 def _shares_seed_query(left: CorpusHit, right: CorpusHit) -> bool:
