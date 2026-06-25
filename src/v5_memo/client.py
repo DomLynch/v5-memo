@@ -354,7 +354,12 @@ class FullRawCorpusSearchClient:
                 f"start [{search_pass.name}/{search_pass.rank_mode}]: {search_pass.query}"
             )
             variant_started = time.monotonic()
-            hits = self._search_variant(search_pass, limit=per_variant_limit)
+            try:
+                hits = self._search_variant(search_pass, limit=per_variant_limit)
+            except SearchBackendError:
+                if best:
+                    break
+                raise
             self._log_progress(
                 f"fullraw variant {variant_index}/{len(search_passes)} done "
                 f"in {time.monotonic() - variant_started:.1f}s; hits={len(hits)}"
