@@ -49,6 +49,23 @@ def test_iter_raw_file_hits_skips_invalid_jsonl_rows(tmp_path: Path) -> None:
     assert [hit["doi"] for hit in hits] == ["10.raw/real"]
 
 
+def test_iter_raw_file_hits_tolerates_semantic_scholar_truncated_gzip_after_valid_rows(tmp_path: Path) -> None:
+    source = tmp_path / "semantic.jsonl.gz"
+    source.write_bytes(gzip.compress(json.dumps({
+        "corpusid": 123,
+        "title": "NAD mitochondrial repair",
+        "abstract": "NAD changed mitochondrial repair.",
+    }).encode("utf-8") + b"\n")[:-8])
+
+    hits = list(iter_raw_file_hits(RawFile(
+        source="semantic_scholar",
+        format="semantic_scholar_jsonl",
+        remote=f"file://{source}",
+    )))
+
+    assert [hit["semantic_scholar_id"] for hit in hits] == ["123"]
+
+
 def test_iter_raw_file_hits_keeps_semantic_scholar_abstract_only_rows(tmp_path: Path) -> None:
     source = tmp_path / "s2_abstracts.jsonl.gz"
     _write_gzip(

@@ -103,7 +103,16 @@ def _iter_jsonl(
     rclone_bin: str,
 ) -> Iterator[dict[str, object]]:
     with _open_gzip_stream(raw_file.remote, rclone_bin=rclone_bin) as stream:
-        for raw_line in stream:
+        yielded = 0
+        while True:
+            try:
+                raw_line = next(stream)
+            except StopIteration:
+                return
+            except EOFError:
+                if raw_file.source == "semantic_scholar" and yielded:
+                    return
+                raise
             line = raw_line.decode("utf-8", errors="replace")
             try:
                 item = json.loads(line)
@@ -111,6 +120,7 @@ def _iter_jsonl(
                 continue
             hit = _normalize_json_hit(item, raw_file.source)
             if hit:
+                yielded += 1
                 yield hit
 
 
