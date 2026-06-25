@@ -135,6 +135,19 @@ def test_select_search_shard_entries_balances_sources_and_rotates_by_query(
     assert [entry.path for entry in metformin] != [entry.path for entry in resveratrol]
 
 
+def test_search_shard_selection_honors_minimum_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entries = [_entry(tmp_path, idx, "openalex" if idx < 4 else "pubmed") for idx in range(8)]
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "3")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", "6")
+
+    selected = select_search_shard_entries(entries, query="metformin exercise")
+
+    assert len(selected) == 6
+
+
 def test_materialized_shard_cache_evicts_old_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()

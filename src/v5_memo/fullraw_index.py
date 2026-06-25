@@ -1204,6 +1204,9 @@ def select_search_shard_entries(
 ) -> list[ShardCatalogEntry]:
     entries = sorted(entries, key=lambda entry: (entry.batch_id, entry.shard_id, str(entry.path)))
     limit = _positive_int_env("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT")
+    min_required = _positive_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED")
+    if limit is not None and min_required is not None:
+        limit = max(limit, min_required)
     if limit is None or limit >= len(entries):
         return entries
     order = os.environ.get("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "balanced").casefold()
