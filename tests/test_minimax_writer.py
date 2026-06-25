@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 from email.message import Message
 from urllib.error import HTTPError, URLError
@@ -26,7 +24,7 @@ class FakeResponse:
     def __init__(self, payload: dict[str, object]) -> None:
         self._payload = payload
 
-    def __enter__(self) -> FakeResponse:
+    def __enter__(self) -> "FakeResponse":
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:

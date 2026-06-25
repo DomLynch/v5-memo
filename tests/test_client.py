@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import urllib.parse
 from email.message import Message
@@ -44,7 +42,7 @@ class FakeResponse:
             }
         ]
 
-    def __enter__(self) -> FakeResponse:
+    def __enter__(self) -> "FakeResponse":
         return self
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
@@ -439,10 +437,10 @@ def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None
         "broad",
         "broad",
         "broad",
+        "anchor",
         "adjacent",
         "falsifier",
         "citation_heavy",
-        "recency",
     ]
     assert [payload["rank_mode"] for payload in requested] == [
         "relevance",
@@ -451,18 +449,18 @@ def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None
         "relevance",
         "relevance",
         "relevance",
+        "relevance",
         "citation",
-        "recency",
     ]
     assert {hit.metadata["search_pass"] for hit in hits} >= {
         "focused",
         "broad",
+        "anchor",
         "adjacent",
         "falsifier",
         "citation_heavy",
-        "recency",
     }
-    assert {hit.metadata["rank_mode"] for hit in hits} == {"relevance", "citation", "recency"}
+    assert {hit.metadata["rank_mode"] for hit in hits} == {"relevance", "citation"}
 
 def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: object) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
@@ -486,7 +484,7 @@ def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: objec
     receipt = hits[0].metadata["fullraw_search_receipt"]
     assert isinstance(receipt, dict)
     assert receipt["duplicate_rate"] == 0.75
-    assert receipt["search_passes"] == ("focused", "broad")
+    assert receipt["search_passes"] == ("focused", "broad", "anchor")
     assert receipt["rank_modes"] == ("relevance",)
 
 def test_full_raw_client_can_fail_closed_on_narrow_shard_receipt(monkeypatch: object) -> None:
@@ -876,7 +874,7 @@ def test_fullraw_search_passes_cover_breadth_depth_modes() -> None:
         "broad",
         "broad",
         "broad",
-        "anchor",
+        "broad",
     ]
     assert all(search_pass.rank_mode == "relevance" for search_pass in passes)
     assert "cold immersion" in [search_pass.query for search_pass in passes]
