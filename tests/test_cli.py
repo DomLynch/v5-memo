@@ -114,8 +114,8 @@ def test_topic_anchored_queries_reject_planner_drift_for_specific_topics() -> No
 
 def test_alpha_shape_queries_add_universal_promise_and_outcome_probes() -> None:
     assert _alpha_shape_queries("metformin resistance training adaptation") == [
-        "metformin expected augment resistance training protocol",
-        "metformin blunted impaired attenuated resistance training outcome",
+        "metformin augment resistance training protocol",
+        "metformin blunted impaired attenuated resistance training",
     ]
 
 
@@ -498,8 +498,8 @@ def test_planned_cli_drops_queries_that_lose_specific_topic_anchor(
     assert "Alpha memo" in capsys.readouterr().out
     assert seen == {
         "seed_queries": [
-            "cold water immersion expected augment resistance protocol",
-            "cold water immersion blunted impaired attenuated resistance outcome",
+            "cold water immersion augment resistance protocol",
+            "cold water immersion blunted impaired attenuated resistance",
             "cold water immersion resistance training adaptation",
             "cold water immersion blunts hypertrophy resistance trained men",
         ],

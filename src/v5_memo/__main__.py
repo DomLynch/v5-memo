@@ -234,8 +234,8 @@ def _alpha_shape_queries(topic: str) -> list[str]:
     anchor = " ".join(terms[:split_at])
     rest = " ".join(terms[split_at:])
     return [
-        f"{anchor} expected augment {rest} protocol",
-        f"{anchor} blunted impaired attenuated {rest} outcome",
+        f"{anchor} augment {rest} protocol",
+        f"{anchor} blunted impaired attenuated {rest}",
     ]
 
 
