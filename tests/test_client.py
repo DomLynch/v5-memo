@@ -291,7 +291,7 @@ def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) ->
     monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
     client = FullRawCorpusSearchClient(
         search_url="https://search.example/full-raw",
-        max_variants=1,
+        max_variants=2,
         sweep_wait_seconds=1.0,
         min_shards_searched=48,
         min_sources_searched=2,
@@ -299,8 +299,7 @@ def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) ->
 
     hits = client.search("management forecast disclosure", limit=3)
 
-    assert payloads[0].get("cache_only") is None
-    assert payloads[1].get("cache_only") is True
+    assert [payload.get("cache_only") for payload in payloads] == [None, True, None]
     assert payloads[1].get("queue_if_missing") is True
     assert timeouts[0] == 60.0
     assert timeouts[1] <= 1.0
