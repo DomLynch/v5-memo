@@ -1329,9 +1329,12 @@ def _cache_fit_warm_entries(
         by_source.setdefault(source, []).append(entry)
     sources = sorted(by_source, key=lambda source: (len(by_source[source]), source))
     ordered_by_source = {source: sorted(by_source[source], key=candidate_key) for source in sources}
-    fit_prefix: list[ShardCatalogEntry] = []
-    fit_paths: set[Path] = set()
-    bytes_used = 0
+    fit_prefix = sorted(
+        (entry for entry in entries if _cached_materialized_shard_path(entry.path) is not None),
+        key=candidate_key,
+    )
+    fit_paths = {entry.path for entry in fit_prefix}
+    bytes_used = sum(max(0, entry.bytes_used) for entry in fit_prefix)
 
     while len(fit_prefix) < target_ready:
         before = len(fit_prefix)

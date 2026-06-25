@@ -164,9 +164,12 @@ def test_search_shard_selection_prefers_cache_fit_matches(tmp_path: Path, monkey
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "100")
     assert select_search_shard_entries([huge, small], query="patients")[0] == small
     huge.path.write_bytes(b"x")
+    cached = ShardCatalogEntry(tmp_path / "cached.sqlite", 3, 0, ("pubmed",), 1, 20, 20, topic_terms=("patients",))
+    cached.path.write_bytes(b"x")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(tmp_path / "cache"))
     fullraw_index._materialized_shard_path(huge.path)
-    assert select_search_shard_entries([huge, small], query="patients")[0] == huge
+    fullraw_index._materialized_shard_path(cached.path)
+    assert set(select_search_shard_entries([huge, small, cached], query="patients")[:2]) == {huge, cached}
 
 
 def test_full_coverage_shard_selection_frontloads_spread_prefix(
