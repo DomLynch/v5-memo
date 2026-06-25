@@ -1031,10 +1031,10 @@ def _rerank_score(
     if hit.abstract and "openalex" in hit.source.casefold():
         evidence_bonus += 4.0
     return (
-        (seed_coverage * 70.0)
-        + (variant_coverage * 20.0)
-        + (title_coverage * 30.0)
-        + (citation_score * 4.0)
+        seed_coverage * 70.0
+        + variant_coverage * 20.0
+        + title_coverage * 30.0
+        + citation_score * 4.0
         + evidence_bonus
         - rank
     )

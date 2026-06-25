@@ -23,6 +23,7 @@ from v5_memo.client import (
     _parse_full_raw_search_response,
     _parse_openalex_response,
     _query_variants,
+    _rerank_score,
 )
 from v5_memo.schemas import CorpusHit
 
@@ -51,7 +52,6 @@ class FakeResponse:
 
     def read(self) -> bytes:
         return json.dumps(self._payload).encode("utf-8")
-
 
 def test_client_posts_to_full_corpus_search(monkeypatch: object) -> None:
     captured: dict[str, object] = {}
@@ -84,7 +84,6 @@ def test_client_posts_to_full_corpus_search(monkeypatch: object) -> None:
     }
     assert hits[0].source == "researka:corpus"
 
-
 def test_researka_client_loads_first_allowlist_token(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv("RESEARKA_DATABASE_TOKEN", raising=False)
     monkeypatch.delenv("RESEARKA_TOKEN", raising=False)
@@ -94,19 +93,16 @@ def test_researka_client_loads_first_allowlist_token(monkeypatch: MonkeyPatch) -
 
     assert client._token == "bot-token"
 
-
 def test_researka_strict_mode_rejects_missing_configuration() -> None:
     client = ResearkaSearchClient(base_url="https://database.example", token="", strict=True)
 
     with pytest.raises(SearchBackendError, match="not configured"):
         client.search("rapamycin", limit=1)
 
-
 def test_researka_client_reports_missing_token_as_unconfigured() -> None:
     client = ResearkaSearchClient(base_url="https://database.example", token="")
 
     assert client.configured is False
-
 
 def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object) -> None:
     captured: dict[str, object] = {}
@@ -165,7 +161,6 @@ def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object)
     assert hits[0].metadata["query_match_count"] == 492361307
     assert hits[0].metadata["score"] == 17.2
 
-
 def test_full_raw_client_relaxes_strict_long_queries(monkeypatch: object) -> None:
     requested: list[str] = []
 
@@ -196,7 +191,6 @@ def test_full_raw_client_relaxes_strict_long_queries(monkeypatch: object) -> Non
     assert hits[0].doi == "10.123/forecast"
     assert hits[0].metadata["search_variant"] == "management forecast"
 
-
 def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
     receipt = {
         "shards_total": 100,
@@ -225,37 +219,16 @@ def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
 
     assert hits[0].metadata["shard_receipt"] == receipt
 
-
-def test_full_raw_client_reranks_title_owned_hits_above_abstract_only_hits(monkeypatch: object) -> None:
-    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
-        del request, timeout
-        return FakeResponse({
-            "meta": {"count": 2},
-            "results": [
-                {
-                    "doi": "10.123/abstract-only",
-                    "title": "Quality child care case study",
-                    "abstract": "Metformin resistance training adaptation in older adults.",
-                    "year": 2024,
-                    "source": "openalex",
-                },
-                {
-                    "doi": "10.123/title-owned",
-                    "title": "Metformin resistance training adaptation trial",
-                    "abstract": "",
-                    "year": 2024,
-                    "source": "openalex",
-                },
-            ],
-        })
-
-    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
-    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=1)
-
-    hits = client.search("metformin resistance training adaptation", limit=2)
-
-    assert [hit.doi for hit in hits] == ["10.123/title-owned", "10.123/abstract-only"]
-
+def test_full_raw_rerank_prefers_title_owned_hits_over_abstract_only_hits() -> None:
+    abstract_only = CorpusHit("a", "Quality child care", "Metformin resistance training adaptation.", "openalex")
+    title_owned = CorpusHit("t", "Metformin resistance training adaptation trial", "", "openalex")
+    terms = ("metformin", "resistance", "training", "adaptation")
+    assert _rerank_score(title_owned, seed_terms=terms, variant_terms=terms, rank=2) > _rerank_score(
+        abstract_only,
+        seed_terms=terms,
+        variant_terms=terms,
+        rank=1,
+    )
 
 def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) -> None:
     payloads: list[dict[str, object]] = []
@@ -321,7 +294,6 @@ def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) ->
         "sources_searched": {"openalex": 24, "semantic_scholar": 24},
     }
 
-
 def test_full_raw_client_uses_cache_only_after_strict_foreground_timeout(
     monkeypatch: object,
 ) -> None:
@@ -367,7 +339,6 @@ def test_full_raw_client_uses_cache_only_after_strict_foreground_timeout(
     assert [payload.get("cache_only") for payload in payloads] == [None, True]
     assert payloads[1].get("queue_if_missing") is True
     assert hits[0].doi == "10.123/recovered"
-
 
 def test_full_raw_client_retries_connection_reset_during_cache_poll(
     monkeypatch: object,
@@ -418,7 +389,6 @@ def test_full_raw_client_retries_connection_reset_during_cache_poll(
 
     assert [payload.get("cache_only") for payload in payloads] == [None, True, True]
     assert hits[0].doi == "10.123/recovered"
-
 
 def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None:
     requested: list[dict[str, object]] = []
@@ -475,7 +445,6 @@ def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None
     }
     assert {hit.metadata["rank_mode"] for hit in hits} == {"relevance", "citation", "recency"}
 
-
 def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: object) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del request, timeout
@@ -500,7 +469,6 @@ def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: objec
     assert receipt["duplicate_rate"] == 0.75
     assert receipt["search_passes"] == ("focused", "broad")
     assert receipt["rank_modes"] == ("relevance",)
-
 
 def test_full_raw_client_can_fail_closed_on_narrow_shard_receipt(monkeypatch: object) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
@@ -532,7 +500,6 @@ def test_full_raw_client_can_fail_closed_on_narrow_shard_receipt(monkeypatch: ob
 
     assert client.search("management forecast disclosure", limit=3) == []
 
-
 def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "secret")
@@ -542,7 +509,6 @@ def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) ->
     assert client.configured is True
     assert client._search_url == "http://127.0.0.1:9902/search"
     assert client._token == "secret"
-
 
 def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
@@ -561,7 +527,6 @@ def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> Non
     assert client._sweep_wait_seconds == 20.0
     assert client._sweep_poll_seconds == 2.0
     assert client._progress is True
-
 
 def test_full_raw_client_budget_stops_variant_fanout(
     monkeypatch: MonkeyPatch,
@@ -605,7 +570,6 @@ def test_full_raw_client_budget_stops_variant_fanout(
     assert "fullraw variant 1/4 start" in err
     assert "fullraw search budget reached after 31.0s; variants=1/4" in err
 
-
 def test_full_raw_client_retries_remote_disconnected_once(monkeypatch: MonkeyPatch) -> None:
     calls = 0
 
@@ -633,7 +597,6 @@ def test_full_raw_client_retries_remote_disconnected_once(monkeypatch: MonkeyPat
     assert calls == 2
     assert hits[0].doi == "10.123/fullraw"
 
-
 def test_full_raw_client_strict_remote_disconnected_raises_after_retry_cap(
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -656,7 +619,6 @@ def test_full_raw_client_strict_remote_disconnected_raises_after_retry_cap(
         client.search("resveratrol exercise training adaptation", limit=5)
     assert calls == 2
 
-
 def test_openalex_strict_mode_raises_backend_errors(monkeypatch: MonkeyPatch) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del request, timeout
@@ -668,7 +630,6 @@ def test_openalex_strict_mode_raises_backend_errors(monkeypatch: MonkeyPatch) ->
     with pytest.raises(SearchBackendError, match="OpenAlex search failed"):
         client.search("nad salvage", limit=1)
 
-
 def test_openalex_lenient_mode_keeps_empty_result_on_backend_errors(monkeypatch: MonkeyPatch) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del request, timeout
@@ -679,14 +640,12 @@ def test_openalex_lenient_mode_keeps_empty_result_on_backend_errors(monkeypatch:
 
     assert client.search("nad salvage", limit=1) == []
 
-
 def test_openalex_strict_from_env_uses_bounded_fanout(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv("V5_MEMO_OPENALEX_MAX_VARIANTS", raising=False)
 
     client = OpenAlexFullCorpusSearchClient.from_env(strict=True)
 
     assert client._max_variants == 1
-
 
 def test_openalex_retries_once_after_rate_limit(monkeypatch: MonkeyPatch) -> None:
     calls = 0
@@ -722,7 +681,6 @@ def test_openalex_retries_once_after_rate_limit(monkeypatch: MonkeyPatch) -> Non
     assert sleeps == [0.01]
     assert hits[0].title == "Resveratrol exercise adaptation"
 
-
 def test_openalex_lenient_rate_limit_returns_empty_without_sleep(monkeypatch: MonkeyPatch) -> None:
     sleeps: list[float] = []
     headers = Message()
@@ -742,7 +700,6 @@ def test_openalex_lenient_rate_limit_returns_empty_without_sleep(monkeypatch: Mo
 
     assert hits == []
     assert sleeps == []
-
 
 def test_hybrid_search_merges_and_dedupes_sources() -> None:
     class StaticSearch:
@@ -783,7 +740,6 @@ def test_hybrid_search_merges_and_dedupes_sources() -> None:
     assert [hit.doi for hit in hits] == ["10.same", "10.only"]
     assert hits[0].source == "researka:corpus"
 
-
 def test_hybrid_search_skips_failed_backend() -> None:
     class FailingSearch:
         def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
@@ -806,7 +762,6 @@ def test_hybrid_search_skips_failed_backend() -> None:
     hits = HybridCorpusSearchClient([FailingSearch(), StaticSearch()]).search("resveratrol")
 
     assert [hit.doi for hit in hits] == ["10.good"]
-
 
 def test_openalex_client_fans_out_dedupes_and_reranks(monkeypatch: object) -> None:
     captured_queries: list[str] = []
@@ -875,7 +830,6 @@ def test_openalex_client_fans_out_dedupes_and_reranks(monkeypatch: object) -> No
     assert hits[0].metadata["search_variant"] == "nad salvage mitochondrial stress exercise response"
     assert hits[0].metadata["query_match_count"] == 604
 
-
 def test_query_variants_do_not_depend_on_one_long_query() -> None:
     assert _query_variants("NAD salvage mitochondrial stress exercise response", limit=5) == [
         "nad salvage mitochondrial stress exercise response",
@@ -884,7 +838,6 @@ def test_query_variants_do_not_depend_on_one_long_query() -> None:
         "mitochondrial stress exercise response",
         "nad salvage mitochondrial",
     ]
-
 
 def test_fullraw_variants_try_strong_windows_before_weak_pairs() -> None:
     assert _fullraw_query_variants(
@@ -899,7 +852,6 @@ def test_fullraw_variants_try_strong_windows_before_weak_pairs() -> None:
         "muscle mass strength resistance",
     ]
 
-
 def test_fullraw_variants_do_not_append_broad_pair_fallback() -> None:
     variants = _fullraw_query_variants(
         "cold water immersion attenuates muscle mass strength resistance training",
@@ -908,7 +860,6 @@ def test_fullraw_variants_do_not_append_broad_pair_fallback() -> None:
 
     assert "cold water" not in variants
     assert "cold muscle" not in variants
-
 
 def test_fullraw_search_passes_cover_breadth_depth_modes() -> None:
     passes = _fullraw_search_passes(
@@ -929,7 +880,6 @@ def test_fullraw_search_passes_cover_breadth_depth_modes() -> None:
     assert all(search_pass.rank_mode == "relevance" for search_pass in passes)
     assert "cold immersion" in [search_pass.query for search_pass in passes]
 
-
 def test_fullraw_search_passes_include_core_variant_before_depth_modes() -> None:
     passes = _fullraw_search_passes("resveratrol exercise training adaptation", limit=5)
 
@@ -943,7 +893,6 @@ def test_fullraw_search_passes_include_core_variant_before_depth_modes() -> None
     assert passes[1].query == "resveratrol exercise training"
     assert "resveratrol training" in [search_pass.query for search_pass in passes]
 
-
 def test_fullraw_search_passes_prioritize_promise_pair_variants() -> None:
     passes = _fullraw_search_passes(
         "resveratrol sirt1 pgc 1a mitochondrial biogenesis endurance training",
@@ -951,7 +900,6 @@ def test_fullraw_search_passes_prioritize_promise_pair_variants() -> None:
     )
 
     assert "resveratrol mitochondrial" in [search_pass.query for search_pass in passes]
-
 
 def test_fullraw_search_passes_prioritize_specific_short_anchor_pairs() -> None:
     metformin_passes = _fullraw_search_passes(
@@ -966,7 +914,6 @@ def test_fullraw_search_passes_prioritize_specific_short_anchor_pairs() -> None:
     assert "metformin training" in [search_pass.query for search_pass in metformin_passes]
     assert "nmn vo2max" in [search_pass.query for search_pass in nmn_passes]
 
-
 def test_fullraw_search_passes_keep_pair_variants_on_primary_anchor() -> None:
     passes = _fullraw_search_passes(
         "metformin resistance training adaptation",
@@ -977,7 +924,6 @@ def test_fullraw_search_passes_keep_pair_variants_on_primary_anchor() -> None:
     assert "metformin training" in queries
     assert "resistance training" not in queries
 
-
 def test_fullraw_search_passes_keep_promise_terms_for_protocol_recall() -> None:
     passes = _fullraw_search_passes(
         "metformin expected to augment resistance training hypertrophy protocol",
@@ -985,7 +931,6 @@ def test_fullraw_search_passes_keep_promise_terms_for_protocol_recall() -> None:
     )
 
     assert "metformin augment" in [search_pass.query for search_pass in passes]
-
 
 def test_fullraw_rerank_prefers_abstract_backed_doi_receipts(monkeypatch: MonkeyPatch) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
@@ -1017,7 +962,6 @@ def test_fullraw_rerank_prefers_abstract_backed_doi_receipts(monkeypatch: Monkey
 
     assert hits[0].doi == "10.1113/jphysiol.2013.258061"
     assert hits[0].abstract
-
 
 def test_fullraw_search_backfills_missing_doi_abstracts(monkeypatch: MonkeyPatch) -> None:
     seen_urls: list[str] = []
@@ -1064,7 +1008,6 @@ def test_fullraw_search_backfills_missing_doi_abstracts(monkeypatch: MonkeyPatch
     assert hits[0].abstract == "Protocol hypothesized metformin would augment training"
     assert hits[0].metadata["abstract_backfill"] == "openalex_doi"
     assert any("api.openalex.org/works/doi:" in url for url in seen_urls)
-
 
 def test_fullraw_search_drops_doi_title_mismatch(monkeypatch: MonkeyPatch) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
@@ -1117,7 +1060,6 @@ def test_fullraw_search_drops_doi_title_mismatch(monkeypatch: MonkeyPatch) -> No
         "Reactive hyperaemia is impaired in hypertrophied guinea pig hearts"
     ]
 
-
 def test_parse_openalex_response_reconstructs_abstract() -> None:
     hits = _parse_openalex_response(
         {
@@ -1143,11 +1085,9 @@ def test_parse_openalex_response_reconstructs_abstract() -> None:
     assert hit.venue == "Nature"
     assert hit.metadata["query_match_count"] == 492361307
 
-
 def test_parse_corpus_search_rejects_non_list_shape() -> None:
     hits = _parse_corpus_search_response({"results": []})
     assert hits == []
-
 
 def test_parse_full_raw_search_accepts_results_shape_and_openalex_abstract() -> None:
     hits = _parse_full_raw_search_response({
@@ -1174,7 +1114,6 @@ def test_parse_full_raw_search_accepts_results_shape_and_openalex_abstract() -> 
     assert hit.metadata["query_match_count"] == 280000000
     assert hit.metadata["cited_by_count"] == 42
 
-
 def test_parse_full_raw_search_rejects_conflicting_doi_year_metadata() -> None:
     hits = _parse_full_raw_search_response({
         "results": [
@@ -1197,7 +1136,6 @@ def test_parse_full_raw_search_rejects_conflicting_doi_year_metadata() -> None:
 
     assert [hit.year for hit in hits] == [2024]
 
-
 def test_parse_full_raw_search_keeps_valid_doi_article_codes_that_look_like_years() -> None:
     hits = _parse_full_raw_search_response({
         "results": [
@@ -1213,7 +1151,6 @@ def test_parse_full_raw_search_keeps_valid_doi_article_codes_that_look_like_year
 
     assert [hit.doi for hit in hits] == ["10.1093/GERONI/IGY023.2009"]
     assert hits[0].year == 2018
-
 
 def test_parse_full_corpus_paper_hit() -> None:
     hits = _parse_corpus_search_response([
@@ -1243,7 +1180,6 @@ def test_parse_full_corpus_paper_hit() -> None:
     assert hit.metadata["pmcid"] == "PMC2786175"
     assert hit.metadata["cited_by_count"] == 1000
     assert hit.metadata["similarity_score"] == 0.91
-
 
 def test_corpus_parser_strips_html_titles() -> None:
     hits = _parse_corpus_search_response([
