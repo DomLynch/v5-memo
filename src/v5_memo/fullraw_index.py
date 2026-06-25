@@ -2378,6 +2378,7 @@ def run_server() -> None:
     shard_manifest_stats = os.environ.get(
         "V5_MEMO_FULL_RAW_SHARD_MANIFEST_STATS", ""
     ).casefold() in {"1", "true", "yes"}
+    fast_health = os.environ.get("V5_MEMO_FULL_RAW_FAST_HEALTH", "").casefold() in {"1", "true", "yes"}
     shard_catalog_ttl = _float_or_none(
         os.environ.get("V5_MEMO_FULL_RAW_SHARD_CATALOG_TTL_SECONDS", "")
     ) or 60.0
@@ -2640,6 +2641,17 @@ def run_server() -> None:
         def do_GET(self) -> None:
             if self.path != "/health":
                 self.send_error(404)
+                return
+            if fast_health and shard_dir is not None:
+                _write_json(self, 200, {
+                    "ok": True,
+                    "backend": _BACKEND,
+                    "index_path": str(index_path),
+                    "shard_dir": str(shard_dir),
+                    "fast_health": True,
+                    "complete": False,
+                    "coverage_requirements": coverage_requirements(),
+                })
                 return
             stats = current_stats()
             _write_json(self, 200, {
