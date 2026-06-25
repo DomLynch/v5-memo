@@ -2723,12 +2723,12 @@ def run_server() -> None:
             sweep_status = "disabled"
             if cache_only and cached is not None and cached.hits and not resume_cached:
                 hits = cached.hits
-                receipt = cached.receipt
+                receipt = auth_receipt(cached.receipt)
                 sweep_status = "hit"
             else:
                 if cache_only:
                     hits = []
-                    receipt = {}
+                    receipt = auth_receipt({})
                     if not sweep_enabled or not catalog:
                         sweep_status = "disabled"
                     elif queue_if_missing:
@@ -2743,9 +2743,9 @@ def run_server() -> None:
                         )
                         if sweep_status == "hit" and (cached := sweep_cache_get(cache_key)) is not None:
                             hits = cached.hits
-                            receipt = cached.receipt
+                            receipt = auth_receipt(cached.receipt)
                         elif resume_cached and cached is not None:
-                            receipt = cached.receipt
+                            receipt = auth_receipt(cached.receipt)
                             if cached.hits or _int_or_none(receipt.get("sweep_remaining_shards")) == 0:
                                 hits = cached.hits
                     else:
@@ -2791,9 +2791,9 @@ def run_server() -> None:
                     return
                 else:
                     receipt = (
-                        shard_coverage_receipt(catalog, select_search_shard_entries(catalog, query=query))
+                        auth_receipt(shard_coverage_receipt(catalog, select_search_shard_entries(catalog, query=query)))
                         if catalog
-                        else {}
+                        else auth_receipt({})
                     )
                     coverage_gate = shard_coverage_gate_response(
                         receipt,
@@ -2823,7 +2823,7 @@ def run_server() -> None:
                     )
                     if not hits and sweep_status == "hit" and (cached := sweep_cache_get(cache_key)) is not None and cached.hits:
                         hits = cached.hits
-                        receipt = cached.receipt
+                        receipt = auth_receipt(cached.receipt)
             coverage_gate = shard_coverage_gate_response(
                 receipt,
                 min_shards_searched=min_shards_searched,

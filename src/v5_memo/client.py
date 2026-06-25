@@ -285,7 +285,7 @@ class FullRawCorpusSearchClient:
         self._doi_abstract_backfill_limit = max(0, doi_abstract_backfill_limit)
         self._min_shards_searched = max(0, min_shards_searched)
         self._min_sources_searched = max(0, min_sources_searched)
-        self._require_auth = require_auth
+        self._require_auth = require_auth or bool(self._token)
         self._progress = progress
         self._strict = strict
 

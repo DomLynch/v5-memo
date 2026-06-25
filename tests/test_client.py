@@ -113,7 +113,15 @@ def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object)
         captured["timeout"] = timeout
         payloads.append(json.loads(cast(bytes, request.data).decode("utf-8")))
         return FakeResponse({
-            "meta": {"count": 492361307},
+            "meta": {
+                "count": 492361307,
+                "shard_receipt": {
+                    "shards_searched": 24,
+                    "sources_searched": {"semantic_scholar": 24},
+                    "auth_required": True,
+                    "authenticated": True,
+                },
+            },
             "results": [
                 {
                     "doi": "https://doi.org/10.123/raw",
@@ -158,6 +166,8 @@ def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object)
     assert hits[0].doi == "10.123/raw"
     assert hits[0].metadata["query_match_count"] == 492361307
     assert hits[0].metadata["score"] == 17.2
+    search_receipt = cast(dict[str, object], hits[0].metadata["fullraw_search_receipt"])
+    assert search_receipt["authenticated"] is True
 
 def test_full_raw_client_relaxes_strict_long_queries(monkeypatch: object) -> None:
     requested: list[str] = []
@@ -216,6 +226,36 @@ def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
     hits = client.search("management forecast disclosure", limit=3)
 
     assert hits[0].metadata["shard_receipt"] == receipt
+
+
+def test_full_raw_client_requires_auth_receipt_when_token_configured(monkeypatch: object) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del request, timeout
+        return FakeResponse({
+            "meta": {
+                "count": 1,
+                "shard_receipt": {
+                    "shards_searched": 24,
+                    "sources_searched": {"openalex": 24},
+                },
+            },
+            "results": [{
+                "doi": "10.123/no-auth-proof",
+                "title": "Management forecast disclosure breadth",
+                "abstract": "Management forecast disclosure evidence.",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="raw-token",
+        max_variants=1,
+    )
+
+    assert client.search("management forecast disclosure", limit=3) == []
 
 def test_full_raw_rerank_prefers_title_owned_hits_over_abstract_only_hits() -> None:
     abstract_only = CorpusHit("a", "Quality child care", "Metformin resistance training adaptation.", "openalex")
@@ -530,6 +570,7 @@ def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) ->
     assert client.configured is True
     assert client._search_url == "http://127.0.0.1:9902/search"
     assert client._token == "secret"
+    assert client._require_auth is True
 
 def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
