@@ -1708,7 +1708,8 @@ def _evict_shard_cache(
     preserved = {path.resolve() for path in (preserve or set())}
     entries = [
         path
-        for path in cache_dir.glob("*.sqlite")
+        for pattern in ("*.sqlite", "*.sqlite-wal", ".*.sqlite.tmp.*")
+        for path in cache_dir.glob(pattern)
         if path.is_file() and path != keep and path.resolve() not in preserved
     ]
     total = sum(path.stat().st_size for path in entries)

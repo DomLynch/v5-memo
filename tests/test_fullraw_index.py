@@ -307,7 +307,7 @@ def test_sweep_passes_do_not_invent_side_queries(tmp_path: Path) -> None:
 def test_materialized_shard_cache_evicts_old_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
-    old, newer, keep = (cache_dir / name for name in ("old.sqlite", "newer.sqlite", "keep.sqlite"))
+    old, newer, keep = (cache_dir / name for name in (".old.sqlite.tmp.1.1", "newer.sqlite", "keep.sqlite"))
     for path in (old, newer, keep):
         path.write_bytes(b"x" * 6)
     for path, stamp in ((old, 1), (newer, 2), (keep, 3)):
