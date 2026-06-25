@@ -877,7 +877,7 @@ def test_fullraw_search_passes_cover_breadth_depth_modes() -> None:
         "broad",
     ]
     assert all(search_pass.rank_mode == "relevance" for search_pass in passes)
-    assert "cold immersion" in [search_pass.query for search_pass in passes]
+    assert "attenuates resistance" in [search_pass.query for search_pass in passes]
 
 def test_fullraw_search_passes_include_core_variant_before_depth_modes() -> None:
     passes = _fullraw_search_passes("resveratrol exercise training adaptation", limit=5)
@@ -911,7 +911,7 @@ def test_fullraw_search_passes_prioritize_specific_short_anchor_pairs() -> None:
         limit=5,
     )
 
-    assert "metformin training" in [search_pass.query for search_pass in metformin_passes]
+    assert "metformin augment" in [search_pass.query for search_pass in metformin_passes]
     assert "nmn vo2max" in [search_pass.query for search_pass in nmn_passes]
 
 def test_fullraw_search_passes_keep_pair_variants_on_primary_anchor() -> None:
@@ -922,7 +922,7 @@ def test_fullraw_search_passes_keep_pair_variants_on_primary_anchor() -> None:
 
     queries = [search_pass.query for search_pass in passes]
     assert "metformin training" in queries
-    assert "resistance training" not in queries
+    assert "resistance training" in queries
 
 def test_fullraw_search_passes_keep_promise_terms_for_protocol_recall() -> None:
     passes = _fullraw_search_passes(

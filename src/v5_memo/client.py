@@ -58,6 +58,7 @@ _FULLRAW_PAIR_DROP = _FULLRAW_CORE_DROP | {
     "trained",
     "expected",
 }
+_FULLRAW_RARE_ANCHOR_DROP = {"resistance", "strength", "training"}
 _DOI_BACKFILL_PRIORITY_TERMS = {
     "attenuate",
     "attenuated",
@@ -315,7 +316,7 @@ class FullRawCorpusSearchClient:
         if not self._search_url or not search_passes:
             return []
         seed_terms = _query_terms(query)
-        anchor_terms = tuple(term for term in seed_terms if len(term) >= 4 and term not in _FULLRAW_PAIR_DROP)
+        anchor_terms = tuple(term for term in seed_terms if len(term) >= 4 and term not in _FULLRAW_PAIR_DROP and term not in _FULLRAW_RARE_ANCHOR_DROP)
         per_variant_limit = max(5, min(limit, 50))
         best: dict[str, tuple[float, CorpusHit]] = {}
         total_seen = 0
@@ -1005,14 +1006,21 @@ def _fullraw_pair_variants(query: str, *, limit: int) -> list[str]:
         return len(out) >= limit
 
     first = terms[0] if terms else ""
-    pairs: list[tuple[int, int, int, str, str]] = []
-    for left_idx, left in enumerate(terms):
-        for right_idx in range(left_idx + 1, len(terms)):
-            right = terms[right_idx]
-            first_bonus = 8 if left == first and (len(first) <= 3 or len(first) >= 6) else 0
-            pairs.append((len(left) + len(right) + first_bonus, left_idx - right_idx, -left_idx, left, right))
-    for *_score, left, right in sorted(pairs, reverse=True):
-        if add(left, right):
+    def term_score(term: str) -> int:
+        return len(term) + (8 if term in _DOI_BACKFILL_PRIORITY_TERMS else 0) - (4 if term.endswith(("tion", "sion", "ity", "ary", "acy", "ness")) else 0)
+
+    def specificity(pair: tuple[int, int]) -> tuple[int, int, int]:
+        left_idx, right_idx = pair
+        left, right = terms[left_idx], terms[right_idx]
+        score = term_score(left) + term_score(right)
+        score += 3 if left == first and (len(first) <= 3 or term_score(first) >= 8) else 0
+        score += 4 if right_idx - left_idx == 1 else 0
+        score -= 8 if left in _FULLRAW_RARE_ANCHOR_DROP and right in _FULLRAW_RARE_ANCHOR_DROP else 0
+        return (score, left_idx - right_idx, -left_idx)
+
+    pairs = ((left_idx, right_idx) for left_idx in range(len(terms)) for right_idx in range(left_idx + 1, len(terms)))
+    for left_idx, right_idx in sorted(pairs, key=specificity, reverse=True):
+        if add(terms[left_idx], terms[right_idx]):
             return out
     return out
 
