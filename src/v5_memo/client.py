@@ -332,7 +332,7 @@ class FullRawCorpusSearchClient:
                     f"after {elapsed:.1f}s; variants={variant_index - 1}/{len(search_passes)}"
                 )
                 break
-            expected_variant_seconds = self._timeout + self._sweep_wait_seconds
+            expected_variant_seconds = self._timeout
             if (
                 self._search_budget_seconds
                 and variant_index > 1
