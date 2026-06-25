@@ -365,34 +365,16 @@ def test_full_raw_client_waits_for_zero_hit_foreground_sweep(monkeypatch: object
         payloads.append(payload)
         if payload.get("cache_only") is True:
             return FakeResponse({
-                "meta": {
-                    "count": 1,
-                    "shard_receipt": {"shards_searched": 48, "sources_searched": {"openalex": 48}},
-                    "async_sweep": {"status": "hit"},
-                },
-                "results": [{
-                    "doi": "10.123/sweep",
-                    "title": "Cold water immersion attenuates training adaptation",
-                    "abstract": "Deeper sweep found the adaptation receipt.",
-                    "year": 2024,
-                    "source": "openalex",
-                }],
+                "meta": {"count": 1, "shard_receipt": {"shards_searched": 48}, "async_sweep": {"status": "hit"}},
+                "results": [{"doi": "10.123/sweep", "title": "Cold water immersion adaptation", "source": "openalex"}],
             })
         return FakeResponse({
-            "meta": {
-                "count": 0,
-                "shard_receipt": {"shards_searched": 12, "partial_shard_search": True},
-                "async_sweep": {"status": "queued"},
-            },
+            "meta": {"count": 0, "shard_receipt": {"shards_searched": 12}, "async_sweep": {"status": "queued"}},
             "results": [],
         })
 
     monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
-    client = FullRawCorpusSearchClient(
-        search_url="https://search.example/full-raw",
-        max_variants=1,
-        sweep_wait_seconds=1.0,
-    )
+    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=1, sweep_wait_seconds=1.0)
 
     hits = client.search("cold water immersion adaptation", limit=3)
 
