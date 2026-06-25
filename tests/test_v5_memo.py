@@ -189,8 +189,8 @@ def test_collect_seed_hits_skips_late_seed_failure_after_hits() -> None:
             return [_hit(query, f"{query} title", "receipt")]
 
     assert [hit.hit_id for hit in collect_seed_hits(FakeSearch(), ["good", "bad"])] == ["good"]
-    with pytest.raises(RuntimeError):
-        collect_seed_hits(FakeSearch(), ["bad", "good"])
+    assert [hit.hit_id for hit in collect_seed_hits(FakeSearch(), ["bad", "good"])] == ["good"]
+    assert collect_seed_hits(FakeSearch(), ["bad"]) == []
 
 
 def test_pipeline_builds_best_memo() -> None:

@@ -27,9 +27,7 @@ def collect_seed_hits(
         try:
             hits = searcher.search(query, limit=query_limit)
         except RuntimeError:
-            if out:
-                continue
-            raise
+            continue
         for hit in hits:
             key = hit.source_key
             if key in seen:
