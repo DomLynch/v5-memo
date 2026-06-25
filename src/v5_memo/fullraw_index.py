@@ -473,37 +473,36 @@ class FullRawFtsIndex:
             terms = _fts_terms(query)
             if not terms:
                 return []
-            match_query = _fts_match_query(self._expanded_term_groups(terms))
+            groups = self._expanded_term_groups(terms)
+            match_queries = [_fts_match_query(groups)]
+            tail = _unique_terms(term for group in groups[1:] for term in group) if len(groups) >= 3 else ()
+            if len(groups) >= 3 and tail:
+                match_queries.append(f"{_fts_match_query(groups[:1])} {_fts_match_query((tail,))}")
             order_by = _search_order_by(rank_mode)
             if timeout_seconds is not None and timeout_seconds > 0:
                 deadline = time.monotonic() + timeout_seconds
                 self._conn.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
             try:
-                rows = self._conn.execute(
-                    f"""
-                    SELECT
-                      p.title,
-                      p.abstract,
-                      p.doi,
-                      p.pmid,
-                      p.pmcid,
-                      p.openalex_id,
-                      p.semantic_scholar_id,
-                      p.year,
-                      p.journal,
-                      p.source,
-                      p.url,
-                      p.cited_by_count,
-                      bm25(paper_fts, 8.0, 3.0, 1.0) AS rank
-                    FROM paper_fts
-                    JOIN papers p ON p.id = paper_fts.rowid
-                    WHERE paper_fts MATCH ?
-                      AND (p.year IS NULL OR (p.year >= ? AND p.year <= ?))
-                    ORDER BY {order_by}
-                    LIMIT ?
-                    """,
-                    (match_query, year_min, year_max, max(1, min(limit, 200))),
-                ).fetchall()
+                rows = []
+                for match_query in match_queries:
+                    rows = self._conn.execute(
+                        f"""
+                        SELECT
+                          p.title, p.abstract, p.doi, p.pmid, p.pmcid,
+                          p.openalex_id, p.semantic_scholar_id, p.year,
+                          p.journal, p.source, p.url, p.cited_by_count,
+                          bm25(paper_fts, 8.0, 3.0, 1.0) AS rank
+                        FROM paper_fts
+                        JOIN papers p ON p.id = paper_fts.rowid
+                        WHERE paper_fts MATCH ?
+                          AND (p.year IS NULL OR (p.year >= ? AND p.year <= ?))
+                        ORDER BY {order_by}
+                        LIMIT ?
+                        """,
+                        (match_query, year_min, year_max, max(1, min(limit, 200))),
+                    ).fetchall()
+                    if rows:
+                        break
             finally:
                 if timeout_seconds is not None and timeout_seconds > 0:
                     self._conn.set_progress_handler(None, 0)
