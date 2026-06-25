@@ -14,6 +14,7 @@ from v5_memo.fullraw_index import (
     ShardCatalogEntry,
     build_upload_shard_batches,
     select_search_shard_entries,
+    select_sweep_shard_entries,
 )
 from v5_memo.fullraw_service import RawFile
 
@@ -144,6 +145,19 @@ def test_search_shard_selection_honors_minimum_coverage(
     monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", "6")
     selected = select_search_shard_entries(entries, query="metformin exercise")
     assert len(selected) == 6
+
+def test_full_coverage_shard_selection_frontloads_spread_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entries = [_entry(tmp_path, idx, "openalex") for idx in range(320)]
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", raising=False)
+    selected = select_search_shard_entries(entries, query="metformin")
+    swept = select_sweep_shard_entries(entries, query="metformin", limit=len(entries))
+    assert len(selected) == len(entries)
+    assert selected[:6] == swept[:6]
+    assert max(entry.batch_id for entry in selected[:20]) > 30
+    assert [entry.batch_id for entry in selected[:6]] != list(range(6))
 
 def test_materialized_shard_cache_evicts_old_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cache_dir = tmp_path / "cache"

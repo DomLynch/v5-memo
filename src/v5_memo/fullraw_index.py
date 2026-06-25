@@ -51,6 +51,7 @@ _STOP = frozenset(
     ).split()
 )
 _BACKEND = "v5-fullraw-indexed-fts5"
+_FULL_COVERAGE_PREFIX_SHARDS = 128
 _SWEEP_STRATEGY = "profile_relaxed_v4"
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _DEFAULT_TERM_MAP = (
@@ -1204,7 +1205,7 @@ def select_search_shard_entries(
     if limit is not None and min_required is not None:
         limit = max(limit, min_required)
     if limit is None or limit >= len(entries):
-        return entries
+        return _frontload_spread_entries(entries)
     order = os.environ.get("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "balanced").casefold()
     if order in {"oldest", "first", "newest", "spread"}:
         paths = select_search_shard_paths([entry.path for entry in entries])
@@ -1224,7 +1225,7 @@ def select_sweep_shard_entries(
         return []
     sweep_limit = limit if limit is not None else (_positive_int_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT") or 128)
     if sweep_limit >= len(entries):
-        return entries
+        return _frontload_spread_entries(entries)
     sweep_limit = max(1, sweep_limit)
     selected: list[ShardCatalogEntry] = []
     query_terms = set(_fts_terms(query))
@@ -1581,6 +1582,14 @@ def _spread_entries(
         if entry.path not in seen:
             out.append(entry)
             seen.add(entry.path)
+    return out
+
+
+def _frontload_spread_entries(entries: list[ShardCatalogEntry]) -> list[ShardCatalogEntry]:
+    prefix_count = min(len(entries), _FULL_COVERAGE_PREFIX_SHARDS)
+    out: list[ShardCatalogEntry] = []
+    _extend_unique_entries(out, _spread_entries(entries, prefix_count), len(entries))
+    _extend_unique_entries(out, entries, len(entries))
     return out
 
 
