@@ -2839,8 +2839,14 @@ def run_server() -> None:
                             catalog=catalog,
                         )
                         if sweep_status == "hit" and (cached := sweep_cache_get(cache_key)) is not None:
-                            hits = cached.hits
                             receipt = auth_receipt(cached.receipt)
+                            if sweep_entry_is_ready(cached) or (
+                                sweep_cache_entry_is_terminal(cached)
+                                and receipt_is_sufficient(cached.receipt)
+                            ):
+                                hits = cached.hits
+                            elif resume_cached:
+                                sweep_status = "running"
                         elif resume_cached and cached is not None:
                             receipt = auth_receipt(cached.receipt)
                             if sweep_entry_is_ready(cached) or (
