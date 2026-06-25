@@ -6,6 +6,7 @@ from urllib.request import Request
 import pytest
 
 from v5_memo.minimax_writer import (
+    MemoScopeError,
     MiniMaxM3CandidateSelector,
     MiniMaxM3MemoWriter,
     MiniMaxM3SearchPlanner,
@@ -382,6 +383,61 @@ See 10.5555/not-in-receipts.
 x""",
             _receipts(),
         )
+
+
+def test_minimax_memo_validation_rejects_unreceipted_numeric_claims() -> None:
+    with pytest.raises(MemoScopeError, match="numeric claims"):
+        validate_minimax_memo(
+            """# Alpha memo: NAD mitochondrial
+## Core signal
+The memo invents a -17% endpoint.
+## The 2+2=5 angle
+The receipts do not contain that number.
+## Why this could matter
+It would overstate the signal.
+## What would break the idea
+A receipt with the number would support it.
+## Receipts
+- 10.1/sleep-nad
+- 10.2/exercise-nad
+## Safety note
+Receipt-bound only.""",
+            _receipts(),
+            candidate=_candidate(),
+        )
+
+
+def test_minimax_memo_validation_allows_receipted_numeric_claims() -> None:
+    receipts = [
+        CorpusHit(
+            hit_id="dose",
+            title="GlyNAC 250 mg/day trial",
+            abstract="The trial reported a 45% endpoint change after 8 weeks.",
+            source="openalex",
+            doi="10.1/glynac-dose",
+        ),
+        _receipts()[1],
+    ]
+
+    memo = validate_minimax_memo(
+        """# Alpha memo: GlyNAC mitochondrial
+## Core signal
+GlyNAC used 250 mg/day and reported a 45% endpoint change after 8-week follow-up.
+## The 2+2=5 angle
+The number is copied from the receipt.
+## Why this could matter
+It keeps exact claims receipt-owned.
+## What would break the idea
+A different trial could fail to replicate it.
+## Receipts
+- 10.1/glynac-dose
+- 10.2/exercise-nad
+## Safety note
+Receipt-bound only.""",
+        receipts,
+    )
+
+    assert "250 mg/day" in memo
 
 
 @pytest.mark.parametrize("receipt_line", ["**10.1/sleep-nad**", "`10.1/sleep-nad`"])

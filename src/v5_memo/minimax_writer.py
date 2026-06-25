@@ -37,6 +37,15 @@ _REQUIRED_MEMO_SECTIONS = (
 )
 _DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s<>()\[\]{}\"']+", re.IGNORECASE)
 _DOI_TRAILING_PUNCTUATION = ".,;:*_`"
+_PRECISE_NUMBER_RE = re.compile(
+    r"(?<![a-z0-9])(?:"
+    r"p\s*[=<]\s*-?\d+(?:\.\d+)?"
+    r"|n\s*=\s*\d+"
+    r"|-?\d+(?:\.\d+)?[-\s]*(?:%|mg/day|g/day|mg|g|kg|weeks?|wk|months?|"
+    r"years?|yrs?|yr|fold|x)"
+    r")",
+    re.IGNORECASE,
+)
 _TITLE_WORD_RE = re.compile(r"[a-z][a-z0-9]{2,}")
 _TITLE_STOPWORDS = frozenset({
     "alpha", "memo", "and", "for", "from", "into", "may", "not", "the", "with",
@@ -535,6 +544,7 @@ def validate_minimax_memo(
         raise ValueError(
             f"MiniMax memo included unreceipted DOI-like references: {', '.join(extra_dois)}"
         )
+    _validate_receipt_owned_numbers(text, receipts)
     if candidate is not None:
         _validate_receipt_owned_title(text, receipts, candidate)
     return text + "\n"
@@ -688,6 +698,37 @@ def _receipt_dois(receipts: Sequence[CorpusHit]) -> set[str]:
             if value:
                 allowed.update(_extract_dois(value))
     return allowed
+
+
+def _validate_receipt_owned_numbers(markdown: str, receipts: Sequence[CorpusHit]) -> None:
+    claimed = _precise_numbers(markdown)
+    if not claimed:
+        return
+    allowed_text = "\n".join(
+        f"{hit.title} {hit.abstract} {hit.year or ''} {hit.venue or ''} {hit.doi or ''} {hit.url}"
+        for hit in receipts
+    )
+    unsupported = sorted(claimed - _precise_numbers(allowed_text))
+    if unsupported:
+        raise MemoScopeError(
+            "MiniMax memo included unreceipted numeric claims: " + ", ".join(unsupported)
+        )
+
+
+def _precise_numbers(text: str) -> set[str]:
+    stripped = _DOI_RE.sub(" ", text)
+    return {_normalize_number(match.group(0)) for match in _PRECISE_NUMBER_RE.finditer(stripped)}
+
+
+def _normalize_number(value: str) -> str:
+    token = re.sub(r"[\s-]+", "", value.casefold())
+    return (
+        token.replace("weeks", "week")
+        .replace("yrs", "year")
+        .replace("years", "year")
+        .replace("yr", "year")
+        .replace("wk", "week")
+    )
 
 
 def _receipt_display_id(hit: CorpusHit) -> str:
