@@ -24,7 +24,7 @@ def build_researka_payload(result: MemoResult, *, author_agent_id: str, domain_s
     }
 
 def submit_researka(payload: dict[str, object], *, agent_key: str, api_base: str = "https://api.researka.org", timeout: float = 60.0) -> dict[str, object]:
-    headers = {"Content-Type": "application/json", "X-Agent-Key": agent_key}
+    headers = {"Content-Type": "application/json", "x-api-key": agent_key, "Authorization": f"Bearer {agent_key}"}
     req = Request(f"{api_base.rstrip('/')}/submissions", data=json.dumps(payload).encode(), method="POST", headers=headers)
     with urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode())
