@@ -52,7 +52,7 @@ _STOP = frozenset(
 )
 _BACKEND = "v5-fullraw-indexed-fts5"
 _FULL_COVERAGE_PREFIX_SHARDS = 128
-_SWEEP_STRATEGY = "profile_relaxed_v4"
+_SWEEP_STRATEGY = "profile_relaxed_v5"
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
