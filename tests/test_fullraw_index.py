@@ -122,6 +122,20 @@ def test_shard_search_returns_partial_hits_on_timeout(tmp_path: Path, monkeypatc
     assert paths == [fast]
     assert [hit["doi"] for hit in hits] == ["10.example/fast"]
 
+    called: list[Path] = []
+
+    def counting_search(path: Path, *args: object, **kwargs: object) -> list[dict[str, object]]:
+        del args, kwargs
+        called.append(path)
+        return []
+
+    monkeypatch.setattr(fullraw_index, "_search_one_shard", counting_search)
+    many_paths = [tmp_path / f"many_{idx}.sqlite" for idx in range(200)]
+    fullraw_index._search_shard_paths_with_paths(
+        many_paths, "metformin", limit=5, year_min=1900, year_max=2100, rank_mode="relevance", timeout_seconds=0.01
+    )
+    assert len(called) <= fullraw_index._FULL_COVERAGE_PREFIX_SHARDS
+    assert many_paths[-1] not in called
 
 def test_select_search_shard_entries_balances_sources_and_rotates_by_query(
     tmp_path: Path,

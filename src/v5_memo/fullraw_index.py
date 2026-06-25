@@ -1069,6 +1069,11 @@ def _search_shard_paths_with_paths_and_receipt(
     timed_out = False
     worker_count = workers if workers is not None else int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "8"))
     worker_count = max(1, min(worker_count, len(paths) or 1))
+    search_paths = (
+        paths[: min(len(paths), max(worker_count * 4, _FULL_COVERAGE_PREFIX_SHARDS))]
+        if timeout_seconds
+        else paths
+    )
     pool = ThreadPoolExecutor(max_workers=worker_count)
     try:
         futures = {
@@ -1082,7 +1087,7 @@ def _search_shard_paths_with_paths_and_receipt(
                 rank_mode,
                 shard_timeout_seconds,
             ): path
-            for path in paths
+            for path in search_paths
         }
         completed = as_completed(futures, timeout=timeout_seconds) if timeout_seconds else as_completed(futures)
         for future in completed:
