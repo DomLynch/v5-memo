@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import Mapping, Sequence
 from typing import cast
 from urllib.request import Request, urlopen
@@ -12,25 +13,16 @@ _RETRIEVAL_EVIDENCE_KEYS = (
     "search_variant",
     "rank_mode",
 )
+_DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
+_SENTENCE_END = re.compile(r"([.!?])(?:\s|$)")
 
 
 def build_researka_payload(result: MemoResult, *, author_agent_id: str, domain_slug: str) -> dict[str, object]:
     body = result.markdown.strip()
     candidate = result.candidate
     heading = next((line[2:] for line in body.splitlines() if line.startswith("# ")), "Untitled alpha memo")
-    abstract = " ".join(body.translate(str.maketrans("#*_`>-", "      ")).split()[:180])
-    source_bundle = [
-        {
-            "title": h.title,
-            "doi": h.doi or "",
-            "url": h.url,
-            "source": h.source,
-            "year": h.year,
-            "evidence_type": "primary",
-            "retrieval_evidence": _retrieval_evidence(h),
-        }
-        for h in result.receipts
-    ]
+    abstract = _abstract_from_markdown(body)
+    source_bundle = [_source_bundle_entry(hit) for hit in result.receipts]
     fullraw_coverage = _fullraw_retrieval_coverage(result.receipts)
     verdict = {"decision": "ready_to_publish", "publish_tier": "TIER_1", "maturity_level": "L5", "confidence_label": "evidence_backed_signal", "blockers": [], "axes": {"bound_receipts": len(source_bundle)}}
     return {
@@ -54,6 +46,46 @@ def _retrieval_evidence(hit: CorpusHit) -> dict[str, object]:
         for key in _RETRIEVAL_EVIDENCE_KEYS
         if (value := hit.metadata.get(key)) not in (None, "", {}, ())
     }
+
+
+def _abstract_from_markdown(markdown: str) -> str:
+    plain = " ".join(markdown.translate(str.maketrans("#*_`>-", "      ")).split())
+    if len(plain) <= 900:
+        return plain
+    clipped = plain[:900].rstrip()
+    last_end = 0
+    for match in _SENTENCE_END.finditer(clipped):
+        last_end = match.end(1)
+    return clipped[:last_end].strip() if last_end >= 80 else clipped.rstrip(" ,;:") + "."
+
+
+def _source_bundle_entry(hit: CorpusHit) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "title": hit.title,
+        "url": hit.url,
+        "source": hit.source,
+        "year": hit.year,
+        "evidence_type": "primary",
+        "retrieval_evidence": _retrieval_evidence(hit),
+    }
+    doi = _valid_doi(hit.doi)
+    if doi:
+        entry["doi"] = doi
+    elif pmid := _pmid(hit):
+        entry["pmid"] = pmid
+        entry["id"] = pmid
+    return entry
+
+
+def _valid_doi(value: object) -> str:
+    doi = str(value or "").strip().rstrip(".,;")
+    return doi if _DOI_RE.match(doi) and "(" not in doi and ")" not in doi else ""
+
+
+def _pmid(hit: CorpusHit) -> str:
+    raw = hit.metadata.get("pmid")
+    pmid = str(raw or hit.hit_id if raw or hit.hit_id.isdigit() else "").strip()
+    return pmid if pmid.isdigit() else ""
 
 
 def _fullraw_retrieval_coverage(receipts: Sequence[CorpusHit]) -> dict[str, object]:
@@ -102,6 +134,9 @@ def _int_value(value: object) -> int:
 
 def submit_researka(payload: dict[str, object], *, agent_key: str, api_base: str = "https://api.researka.org", timeout: float = 60.0) -> dict[str, object]:
     headers = {"Content-Type": "application/json", "x-api-key": agent_key, "Authorization": f"Bearer {agent_key}"}
+    agent_slug = payload.get("author_agent_slug") or payload.get("author_agent_id")
+    if isinstance(agent_slug, str) and agent_slug.strip():
+        headers["X-Agent-Slug"] = agent_slug.strip()
     req = Request(f"{api_base.rstrip('/')}/submissions", data=json.dumps(payload).encode(), method="POST", headers=headers)
     with urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode())

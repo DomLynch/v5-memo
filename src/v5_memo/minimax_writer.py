@@ -325,6 +325,10 @@ Hard rules:
 - Scope every implication to the receipts: state the specific population, market,
   company, channel, model, benchmark, timeframe, geography, or source type only when
   the receipts provide it.
+- State the receipt-owned timing exactly; do not turn pre-exercise, prior-to-use,
+  or post-intervention exposure into "during" unless a receipt says during.
+- If receipts split by endpoint or metric, say it is not a direct contradiction
+  unless both receipts measure the same endpoint family.
 - Respect receipt roles: if a receipt is labeled promise, protocol, intent, or
   mechanism, describe it as expected/designed/hypothesized/framed, not as an observed result or confirmed endpoint.
 - Use source-appropriate descriptors from the receipts, not generic prestige labels:
@@ -334,6 +338,8 @@ Hard rules:
   contradiction, boundary condition, inversion, neglected proxy, metric mismatch, or
   cross-domain transfer.
 - Avoid generic phrases such as "more research is needed" unless tied to a receipt-specific test.
+- In "What would break the idea", name one concrete next-step uncertainty or
+  study design that would resolve the boundary.
 - Use this exact receipt-owned title first line: # Alpha memo: {title}
 - Output Markdown only.
 - Keep it under 450 words.
@@ -383,7 +389,7 @@ def _safe_alpha_title(candidate: InsightCandidate, receipts: Sequence[CorpusHit]
             promise_terms.extend(term for term in ("augment", "mimic", "protocol", "expected") if term in title_terms)
         elif role.role == "outcome":
             outcome_terms.extend(term for term in ("blunt", "impair", "attenuate", "null", "reduce") if term in title_terms)
-    terms = [term for term in candidate.bridge_terms if term]
+    terms = [term for term in candidate.bridge_terms if term and term not in _TITLE_STOPWORDS]
     if promise_terms and outcome_terms:
         terms = [terms[0], promise_terms[0], "versus", outcome_terms[0], *terms[1:3]]
     else:

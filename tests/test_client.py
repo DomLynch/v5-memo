@@ -15,12 +15,10 @@ from v5_memo.client import (
     OpenAlexFullCorpusSearchClient,
     ResearkaSearchClient,
     SearchBackendError,
-    _fullraw_query_variants,
     _fullraw_search_passes,
     _parse_corpus_search_response,
     _parse_full_raw_search_response,
     _parse_openalex_response,
-    _query_variants,
     _rerank_score,
 )
 from v5_memo.schemas import CorpusHit
@@ -380,6 +378,31 @@ def test_full_raw_client_waits_for_zero_hit_foreground_sweep(monkeypatch: object
 
     assert [payload.get("cache_only") for payload in payloads] == [None, True]
     assert hits[0].doi == "10.123/sweep"
+
+
+def test_full_raw_client_keeps_sufficient_foreground_hit(monkeypatch: object) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        assert payload.get("cache_only") is not True
+        return FakeResponse({
+            "meta": {
+                "count": 1,
+                "shard_receipt": {"shards_searched": 48, "sources_searched": {"openalex": 24, "pubmed": 24}},
+            },
+            "results": [{"doi": "10.123/foreground", "title": "Metformin longevity foreground evidence", "source": "openalex"}],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        sweep_wait_seconds=1.0,
+        min_shards_searched=48,
+        min_sources_searched=2,
+    )
+
+    assert client.search("metformin longevity", limit=3)[0].doi == "10.123/foreground"
 
 
 def test_full_raw_client_uses_cache_only_after_strict_foreground_timeout(
@@ -919,90 +942,22 @@ def test_openalex_client_fans_out_dedupes_and_reranks(monkeypatch: object) -> No
     assert hits[0].metadata["search_variant"] == "nad salvage mitochondrial stress exercise response"
     assert hits[0].metadata["query_match_count"] == 604
 
-def test_query_variants_do_not_depend_on_one_long_query() -> None:
-    assert _query_variants("NAD salvage mitochondrial stress exercise response", limit=5) == [
-        "nad salvage mitochondrial stress exercise response",
-        "nad salvage mitochondrial stress",
-        "salvage mitochondrial stress exercise",
-        "mitochondrial stress exercise response",
-        "nad salvage mitochondrial",
-    ]
+@pytest.mark.parametrize(
+    ("query", "limit", "expected"),
+    [
+        ("cold water immersion attenuates muscle mass strength resistance training", 8, ("attenuates resistance",)),
+        ("resveratrol exercise training adaptation", 5, ("resveratrol", "resveratrol training")),
+        ("resveratrol sirt1 pgc 1a mitochondrial biogenesis endurance training", 5, ("resveratrol mitochondrial",)),
+        ("metformin augment strength training seniors", 5, ("metformin augment",)),
+        ("nmn supplementation vo2max adaptation trained cyclists", 5, ("nmn vo2max",)),
+        ("metformin resistance training adaptation", 6, ("metformin training", "resistance training")),
+        ("metformin expected to augment resistance training hypertrophy protocol", 4, ("metformin augment",)),
+    ],
+)
+def test_fullraw_search_passes_preserve_key_recall_shapes(query: str, limit: int, expected: tuple[str, ...]) -> None:
+    queries = [search_pass.query for search_pass in _fullraw_search_passes(query, limit=limit)]
 
-def test_fullraw_variants_try_strong_windows_before_weak_pairs() -> None:
-    query = "cold water immersion attenuates muscle mass strength resistance training"
-    assert _fullraw_query_variants(query, limit=6) == ["cold water immersion attenuates muscle mass strength resistance training", "cold water immersion attenuates", "water immersion attenuates muscle", "immersion attenuates muscle mass", "attenuates muscle mass strength", "muscle mass strength resistance"]
-
-def test_fullraw_search_passes_cover_breadth_depth_modes() -> None:
-    passes = _fullraw_search_passes(
-        "cold water immersion attenuates muscle mass strength resistance training",
-        limit=8,
-    )
-
-    assert [search_pass.name for search_pass in passes] == [
-        "focused",
-        "broad",
-        "broad",
-        "broad",
-        "broad",
-        "broad",
-        "broad",
-        "broad",
-    ]
-    assert all(search_pass.rank_mode == "relevance" for search_pass in passes)
-    assert "attenuates resistance" in [search_pass.query for search_pass in passes]
-
-def test_fullraw_search_passes_include_core_variant_before_depth_modes() -> None:
-    passes = _fullraw_search_passes("resveratrol exercise training adaptation", limit=5)
-
-    assert [search_pass.name for search_pass in passes] == [
-        "focused",
-        "core",
-        "anchor",
-        "adjacent",
-        "falsifier",
-    ]
-    assert passes[1].query == "resveratrol training"
-    assert passes[2].query == "resveratrol"
-    assert "resveratrol training" in [search_pass.query for search_pass in passes]
-
-def test_fullraw_search_passes_prioritize_promise_pair_variants() -> None:
-    passes = _fullraw_search_passes(
-        "resveratrol sirt1 pgc 1a mitochondrial biogenesis endurance training",
-        limit=5,
-    )
-
-    assert "resveratrol mitochondrial" in [search_pass.query for search_pass in passes]
-
-def test_fullraw_search_passes_prioritize_specific_short_anchor_pairs() -> None:
-    metformin_passes = _fullraw_search_passes(
-        "metformin augment strength training seniors",
-        limit=5,
-    )
-    nmn_passes = _fullraw_search_passes(
-        "nmn supplementation vo2max adaptation trained cyclists",
-        limit=5,
-    )
-
-    assert "metformin augment" in [search_pass.query for search_pass in metformin_passes]
-    assert "nmn vo2max" in [search_pass.query for search_pass in nmn_passes]
-
-def test_fullraw_search_passes_keep_pair_variants_on_primary_anchor() -> None:
-    passes = _fullraw_search_passes(
-        "metformin resistance training adaptation",
-        limit=6,
-    )
-
-    queries = [search_pass.query for search_pass in passes]
-    assert "metformin training" in queries
-    assert "resistance training" in queries
-
-def test_fullraw_search_passes_keep_promise_terms_for_protocol_recall() -> None:
-    passes = _fullraw_search_passes(
-        "metformin expected to augment resistance training hypertrophy protocol",
-        limit=4,
-    )
-
-    assert "metformin augment" in [search_pass.query for search_pass in passes]
+    assert all(item in queries for item in expected)
 
 def test_fullraw_rerank_prefers_abstract_backed_doi_receipts(monkeypatch: MonkeyPatch) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:

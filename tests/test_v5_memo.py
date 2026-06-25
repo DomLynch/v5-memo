@@ -2,6 +2,7 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
+from urllib.request import Request
 
 import pytest
 
@@ -9,7 +10,7 @@ from v5_memo.binder import bind_receipts
 from v5_memo.gate import candidate_alpha_tier, meets_publish_bar
 from v5_memo.miner import mine_insights, query_anchor_terms
 from v5_memo.pipeline import build_alpha_memo
-from v5_memo.publisher import build_researka_payload
+from v5_memo.publisher import build_researka_payload, submit_researka
 from v5_memo.retriever import collect_seed_hits
 from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult
 from v5_memo.scorer import score_connection
@@ -825,6 +826,102 @@ def test_researka_payload_preserves_memo_and_receipts() -> None:
     assert payload["source_bundle"][0]["evidence_type"] == "primary"  # type: ignore[index]
 
 
+def test_researka_payload_uses_valid_doi_or_pmid_not_empty_doi() -> None:
+    candidate = InsightCandidate(
+        topic="caffeine exercise",
+        thesis="Endpoint-gated caffeine signal.",
+        bridge_terms=("caffeine", "exercise"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("10.1000/caffeine", "1798317"),
+        score=100,
+        novelty_score=50,
+        evidence_score=85,
+        reasons=("shape:directional_reversal",),
+    )
+    receipts = [
+        CorpusHit(
+                hit_id="10.1000/caffeine",
+            title="Failure of caffeine to affect metabolism during 60 min submaximal exercise.",
+            abstract="Caffeine did not change submaximal metabolic endpoints.",
+            source="researka",
+                doi="10.1000/caffeine",
+        ),
+        CorpusHit(
+            hit_id="1798317",
+            title="Caffeine ingestion during exercise to exhaustion in elite distance runners.",
+            abstract="Caffeine improved exercise to exhaustion.",
+            source="researka",
+            metadata={"pmid": "1798317"},
+        ),
+    ]
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=render_memo(candidate, receipts)),
+        author_agent_id="v6-alpha-memo",
+        domain_slug="performance",
+    )
+
+    source_bundle = cast(list[dict[str, object]], payload["source_bundle"])
+    assert source_bundle[0]["doi"] == "10.1000/caffeine"
+    assert "doi" not in source_bundle[1]
+    assert source_bundle[1]["pmid"] == "1798317"
+    assert source_bundle[1]["id"] == "1798317"
+
+
+def test_researka_payload_abstract_ends_at_sentence_boundary() -> None:
+    candidate = InsightCandidate(
+        topic="topic",
+        thesis="Bounded signal.",
+        bridge_terms=("bridge",),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("a", "b"),
+        score=80,
+        novelty_score=50,
+        evidence_score=85,
+        reasons=("shape:directional_reversal",),
+    )
+    receipts = [_hit("a", "A", "A"), _hit("b", "B", "B")]
+    markdown = "# Alpha memo: bridge\n\n" + ("Complete sentence. " * 120)
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v6-alpha-memo",
+        domain_slug="test",
+    )
+
+    assert str(payload["abstract"]).endswith(".")
+
+
+def test_submit_researka_sends_agent_slug_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"ok": true}'
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        captured["agent"] = request.headers["X-agent-slug"]
+        return FakeResponse()
+
+    monkeypatch.setattr("v5_memo.publisher.urlopen", fake_urlopen)
+
+    response = submit_researka(
+        {"author_agent_slug": "v6-alpha-memo"},
+        agent_key="secret",
+        api_base="https://api.example",
+    )
+
+    assert response == {"ok": True}
+    assert captured["agent"] == "v6-alpha-memo"
+
+
 def test_researka_payload_preserves_authenticated_fullraw_coverage() -> None:
     receipt = {
         "shards_total": 100,
@@ -1126,6 +1223,30 @@ def test_miner_rejects_power_word_endpoint_mismatch_as_alpha() -> None:
         hits,
         topic="longevity exercise adaptation supplement reversal",
         required_anchor_terms=("training",),
+        include_discovery=True,
+    )
+
+    assert all(candidate_alpha_tier(candidate) != "publishable_alpha" for candidate in candidates)
+
+
+def test_miner_rejects_all_cause_object_bridge_endpoint_split_as_alpha() -> None:
+    hits = [
+        _hit(
+            "treadmill",
+            "Productivity of transcriptionists using a treadmill desk",
+            "Objective: Time spent sitting increases all-cause mortality. A treadmill desk offers the potential to increase activity while working.",
+        ),
+        _hit(
+            "inclined",
+            "The effect on sitting posture of a desk with a 10 degree inclination for reading and writing.",
+            "A pilot study found more erect head and trunk posture and decreased cervical and thoracic spine load at an inclined desk.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="standing desk sedentary health productivity",
+        required_anchor_terms=("standing", "desk"),
         include_discovery=True,
     )
 

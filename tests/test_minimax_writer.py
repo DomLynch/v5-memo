@@ -283,6 +283,9 @@ def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
     assert "The title must be made only from locked receipt title/abstract words" in prompt
     assert "Use this exact receipt-owned title first line: # Alpha memo: nad mitochondrial" in prompt
     assert "Scope every implication to the receipts" in prompt
+    assert "State the receipt-owned timing exactly" in prompt
+    assert "not a direct contradiction" in prompt
+    assert "one concrete next-step uncertainty" in prompt
     assert "Respect receipt roles" in prompt
     assert "observed result or confirmed endpoint" in prompt
     assert "population, market" in prompt
@@ -321,6 +324,29 @@ def test_build_minimax_prompt_uses_role_verbs_in_safe_title() -> None:
     prompt = build_minimax_prompt(candidate, receipts)
 
     assert "# Alpha memo: metformin augment versus blunt master training" in prompt
+
+
+def test_build_minimax_prompt_filters_weak_bridge_words_from_title() -> None:
+    candidate = InsightCandidate(
+        topic="caffeine exercise performance",
+        thesis="Endpoint boundary.",
+        bridge_terms=("caffeine", "during", "exercise"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("metabolism", "exhaustion"),
+        score=100,
+        novelty_score=50,
+        evidence_score=85,
+        reasons=("tier:elite_alpha",),
+    )
+    receipts = [
+        CorpusHit("metabolism", "Failure of caffeine to affect metabolism during 60 min submaximal exercise", "", "fullraw"),
+        CorpusHit("exhaustion", "Caffeine ingestion during exercise to exhaustion in elite distance runners", "", "fullraw"),
+    ]
+
+    prompt = build_minimax_prompt(candidate, receipts)
+
+    assert "# Alpha memo: caffeine exercise" in prompt
+    assert "# Alpha memo: caffeine during exercise" not in prompt
 
 
 def test_minimax_planner_prompt_prefers_reversal_pairs_not_reviews() -> None:

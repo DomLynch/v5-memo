@@ -2914,6 +2914,7 @@ def run_server() -> None:
                         rank_mode=rank_mode,
                         timeout_seconds=timeout_seconds,
                     )
+                    receipt = auth_receipt(receipt)
                     sweep_status = enqueue_sweep(
                         key=cache_key,
                         query=query,

@@ -59,7 +59,7 @@ _EXPERTISE = frozenset({"expert", "experts", "novice", "novices", "nonexpert", "
 _BOUNDARY = frozenset({"boundary", "context", "dose", "endpoint", "modality", "population", "setting"})
 _INTENT = frozenset({"aim", "aimed", "designed", "expect", "expected", "hypothesis", "intended", "protocol", "theory"})
 _OBSERVED = frozenset({"found", "observed", "outcome", "outcomes", "reported", "result", "results", "showed"})
-_PROMISE = _INTENT | _ROLE_A | frozenset({
+_PROMISE = _INTENT | frozenset({
     "activate", "activated", "activates", "activating", "activation",
     "augment",
     "mimetic", "mimetics", "mimic", "mimics",
