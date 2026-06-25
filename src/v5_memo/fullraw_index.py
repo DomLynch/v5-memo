@@ -1311,9 +1311,11 @@ def _cache_fit_warm_entries(
         return selected
     query_terms = set(_fts_terms(query))
 
-    def candidate_key(entry: ShardCatalogEntry) -> tuple[int, int, int, int, int, str]:
+    def candidate_key(entry: ShardCatalogEntry) -> tuple[int, int, int, int, int, int, str]:
         topic_hits = len(query_terms & set(entry.topic_terms))
+        ready = _cached_materialized_shard_path(entry.path) is not None
         return (
+            0 if ready else 1,
             max(0, entry.bytes_used),
             -topic_hits,
             -entry.cited_by_max,
@@ -1341,7 +1343,8 @@ def _cache_fit_warm_entries(
                 if candidate.path in fit_paths:
                     continue
                 candidate_bytes = max(0, candidate.bytes_used)
-                if bytes_used + candidate_bytes > max_cache_bytes:
+                ready = _cached_materialized_shard_path(candidate.path) is not None
+                if not ready and bytes_used + candidate_bytes > max_cache_bytes:
                     continue
                 fit_prefix.append(candidate)
                 fit_paths.add(candidate.path)
