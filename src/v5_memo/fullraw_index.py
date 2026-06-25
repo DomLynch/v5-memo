@@ -1074,34 +1074,32 @@ def _search_shard_paths_with_paths_and_receipt(
         if timeout_seconds
         else paths
     )
-    pool = ThreadPoolExecutor(max_workers=worker_count)
-    try:
-        futures = {
-            pool.submit(
-                _search_one_shard,
-                path,
-                query,
-                limit,
-                year_min,
-                year_max,
-                rank_mode,
-                shard_timeout_seconds,
-            ): path
-            for path in search_paths
-        }
-        completed = as_completed(futures, timeout=timeout_seconds) if timeout_seconds else as_completed(futures)
-        for future in completed:
-            path = futures[future]
-            try:
-                hits = future.result()
-            except (OSError, sqlite3.Error):
-                continue
-            completed_paths.append(path)
-            hit_groups.append(hits)
-    except FuturesTimeoutError:
-        timed_out = True
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+    deadline = time.monotonic() + timeout_seconds if timeout_seconds else None
+    for start in range(0, len(search_paths), worker_count):
+        if deadline is not None and time.monotonic() >= deadline:
+            timed_out = True
+            break
+        batch = search_paths[start:start + worker_count]
+        pool = ThreadPoolExecutor(max_workers=max(1, min(worker_count, len(batch))))
+        try:
+            futures = {
+                pool.submit(_search_one_shard, path, query, limit, year_min, year_max, rank_mode, shard_timeout_seconds): path
+                for path in batch
+            }
+            remaining = None if deadline is None else max(0.05, deadline - time.monotonic())
+            for future in as_completed(futures, timeout=remaining):
+                path = futures[future]
+                try:
+                    hits = future.result()
+                except (OSError, sqlite3.Error):
+                    continue
+                completed_paths.append(path)
+                hit_groups.append(hits)
+        except FuturesTimeoutError:
+            timed_out = True
+            break
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
     hits, metrics = _merge_hit_groups_with_receipt(hit_groups, limit=limit)
     return hits, completed_paths, timed_out, metrics
 
