@@ -959,10 +959,12 @@ def test_pipeline_filters_publishable_seed_when_elite_required() -> None:
             seed_queries=["sauna hypertension"],
             searcher=FakeSearch(),
             min_alpha_tier="elite_alpha",
-        )
+    )
     assert exc.value.failure.details["min_alpha_tier"] == "elite_alpha"
+    assert exc.value.failure.details["mined_candidate_count"] == 1
     assert "hit_count=2" in str(exc.value)
     assert "candidate_count=0" in str(exc.value)
+    assert "mined_candidate_count=1" in str(exc.value)
     assert "min_alpha_tier=elite_alpha" in str(exc.value)
 
 
