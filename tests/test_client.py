@@ -420,10 +420,10 @@ def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None
         "broad",
         "broad",
         "broad",
-        "anchor",
         "adjacent",
         "falsifier",
         "citation_heavy",
+        "recency",
     ]
     assert [payload["rank_mode"] for payload in requested] == [
         "relevance",
@@ -433,16 +433,17 @@ def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None
         "relevance",
         "relevance",
         "citation",
+        "recency",
     ]
     assert {hit.metadata["search_pass"] for hit in hits} >= {
         "focused",
-        "anchor",
         "broad",
         "adjacent",
         "falsifier",
         "citation_heavy",
+        "recency",
     }
-    assert {hit.metadata["rank_mode"] for hit in hits} == {"relevance", "citation"}
+    assert {hit.metadata["rank_mode"] for hit in hits} == {"relevance", "citation", "recency"}
 
 def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: object) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
@@ -466,7 +467,7 @@ def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: objec
     receipt = hits[0].metadata["fullraw_search_receipt"]
     assert isinstance(receipt, dict)
     assert receipt["duplicate_rate"] == 0.75
-    assert receipt["search_passes"] == ("focused", "anchor", "broad")
+    assert receipt["search_passes"] == ("focused", "broad")
     assert receipt["rank_modes"] == ("relevance",)
 
 def test_full_raw_client_can_fail_closed_on_narrow_shard_receipt(monkeypatch: object) -> None:
@@ -871,7 +872,7 @@ def test_fullraw_search_passes_cover_breadth_depth_modes() -> None:
         "broad",
         "broad",
         "broad",
-        "anchor",
+        "broad",
         "broad",
         "broad",
         "broad",
@@ -884,13 +885,12 @@ def test_fullraw_search_passes_include_core_variant_before_depth_modes() -> None
 
     assert [search_pass.name for search_pass in passes] == [
         "focused",
-        "anchor",
         "core",
         "broad",
         "broad",
+        "broad",
     ]
-    assert passes[1].query == "resveratrol"
-    assert passes[2].query == "resveratrol exercise training"
+    assert passes[1].query == "resveratrol exercise training"
     assert "resveratrol training" in [search_pass.query for search_pass in passes]
 
 def test_fullraw_search_passes_prioritize_promise_pair_variants() -> None:

@@ -943,9 +943,6 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
     for index, variant in enumerate(_query_variants(query, limit=window_limit)):
         if add("focused" if index == 0 else "broad", variant):
             return out
-    anchor_variant = _fullraw_anchor_variant(query)
-    if anchor_variant and add("anchor", anchor_variant):
-        return out
     core_variant = _fullraw_core_variant(query)
     if core_variant and add("core", core_variant):
         return out
@@ -965,13 +962,6 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
         if add("broad", variant):
             return out
     return out
-
-
-def _fullraw_anchor_variant(query: str) -> str:
-    for term in dict.fromkeys(_query_terms(query)):
-        if len(term) >= 6 and term not in _FULLRAW_PAIR_DROP:
-            return term
-    return ""
 
 
 def _fullraw_core_variant(query: str) -> str:
@@ -1003,6 +993,11 @@ def _fullraw_pair_variants(query: str, *, limit: int) -> list[str]:
         out.append(pair)
         return len(out) >= limit
 
+    if len(terms) > 2:
+        anchor = terms[0]
+        for term in terms[1:]:
+            if add(anchor, term):
+                return out
     for gap in range(1, len(terms)):
         for start in range(0, len(terms) - gap):
             left = terms[start]
@@ -1010,11 +1005,6 @@ def _fullraw_pair_variants(query: str, *, limit: int) -> list[str]:
             if left in _FULLRAW_WEAK_PAIR_TERMS and right in _FULLRAW_WEAK_PAIR_TERMS:
                 continue
             if add(left, right):
-                return out
-    if len(terms) > 2:
-        anchor = terms[0]
-        for term in terms[1:]:
-            if add(anchor, term):
                 return out
     return out
 
