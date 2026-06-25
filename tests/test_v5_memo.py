@@ -920,9 +920,26 @@ def test_researka_payload_preserves_memo_and_receipts() -> None:
     assert payload["article_type"] == "alpha_memo"
     assert payload["body_markdown"] == markdown.strip()
     assert payload["source_bundle"] == [
-        {"title": hit.title, "doi": hit.doi or "", "url": hit.url, "source": hit.source}
+        {
+            "title": hit.title,
+            "doi": hit.doi or "",
+            "url": hit.url,
+            "source": hit.source,
+            "year": hit.year,
+            "evidence_type": "primary",
+        }
         for hit in receipts
     ]
+    assert payload["evidence_bundle"] == {
+        "publish_verdict": {
+            "decision": "ready_to_publish",
+            "publish_tier": "TIER_1",
+            "maturity_level": "L5",
+            "confidence_label": "evidence_backed_signal",
+            "blockers": [],
+            "axes": {"bound_receipts": 2},
+        }
+    }
 
 
 def test_researka_submit_uses_live_api_auth_header(monkeypatch: pytest.MonkeyPatch) -> None:
