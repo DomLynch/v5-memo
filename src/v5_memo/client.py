@@ -951,8 +951,11 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
     core_variant = _fullraw_core_variant(query)
     if core_variant and add("core", core_variant):
         return out
-    first = (_query_terms(query) or ("",))[0]
+    terms = _query_terms(query)
+    first = (terms or ("",))[0]
     anchor = first if (len(first) <= 3 or len(first) >= 6) and first not in _FULLRAW_PAIR_DROP and not first.endswith(("tion", "sion", "ity", "ary", "acy", "ness")) else ""
+    if not anchor and len(terms) > 3 and add("broad", " ".join(terms[:3])):
+        return out
     pair_limit = max(0, limit - len(out) - (1 if anchor and limit <= 5 else 0))
     for variant in _fullraw_pair_variants(query, limit=pair_limit):
         if add("broad", variant):
