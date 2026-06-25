@@ -1,12 +1,10 @@
 """Selector gate contracts for V5 memo candidates."""
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 
 from v5_memo.schemas import CorpusHit, InsightCandidate, SearchFailure
 
-_DOI_TITLE_RE = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
 _TIER_RANK = {"discovery_seed": 0, "publishable_alpha": 1, "elite_alpha": 2}
 _MIN_SCORE_BY_TIER = {
     "discovery_seed": 0,
@@ -111,11 +109,9 @@ def memo_coverage_failure(
     min_sources_searched: int = 0,
     min_search_passes: int = 0,
     min_abstract_receipts: int = 0,
-    require_receipt_metadata: bool = False,
 ) -> SearchFailure | None:
     summary = memo_coverage_summary(receipts)
     failures: list[str] = []
-    weak_metadata: list[str] = []
     min_search_passes = min(min_search_passes, len(receipts))
     if min_shards_searched and _int_value(summary["shards_searched"]) < min_shards_searched:
         failures.append("shards_searched")
@@ -128,13 +124,6 @@ def memo_coverage_failure(
         and _int_value(summary["abstract_receipt_count"]) < min_abstract_receipts
     ):
         failures.append("abstract_receipts")
-    if require_receipt_metadata:
-        for hit in receipts:
-            weak_reasons = _receipt_metadata_failures(hit)
-            if weak_reasons:
-                weak_metadata.append(f"{hit.hit_id}:{','.join(weak_reasons)}")
-        if weak_metadata:
-            failures.append("receipt_metadata")
     if not failures:
         return None
     return SearchFailure(
@@ -148,30 +137,10 @@ def memo_coverage_failure(
                 "min_sources_searched": min_sources_searched,
                 "min_search_passes": min_search_passes,
                 "min_abstract_receipts": min_abstract_receipts,
-                "require_receipt_metadata": require_receipt_metadata,
             },
             "coverage": summary,
-            "weak_receipt_metadata": tuple(weak_metadata),
         },
     )
-
-
-def _receipt_metadata_failures(hit: CorpusHit) -> tuple[str, ...]:
-    failures: list[str] = []
-    title = hit.title.strip()
-    doi = hit.doi.strip() if hit.doi else ""
-    if (
-        not title
-        or title.casefold() == hit.hit_id.casefold()
-        or (doi and title.casefold() == doi.casefold())
-        or _DOI_TITLE_RE.fullmatch(title)
-    ):
-        failures.append("title")
-    if hit.year is None:
-        failures.append("year")
-    if not (doi or hit.url.strip()):
-        failures.append("locator")
-    return tuple(failures)
 
 
 def _int_value(value: object) -> int:

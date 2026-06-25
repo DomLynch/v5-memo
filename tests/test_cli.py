@@ -28,7 +28,6 @@ class ResveratrolOpenAlex:
                 title="Resveratrol mimics exercise mitochondrial biology",
                 abstract="Mechanism paper reported resveratrol improved mitochondrial function.",
                 source="openalex",
-                year=2006,
                 doi="10.promise",
             ),
             CorpusHit(
@@ -36,7 +35,6 @@ class ResveratrolOpenAlex:
                 title="Resveratrol blunts exercise training adaptation",
                 abstract="Human outcome trial observed resveratrol reduced exercise training benefits.",
                 source="openalex",
-                year=2013,
                 doi="10.outcome",
             ),
         ]
@@ -546,7 +544,6 @@ def test_planned_cli_self_corrects_when_first_planned_anchor_drifts(
                         title="Resveratrol mimics exercise mitochondrial biology",
                         abstract="Mechanism paper reported resveratrol improved mitochondrial function.",
                         source="fullraw",
-                        year=2006,
                         doi="10.promise",
                     ),
                     CorpusHit(
@@ -554,7 +551,6 @@ def test_planned_cli_self_corrects_when_first_planned_anchor_drifts(
                         title="Resveratrol blunts exercise training adaptation",
                         abstract="Human outcome trial observed resveratrol reduced exercise training benefits.",
                         source="fullraw",
-                        year=2013,
                         doi="10.outcome",
                     ),
                 ]
