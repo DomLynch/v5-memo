@@ -605,59 +605,7 @@ def test_anchor_only_bridge_requires_elite_shape() -> None:
     ) == []
 
 
-def test_anchor_only_bridge_can_support_elite_reversal() -> None:
-    case = next(item for item in _golden_cases() if item["name"] == "resveratrol-real-snippet")
-    hits = [
-        _hit(str(hit["id"]), str(hit["title"]), str(hit["abstract"]))
-        for hit in case["hits"]
-    ]
-
-    candidate = mine_insights(
-        hits,
-        topic=str(case["topic"]),
-        required_anchor_terms=tuple(str(anchor) for anchor in case["anchors"]),
-    )[0]
-
-    assert candidate.bridge_terms == ("resveratrol",)
-    assert "shape:promise_outcome_reversal" in candidate.reasons
-
-
-def test_title_only_specific_anchor_can_support_elite_promise_outcome_pair() -> None:
-    hits = [
-        _hit(
-            "promise",
-            "Resveratrol Improves Mitochondrial Function and Protects against Metabolic Disease by Activating SIRT1 and PGC-1alpha",
-            "",
-        ),
-        _hit(
-            "outcome",
-            "Resveratrol blunts the positive effects of exercise training on cardiovascular health in aged men",
-            "",
-        ),
-        *[
-            _hit(
-                f"filler-{index}",
-                f"Resveratrol exercise training context {index}",
-                "Resveratrol exercise training context.",
-            )
-            for index in range(10)
-        ],
-    ]
-
-    candidate = mine_insights(
-        hits,
-        topic="resveratrol exercise training adaptation reversal",
-        required_anchor_terms=("resveratrol",),
-    )[0]
-
-    assert candidate.receipt_ids == ("promise", "outcome")
-    assert candidate.bridge_terms == ("resveratrol",)
-    assert "shape:promise_outcome_reversal" in candidate.reasons
-    assert candidate_alpha_tier(candidate) == "elite_alpha"
-    assert meets_publish_bar(candidate, "elite_alpha")
-
-
-def test_mechanism_promise_may_omit_topic_context_when_outcome_has_it() -> None:
+def test_mechanism_promise_without_shared_axis_is_not_elite() -> None:
     hits = [
         _hit(
             "promise",
@@ -678,7 +626,32 @@ def test_mechanism_promise_may_omit_topic_context_when_outcome_has_it() -> None:
     )[0]
 
     assert candidate.receipt_ids == ("promise", "outcome")
-    assert candidate_alpha_tier(candidate) == "elite_alpha"
+    assert candidate_alpha_tier(candidate) == "publishable_alpha"
+
+
+def test_single_anchor_drug_pair_is_not_elite_without_shared_axis() -> None:
+    hits = [
+        _hit(
+            "promise",
+            "Metformin activates SIRT2 in ovarian syndrome",
+            "Metformin activates SIRT2 and improves insulin resistance in an ovarian syndrome model.",
+        ),
+        _hit(
+            "outcome",
+            "Metformin blunts blood pressure adaptation during exercise training",
+            "Metformin blunted exercise training blood pressure adaptation in adults.",
+        ),
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic="metformin resistance training adaptation",
+        required_anchor_terms=("metformin",),
+    )[0]
+
+    assert candidate.bridge_terms == ("metformin",)
+    assert candidate_alpha_tier(candidate) == "publishable_alpha"
+    assert not meets_publish_bar(candidate, "elite_alpha")
 
 
 def test_topic_context_blocks_same_anchor_injury_drift() -> None:
