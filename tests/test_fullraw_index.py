@@ -3,7 +3,6 @@ from __future__ import annotations
 import gzip
 import json
 import os
-import subprocess
 import time
 from pathlib import Path
 
@@ -143,13 +142,8 @@ def test_search_shard_selection_honors_minimum_coverage(
     entries = [_entry(tmp_path, idx, "openalex" if idx < 4 else "pubmed") for idx in range(8)]
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "3")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", "6")
-    monkeypatch.setenv("V5_MEMO_FULL_RAW_QUERY_SHARD_PREFILTER_LIMIT", "2")
-    monkeypatch.setenv("V5_MEMO_FULL_RAW_QUERY_SHARD_PREFILTER_SECONDS", "1")
-    monkeypatch.setattr("v5_memo.fullraw_index.shutil.which", lambda _name: "/usr/bin/rg")
-    result = subprocess.CompletedProcess([], 0, f"{entries[5].path}\n", "")
-    monkeypatch.setattr("v5_memo.fullraw_index.subprocess.run", lambda *_, **__: result)
     selected = select_search_shard_entries(entries, query="metformin exercise")
-    assert (len(selected), selected[0]) == (6, entries[5])
+    assert len(selected) == 6
 
 def test_materialized_shard_cache_evicts_old_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cache_dir = tmp_path / "cache"

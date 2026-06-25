@@ -1206,51 +1206,11 @@ def select_search_shard_entries(
     if limit is None or limit >= len(entries):
         return entries
     order = os.environ.get("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "balanced").casefold()
-    prefixed = _query_prefiltered_entries(entries, query, limit=limit)
     if order in {"oldest", "first", "newest", "spread"}:
         paths = select_search_shard_paths([entry.path for entry in entries])
         by_path = {entry.path: entry for entry in entries}
-        selected = [by_path[path] for path in paths if path in by_path]
-    else:
-        selected = _select_balanced_shard_entries(entries, limit, query=query)
-    if prefixed:
-        _extend_unique_entries(prefixed, selected, limit)
-        return prefixed
-    return selected
-
-
-def _query_prefiltered_entries(
-    entries: list[ShardCatalogEntry],
-    query: str,
-    *,
-    limit: int,
-) -> list[ShardCatalogEntry]:
-    prefix_limit = _positive_int_env("V5_MEMO_FULL_RAW_QUERY_SHARD_PREFILTER_LIMIT") or 0
-    seconds = _float_or_none(os.environ.get("V5_MEMO_FULL_RAW_QUERY_SHARD_PREFILTER_SECONDS", "")) or 0.0
-    if not prefix_limit or not seconds or not query or not shutil.which("rg"):
-        return []
-    root = Path(os.path.commonpath([str(entry.path) for entry in entries]))
-    by_path = {str(entry.path): entry for entry in entries}
-    selected: list[ShardCatalogEntry] = []
-    for term in _fts_terms(query)[:2]:
-        try:
-            command = ["rg", "-a", "-i", "-l", "--glob", "*.sqlite", term, str(root)]
-            result = subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=seconds,
-            )
-        except (OSError, subprocess.SubprocessError):
-            continue
-        for line in result.stdout.splitlines():
-            entry = by_path.get(line.strip())
-            if entry is not None and entry not in selected:
-                selected.append(entry)
-                if len(selected) >= min(prefix_limit, limit):
-                    return selected
-    return selected
+        return [by_path[path] for path in paths if path in by_path]
+    return _select_balanced_shard_entries(entries, limit, query=query)
 
 
 def select_sweep_shard_entries(
