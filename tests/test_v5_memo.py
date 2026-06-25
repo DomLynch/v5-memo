@@ -1635,7 +1635,7 @@ def test_pipeline_accepts_deep_fullraw_memo_coverage() -> None:
         min_alpha_tier="discovery_seed",
         min_shards_searched=48,
         min_sources_searched=2,
-        min_search_passes=2,
+        min_search_passes=6,
     )
 
     assert [hit.doi for hit in result.receipts] == ["10.deep/1", "10.deep/2"]

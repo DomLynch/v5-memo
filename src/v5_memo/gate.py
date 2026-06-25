@@ -112,6 +112,7 @@ def memo_coverage_failure(
 ) -> SearchFailure | None:
     summary = memo_coverage_summary(receipts)
     failures: list[str] = []
+    min_search_passes = min(min_search_passes, len(receipts))
     if min_shards_searched and _int_value(summary["shards_searched"]) < min_shards_searched:
         failures.append("shards_searched")
     if min_sources_searched and _int_value(summary["source_count"]) < min_sources_searched:
