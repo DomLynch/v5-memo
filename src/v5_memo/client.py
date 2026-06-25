@@ -1017,8 +1017,10 @@ def _rerank_score(
     rank: int,
 ) -> float:
     text = hit.text.casefold()
+    title = hit.title.casefold()
     seed_coverage = _coverage(seed_terms, text)
     variant_coverage = _coverage(variant_terms, text)
+    title_coverage = max(_coverage(seed_terms, title), _coverage(variant_terms, title))
     cited = hit.metadata.get("cited_by_count")
     citation_score = math.log10(max(0, cited) + 1) if isinstance(cited, (int, float)) else 0.0
     evidence_bonus = 0.0
@@ -1028,7 +1030,14 @@ def _rerank_score(
         evidence_bonus += 4.0
     if hit.abstract and "openalex" in hit.source.casefold():
         evidence_bonus += 4.0
-    return (seed_coverage * 70.0) + (variant_coverage * 20.0) + (citation_score * 4.0) + evidence_bonus - rank
+    return (
+        (seed_coverage * 70.0)
+        + (variant_coverage * 20.0)
+        + (title_coverage * 30.0)
+        + (citation_score * 4.0)
+        + evidence_bonus
+        - rank
+    )
 
 
 def _coverage(terms: tuple[str, ...], text: str) -> float:

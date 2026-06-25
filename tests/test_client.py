@@ -226,6 +226,37 @@ def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
     assert hits[0].metadata["shard_receipt"] == receipt
 
 
+def test_full_raw_client_reranks_title_owned_hits_above_abstract_only_hits(monkeypatch: object) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del request, timeout
+        return FakeResponse({
+            "meta": {"count": 2},
+            "results": [
+                {
+                    "doi": "10.123/abstract-only",
+                    "title": "Quality child care case study",
+                    "abstract": "Metformin resistance training adaptation in older adults.",
+                    "year": 2024,
+                    "source": "openalex",
+                },
+                {
+                    "doi": "10.123/title-owned",
+                    "title": "Metformin resistance training adaptation trial",
+                    "abstract": "",
+                    "year": 2024,
+                    "source": "openalex",
+                },
+            ],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", max_variants=1)
+
+    hits = client.search("metformin resistance training adaptation", limit=2)
+
+    assert [hit.doi for hit in hits] == ["10.123/title-owned", "10.123/abstract-only"]
+
+
 def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) -> None:
     payloads: list[dict[str, object]] = []
     timeouts: list[float] = []
