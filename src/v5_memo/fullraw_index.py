@@ -35,25 +35,21 @@ from pathlib import Path
 from v5_memo.fullraw_service import RawFile, iter_raw_file_hits, load_or_build_manifest
 
 _WORD = re.compile(r"[A-Za-z0-9]+")
-_STOP = {
-    "about", "above", "abstract", "after", "also", "among", "and", "are", "because", "been", "both",
-    "but", "can", "could", "different", "does", "during", "for", "from", "had", "has", "have", "high",
-    "important", "international", "into", "its",
-    "may", "most", "no", "not", "off", "or", "our", "out", "over", "per", "such", "than", "that", "the",
-    "their", "these", "this", "those", "through", "was", "were", "with", "within",
-    "without", "would", "all", "any", "between", "each", "other",
-    "should", "there", "using", "which", "while", "who", "whose", "will", "you", "your",
-    "of", "in", "by", "to", "is", "be", "at", "on", "as", "an",
-    "analysis", "associated", "based", "better", "compared", "data", "effect",
-    "effects", "first", "form", "found", "here", "it", "method", "methods",
-    "journal", "model", "models", "more", "name", "new", "none", "one", "only", "pages", "paper",
-    "provide", "provided", "research", "related", "result", "results", "show", "showed", "shown", "significant",
-    "significantly", "studies", "study", "two", "use", "used", "we", "work",
-    "volume", "dan", "de", "del", "di", "es", "findings", "general", "however", "ini", "many", "merupakan",
-    "para", "process", "que", "role", "specific", "therefore", "un", "understanding", "well", "yang",
-    "adalah", "analisis", "dengan", "dilakukan", "hasil", "including", "made",
-    "el", "en", "la", "los", "metode", "pada", "penelitian",
-}
+_STOP = frozenset(
+    (  # noqa: SIM905
+        "about above abstract after also among and are because been both but can could different "
+        "does during for from had has have high important international into its may most no not "
+        "off or our out over per such than that the their these this those through was were with "
+        "within without would all any between each other should there using which while who whose "
+        "will you your of in by to is be at on as an analysis associated based better compared "
+        "data effect effects first form found here it method methods journal model models more "
+        "name new none one only pages paper provide provided research related result results show "
+        "showed shown significant significantly studies study two use used we work volume dan de "
+        "del di es findings general however ini many merupakan para process que role specific "
+        "therefore un understanding well yang adalah analisis dengan dilakukan hasil including "
+        "made el en la los metode pada penelitian"
+    ).split()
+)
 _BACKEND = "v5-fullraw-indexed-fts5"
 _SWEEP_STRATEGY = "profile_relaxed_v4"
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()

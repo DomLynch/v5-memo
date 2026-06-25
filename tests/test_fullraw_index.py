@@ -146,23 +146,10 @@ def test_search_shard_selection_honors_minimum_coverage(
     monkeypatch.setenv("V5_MEMO_FULL_RAW_QUERY_SHARD_PREFILTER_LIMIT", "2")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_QUERY_SHARD_PREFILTER_SECONDS", "1")
     monkeypatch.setattr("v5_memo.fullraw_index.shutil.which", lambda _name: "/usr/bin/rg")
-
-    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        del args, kwargs
-        return subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout=f"{entries[5].path}\n",
-            stderr="",
-        )
-
-    monkeypatch.setattr("v5_memo.fullraw_index.subprocess.run", fake_run)
-
+    result = subprocess.CompletedProcess([], 0, f"{entries[5].path}\n", "")
+    monkeypatch.setattr("v5_memo.fullraw_index.subprocess.run", lambda *_, **__: result)
     selected = select_search_shard_entries(entries, query="metformin exercise")
-
-    assert len(selected) == 6
-    assert selected[0] == entries[5]
-
+    assert (len(selected), selected[0]) == (6, entries[5])
 
 def test_materialized_shard_cache_evicts_old_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cache_dir = tmp_path / "cache"
