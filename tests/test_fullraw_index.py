@@ -162,6 +162,56 @@ def test_foreground_receipt_counts_only_completed_shards(tmp_path: Path, monkeyp
     assert receipt["partial_shard_search"] is True
 
 
+def test_sweep_cache_entry_ready_rejects_insufficient_partial_hits() -> None:
+    receipt = {
+        "shards_searched": 32,
+        "shards_total": 1525,
+        "partial_shard_search": True,
+        "sources_searched": {
+            "biorxiv": 7,
+            "openalex": 7,
+            "pubmed": 7,
+            "semantic_scholar": 13,
+            "semantic_scholar_abstracts": 5,
+        },
+        "sweep_remaining_shards": 1493,
+    }
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Rapamycin formulation for oral administration"}],
+        receipt=receipt,
+    )
+
+    assert not fullraw_index.sweep_cache_entry_is_ready(
+        entry,
+        min_shards_searched=512,
+        min_sources_searched=5,
+    )
+    assert not fullraw_index.sweep_cache_entry_is_ready(
+        entry,
+        min_sources_searched=5,
+        require_complete_search=True,
+    )
+    assert not fullraw_index.sweep_cache_entry_is_ready(
+        entry,
+        min_sources_searched=5,
+        require_complete_sweep=True,
+    )
+
+    receipt.update({
+        "shards_searched": 1525,
+        "partial_shard_search": False,
+        "sweep_remaining_shards": 0,
+    })
+    assert fullraw_index.sweep_cache_entry_is_ready(
+        entry,
+        min_shards_searched=512,
+        min_sources_searched=5,
+        require_complete_search=True,
+        require_complete_sweep=True,
+    )
+
+
 def test_select_search_shard_entries_balances_sources_and_rotates_by_query(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     entries = [_entry(tmp_path, idx, "openalex" if idx < 4 else "pubmed") for idx in range(8)]
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "4")

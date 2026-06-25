@@ -2112,16 +2112,46 @@ def _sweep_pass_roles_sufficient(receipt: dict[str, object]) -> bool:
     return len(completed_roles & planned_roles) >= required_roles
 
 
+def sweep_cache_entry_is_terminal(entry: SweepCacheEntry) -> bool:
+    return _int_or_none(entry.receipt.get("sweep_remaining_shards")) == 0
+
+
+def sweep_cache_entry_is_ready(
+    entry: SweepCacheEntry,
+    *,
+    min_shards_searched: int = 0,
+    min_sources_searched: int = 0,
+    require_complete_search: bool = False,
+    require_complete_sweep: bool = False,
+) -> bool:
+    if not entry.hits:
+        return False
+    if shard_coverage_gate_response(
+        entry.receipt,
+        min_shards_searched=min_shards_searched,
+        min_sources_searched=min_sources_searched,
+        require_complete_search=require_complete_search,
+    ) is not None:
+        return False
+    if not _sweep_pass_roles_sufficient(entry.receipt):
+        return False
+    remaining = _int_or_none(entry.receipt.get("sweep_remaining_shards"))
+    return not (require_complete_sweep and remaining is not None and remaining > 0)
+
+
 def shard_coverage_gate_response(
     receipt: dict[str, object],
     *,
     min_shards_searched: int = 0,
     min_sources_searched: int = 0,
+    require_complete_search: bool = False,
 ) -> tuple[int, dict[str, object]] | None:
     failures: list[str] = []
     shards_searched = _int_or_none(receipt.get("shards_searched")) or 0
     sources_searched = receipt.get("sources_searched")
     source_count = len(sources_searched) if isinstance(sources_searched, dict) else 0
+    if require_complete_search and receipt.get("partial_shard_search") is True:
+        failures.append("partial_shard_search true while complete search is required")
     if min_shards_searched > 0 and shards_searched < min_shards_searched:
         failures.append(f"shards_searched {shards_searched} < required {min_shards_searched}")
     if min_sources_searched > 0 and source_count < min_sources_searched:
@@ -2134,6 +2164,7 @@ def shard_coverage_gate_response(
         "requirements": {
             "min_shards_searched": min_shards_searched,
             "min_sources_searched": min_sources_searched,
+            "require_complete_search": require_complete_search,
         },
         "shard_receipt": receipt,
     }
@@ -2408,6 +2439,12 @@ def run_server() -> None:
     ) or 60.0
     min_shards_searched = _positive_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED") or 0
     min_sources_searched = _positive_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED") or 0
+    require_complete_search = os.environ.get(
+        "V5_MEMO_FULL_RAW_REQUIRE_COMPLETE_SEARCH", ""
+    ).casefold() in {"1", "true", "yes"}
+    sweep_require_complete = os.environ.get(
+        "V5_MEMO_FULL_RAW_SWEEP_REQUIRE_COMPLETE", ""
+    ).casefold() in {"1", "true", "yes"}
     sweep_enabled = os.environ.get("V5_MEMO_FULL_RAW_ASYNC_SWEEP", "").casefold() in {"1", "true", "yes"}
     sweep_ttl = _float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS", "")) or 86400.0
     sweep_workers = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKERS") or 1
@@ -2535,7 +2572,10 @@ def run_server() -> None:
         if not sweep_enabled or shard_dir is None:
             return "disabled"
         existing = sweep_cache_get(key)
-        if existing is not None and (existing.hits or _int_or_none(existing.receipt.get("sweep_remaining_shards")) == 0):
+        if existing is not None and (
+            sweep_entry_is_ready(existing)
+            or (sweep_cache_entry_is_terminal(existing) and receipt_is_sufficient(existing.receipt))
+        ):
             return "hit"
         with sweep_lock:
             if key in sweep_inflight:
@@ -2664,14 +2704,32 @@ def run_server() -> None:
         return {
             "min_shards_searched": min_shards_searched,
             "min_sources_searched": min_sources_searched,
+            "require_complete_search": int(require_complete_search),
+            "sweep_require_complete": int(sweep_require_complete),
         }
 
     def receipt_is_sufficient(receipt: dict[str, object]) -> bool:
-        return shard_coverage_gate_response(
+        if shard_coverage_gate_response(
             receipt,
             min_shards_searched=min_shards_searched,
             min_sources_searched=min_sources_searched,
-        ) is None and _sweep_pass_roles_sufficient(receipt)
+            require_complete_search=require_complete_search,
+        ) is not None or not _sweep_pass_roles_sufficient(receipt):
+            return False
+        if sweep_require_complete:
+            remaining = _int_or_none(receipt.get("sweep_remaining_shards"))
+            if remaining is not None and remaining > 0:
+                return False
+        return True
+
+    def sweep_entry_is_ready(entry: SweepCacheEntry) -> bool:
+        return sweep_cache_entry_is_ready(
+            entry,
+            min_shards_searched=min_shards_searched,
+            min_sources_searched=min_sources_searched,
+            require_complete_search=require_complete_search,
+            require_complete_sweep=sweep_require_complete,
+        )
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -2754,17 +2812,20 @@ def run_server() -> None:
                 cached is not None
                 and cache_only
                 and queue_if_missing
-                and not (cached.hits or _int_or_none(cached.receipt.get("sweep_remaining_shards")) == 0)
+                and not (
+                    sweep_entry_is_ready(cached)
+                    or (sweep_cache_entry_is_terminal(cached) and receipt_is_sufficient(cached.receipt))
+                )
             )
             sweep_status = "disabled"
-            if cache_only and cached is not None and cached.hits and not resume_cached:
+            if cache_only and cached is not None and sweep_entry_is_ready(cached) and not resume_cached:
                 hits = cached.hits
                 receipt = auth_receipt(cached.receipt)
                 sweep_status = "hit"
             else:
                 if cache_only:
                     hits = []
-                    receipt = auth_receipt({})
+                    receipt = auth_receipt(cached.receipt) if cached is not None else auth_receipt({})
                     if not sweep_enabled or not catalog:
                         sweep_status = "disabled"
                     elif queue_if_missing:
@@ -2782,7 +2843,10 @@ def run_server() -> None:
                             receipt = auth_receipt(cached.receipt)
                         elif resume_cached and cached is not None:
                             receipt = auth_receipt(cached.receipt)
-                            if cached.hits or _int_or_none(receipt.get("sweep_remaining_shards")) == 0:
+                            if sweep_entry_is_ready(cached) or (
+                                sweep_cache_entry_is_terminal(cached)
+                                and receipt_is_sufficient(cached.receipt)
+                            ):
                                 hits = cached.hits
                     else:
                         with sweep_lock:
@@ -2798,6 +2862,7 @@ def run_server() -> None:
                             receipt,
                             min_shards_searched=min_shards_searched,
                             min_sources_searched=min_sources_searched,
+                            require_complete_search=require_complete_search,
                         )
                         if coverage_gate is not None and not partial_progress:
                             status, body = coverage_gate
@@ -2835,6 +2900,7 @@ def run_server() -> None:
                         receipt,
                         min_shards_searched=min_shards_searched,
                         min_sources_searched=min_sources_searched,
+                        require_complete_search=require_complete_search,
                     )
                     if coverage_gate is not None:
                         status, body = coverage_gate
@@ -2857,13 +2923,19 @@ def run_server() -> None:
                         rank_mode=rank_mode,
                         catalog=catalog,
                     )
-                    if not hits and sweep_status == "hit" and (cached := sweep_cache_get(cache_key)) is not None and cached.hits:
+                    if (
+                        not hits
+                        and sweep_status == "hit"
+                        and (cached := sweep_cache_get(cache_key)) is not None
+                        and sweep_entry_is_ready(cached)
+                    ):
                         hits = cached.hits
                         receipt = auth_receipt(cached.receipt)
             coverage_gate = shard_coverage_gate_response(
                 receipt,
                 min_shards_searched=min_shards_searched,
                 min_sources_searched=min_sources_searched,
+                require_complete_search=require_complete_search,
             )
             if coverage_gate is not None:
                 status, body = coverage_gate
