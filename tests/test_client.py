@@ -142,7 +142,7 @@ def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object)
 
     headers = cast(dict[str, str], captured["headers"])
     assert captured["url"] == "https://search.example/full-raw"
-    assert captured["timeout"] == 7.0
+    assert captured["timeout"] == 22.0
     assert headers["Authorization"] == "Bearer raw-token"
     assert payloads[0] == {
         "query": ("nad exercise " * 200)[:1024],
@@ -286,6 +286,7 @@ def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) ->
     assert payloads[0].get("cache_only") is None
     assert payloads[1].get("cache_only") is True
     assert payloads[1].get("queue_if_missing") is True
+    assert timeouts[0] == 60.0
     assert timeouts[1] <= 1.0
     assert hits[0].doi == "10.123/deep"
     assert hits[0].metadata["shard_receipt"] == {

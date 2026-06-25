@@ -466,9 +466,10 @@ class FullRawCorpusSearchClient:
             headers=headers,
             method="POST",
         )
+        request_timeout = self._timeout + 15.0 if timeout is None else max(0.05, timeout)
         for attempt in range(2):
             try:
-                with urlopen(request, timeout=self._timeout if timeout is None else max(0.05, timeout)) as response:
+                with urlopen(request, timeout=request_timeout) as response:
                     return json.loads(response.read().decode("utf-8"))
             except (ConnectionResetError, RemoteDisconnected) as exc:
                 if attempt == 0:
