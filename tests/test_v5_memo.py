@@ -7,21 +7,15 @@ from typing import Any
 
 import pytest
 
-from v5_memo import (
-    CorpusHit,
-    MemoBuildError,
-    bind_receipts,
-    build_alpha_memo,
-    candidate_alpha_tier,
-    collect_seed_hits,
-    meets_publish_bar,
-    mine_insights,
-    query_anchor_terms,
-    render_discovery_seed,
-    render_memo,
-)
-from v5_memo.schemas import InsightCandidate
+from v5_memo.binder import bind_receipts
+from v5_memo.gate import candidate_alpha_tier, meets_publish_bar
+from v5_memo.miner import mine_insights, query_anchor_terms
+from v5_memo.pipeline import build_alpha_memo
+from v5_memo.publisher import build_researka_payload
+from v5_memo.retriever import collect_seed_hits
+from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult
 from v5_memo.scorer import score_connection
+from v5_memo.writer import render_discovery_seed, render_memo
 
 _FIXTURES = Path(__file__).with_name("fixtures")
 
@@ -899,6 +893,38 @@ def test_render_discovery_seed_downgrades_label() -> None:
 
     assert memo.startswith("# Discovery seed:")
     assert "# Alpha memo:" not in memo
+
+
+def test_researka_payload_preserves_memo_and_receipts() -> None:
+    candidate = InsightCandidate(
+        topic="resveratrol exercise adaptation",
+        thesis="Resveratrol may reverse on training.",
+        bridge_terms=("resveratrol",),
+        tension_terms=("blunted",),
+        receipt_ids=("a", "b"),
+        score=92,
+        novelty_score=90,
+        evidence_score=94,
+        reasons=("shape:directional_reversal",),
+    )
+    receipts = [
+        _hit("a", "Resveratrol improves mitochondrial function", "Animal mechanism improved capacity."),
+        _hit("b", "Resveratrol blunts exercise training", "Human trial blunted adaptation."),
+    ]
+    markdown = render_memo(candidate, receipts)
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="longevity",
+    )
+
+    assert payload["article_type"] == "alpha_memo"
+    assert payload["body_markdown"] == markdown.strip()
+    assert payload["source_bundle"] == [
+        {"title": hit.title, "doi": hit.doi or "", "url": hit.url, "source": hit.source}
+        for hit in receipts
+    ]
 
 
 def test_pipeline_supports_explicit_discovery_seed_lane() -> None:

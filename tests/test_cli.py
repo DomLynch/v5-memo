@@ -7,10 +7,9 @@ from types import SimpleNamespace
 import pytest
 from pytest import MonkeyPatch
 
-from v5_memo import CorpusHit
 from v5_memo.__main__ import _alpha_shape_queries, _topic_anchored_queries, main
 from v5_memo.client import ResearkaSearchClient
-from v5_memo.schemas import MemoBuildError
+from v5_memo.schemas import CorpusHit, MemoBuildError
 
 
 class EmptyFullRaw:

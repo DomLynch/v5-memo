@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from v5_memo import fullraw_index
+import v5_memo.fullraw_index as fullraw_index
 from v5_memo.fullraw_index import (
     FullRawFtsIndex,
     ShardCatalogEntry,
