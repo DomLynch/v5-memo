@@ -106,7 +106,6 @@ def test_shard_search_returns_partial_hits_on_timeout(tmp_path: Path, monkeypatc
         if path == slow:
             time.sleep(0.2)
         return [{"doi": f"10.example/{path.stem}", "title": path.stem, "score": 1.0}]
-
     monkeypatch.setattr(fullraw_index, "_search_one_shard", fake_search)
     hits, paths, timed_out = fullraw_index._search_shard_paths_with_paths(
         [fast, slow],
@@ -118,7 +117,6 @@ def test_shard_search_returns_partial_hits_on_timeout(tmp_path: Path, monkeypatc
         workers=2,
         timeout_seconds=0.05,
     )
-
     assert timed_out is True
     assert paths == [fast]
     assert [hit["doi"] for hit in hits] == ["10.example/fast"]
@@ -131,10 +129,8 @@ def test_select_search_shard_entries_balances_sources_and_rotates_by_query(
     entries = [_entry(tmp_path, idx, "openalex" if idx < 4 else "pubmed") for idx in range(8)]
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "4")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "balanced")
-
     metformin = select_search_shard_entries(entries, query="metformin exercise")
     resveratrol = select_search_shard_entries(entries, query="resveratrol exercise")
-
     assert {entry.sources[0] for entry in metformin} == {"openalex", "pubmed"}
     assert [entry.path for entry in metformin] != [entry.path for entry in resveratrol]
 
@@ -145,13 +141,10 @@ def test_materialized_shard_cache_evicts_old_entries(tmp_path: Path, monkeypatch
     old, newer, keep = (cache_dir / name for name in ("old.sqlite", "newer.sqlite", "keep.sqlite"))
     for path in (old, newer, keep):
         path.write_bytes(b"x" * 6)
-    os.utime(old, (1, 1))
-    os.utime(newer, (2, 2))
-    os.utime(keep, (3, 3))
+    for path, stamp in ((old, 1), (newer, 2), (keep, 3)):
+        os.utime(path, (stamp, stamp))
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "12")
-
     fullraw_index._evict_shard_cache(cache_dir, required_bytes=0, keep=keep)
-
     assert not old.exists()
     assert newer.exists()
     assert keep.exists()
@@ -164,7 +157,6 @@ def test_build_upload_shard_batches_keeps_all_failed_batch_fatal(
     monkeypatch.setattr(fullraw_index, "_remote_complete_exists", lambda *args, **kwargs: False)
     bad_path = tmp_path / "bad.jsonl.gz"
     bad_path.write_bytes(gzip.compress(b'{"display_name":"bad"}\n')[:-8])
-
     result = build_upload_shard_batches(
         [RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{bad_path}")],
         shard_dir=tmp_path / "shards",
@@ -174,7 +166,6 @@ def test_build_upload_shard_batches_keeps_all_failed_batch_fatal(
         workers=1,
         delete_local=False,
     )
-
     assert result[0].uploaded is False
     assert result[0].files_failed == 1
     assert result[0].error
