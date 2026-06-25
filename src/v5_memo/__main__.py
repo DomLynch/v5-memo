@@ -175,7 +175,7 @@ def main() -> None:
             shape_queries = _alpha_shape_queries(args.topic)
             topic_has_anchors = bool(query_anchor_terms(base_queries))
             queries = (
-                _dedupe_queries([*base_queries, *shape_queries, *planned_queries])
+                _dedupe_queries([*shape_queries, *base_queries, *planned_queries])
                 if topic_has_anchors
                 else planned_queries or base_queries
             )
