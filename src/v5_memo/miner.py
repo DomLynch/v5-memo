@@ -265,10 +265,7 @@ def _pair_has_topic_context(
 
 
 def _has_topic_context(hit: CorpusHit, context_terms: frozenset[str]) -> bool:
-    if _tokens(hit.title) & context_terms:
-        return True
-    hit_terms = _tokens(hit.text)
-    hit_terms = _expanded_context_terms(hit_terms)
+    hit_terms = _expanded_context_terms(_tokens(hit.title) | _tokens(hit.text))
     required = 1 if len(context_terms) == 1 else 2
     return len(hit_terms & context_terms) >= required
 
