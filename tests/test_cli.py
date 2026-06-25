@@ -94,7 +94,6 @@ def test_seed_planner_uses_topic_outside_demo(
     )
 
     main()
-
     assert "Alpha memo" in capsys.readouterr().out
     assert seen["seed_queries"] == ["resveratrol exercise training adaptation"]
 
