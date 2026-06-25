@@ -160,6 +160,15 @@ def test_search_shard_selection_honors_minimum_coverage(
     selected = select_search_shard_entries(entries, query="metformin exercise")
     assert len(selected) == 6
 
+
+def test_search_shard_selection_prefers_cache_fit_matches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    small = ShardCatalogEntry(tmp_path / "small.sqlite", 1, 0, ("openalex",), 1, 10, 10, topic_terms=("patients",))
+    huge = ShardCatalogEntry(tmp_path / "huge.sqlite", 2, 0, ("openalex",), 1, 10_000, 10_000, topic_terms=("patients",))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "2")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "100")
+    assert select_search_shard_entries([huge, small], query="patients")[0] == small
+
+
 def test_full_coverage_shard_selection_frontloads_spread_prefix(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -1214,7 +1214,8 @@ def select_search_shard_entries(
         paths = select_search_shard_paths([entry.path for entry in entries])
         by_path = {entry.path: entry for entry in entries}
         return [by_path[path] for path in paths if path in by_path]
-    return _select_balanced_shard_entries(entries, limit, query=query)
+    selected = _select_balanced_shard_entries(entries, limit, query=query)
+    return _cache_fit_warm_entries(entries, selected, query=query, target_ready=min(32, len(selected)))
 
 
 def select_sweep_shard_entries(
