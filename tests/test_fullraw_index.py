@@ -167,10 +167,7 @@ def test_search_shard_selection_prefers_cache_fit_matches(tmp_path: Path, monkey
     assert select_search_shard_entries([huge, small], query="patients")[0] == small
     huge.path.write_bytes(b"x")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(tmp_path / "cache"))
-    cache = fullraw_index._shard_cache_path(huge.path)
-    assert cache is not None
-    cache.parent.mkdir()
-    cache.write_bytes(b"x")
+    fullraw_index._materialized_shard_path(huge.path)
     assert select_search_shard_entries([huge, small], query="patients")[0] == huge
 
 
