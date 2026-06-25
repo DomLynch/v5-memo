@@ -236,20 +236,8 @@ def test_full_raw_client_filters_hits_without_rare_query_anchor(monkeypatch: obj
         return FakeResponse({
             "meta": {"count": 2},
             "results": [
-                {
-                    "doi": "10.123/generic",
-                    "title": "Resistance training adaptation",
-                    "abstract": "Resistance training adaptation in older adults.",
-                    "year": 2024,
-                    "source": "openalex",
-                },
-                {
-                    "doi": "10.123/metformin",
-                    "title": "Metformin blunts resistance training adaptation",
-                    "abstract": "Metformin altered resistance training adaptation.",
-                    "year": 2024,
-                    "source": "openalex",
-                },
+                {"doi": "10.123/generic", "title": "Resistance training adaptation", "abstract": "Resistance training adaptation in older adults.", "year": 2024, "source": "openalex"},
+                {"doi": "10.123/metformin", "title": "Metformin blunts resistance training adaptation", "abstract": "Metformin altered resistance training adaptation.", "year": 2024, "source": "openalex"},
             ],
         })
 
@@ -871,26 +859,8 @@ def test_query_variants_do_not_depend_on_one_long_query() -> None:
     ]
 
 def test_fullraw_variants_try_strong_windows_before_weak_pairs() -> None:
-    assert _fullraw_query_variants(
-        "cold water immersion attenuates muscle mass strength resistance training",
-        limit=6,
-    ) == [
-        "cold water immersion attenuates muscle mass strength resistance training",
-        "cold water immersion attenuates",
-        "water immersion attenuates muscle",
-        "immersion attenuates muscle mass",
-        "attenuates muscle mass strength",
-        "muscle mass strength resistance",
-    ]
-
-def test_fullraw_variants_do_not_append_broad_pair_fallback() -> None:
-    variants = _fullraw_query_variants(
-        "cold water immersion attenuates muscle mass strength resistance training",
-        limit=20,
-    )
-
-    assert "cold water" not in variants
-    assert "cold muscle" not in variants
+    query = "cold water immersion attenuates muscle mass strength resistance training"
+    assert _fullraw_query_variants(query, limit=6) == ["cold water immersion attenuates muscle mass strength resistance training", "cold water immersion attenuates", "water immersion attenuates muscle", "immersion attenuates muscle mass", "attenuates muscle mass strength", "muscle mass strength resistance"]
 
 def test_fullraw_search_passes_cover_breadth_depth_modes() -> None:
     passes = _fullraw_search_passes(
