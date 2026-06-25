@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from v5_memo.gate import candidate_alpha_tier
 from v5_memo.schemas import CorpusHit, InsightCandidate
 
+_TITLE_STOPWORDS = frozenset({"during", "after", "before", "following", "under", "with"})
+
 
 def render_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> str:
     if candidate_alpha_tier(candidate) == "discovery_seed":
@@ -88,7 +90,8 @@ def _receipt_line(index: int, hit: CorpusHit) -> str:
 
 def _memo_title(candidate: InsightCandidate) -> str:
     if candidate.bridge_terms:
-        return " / ".join(candidate.bridge_terms[:3])
+        terms = [term for term in candidate.bridge_terms if term not in _TITLE_STOPWORDS]
+        return " / ".join((terms or list(candidate.bridge_terms))[:3])
     return candidate.topic
 
 

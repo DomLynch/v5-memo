@@ -797,6 +797,25 @@ def test_render_discovery_seed_downgrades_label() -> None:
     assert "# Alpha memo:" not in memo
 
 
+def test_render_memo_filters_weak_bridge_words_from_title() -> None:
+    candidate = InsightCandidate(
+        topic="caffeine exercise performance",
+        thesis="Endpoint boundary.",
+        bridge_terms=("caffeine", "during", "exercise"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("a", "b"),
+        score=100,
+        novelty_score=50,
+        evidence_score=85,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+    )
+
+    memo = render_memo(candidate, [_hit("a", "A", "A"), _hit("b", "B", "B")])
+
+    assert memo.startswith("# Alpha memo: caffeine / exercise")
+    assert "# Alpha memo: caffeine / during / exercise" not in memo
+
+
 def test_researka_payload_preserves_memo_and_receipts() -> None:
     candidate = InsightCandidate(
         topic="resveratrol exercise adaptation",
