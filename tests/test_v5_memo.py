@@ -1,7 +1,7 @@
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -880,6 +880,73 @@ def test_researka_payload_preserves_memo_and_receipts() -> None:
     assert payload["article_type"] == "alpha_memo"
     assert payload["body_markdown"] == markdown.strip()
     assert payload["source_bundle"][0]["evidence_type"] == "primary"  # type: ignore[index]
+
+
+def test_researka_payload_preserves_authenticated_fullraw_coverage() -> None:
+    receipt = {
+        "shards_total": 100,
+        "shards_searched": 48,
+        "sources_searched": {"openalex": 24, "semantic_scholar": 24},
+        "auth_required": True,
+        "authenticated": True,
+    }
+    candidate = InsightCandidate(
+        topic="metformin resistance training adaptation",
+        thesis="Metformin protocol and outcome reverse.",
+        bridge_terms=("metformin",),
+        tension_terms=("blunted",),
+        receipt_ids=("a", "b"),
+        score=92,
+        novelty_score=90,
+        evidence_score=94,
+        reasons=("shape:promise_outcome_reversal",),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="a",
+            title="Metformin augments resistance training protocol",
+            abstract="Protocol expected augmentation.",
+            source="fullraw:openalex",
+            doi="10.a",
+            metadata={
+                "shard_receipt": receipt,
+                "fullraw_search_receipt": {
+                    "search_passes": ("focused", "broad"),
+                    "auth_required": True,
+                    "authenticated": True,
+                },
+                "search_pass": "focused",
+            },
+        ),
+        CorpusHit(
+            hit_id="b",
+            title="Metformin blunts resistance training adaptation",
+            abstract="Outcome blunted hypertrophy.",
+            source="fullraw:semantic_scholar",
+            doi="10.b",
+            metadata={"shard_receipt": receipt, "search_pass": "broad"},
+        ),
+    ]
+    markdown = render_memo(candidate, receipts)
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="longevity",
+    )
+
+    source_bundle = cast(list[dict[str, object]], payload["source_bundle"])
+    evidence = cast(dict[str, object], source_bundle[0]["retrieval_evidence"])
+    shard_receipt = cast(dict[str, object], evidence["shard_receipt"])
+    assert shard_receipt["authenticated"] is True
+
+    evidence_bundle = cast(dict[str, object], payload["evidence_bundle"])
+    coverage = cast(dict[str, object], evidence_bundle["fullraw_retrieval_coverage"])
+    assert coverage["authenticated"] is True
+    assert coverage["auth_required"] is True
+    assert coverage["shards_searched"] == 48
+    assert coverage["sources_searched"] == ["openalex", "semantic_scholar"]
+    assert coverage["search_passes"] == ["broad", "focused"]
 
 
 def test_pipeline_supports_explicit_discovery_seed_lane() -> None:
