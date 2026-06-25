@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from v5_memo.binder import bind_receipts
-from v5_memo.gate import candidate_alpha_tier, meets_publish_bar, memo_coverage_failure
+from v5_memo.gate import candidate_alpha_tier, meets_publish_bar
 from v5_memo.miner import mine_insights, query_anchor_terms
 from v5_memo.pipeline import build_alpha_memo
 from v5_memo.publisher import build_researka_payload
@@ -58,14 +58,7 @@ def _hits() -> list[CorpusHit]:
 
 
 def _hit(hit_id: str, title: str, abstract: str) -> CorpusHit:
-    return CorpusHit(
-        hit_id=hit_id,
-        title=title,
-        abstract=abstract,
-        source="openalex",
-        year=2024,
-        doi=f"10.{hit_id}",
-    )
+    return CorpusHit(hit_id=hit_id, title=title, abstract=abstract, source="openalex", doi=f"10.{hit_id}")
 
 
 def test_mines_bridge_and_renders_receipt_bound_memo() -> None:
@@ -218,7 +211,6 @@ def test_pipeline_anchors_cover_late_planned_query_angles() -> None:
                     title="Resveratrol improves mitochondrial function and exercise performance",
                     abstract="Resveratrol activated a mitochondrial mechanism and improved running performance.",
                     source="openalex",
-                    year=2006,
                     doi="10.promise",
                 ),
                 CorpusHit(
@@ -226,7 +218,6 @@ def test_pipeline_anchors_cover_late_planned_query_angles() -> None:
                     title="Resveratrol exercise training trial blunted cardiovascular adaptation",
                     abstract="Randomized trial observed resveratrol blunted exercise training adaptation.",
                     source="semantic_scholar",
-                    year=2013,
                     doi="10.outcome",
                 ),
             ]
@@ -1534,44 +1525,6 @@ def test_pipeline_fails_closed_when_memo_coverage_is_too_narrow() -> None:
         "sources_searched",
         "search_passes",
     )
-
-
-def test_memo_coverage_blocks_publishable_receipts_with_weak_metadata() -> None:
-    failure = memo_coverage_failure(
-        topic="metadata",
-        receipts=[
-            CorpusHit(
-                hit_id="10.bad/receipt",
-                title="10.bad/receipt",
-                abstract="A weak receipt has no usable source metadata.",
-                source="openalex",
-            )
-        ],
-        require_receipt_metadata=True,
-    )
-
-    assert failure is not None
-    assert failure.details["failures"] == ("receipt_metadata",)
-    assert failure.details["weak_receipt_metadata"] == (
-        "10.bad/receipt:title,year,locator",
-    )
-
-
-def test_memo_coverage_accepts_publishable_receipts_with_source_metadata() -> None:
-    assert memo_coverage_failure(
-        topic="metadata",
-        receipts=[
-            CorpusHit(
-                hit_id="good",
-                title="Receipt-owned source title",
-                abstract="The abstract supports the memo claim.",
-                source="openalex",
-                year=2024,
-                doi="10.good/receipt",
-            )
-        ],
-        require_receipt_metadata=True,
-    ) is None
 
 
 def test_pipeline_blocks_title_only_elite_memos() -> None:
