@@ -166,13 +166,14 @@ def test_fullraw_cli_inherits_search_service_coverage_thresholds(
             "--writer",
             "template",
             "--topic",
-            "management forecast disclosure",
+            "metformin resistance training adaptation",
         ],
     )
 
     main()
 
     assert "Alpha memo" in capsys.readouterr().out
+    assert seen["seed_queries"] == [*_alpha_shape_queries("metformin resistance training adaptation"), "metformin resistance training adaptation"]
     assert seen["min_shards_searched"] == 50
     assert seen["min_sources_searched"] == 2
 
