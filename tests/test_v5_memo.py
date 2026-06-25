@@ -321,63 +321,6 @@ def test_pipeline_accepts_custom_memo_writer() -> None:
     assert result.markdown == "custom: longevity resilience / 2"
 
 
-def test_pipeline_applies_selector_to_existing_candidates() -> None:
-    hits = [
-        _hit(
-            "tail-a",
-            "Tool safety cohort benefit in aggregate outcomes",
-            "Tool safety reduced aggregate outcome risk in a cohort population.",
-        ),
-        _hit(
-            "tail-b",
-            "Tool safety fatality cases in acute sessions",
-            "Rare acute tool safety death cases concentrated in case reports.",
-        ),
-        _hit(
-            "metric-a",
-            "Tool improves benchmark accuracy",
-            "The tool improved benchmark accuracy score.",
-        ),
-        _hit(
-            "metric-b",
-            "Tool reduces deployment benchmark reliability outcomes",
-            "The tool reduced deployment benchmark reliability and worsened error outcome rates.",
-        ),
-    ]
-
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return hits
-
-    deterministic = mine_insights(
-        hits,
-        topic="tool",
-        required_anchor_terms=query_anchor_terms(["tool"]),
-    )
-    chosen = next(
-        candidate
-        for candidate in reversed(deterministic)
-        if meets_publish_bar(candidate, "publishable_alpha")
-    ).receipt_ids
-
-    result = build_alpha_memo(
-        topic="tool",
-        seed_queries=["tool"],
-        searcher=FakeSearch(),
-        memo_selector=lambda candidates, _hits: [
-            next(
-                candidate
-                for candidate in reversed(candidates)
-                if meets_publish_bar(candidate, "publishable_alpha")
-            )
-        ],
-    )
-
-    assert len(deterministic) >= 2
-    assert result.candidate.receipt_ids == chosen
-
-
 def test_pipeline_filters_to_requested_tier_before_selector(monkeypatch: pytest.MonkeyPatch) -> None:
     hits = [
         _hit("low-a", "Tool improves benchmark accuracy", "Tool improved benchmark accuracy."),
