@@ -41,7 +41,7 @@ _FULLRAW_CORE_DROP = {
     "outcome",
     "outcomes",
     "response",
-    "responses",
+    "responses", "exercise", "exercises",
     "result",
     "results", "recovery", "hypertrophy",
 }

@@ -885,12 +885,12 @@ def test_fullraw_search_passes_include_core_variant_before_depth_modes() -> None
     assert [search_pass.name for search_pass in passes] == [
         "focused",
         "core",
-        "broad",
-        "broad",
         "anchor",
+        "adjacent",
+        "falsifier",
     ]
-    assert passes[1].query == "resveratrol exercise training"
-    assert passes[-1].query == "resveratrol"
+    assert passes[1].query == "resveratrol training"
+    assert passes[2].query == "resveratrol"
     assert "resveratrol training" in [search_pass.query for search_pass in passes]
 
 def test_fullraw_search_passes_prioritize_promise_pair_variants() -> None:
