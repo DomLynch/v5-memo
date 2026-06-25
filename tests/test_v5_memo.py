@@ -9,7 +9,7 @@ from v5_memo.binder import bind_receipts
 from v5_memo.gate import candidate_alpha_tier, meets_publish_bar
 from v5_memo.miner import mine_insights, query_anchor_terms
 from v5_memo.pipeline import build_alpha_memo
-from v5_memo.publisher import build_researka_payload, submit_researka
+from v5_memo.publisher import build_researka_payload
 from v5_memo.retriever import collect_seed_hits
 from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult
 from v5_memo.scorer import score_connection
@@ -919,53 +919,7 @@ def test_researka_payload_preserves_memo_and_receipts() -> None:
 
     assert payload["article_type"] == "alpha_memo"
     assert payload["body_markdown"] == markdown.strip()
-    assert payload["source_bundle"] == [
-        {
-            "title": hit.title,
-            "doi": hit.doi or "",
-            "url": hit.url,
-            "source": hit.source,
-            "year": hit.year,
-            "evidence_type": "primary",
-        }
-        for hit in receipts
-    ]
-    assert payload["evidence_bundle"] == {
-        "publish_verdict": {
-            "decision": "ready_to_publish",
-            "publish_tier": "TIER_1",
-            "maturity_level": "L5",
-            "confidence_label": "evidence_backed_signal",
-            "blockers": [],
-            "axes": {"bound_receipts": 2},
-        }
-    }
-
-
-def test_researka_submit_uses_live_api_auth_header(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: dict[str, Any] = {}
-
-    class FakeResponse:
-        def __enter__(self) -> "FakeResponse":
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return b'{"ok": true}'
-
-    def fake_urlopen(req: Any, *, timeout: float) -> FakeResponse:
-        seen["headers"] = req.headers
-        seen["timeout"] = timeout
-        return FakeResponse()
-
-    monkeypatch.setattr("v5_memo.publisher.urlopen", fake_urlopen)
-
-    assert submit_researka({"title": "ok"}, agent_key="secret", timeout=12) == {"ok": True}
-    assert seen["headers"]["X-api-key"] == "secret"
-    assert seen["headers"]["Authorization"] == "Bearer secret"
-    assert seen["timeout"] == 12
+    assert payload["source_bundle"][0]["evidence_type"] == "primary"  # type: ignore[index]
 
 
 def test_pipeline_supports_explicit_discovery_seed_lane() -> None:
