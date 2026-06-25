@@ -2601,9 +2601,11 @@ def run_server() -> None:
                         or pass_index + 1 >= sweep_max_passes
                     )
                     sweep_cache_put(key, SweepCacheEntry(time.time(), merged_hits, receipt), final=final)
-                    if final:
+                    if final or (timed_out and not completed_paths):
                         break
             except Exception:
+                pass
+            finally:
                 with sweep_lock:
                     sweep_inflight.discard(key)
 
