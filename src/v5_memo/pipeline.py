@@ -40,18 +40,18 @@ def build_alpha_memo(
         anchor_terms = _anchor_terms_for_queries(seed_queries)
     else:
         anchor_terms = _anchor_terms_for_queries(anchor_queries)
-    candidates: Sequence[InsightCandidate] = mine_insights(
+    mined_candidates: list[InsightCandidate] = mine_insights(
         hits,
         topic=topic,
         required_anchor_terms=anchor_terms,
         include_discovery=min_alpha_tier == "discovery_seed",
     )
-    candidates = [
+    publishable_candidates = [
         candidate
-        for candidate in candidates
+        for candidate in mined_candidates
         if meets_publish_bar(candidate, min_alpha_tier)
     ]
-    candidates = _apply_selector(candidates, hits, memo_selector)
+    candidates = _apply_selector(publishable_candidates, hits, memo_selector)
     coverage_failures: list[MemoBuildError] = []
     for candidate in candidates:
         receipts = bind_receipts(candidate, hits)
@@ -80,6 +80,7 @@ def build_alpha_memo(
             hits=hits,
             candidates=candidates,
             min_alpha_tier=min_alpha_tier,
+            mined_candidates=mined_candidates,
         )
     )
 

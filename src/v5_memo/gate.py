@@ -43,7 +43,9 @@ def no_alpha_failure(
     hits: Sequence[CorpusHit],
     candidates: Sequence[InsightCandidate],
     min_alpha_tier: str,
+    mined_candidates: Sequence[InsightCandidate] = (),
 ) -> SearchFailure:
+    best_mined = max(mined_candidates, key=lambda candidate: candidate.score, default=None)
     return SearchFailure(
         code="no_receipt_bound_alpha_candidate",
         message="no receipt-bound alpha memo candidate found",
@@ -51,6 +53,9 @@ def no_alpha_failure(
             "topic": topic,
             "hit_count": len(hits),
             "candidate_count": len(candidates),
+            "mined_candidate_count": len(mined_candidates),
+            "best_mined_score": best_mined.score if best_mined is not None else 0,
+            "best_mined_novelty": best_mined.novelty_score if best_mined is not None else 0,
             "min_alpha_tier": min_alpha_tier,
         },
     )
