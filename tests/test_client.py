@@ -405,6 +405,27 @@ def test_full_raw_client_keeps_sufficient_foreground_hit(monkeypatch: object) ->
     assert client.search("metformin longevity", limit=3)[0].doi == "10.123/foreground"
 
 
+def test_full_raw_client_does_not_wait_on_unknown_non_strict_empty_response(
+    monkeypatch: object,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payloads.append(json.loads(cast(bytes, request.data).decode("utf-8")))
+        raise TimeoutError("foreground too slow")
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        sweep_wait_seconds=1.0,
+    )
+
+    assert client.search("resveratrol exercise training", limit=3) == []
+    assert [payload.get("cache_only") for payload in payloads] == [None]
+
+
 def test_full_raw_client_keeps_prior_hits_when_later_strict_variant_fails(monkeypatch: object) -> None:
     calls = 0
 
