@@ -433,11 +433,13 @@ class FullRawCorpusSearchClient:
             initial_error = exc
             data = {}
         receipt = _full_raw_shard_receipt(data)
+        sweep_status = _full_raw_async_sweep_status(data)
+        can_wait_for_sweep = initial_error is not None or sweep_status in {"miss", "queued", "running"}
         if (
             self._sweep_wait_seconds
             and search_pass.name in {"focused", "core"}
             and (not _parse_full_raw_search_response(data) or not self._receipt_is_sufficient(receipt))
-            and _full_raw_async_sweep_status(data) != "hit"
+            and can_wait_for_sweep
         ):
             cached = self._wait_for_sweep_hit(payload)
             if cached is not None:
