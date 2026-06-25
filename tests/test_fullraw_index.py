@@ -173,6 +173,18 @@ def test_full_coverage_shard_selection_frontloads_spread_prefix(
     assert max(entry.batch_id for entry in selected[:20]) > 30
     assert [entry.batch_id for entry in selected[:6]] != list(range(6))
 
+
+def test_sweep_passes_do_not_invent_side_queries(tmp_path: Path) -> None:
+    entries = [_entry(tmp_path, idx, "openalex") for idx in range(4)]
+    passes = fullraw_index._sweep_search_passes(
+        "resveratrol exercise training adaptation",
+        entries,
+        rank_mode="relevance",
+    )
+    assert [item.role for item in passes] == ["focused", "broad", "citation_heavy", "recency"]
+    assert all("risk" not in item.query and "patients" not in item.query for item in passes)
+
+
 def test_materialized_shard_cache_evicts_old_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()

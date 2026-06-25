@@ -52,7 +52,7 @@ _STOP = frozenset(
 )
 _BACKEND = "v5-fullraw-indexed-fts5"
 _FULL_COVERAGE_PREFIX_SHARDS = max(1, int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS") or os.environ.get("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "128")))
-_SWEEP_STRATEGY = "profile_relaxed_v5"
+_SWEEP_STRATEGY = "profile_relaxed_v6"
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
@@ -1415,14 +1415,10 @@ def _sweep_search_passes(
 ) -> tuple[SweepSearchPass, ...]:
     focused = _profile_relaxed_sweep_query(query, entries)
     broad = _broad_sweep_query(focused)
-    adjacent = _adjacent_sweep_query(query, entries) or broad
-    falsifier = _falsifier_sweep_query(focused)
     requested_rank_mode = _rank_mode(rank_mode)
     passes = (
         SweepSearchPass("focused", focused, requested_rank_mode),
         SweepSearchPass("broad", broad, requested_rank_mode),
-        SweepSearchPass("adjacent_field", adjacent, "relevance"),
-        SweepSearchPass("falsifier", falsifier, "relevance"),
         SweepSearchPass("citation_heavy", focused, "citation"),
         SweepSearchPass("recency", focused, "recency"),
     )
@@ -1434,24 +1430,6 @@ def _broad_sweep_query(query: str) -> str:
     if len(terms) <= 2:
         return " ".join(terms)
     return " ".join(_spread_terms(terms, 2))
-
-
-def _adjacent_sweep_query(query: str, entries: list[ShardCatalogEntry]) -> str:
-    query_terms = set(_fts_terms(query))
-    adjacent_counts: Counter[str] = Counter()
-    for entry in entries:
-        for term in entry.topic_terms:
-            if term not in query_terms:
-                adjacent_counts[term] += 1
-    adjacent_terms = [term for term, _count in adjacent_counts.most_common(3)]
-    return " ".join(adjacent_terms) if len(adjacent_terms) >= 2 else ""
-
-
-def _falsifier_sweep_query(query: str) -> str:
-    terms = _fts_terms(query)
-    if not terms:
-        return ""
-    return f"{terms[0]} risk"
 
 
 def _term_aliases(term: str) -> set[str]:
