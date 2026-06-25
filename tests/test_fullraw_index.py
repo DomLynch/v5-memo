@@ -197,11 +197,25 @@ def test_sweep_cache_entry_ready_rejects_insufficient_partial_hits() -> None:
         min_sources_searched=5,
         require_complete_sweep=True,
     )
+    receipt.update({
+        "sweep_search_passes": ({"role": "focused"}, {"role": "broad"}),
+        "sweep_completed_pass_roles": ("focused",),
+    })
+    assert fullraw_index.sweep_cache_entry_is_ready(
+        entry,
+        min_sources_searched=5,
+    )
+    assert not fullraw_index.sweep_cache_entry_is_ready(
+        entry,
+        min_sources_searched=5,
+        require_complete_sweep=True,
+    )
 
     receipt.update({
         "shards_searched": 1525,
         "partial_shard_search": False,
         "sweep_remaining_shards": 0,
+        "sweep_completed_pass_roles": ("focused", "broad"),
     })
     assert fullraw_index.sweep_cache_entry_is_ready(
         entry,

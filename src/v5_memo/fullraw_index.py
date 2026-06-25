@@ -2134,7 +2134,7 @@ def sweep_cache_entry_is_ready(
         require_complete_search=require_complete_search,
     ) is not None:
         return False
-    if not _sweep_pass_roles_sufficient(entry.receipt):
+    if require_complete_sweep and not _sweep_pass_roles_sufficient(entry.receipt):
         return False
     remaining = _int_or_none(entry.receipt.get("sweep_remaining_shards"))
     return not (require_complete_sweep and remaining is not None and remaining > 0)
@@ -2737,7 +2737,7 @@ def run_server() -> None:
             min_shards_searched=min_shards_searched,
             min_sources_searched=min_sources_searched,
             require_complete_search=require_complete_search,
-        ) is not None or not _sweep_pass_roles_sufficient(receipt):
+        ) is not None or (sweep_require_complete and not _sweep_pass_roles_sufficient(receipt)):
             return False
         if sweep_require_complete:
             remaining = _int_or_none(receipt.get("sweep_remaining_shards"))
