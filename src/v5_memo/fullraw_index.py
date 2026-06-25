@@ -2522,7 +2522,7 @@ def run_server() -> None:
         if not sweep_enabled or shard_dir is None:
             return "disabled"
         existing = sweep_cache_get(key)
-        if existing is not None and receipt_is_sufficient(existing.receipt):
+        if existing is not None and (existing.hits or _int_or_none(existing.receipt.get("sweep_remaining_shards")) == 0):
             return "hit"
         with sweep_lock:
             if key in sweep_inflight:
@@ -2617,7 +2617,7 @@ def run_server() -> None:
                     required_pass_roles = min(len(sweep_passes), sweep_max_passes)
                     pass_roles_sufficient = len(set(completed_pass_roles)) >= required_pass_roles
                     final = (
-                        (receipt_is_sufficient(receipt) and pass_roles_sufficient)
+                        (bool(merged_hits) and receipt_is_sufficient(receipt) and pass_roles_sufficient)
                         or receipt["sweep_remaining_shards"] == 0
                         or pass_index + 1 >= sweep_max_passes
                     )
@@ -2731,10 +2731,10 @@ def run_server() -> None:
                 cached is not None
                 and cache_only
                 and queue_if_missing
-                and not receipt_is_sufficient(cached.receipt)
+                and not (cached.hits or _int_or_none(cached.receipt.get("sweep_remaining_shards")) == 0)
             )
             sweep_status = "disabled"
-            if cached is not None and not resume_cached:
+            if cached is not None and (cached.hits or _int_or_none(cached.receipt.get("sweep_remaining_shards")) == 0) and not resume_cached:
                 hits = cached.hits
                 receipt = cached.receipt
                 sweep_status = "hit"
@@ -2759,7 +2759,7 @@ def run_server() -> None:
                             receipt = cached.receipt
                         elif resume_cached and cached is not None:
                             receipt = cached.receipt
-                            if receipt_is_sufficient(receipt):
+                            if cached.hits or _int_or_none(receipt.get("sweep_remaining_shards")) == 0:
                                 hits = cached.hits
                     else:
                         with sweep_lock:
