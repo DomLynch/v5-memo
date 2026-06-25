@@ -84,7 +84,7 @@ def _valid_doi(value: object) -> str:
 
 def _pmid(hit: CorpusHit) -> str:
     raw = hit.metadata.get("pmid")
-    pmid = str(raw or hit.hit_id if raw or hit.hit_id.isdigit() else "").strip()
+    pmid = str(raw or (hit.hit_id if hit.hit_id.isdigit() else "")).strip()
     return pmid if pmid.isdigit() else ""
 
 

@@ -840,11 +840,11 @@ def test_researka_payload_uses_valid_doi_or_pmid_not_empty_doi() -> None:
     )
     receipts = [
         CorpusHit(
-                hit_id="10.1000/caffeine",
+            hit_id="10.1000/caffeine",
             title="Failure of caffeine to affect metabolism during 60 min submaximal exercise.",
             abstract="Caffeine did not change submaximal metabolic endpoints.",
             source="researka",
-                doi="10.1000/caffeine",
+            doi="10.1000/caffeine",
         ),
         CorpusHit(
             hit_id="1798317",
