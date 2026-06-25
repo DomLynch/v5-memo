@@ -498,7 +498,6 @@ def test_planned_cli_drops_queries_that_lose_specific_topic_anchor(
             "cold water immersion augment resistance protocol",
             "cold water immersion blunted impaired attenuated resistance",
             "cold water immersion resistance training adaptation",
-            "cold water immersion blunts hypertrophy resistance trained men",
         ],
         "anchor_queries": ["cold water immersion resistance training adaptation"],
     }
@@ -641,4 +640,3 @@ def test_planned_cli_does_not_rerun_fullraw_after_no_alpha(
         main()
 
     assert calls == ["generic exercise power adaptation"]
-

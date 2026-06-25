@@ -174,11 +174,10 @@ def main() -> None:
             planned_queries = _topic_anchored_queries(planned_queries, args.topic)
             shape_queries = _alpha_shape_queries(args.topic)
             topic_has_anchors = bool(query_anchor_terms(base_queries))
-            queries = (
-                _dedupe_queries([*shape_queries, *base_queries, *planned_queries])
-                if topic_has_anchors
-                else planned_queries or base_queries
-            )
+            if topic_has_anchors:
+                queries = _dedupe_queries([*shape_queries, *base_queries, *(planned_queries if not fullraw_backed else [])])
+            else:
+                queries = planned_queries or base_queries
     elif fullraw_backed and not explicit_queries and query_anchor_terms(base_queries):
         queries = _dedupe_queries([*_alpha_shape_queries(args.topic), *base_queries])
     anchor_queries = base_queries
