@@ -2578,9 +2578,10 @@ def run_server() -> None:
                     )
                     completed_pass_roles.append(pass_plan.role)
                     completed_path_strings.update(str(path) for path in completed_paths)
-                    failed_path_strings.update(
-                        str(entry.path) for entry in pass_entries if str(entry.path) not in completed_path_strings
-                    )
+                    if not timed_out:
+                        failed_path_strings.update(
+                            str(entry.path) for entry in pass_entries if str(entry.path) not in completed_path_strings
+                        )
                     searched_entries = [entry for entry in sweep_entries if str(entry.path) in completed_path_strings]
                     receipt = shard_coverage_receipt(catalog, searched_entries)
                     _add_planned_sweep_receipt(receipt, planned_receipt)
