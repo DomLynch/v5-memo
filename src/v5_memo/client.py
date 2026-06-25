@@ -1008,14 +1008,10 @@ def _fullraw_pair_variants(query: str, *, limit: int) -> list[str]:
     first = terms[0] if terms else ""
     def term_score(term: str) -> int:
         return len(term) + (8 if term in _DOI_BACKFILL_PRIORITY_TERMS else 0) - (4 if term.endswith(("tion", "sion", "ity", "ary", "acy", "ness")) else 0)
-
     def specificity(pair: tuple[int, int]) -> tuple[int, int, int]:
         left_idx, right_idx = pair
         left, right = terms[left_idx], terms[right_idx]
-        score = term_score(left) + term_score(right)
-        score += 3 if left == first and (len(first) <= 3 or term_score(first) >= 8) else 0
-        score += 4 if right_idx - left_idx == 1 else 0
-        score -= 8 if left in _FULLRAW_RARE_ANCHOR_DROP and right in _FULLRAW_RARE_ANCHOR_DROP else 0
+        score = term_score(left) + term_score(right) + (3 if left == first and (len(first) <= 3 or term_score(first) >= 8) else 0) + (4 if right_idx - left_idx == 1 else 0) - (8 if left in _FULLRAW_RARE_ANCHOR_DROP and right in _FULLRAW_RARE_ANCHOR_DROP else 0)
         return (score, left_idx - right_idx, -left_idx)
 
     pairs = ((left_idx, right_idx) for left_idx in range(len(terms)) for right_idx in range(left_idx + 1, len(terms)))
