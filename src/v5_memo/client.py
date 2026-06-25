@@ -431,6 +431,7 @@ class FullRawCorpusSearchClient:
         if (
             self._sweep_wait_seconds
             and search_pass.name in {"focused", "core"}
+            and (not _parse_full_raw_search_response(data) or not self._receipt_is_sufficient(receipt))
             and _full_raw_async_sweep_status(data) != "hit"
         ):
             cached = self._wait_for_sweep_hit(payload)
