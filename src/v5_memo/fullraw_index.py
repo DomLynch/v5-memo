@@ -3262,6 +3262,8 @@ def _sweep_completed_path_strings(receipt: dict[str, object]) -> set[str]:
 
 
 def _sweep_failed_path_strings(receipt: dict[str, object]) -> set[str]:
+    if receipt.get("sweep_timed_out") is True:
+        return set()
     value = receipt.get("sweep_failed_paths")
     if not isinstance(value, list | tuple):
         return set()

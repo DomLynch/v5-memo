@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 from typing import cast
 from urllib.request import Request, urlopen
