@@ -472,24 +472,24 @@ def test_full_raw_client_recovers_non_strict_coverage_error_from_sweep(
     assert hits[0].doi == "10.123/metformin"
 
 
-def test_full_raw_client_keeps_prior_hits_when_later_strict_variant_fails(monkeypatch: object) -> None:
-    calls = 0
+def test_full_raw_client_tries_next_strict_variant_after_failure(monkeypatch: object) -> None:
+    queries: list[object] = []
 
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
-        del request, timeout
-        nonlocal calls
-        calls += 1
-        if calls > 1:
-            raise TimeoutError("later variant failed")
+        del timeout
+        queries.append(json.loads(cast(bytes, request.data).decode("utf-8")).get("query"))
+        if len(queries) == 1:
+            raise TimeoutError("focused variant failed")
         return FakeResponse({
             "meta": {"count": 1, "shard_receipt": {"shards_searched": 1, "authenticated": True}},
-            "results": [{"doi": "10.123/kept", "title": "Metformin longevity kept hit", "source": "openalex"}],
+            "results": [{"doi": "10.123/fallback", "title": "Metformin longevity fallback hit", "source": "openalex"}],
         })
 
     monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
     client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", token="t", max_variants=2, strict=True)
 
-    assert client.search("metformin longevity", limit=3)[0].doi == "10.123/kept"
+    assert client.search("metformin longevity", limit=3)[0].doi == "10.123/fallback"
+    assert queries == ["metformin longevity", "metformin"]
 
 
 def test_full_raw_client_uses_cache_only_after_strict_foreground_timeout(

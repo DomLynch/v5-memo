@@ -359,6 +359,8 @@ class FullRawCorpusSearchClient:
             except SearchBackendError:
                 if best:
                     break
+                if variant_index < len(search_passes):
+                    continue
                 raise
             self._log_progress(
                 f"fullraw variant {variant_index}/{len(search_passes)} done "
