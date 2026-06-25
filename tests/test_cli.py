@@ -212,66 +212,6 @@ def test_cli_explicit_zero_disables_inherited_coverage_threshold(
     assert seen["min_shards_searched"] == 0
 
 
-def test_cli_publish_submits_researka_payload(
-    monkeypatch: MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    seen: dict[str, object] = {}
-    result = SimpleNamespace(markdown="# Alpha memo: ok\n")
-
-    def fake_payload(result_arg: object, **kwargs: object) -> dict[str, object]:
-        seen["payload_result"] = result_arg
-        seen["payload_kwargs"] = kwargs
-        return {"title": "ok"}
-
-    def fake_submit(payload_arg: dict[str, object], **kwargs: object) -> dict[str, object]:
-        seen["submit_payload"] = payload_arg
-        seen["submit_kwargs"] = kwargs
-        return {"submission_id": "sub_123", "status": "received"}
-
-    monkeypatch.setenv("RESEARKA_API_KEY_V4", "secret")
-    monkeypatch.setenv("RESEARKA_SUBMIT_URL", "https://api.example/submissions")
-    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", lambda **kwargs: result)
-    monkeypatch.setattr("v5_memo.__main__.build_researka_payload", fake_payload)
-    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["v5_memo", "--demo", "--publish", "--publish-domain", "ai_research", "--publish-agent-id", "v5-test"],
-    )
-
-    main()
-
-    assert "published_submission" in capsys.readouterr().out
-    assert seen["payload_result"] is result
-    assert seen["payload_kwargs"] == {
-        "author_agent_id": "v5-test",
-        "domain_slug": "ai_research",
-    }
-    assert seen["submit_payload"] == {"title": "ok"}
-    assert seen["submit_kwargs"] == {"agent_key": "secret", "submit_url": "https://api.example/submissions"}
-
-
-def test_cli_publish_fails_closed_without_token(
-    monkeypatch: MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.delenv("RESEARKA_API_KEY_V4", raising=False)
-    monkeypatch.delenv("RESEARKA_API_TOKEN_V4", raising=False)
-    monkeypatch.delenv("RESEARKA_AGENT_TOKEN_V4", raising=False)
-    monkeypatch.delenv("RESEARCH_API_KEY_V4", raising=False)
-    monkeypatch.delenv("V5_MEMO_RESEARKA_AGENT_KEY", raising=False)
-    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", lambda **kwargs: SimpleNamespace(markdown="# Alpha memo: ok\n"))
-    monkeypatch.setattr("v5_memo.__main__.submit_researka", lambda **kwargs: pytest.fail("submit should not run"))
-    monkeypatch.setattr(sys, "argv", ["v5_memo", "--demo", "--publish"])
-
-    with pytest.raises(SystemExit) as exc:
-        main()
-
-    assert exc.value.code == 2
-    assert "Missing publish token" in capsys.readouterr().err
-
-
 def test_fullraw_searcher_fails_closed_without_endpoint(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

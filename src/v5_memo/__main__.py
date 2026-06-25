@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import sys
@@ -22,7 +21,6 @@ from v5_memo.minimax_writer import (
     MiniMaxM3SearchPlanner,
 )
 from v5_memo.pipeline import build_alpha_memo
-from v5_memo.publisher import build_researka_payload, submit_researka
 from v5_memo.retriever import CorpusSearcher
 from v5_memo.schemas import CorpusHit
 from v5_memo.writer import render_memo
@@ -90,9 +88,6 @@ def main() -> None:
     parser.add_argument("--min-shards-searched", type=int)
     parser.add_argument("--min-sources-searched", type=int)
     parser.add_argument("--min-search-passes", type=int)
-    parser.add_argument("--publish", action="store_true")
-    parser.add_argument("--publish-domain", default=os.environ.get("V5_MEMO_PUBLISH_DOMAIN", "longevity"))
-    parser.add_argument("--publish-agent-id", default=os.environ.get("V5_MEMO_PUBLISH_AGENT_ID", "v5-alpha"))
     args = parser.parse_args()
     fullraw_backed = args.searcher in {"fullraw", "hybrid", "smart"}
     args.min_shards_searched = _coverage_threshold(
@@ -203,22 +198,6 @@ def main() -> None:
         min_search_passes=args.min_search_passes,
     )
     print(result.markdown)
-    if args.publish:
-        token = _publish_token()
-        if not token:
-            print("Missing publish token: set RESEARKA_API_KEY_V4 or V5_MEMO_RESEARKA_AGENT_KEY", file=sys.stderr)
-            raise SystemExit(2)
-        payload = build_researka_payload(
-            result,
-            author_agent_id=args.publish_agent_id,
-            domain_slug=args.publish_domain,
-        )
-        response = submit_researka(
-            payload,
-            agent_key=token,
-            submit_url=os.environ.get("RESEARKA_SUBMIT_URL", ""),
-        )
-        print(json.dumps({"published_submission": response}, sort_keys=True))
 
 
 def _require_full_raw_or_exit() -> None:
@@ -284,20 +263,6 @@ def _topic_filter_terms(topic: str) -> tuple[str, ...]:
 
 def _int_env(name: str) -> int:
     return _optional_int_env(name) or 0
-
-
-def _publish_token() -> str:
-    for name in (
-        "RESEARKA_API_KEY_V4",
-        "RESEARKA_API_TOKEN_V4",
-        "RESEARKA_AGENT_TOKEN_V4",
-        "RESEARCH_API_KEY_V4",
-        "V5_MEMO_RESEARKA_AGENT_KEY",
-    ):
-        value = os.environ.get(name, "").strip()
-        if value:
-            return value
-    return ""
 
 
 def _coverage_threshold(
