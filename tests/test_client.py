@@ -476,7 +476,6 @@ def test_full_raw_client_tries_next_strict_variant_after_failure(monkeypatch: ob
     queries: list[object] = []
 
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
-        del timeout
         queries.append(json.loads(cast(bytes, request.data).decode("utf-8")).get("query"))
         if len(queries) == 1:
             raise TimeoutError("focused variant failed")
@@ -487,7 +486,6 @@ def test_full_raw_client_tries_next_strict_variant_after_failure(monkeypatch: ob
 
     monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
     client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", token="t", max_variants=2, strict=True)
-
     assert client.search("metformin longevity", limit=3)[0].doi == "10.123/fallback"
     assert queries == ["metformin longevity", "metformin"]
 
