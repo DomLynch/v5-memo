@@ -98,7 +98,7 @@ def _apply_selector(
         original = by_receipts.get(candidate.receipt_ids)
         if original is not None and original not in selected:
             selected.append(original)
-    return selected
+    return selected or candidates
 
 
 def _anchor_terms_for_queries(queries: Sequence[str]) -> tuple[str, ...]:

@@ -377,7 +377,7 @@ def test_pipeline_filters_to_requested_tier_before_selector(monkeypatch: pytest.
     assert result.candidate == elite
 
 
-def test_pipeline_selector_cannot_invent_receipt_pair() -> None:
+def test_pipeline_selector_cannot_veto_with_invented_receipt_pair() -> None:
     class FakeSearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
             del query, limit
@@ -395,13 +395,14 @@ def test_pipeline_selector_cannot_invent_receipt_pair() -> None:
         reasons=("source_diverse",),
     )
 
-    with pytest.raises(ValueError, match="no receipt-bound"):
-        build_alpha_memo(
-            topic="longevity resilience",
-            seed_queries=["sleep nad", "exercise nad"],
-            searcher=FakeSearch(),
-            memo_selector=lambda _candidates, _hits: [invented],
-        )
+    result = build_alpha_memo(
+        topic="longevity resilience",
+        seed_queries=["sleep nad", "exercise nad"],
+        searcher=FakeSearch(),
+        memo_selector=lambda _candidates, _hits: [invented],
+    )
+
+    assert result.candidate.receipt_ids == ("h1", "h2")
 
 
 def test_query_anchor_terms_keep_specific_seed_terms() -> None:
