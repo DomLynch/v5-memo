@@ -876,7 +876,7 @@ def test_fullraw_search_passes_cover_breadth_depth_modes() -> None:
         "broad",
         "broad",
         "broad",
-        "broad",
+        "anchor",
     ]
     assert all(search_pass.rank_mode == "relevance" for search_pass in passes)
     assert "cold immersion" in [search_pass.query for search_pass in passes]
@@ -889,9 +889,10 @@ def test_fullraw_search_passes_include_core_variant_before_depth_modes() -> None
         "core",
         "broad",
         "broad",
-        "broad",
+        "anchor",
     ]
     assert passes[1].query == "resveratrol exercise training"
+    assert passes[-1].query == "resveratrol"
     assert "resveratrol training" in [search_pass.query for search_pass in passes]
 
 def test_fullraw_search_passes_prioritize_promise_pair_variants() -> None:

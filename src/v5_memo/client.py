@@ -56,6 +56,7 @@ _FULLRAW_PAIR_DROP = _FULLRAW_CORE_DROP | {
     "supplement",
     "supplementation",
     "trained",
+    "expected",
 }
 _FULLRAW_WEAK_PAIR_TERMS = {"resistance", "strength", "training"}
 _DOI_BACKFILL_PRIORITY_TERMS = {
@@ -950,10 +951,17 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
     core_variant = _fullraw_core_variant(query)
     if core_variant and add("core", core_variant):
         return out
-    pair_limit = max(0, limit - len(out))
+    anchor = ""
+    for term in _query_terms(query):
+        if len(term) >= 6 and term not in _FULLRAW_PAIR_DROP and term not in _FULLRAW_WEAK_PAIR_TERMS:
+            anchor = term
+            break
+    pair_limit = max(0, limit - len(out) - (1 if anchor and limit <= 5 else 0))
     for variant in _fullraw_pair_variants(query, limit=pair_limit):
         if add("broad", variant):
             return out
+    if anchor and add("anchor", anchor):
+        return out
     if add("adjacent", f"{query} mechanism outcome"):
         return out
     if add("falsifier", f"{query} null adverse conflicting"):
