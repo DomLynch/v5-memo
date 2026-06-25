@@ -181,6 +181,18 @@ def test_collect_seed_hits_balances_planned_query_budget() -> None:
     assert any(hit.hit_id.startswith("later-reversal-query") for hit in hits)
 
 
+def test_collect_seed_hits_skips_late_seed_failure_after_hits() -> None:
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            if query == "bad" and limit:
+                raise RuntimeError("backend miss")
+            return [_hit(query, f"{query} title", "receipt")]
+
+    assert [hit.hit_id for hit in collect_seed_hits(FakeSearch(), ["good", "bad"])] == ["good"]
+    with pytest.raises(RuntimeError):
+        collect_seed_hits(FakeSearch(), ["bad", "good"])
+
+
 def test_pipeline_builds_best_memo() -> None:
     class FakeSearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
