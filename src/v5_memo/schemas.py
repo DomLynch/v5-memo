@@ -53,6 +53,15 @@ class ClaimCard:
 
 
 @dataclass(frozen=True, slots=True)
+class EvidenceNode:
+    """One receipt's role in the candidate evidence graph."""
+
+    receipt_id: str
+    role: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class InsightCandidate:
     """Receipt-addressed alpha hypothesis candidate."""
 
@@ -67,6 +76,7 @@ class InsightCandidate:
     reasons: tuple[str, ...]
     receipt_roles: tuple[ReceiptRole, ...] = ()
     claim_cards: tuple[ClaimCard, ...] = ()
+    evidence_graph: tuple[EvidenceNode, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
