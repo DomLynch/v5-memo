@@ -3754,11 +3754,14 @@ def _float_or_none(value: object) -> float | None:
 
 def _write_json(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, object]) -> None:
     data = json.dumps(payload).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json")
-    handler.send_header("Content-Length", str(len(data)))
-    handler.end_headers()
-    handler.wfile.write(data)
+    try:
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data)
+    except (BrokenPipeError, ConnectionResetError):
+        return
 
 
 if __name__ == "__main__":

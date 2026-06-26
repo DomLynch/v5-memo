@@ -176,6 +176,28 @@ def test_isolated_shard_search_kills_timed_out_child(
     assert fake.waited is True
 
 
+def test_write_json_ignores_disconnected_client() -> None:
+    class BrokenWriter:
+        def write(self, data: bytes) -> None:
+            del data
+            raise BrokenPipeError
+
+    class FakeHandler:
+        wfile = BrokenWriter()
+
+        def send_response(self, status: int) -> None:
+            assert status == 200
+
+        def send_header(self, key: str, value: str) -> None:
+            assert key
+            assert value
+
+        def end_headers(self) -> None:
+            return None
+
+    fullraw_index._write_json(FakeHandler(), 200, {"ok": True})  # type: ignore[arg-type]
+
+
 def test_foreground_receipt_counts_only_completed_shards(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     entries = [_entry(tmp_path, idx, "openalex") for idx in range(4)]
 
