@@ -110,6 +110,13 @@ PYTHONPATH=src python -m v5_memo.fullraw_index stats-shards
 PYTHONPATH=src python -m v5_memo.fullraw_index search-shards "management forecast disclosure"
 ```
 
+Serve shard-backed search:
+
+```bash
+V5_MEMO_FULL_RAW_SHARD_DIR=/mnt/fullraw-shards \
+PYTHONPATH=src python -m v5_memo.fullraw_index serve
+```
+
 Default indexed endpoint: `127.0.0.1:9902`.
 
 The index stores a persistent `term_map` table for query expansion. Inspect the
@@ -117,6 +124,12 @@ actual expansion used for a query:
 
 ```bash
 PYTHONPATH=src python -m v5_memo.fullraw_index explain "management forecast disclosure"
+```
+
+Run the golden insight-quality harness:
+
+```bash
+PYTHONPATH=src python -m v5_memo.eval
 ```
 
 Storage Box shard layout details live in
