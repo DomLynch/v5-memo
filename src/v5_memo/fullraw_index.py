@@ -2935,8 +2935,8 @@ def run_server() -> None:
                     sweep_cache_put(job.key, SweepCacheEntry(time.time(), merged_hits, receipt), final=final)
                     if final or (timed_out and not completed_paths):
                         break
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"fullraw sweep worker failed key={job.key}: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             finally:
                 next_job = None
                 with sweep_lock:
