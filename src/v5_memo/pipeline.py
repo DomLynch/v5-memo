@@ -100,11 +100,14 @@ def _apply_selector(
     candidates = _selector_slate(candidates)
     by_receipts = {candidate.receipt_ids: candidate for candidate in candidates}
     selected: list[InsightCandidate] = []
-    for candidate in selector(candidates, hits):
+    selector_choices = list(selector(candidates, hits))
+    for candidate in selector_choices:
         original = by_receipts.get(candidate.receipt_ids)
         if original is not None and original not in selected:
             selected.append(original)
-    return selected or candidates
+    if selected:
+        return selected
+    return candidates if selector_choices else []
 
 
 def _selector_slate(candidates: Sequence[InsightCandidate]) -> Sequence[InsightCandidate]:

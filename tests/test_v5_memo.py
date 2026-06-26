@@ -668,6 +668,26 @@ def test_pipeline_selector_cannot_veto_with_invented_receipt_pair() -> None:
     assert result.candidate.receipt_ids == ("h1", "h2")
 
 
+def test_pipeline_selector_empty_choice_fails_closed() -> None:
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return _hits()
+
+    with pytest.raises(MemoBuildError, match="no receipt-bound") as exc:
+        build_alpha_memo(
+            topic="longevity resilience",
+            seed_queries=["sleep nad", "exercise nad"],
+            searcher=FakeSearch(),
+            memo_selector=lambda _candidates, _hits: [],
+    )
+
+    assert exc.value.failure.details["candidate_count"] == 0
+    mined_count = exc.value.failure.details["mined_candidate_count"]
+    assert isinstance(mined_count, int)
+    assert mined_count > 0
+
+
 def test_query_anchor_terms_keep_specific_seed_terms() -> None:
     assert query_anchor_terms([
         "NAD salvage mitochondrial stress exercise response",
