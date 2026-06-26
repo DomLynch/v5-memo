@@ -6,7 +6,7 @@ from collections import Counter
 from collections.abc import Sequence
 from itertools import combinations
 
-from v5_memo.schemas import CorpusHit, InsightCandidate, ReceiptRole
+from v5_memo.schemas import ClaimCard, CorpusHit, InsightCandidate, ReceiptRole
 from v5_memo.scorer import score_connection
 
 _WORD = re.compile(r"[a-z][a-z0-9]{2,}")
@@ -192,6 +192,8 @@ def mine_insights(
             tier = "publishable_alpha"
         if tier == "discovery_seed" and not include_discovery:
             continue
+        receipt_roles = _receipt_roles(left, right, shape_reasons)
+        claim_cards = _claim_cards(left, right, receipt_roles)
         score = score_connection(
             bridge_terms=bridge,
             bridge_doc_counts=doc_counts,
@@ -200,6 +202,7 @@ def mine_insights(
             has_tension=bool(tension_terms),
             shape_score=len(shape_reasons),
             shape_reasons=shape_reasons,
+            support_quality=_support_quality(claim_cards),
         )
         candidates.append(InsightCandidate(
             topic=topic,
@@ -216,7 +219,8 @@ def mine_insights(
                 *_direction_cautions(left.text, right.text),
                 f"tier:{tier}",
             ),
-            receipt_roles=_receipt_roles(left, right, shape_reasons),
+            receipt_roles=receipt_roles,
+            claim_cards=claim_cards,
         ))
     return sorted(candidates, key=_candidate_rank, reverse=True)[
         :max(0, max_candidates)
@@ -687,6 +691,92 @@ def _signal_role(text: str) -> str:
     if len(polarity) == 1:
         return f"{next(iter(polarity))}_signal"
     return "evidence"
+
+
+def _claim_cards(
+    left: CorpusHit,
+    right: CorpusHit,
+    roles: tuple[ReceiptRole, ...],
+) -> tuple[ClaimCard, ...]:
+    by_id = {left.hit_id: left, right.hit_id: right}
+    return tuple(
+        _claim_card(by_id[role.receipt_id], role)
+        for role in roles
+        if role.receipt_id in by_id
+    )
+
+
+def _claim_card(hit: CorpusHit, role: ReceiptRole) -> ClaimCard:
+    terms = _raw_terms(hit.text)
+    design = _design_type(terms)
+    population = _population_type(terms)
+    direction = "/".join(sorted(_direction_polarity(hit))) or "unclear"
+    support_type = "direct" if design in {"randomized_trial", "cohort"} and population == "human" else "indirect"
+    confidence = "high" if support_type == "direct" and direction != "unclear" else "medium" if direction != "unclear" else "low"
+    return ClaimCard(
+        receipt_id=hit.hit_id,
+        role=role.role,
+        design=design,
+        population=population,
+        outcome=_outcome_label(terms),
+        direction=direction,
+        support_type=support_type,
+        confidence=confidence,
+        quote=_claim_quote(hit),
+    )
+
+
+def _design_type(terms: frozenset[str]) -> str:
+    if terms & {"randomized", "randomised", "rct", "trial"}:
+        return "randomized_trial"
+    if terms & {"cohort", "prospective", "longitudinal"}:
+        return "cohort"
+    if terms & {"review", "meta", "systematic"}:
+        return "synthesis"
+    if terms & {"mouse", "mice", "rat", "rats", "cell", "cells"}:
+        return "mechanistic_model"
+    return "unspecified"
+
+
+def _population_type(terms: frozenset[str]) -> str:
+    if terms & {"human", "humans", "patient", "patients", "adult", "adults", "men", "women"}:
+        return "human"
+    if terms & {"mouse", "mice", "rat", "rats", "animal", "animals"}:
+        return "animal"
+    if terms & {"cell", "cells", "cellular"}:
+        return "cell_model"
+    return "unspecified"
+
+
+def _outcome_label(terms: frozenset[str]) -> str:
+    candidates = sorted(terms & (_OUTCOME | _METRIC | _ADVERSE_ENDPOINT | _BOUNDARY | _TIMING))
+    return "/".join(candidates[:3]) if candidates else "unspecified"
+
+
+def _claim_quote(hit: CorpusHit) -> str:
+    text = " ".join((hit.abstract or hit.title).split())
+    return text[:180].rstrip()
+
+
+def _support_quality(cards: tuple[ClaimCard, ...]) -> int:
+    quality = 0
+    for card in cards:
+        quality += {
+            "randomized_trial": 12,
+            "cohort": 9,
+            "synthesis": 5,
+            "mechanistic_model": 4,
+        }.get(card.design, 2)
+        quality += {"human": 8, "animal": 3, "cell_model": 2}.get(card.population, 1)
+        if card.direction != "unclear":
+            quality += 5
+        if card.role in {"promise", "outcome", "tail_risk", "aggregate_signal"}:
+            quality += 3
+    return min(35, quality)
+
+
+def _raw_terms(text: str) -> frozenset[str]:
+    return frozenset(_norm_token(raw) for raw in _WORD.findall(text.casefold()))
 
 
 def _thesis(

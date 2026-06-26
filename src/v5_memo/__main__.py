@@ -127,23 +127,23 @@ def main() -> None:
         searcher = DemoSearch()
     elif searcher_mode == "fullraw":
         _require_full_raw_or_exit()
-        searcher = FullRawCorpusSearchClient.from_env(strict=args.searcher == "smart")
+        searcher = FullRawCorpusSearchClient.from_env(strict=True)
     elif searcher_mode == "researka":
         searcher = ResearkaSearchClient.from_env()
     elif searcher_mode == "hybrid":
         searchers: list[CorpusSearcher] = []
-        full_raw = FullRawCorpusSearchClient.from_env(strict=args.searcher == "smart")
+        full_raw = FullRawCorpusSearchClient.from_env(strict=False)
         if full_raw.configured:
             searchers.append(full_raw)
-        researka = ResearkaSearchClient.from_env(strict=args.searcher == "smart")
+        researka = ResearkaSearchClient.from_env(strict=False)
         if researka.configured:
             searchers.append(researka)
         searchers.extend([
-            OpenAlexFullCorpusSearchClient.from_env(strict=args.searcher == "smart"),
+            OpenAlexFullCorpusSearchClient.from_env(strict=False),
         ])
         searcher = HybridCorpusSearchClient(searchers)
     else:
-        searcher = OpenAlexFullCorpusSearchClient.from_env(strict=args.searcher == "smart")
+        searcher = OpenAlexFullCorpusSearchClient.from_env(strict=False)
     memo_writer = render_memo
     if writer_mode == "minimax":
         memo_writer = MiniMaxM3MemoWriter.from_env().render

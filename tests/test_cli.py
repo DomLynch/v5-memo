@@ -153,6 +153,7 @@ def test_fullraw_cli_inherits_search_service_coverage_thresholds(
     monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", "50")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", "2")
     monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -189,6 +190,7 @@ def test_cli_explicit_zero_disables_inherited_coverage_threshold(
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", "50")
     monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -236,7 +238,7 @@ def test_fullraw_searcher_fails_closed_without_endpoint(
     assert exc.value.code == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "Full local raw 450M+ corpus search is not configured" in captured.err
+    assert "Full local raw 450M+ corpus search is not healthy" in captured.err
     assert "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL" in captured.err
 
 
@@ -270,6 +272,56 @@ def test_smart_cli_skips_unconfigured_researka_when_openalex_available(
     captured = capsys.readouterr()
     assert "Alpha memo" in captured.out
     assert "Resveratrol" in captured.out
+
+
+def test_smart_cli_uses_lenient_optional_backends(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: list[tuple[str, bool]] = []
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        del kwargs
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    def fullraw_from_env(*, strict: bool = False) -> EmptyFullRaw:
+        seen.append(("fullraw", strict))
+        return EmptyFullRaw()
+
+    def researka_from_env(*, strict: bool = False) -> ResearkaSearchClient:
+        seen.append(("researka", strict))
+        return ResearkaSearchClient(base_url="https://database.example", token="", strict=strict)
+
+    def openalex_from_env(*, strict: bool = False) -> ResveratrolOpenAlex:
+        seen.append(("openalex", strict))
+        return ResveratrolOpenAlex()
+
+    monkeypatch.setattr("v5_memo.__main__.FullRawCorpusSearchClient.from_env", fullraw_from_env)
+    monkeypatch.setattr("v5_memo.__main__.ResearkaSearchClient.from_env", researka_from_env)
+    monkeypatch.setattr("v5_memo.__main__.OpenAlexFullCorpusSearchClient.from_env", openalex_from_env)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "smart",
+            "--planner",
+            "seed",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+            "--topic",
+            "resveratrol exercise adaptation",
+        ],
+    )
+
+    main()
+
+    assert "Alpha memo" in capsys.readouterr().out
+    assert seen == [("fullraw", False), ("researka", False), ("openalex", False)]
 
 
 def test_smart_cli_planner_surfaces_elite_pair_from_broad_seed(

@@ -38,6 +38,21 @@ class CorpusHit:
 
 
 @dataclass(frozen=True, slots=True)
+class ClaimCard:
+    """Receipt-local claim shape used before prose generation."""
+
+    receipt_id: str
+    role: str
+    design: str
+    population: str
+    outcome: str
+    direction: str
+    support_type: str
+    confidence: str
+    quote: str
+
+
+@dataclass(frozen=True, slots=True)
 class InsightCandidate:
     """Receipt-addressed alpha hypothesis candidate."""
 
@@ -51,6 +66,7 @@ class InsightCandidate:
     evidence_score: int
     reasons: tuple[str, ...]
     receipt_roles: tuple[ReceiptRole, ...] = ()
+    claim_cards: tuple[ClaimCard, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
