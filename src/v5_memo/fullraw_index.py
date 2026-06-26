@@ -2745,6 +2745,16 @@ def run_server() -> None:
     sweep_queued_jobs: dict[str, SweepJob] = {}
     sweep_lock = threading.RLock()
 
+    def sweep_queue_state(key: str) -> dict[str, object]:
+        with sweep_lock:
+            return {
+                "inflight_count": len(sweep_inflight),
+                "queued_count": len(sweep_queued_jobs),
+                "max_inflight": sweep_max_inflight,
+                "key_running": key in sweep_inflight,
+                "key_queued": key in sweep_queued_jobs,
+            }
+
     def current_catalog() -> list[ShardCatalogEntry]:
         nonlocal catalog_cache
         if shard_dir is None:
@@ -3217,6 +3227,7 @@ def run_server() -> None:
                                 "scope": "relevant",
                                 "shard_limit": sweep_shard_limit,
                                 "strategy": _SWEEP_STRATEGY,
+                                **sweep_queue_state(cache_key),
                             },
                         },
                         "results": hits,
@@ -3293,6 +3304,7 @@ def run_server() -> None:
                         "scope": "relevant",
                         "shard_limit": sweep_shard_limit,
                         "strategy": _SWEEP_STRATEGY,
+                        **sweep_queue_state(cache_key),
                     },
                 },
                 "results": hits,
