@@ -18,8 +18,12 @@ from v5_memo.llm.minimax_client import (
     MINIMAX_MODEL_ENV,
     MINIMAX_TIMEOUT_ENV,
     RequestOpener,
-    call_minimax_m3,
-    load_minimax_api_key,
+)
+from v5_memo.llm.minimax_client import (
+    call_minimax_m3 as call_minimax_m3,
+)
+from v5_memo.llm.minimax_client import (
+    load_minimax_api_key as load_minimax_api_key,
 )
 from v5_memo.schemas import CorpusHit, InsightCandidate
 

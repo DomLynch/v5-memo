@@ -64,7 +64,7 @@ def test_minimax_call_retries_transient_errors(
             raise URLError(TimeoutError("handshake timed out"))
         return FakeResponse({"content": [{"type": "text", "text": "ok"}]})
 
-    monkeypatch.setattr("v5_memo.minimax_writer.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("v5_memo.llm.minimax_client.time.sleep", lambda _seconds: None)
 
     assert call_minimax_m3(
         api_key="key",

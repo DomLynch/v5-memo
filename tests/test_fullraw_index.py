@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import v5_memo.fullraw_index as fullraw_index
+from v5_memo.fullraw.http import write_json
 from v5_memo.fullraw_index import (
     FullRawFtsIndex,
     ShardCatalogEntry,
@@ -45,6 +46,28 @@ def _entry(tmp_path: Path, index: int, source: str) -> ShardCatalogEntry:
         cited_by_max=index,
         topic_terms=("resveratrol",) if index % 2 else ("metformin",),
     )
+
+
+def test_write_json_ignores_disconnected_client() -> None:
+    class BrokenWriter:
+        def write(self, data: bytes) -> None:
+            del data
+            raise BrokenPipeError("client disconnected")
+
+    class FakeHandler:
+        wfile = BrokenWriter()
+
+        def send_response(self, status: int) -> None:
+            assert status == 200
+
+        def send_header(self, name: str, value: str) -> None:
+            assert name
+            assert value
+
+        def end_headers(self) -> None:
+            return None
+
+    write_json(FakeHandler(), 200, {"ok": True})  # type: ignore[arg-type]
 
 
 def test_fullraw_index_builds_searchable_ranked_index(tmp_path: Path) -> None:
