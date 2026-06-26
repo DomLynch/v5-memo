@@ -707,7 +707,7 @@ def _claim_cards(
 
 
 def _claim_card(hit: CorpusHit, role: ReceiptRole) -> ClaimCard:
-    terms = _tokens(hit.text)
+    terms = _raw_terms(hit.text)
     design = _design_type(terms)
     population = _population_type(terms)
     direction = "/".join(sorted(_direction_polarity(hit))) or "unclear"
@@ -773,6 +773,10 @@ def _support_quality(cards: tuple[ClaimCard, ...]) -> int:
         if card.role in {"promise", "outcome", "tail_risk", "aggregate_signal"}:
             quality += 3
     return min(35, quality)
+
+
+def _raw_terms(text: str) -> frozenset[str]:
+    return frozenset(_norm_token(raw) for raw in _WORD.findall(text.casefold()))
 
 
 def _thesis(

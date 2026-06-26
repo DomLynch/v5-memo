@@ -17,7 +17,7 @@ from v5_memo.minimax_writer import (
     parse_minimax_selection,
     validate_minimax_memo,
 )
-from v5_memo.schemas import CorpusHit, InsightCandidate, ReceiptRole
+from v5_memo.schemas import ClaimCard, CorpusHit, InsightCandidate, ReceiptRole
 
 
 class FakeResponse:
@@ -179,6 +179,39 @@ Hypothesis only."""
     body = json.loads(request_data.decode("utf-8"))
     assert body["model"] == "MiniMax-M3"
     assert body["thinking"] == {"type": "disabled"}
+
+
+def test_minimax_prompt_includes_structured_claim_ledger() -> None:
+    candidate = InsightCandidate(
+        topic="longevity resilience",
+        thesis="receipt-bound claim",
+        bridge_terms=("nad",),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("h1", "h2"),
+        score=80,
+        novelty_score=70,
+        evidence_score=75,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard(
+                receipt_id="h1",
+                role="outcome",
+                design="randomized_trial",
+                population="human",
+                outcome="performance",
+                direction="negative",
+                support_type="direct",
+                confidence="high",
+                quote="Human trial observed a reduced outcome.",
+            ),
+        ),
+    )
+
+    prompt = build_minimax_prompt(candidate, _receipts())
+
+    assert "Claim ledger:" in prompt
+    assert "design=randomized_trial" in prompt
+    assert "support=direct/high" in prompt
 
 
 def test_minimax_writer_from_env_uses_v5_overrides(monkeypatch: pytest.MonkeyPatch) -> None:

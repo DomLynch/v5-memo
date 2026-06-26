@@ -12,6 +12,7 @@ from v5_memo.pipeline import build_alpha_memo
 from v5_memo.publisher import build_researka_payload
 from v5_memo.retriever import collect_seed_hits
 from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult
+from v5_memo.scorer import score_connection
 from v5_memo.writer import render_memo
 
 _FIXTURES = Path(__file__).with_name("fixtures")
@@ -76,6 +77,47 @@ def test_mines_bridge_and_renders_receipt_bound_memo() -> None:
     assert "10.1/sleep-nad" in memo
     assert "10.2/exercise-nad" in memo
     assert "Safety note" in memo
+
+
+def test_miner_emits_claim_cards_before_prose() -> None:
+    hits = [
+        _hit(
+            "promise",
+            "Protocol expected metformin training augmentation",
+            "Protocol hypothesis expected metformin would improve strength training response in older human adults.",
+        ),
+        _hit(
+            "outcome",
+            "Trial observed metformin training blunting",
+            "Randomized human outcome trial observed metformin reduced strength training response.",
+        ),
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic="metformin resistance training adaptation",
+        required_anchor_terms=("metformin", "training"),
+    )[0]
+    memo = render_memo(candidate, hits)
+
+    by_role = {card.role: card for card in candidate.claim_cards}
+    assert by_role["outcome"].design == "randomized_trial"
+    assert by_role["outcome"].population == "human"
+    assert by_role["outcome"].support_type == "direct"
+    assert "**Claim ledger:**" in memo
+
+
+def test_two_receipts_do_not_inflate_evidence_without_support_quality() -> None:
+    score = score_connection(
+        bridge_terms=("foo", "bar"),
+        bridge_doc_counts={"foo": 2, "bar": 2},
+        unique_source_count=2,
+        receipt_count=2,
+        has_tension=False,
+    )
+
+    assert score.evidence_score < 85
+    assert "thin_claim_support" in score.reasons
 
 
 def test_binder_rejects_single_source_candidates() -> None:
@@ -387,6 +429,33 @@ def test_pipeline_filters_to_requested_tier_before_selector(monkeypatch: pytest.
 
     assert seen == [elite]
     assert result.candidate == elite
+
+
+def test_pipeline_mines_broader_slate_when_selector_is_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return _hits()
+
+    def fake_mine(*_args: object, **kwargs: object) -> list[InsightCandidate]:
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr("v5_memo.pipeline.mine_insights", fake_mine)
+
+    with pytest.raises(MemoBuildError):
+        build_alpha_memo(
+            topic="longevity resilience",
+            seed_queries=["sleep nad", "exercise nad"],
+            searcher=FakeSearch(),
+            memo_selector=lambda candidates, _hits: candidates,
+        )
+
+    assert captured["max_candidates"] == 25
 
 
 def test_pipeline_filters_primary_anchor_drift_before_selector(monkeypatch: pytest.MonkeyPatch) -> None:
