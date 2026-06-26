@@ -577,9 +577,12 @@ def test_full_coverage_shard_selection_frontloads_spread_prefix(
 def test_sweep_passes_do_not_invent_side_queries(tmp_path: Path) -> None:
     entries = [_entry(tmp_path, idx, "openalex") for idx in range(4)]
     passes = fullraw_index._sweep_search_passes("resveratrol exercise training adaptation", entries, rank_mode="relevance")
-    assert [item.role for item in passes] == ["focused", "broad", "citation_heavy", "recency"]
+    assert [item.role for item in passes] == ["focused", "citation_heavy", "recency"]
     assert all("risk" not in item.query and "patients" not in item.query for item in passes)
     assert fullraw_index._sweep_search_passes("metformin blunts muscle hypertrophy progressive resistance training", entries, rank_mode="relevance")[0].query.startswith("metformin ")
+    cwi_passes = fullraw_index._sweep_search_passes("cold water immersion resistance training", entries, rank_mode="relevance")
+    assert {item.query for item in cwi_passes} == {"cold immersion training"}
+    assert all(item.query != "water resistance training" for item in cwi_passes)
 
 def test_materialized_shard_cache_evicts_old_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cache_dir = tmp_path / "cache"
