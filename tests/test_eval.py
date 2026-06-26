@@ -11,3 +11,7 @@ def test_golden_eval_harness_scores_all_cases() -> None:
     assert report.failed == 0
     assert report.passed == report.cases
     assert report.cases >= 5
+    assert report.positive_cases >= 3
+    assert report.negative_cases >= 3
+    assert report.false_positive_count == 0
+    assert report.missed_positive_count == 0

@@ -290,9 +290,17 @@ class FullRawCorpusSearchClient:
 
     @classmethod
     def from_env(cls, *, strict: bool = False) -> FullRawCorpusSearchClient:
-        token = os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "").strip()
+        token = (
+            os.environ.get("V5_MEMO_FULL_RAW_INDEX_TOKEN", "").strip()
+            or os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "").strip()
+        )
+        search_url = os.environ.get("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "")
+        if token and not search_url:
+            search_url = "http://127.0.0.1:9903/search"
+        default_min_shards = 1525 if token else 0
+        default_min_sources = 5 if token else 0
         return cls(
-            search_url=os.environ.get("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", ""),
+            search_url=search_url,
             token=token,
             timeout=min(_float_env("V5_MEMO_FULL_RAW_QUERY_TIMEOUT", _float_env("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", 60.0)), 240.0),
             max_variants=min(_int_env("V5_MEMO_FULL_RAW_MAX_VARIANTS", 16), 4),
@@ -303,8 +311,8 @@ class FullRawCorpusSearchClient:
                 "V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT",
                 6,
             ),
-            min_shards_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", 0),
-            min_sources_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", 0),
+            min_shards_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", default_min_shards),
+            min_sources_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", default_min_sources),
             require_auth=_bool_env("V5_MEMO_FULL_RAW_REQUIRE_AUTH", bool(token)),
             progress=_bool_env("V5_MEMO_FULL_RAW_PROGRESS", False),
             strict=strict,
@@ -427,6 +435,8 @@ class FullRawCorpusSearchClient:
             "rank_mode": search_pass.rank_mode,
             "timeout_seconds": self._timeout,
         }
+        if self._uses_cache_sweep_contract():
+            payload.update({"cache_only": True, "queue_if_missing": True})
         initial_error: SearchBackendError | None = None
         try:
             data = self._request_search(payload)
@@ -527,6 +537,10 @@ class FullRawCorpusSearchClient:
             return False
         if not receipt:
             return True
+        if receipt.get("partial_shard_search") is True:
+            return False
+        if (_int_or_none(receipt.get("sweep_failed_shards")) or 0) > 0:
+            return False
         shards = _int_or_none(receipt.get("shards_searched")) or 0
         if self._min_shards_searched and shards < self._min_shards_searched:
             return False
@@ -537,6 +551,9 @@ class FullRawCorpusSearchClient:
             else 0
         )
         return not (self._min_sources_searched and source_count < self._min_sources_searched)
+
+    def _uses_cache_sweep_contract(self) -> bool:
+        return bool(self._require_auth or self._min_shards_searched or self._min_sources_searched)
 
 
 class HybridCorpusSearchClient:

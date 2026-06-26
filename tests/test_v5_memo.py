@@ -6,7 +6,7 @@ from typing import Any, cast
 import pytest
 
 from v5_memo.binder import bind_receipts
-from v5_memo.gate import candidate_alpha_tier
+from v5_memo.gate import candidate_alpha_tier, candidate_quality_score
 from v5_memo.miner import mine_insights, query_anchor_terms
 from v5_memo.pipeline import build_alpha_memo
 from v5_memo.publisher import build_researka_payload
@@ -59,6 +59,15 @@ def _hits() -> list[CorpusHit]:
 
 def _hit(hit_id: str, title: str, abstract: str) -> CorpusHit:
     return CorpusHit(hit_id=hit_id, title=title, abstract=abstract, source="openalex", doi=f"10.{hit_id}")
+
+
+class _StaticSearch:
+    def __init__(self, hits: Sequence[CorpusHit]) -> None:
+        self._hits = hits
+
+    def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+        del query, limit
+        return self._hits
 
 
 def test_mines_bridge_and_renders_receipt_bound_memo() -> None:
@@ -298,15 +307,10 @@ def test_collect_seed_hits_skips_late_seed_failure_after_hits() -> None:
 
 
 def test_pipeline_builds_best_memo() -> None:
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return _hits()
-
     result = build_alpha_memo(
         topic="longevity resilience",
         seed_queries=["sleep nad", "exercise nad"],
-        searcher=FakeSearch(),
+        searcher=_StaticSearch(_hits()),
     )
 
     assert result.candidate.score >= 60
@@ -375,16 +379,11 @@ def test_pipeline_anchors_to_original_seed_before_planner_drift() -> None:
         ),
     ]
 
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return hits
-
     result = build_alpha_memo(
         topic="resveratrol exercise adaptation",
         seed_queries=["arabidopsis tor cotyledon greening"],
         anchor_queries=["resveratrol exercise training adaptation"],
-        searcher=FakeSearch(),
+        searcher=_StaticSearch(hits),
     )
 
     assert result.candidate.receipt_ids == ("promise", "outcome")
@@ -405,31 +404,21 @@ def test_pipeline_does_not_fallback_to_planner_anchors_when_seed_is_broad() -> N
         ),
     ]
 
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return hits
-
     result = build_alpha_memo(
         topic="longevity exercise adaptation supplement reversal",
         seed_queries=["arabidopsis tor cotyledon greening"],
         anchor_queries=["longevity exercise adaptation intervention reversal"],
-        searcher=FakeSearch(),
+        searcher=_StaticSearch(hits),
     )
 
     assert result.candidate.receipt_ids == ("promise", "outcome")
 
 
 def test_pipeline_accepts_custom_memo_writer() -> None:
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return _hits()
-
     result = build_alpha_memo(
         topic="longevity resilience",
         seed_queries=["sleep nad", "exercise nad"],
-        searcher=FakeSearch(),
+        searcher=_StaticSearch(_hits()),
         memo_writer=lambda candidate, receipts: f"custom: {candidate.topic} / {len(receipts)}",
     )
 
@@ -467,11 +456,6 @@ def test_pipeline_filters_to_requested_tier_before_selector(monkeypatch: pytest.
     )
     seen: list[InsightCandidate] = []
 
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return hits
-
     def fake_mine(*_args: object, **_kwargs: object) -> list[InsightCandidate]:
         return [low, elite]
 
@@ -484,7 +468,7 @@ def test_pipeline_filters_to_requested_tier_before_selector(monkeypatch: pytest.
     result = build_alpha_memo(
         topic="tool reliability",
         seed_queries=["tool"],
-        searcher=FakeSearch(),
+        searcher=_StaticSearch(hits),
         memo_selector=selector,
         min_alpha_tier="elite_alpha",
     )
@@ -493,15 +477,60 @@ def test_pipeline_filters_to_requested_tier_before_selector(monkeypatch: pytest.
     assert result.candidate == elite
 
 
+def test_pipeline_quality_rank_lifts_strong_candidate_before_writer(monkeypatch: pytest.MonkeyPatch) -> None:
+    hits = [
+        _hit("weak-a", "Tool benchmark accuracy improves", "Tool benchmark accuracy improved."),
+        _hit("weak-b", "Tool benchmark reliability changes", "Tool benchmark reliability changed."),
+        _hit("rev-a", "Protocol expected tool reliability augmentation", "Protocol expected tool reliability augmentation."),
+        _hit("rev-b", "Outcome observed tool reliability blunting", "Outcome observed tool reliability blunting."),
+    ]
+    weak = InsightCandidate(
+        topic="tool reliability",
+        thesis="Weak metric bridge.",
+        bridge_terms=("tool",),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("weak-a", "weak-b"),
+        score=99,
+        novelty_score=99,
+        evidence_score=99,
+        reasons=("shape:measurement_mismatch", "tier:elite_alpha"),
+    )
+    strong = InsightCandidate(
+        topic="tool reliability",
+        thesis="Strong reversal.",
+        bridge_terms=("tool",),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("rev-a", "rev-b"),
+        score=80,
+        novelty_score=80,
+        evidence_score=80,
+        reasons=("shape:expectation_reversal", "tier:elite_alpha"),
+    )
+    seen: list[InsightCandidate] = []
+
+    def selector(candidates: Sequence[InsightCandidate], _hits: Sequence[CorpusHit]) -> Sequence[InsightCandidate]:
+        seen.extend(candidates)
+        return list(candidates)
+
+    monkeypatch.setattr("v5_memo.pipeline.mine_insights", lambda *_args, **_kwargs: [weak, strong])
+
+    result = build_alpha_memo(
+        topic="tool reliability",
+        seed_queries=["tool reliability"],
+        searcher=_StaticSearch(hits),
+        memo_selector=selector,
+        min_alpha_tier="elite_alpha",
+    )
+
+    assert candidate_quality_score(strong) > candidate_quality_score(weak)
+    assert seen[:2] == [strong, weak]
+    assert result.candidate == strong
+
+
 def test_pipeline_mines_broader_slate_when_selector_is_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
-
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return _hits()
 
     def fake_mine(*_args: object, **kwargs: object) -> list[InsightCandidate]:
         captured.update(kwargs)
@@ -513,7 +542,7 @@ def test_pipeline_mines_broader_slate_when_selector_is_present(
         build_alpha_memo(
             topic="longevity resilience",
             seed_queries=["sleep nad", "exercise nad"],
-            searcher=FakeSearch(),
+            searcher=_StaticSearch(_hits()),
             memo_selector=lambda candidates, _hits: candidates,
         )
 
@@ -551,11 +580,6 @@ def test_pipeline_filters_primary_anchor_drift_before_selector(monkeypatch: pyte
     )
     seen: list[InsightCandidate] = []
 
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return hits
-
     def selector(candidates: Sequence[InsightCandidate], _hits: Sequence[CorpusHit]) -> Sequence[InsightCandidate]:
         seen.extend(candidates)
         return list(candidates)
@@ -565,7 +589,7 @@ def test_pipeline_filters_primary_anchor_drift_before_selector(monkeypatch: pyte
     result = build_alpha_memo(
         topic="metformin exercise training mitochondrial adaptation",
         seed_queries=["metformin exercise training mitochondrial adaptation"],
-        searcher=FakeSearch(),
+        searcher=_StaticSearch(hits),
         memo_selector=selector,
         min_alpha_tier="elite_alpha",
     )
@@ -603,24 +627,14 @@ def test_pipeline_primary_anchor_guard_is_topic_agnostic(
         reasons=("tier:publishable_alpha",),
     )
 
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return hits
-
     monkeypatch.setattr("v5_memo.pipeline.mine_insights", lambda *_args, **_kwargs: [candidate])
 
-    result = build_alpha_memo(topic=topic, seed_queries=[topic], searcher=FakeSearch())
+    result = build_alpha_memo(topic=topic, seed_queries=[topic], searcher=_StaticSearch(hits))
 
     assert result.candidate == candidate
 
 
 def test_pipeline_selector_cannot_veto_with_invented_receipt_pair() -> None:
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return _hits()
-
     invented = InsightCandidate(
         topic="longevity resilience",
         thesis="Invented candidate.",
@@ -636,11 +650,26 @@ def test_pipeline_selector_cannot_veto_with_invented_receipt_pair() -> None:
     result = build_alpha_memo(
         topic="longevity resilience",
         seed_queries=["sleep nad", "exercise nad"],
-        searcher=FakeSearch(),
+        searcher=_StaticSearch(_hits()),
         memo_selector=lambda _candidates, _hits: [invented],
     )
 
     assert result.candidate.receipt_ids == ("h1", "h2")
+
+
+def test_pipeline_selector_empty_choice_fails_closed() -> None:
+    with pytest.raises(MemoBuildError, match="no receipt-bound") as exc:
+        build_alpha_memo(
+            topic="longevity resilience",
+            seed_queries=["sleep nad", "exercise nad"],
+            searcher=_StaticSearch(_hits()),
+            memo_selector=lambda _candidates, _hits: [],
+        )
+
+    assert exc.value.failure.details["candidate_count"] == 0
+    mined_count = exc.value.failure.details["mined_candidate_count"]
+    assert isinstance(mined_count, int)
+    assert mined_count > 0
 
 
 def test_query_anchor_terms_keep_specific_seed_terms() -> None:
@@ -1187,16 +1216,11 @@ def test_pipeline_filters_publishable_seed_when_elite_required() -> None:
         ),
     ]
 
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return hits
-
     with pytest.raises(MemoBuildError, match="no receipt-bound") as exc:
         build_alpha_memo(
             topic="longevity sauna cardiovascular risk",
             seed_queries=["sauna hypertension"],
-            searcher=FakeSearch(),
+            searcher=_StaticSearch(hits),
             min_alpha_tier="elite_alpha",
     )
     assert exc.value.failure.details["min_alpha_tier"] == "elite_alpha"

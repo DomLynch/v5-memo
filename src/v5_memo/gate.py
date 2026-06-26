@@ -100,6 +100,8 @@ def memo_coverage_summary(receipts: Sequence[CorpusHit]) -> dict[str, object]:
     years = [hit.year for hit in receipts if hit.year is not None]
     cited_by_max = 0
     abstract_count = 0
+    partial_shard_search = False
+    sweep_failed_shards = 0
     for hit in receipts:
         if hit.abstract.strip():
             abstract_count += 1
@@ -112,6 +114,8 @@ def memo_coverage_summary(receipts: Sequence[CorpusHit]) -> dict[str, object]:
         receipt = hit.metadata.get("shard_receipt")
         if not isinstance(receipt, dict):
             continue
+        partial_shard_search = partial_shard_search or receipt.get("partial_shard_search") is True
+        sweep_failed_shards += _int_value(receipt.get("sweep_failed_shards"))
         shards_searched = max(shards_searched, _int_value(receipt.get("shards_searched")))
         raw_sources = receipt.get("sources_searched")
         if isinstance(raw_sources, dict):
@@ -135,6 +139,8 @@ def memo_coverage_summary(receipts: Sequence[CorpusHit]) -> dict[str, object]:
         "search_passes": tuple(sorted(search_passes)),
         "search_pass_count": len(search_passes),
         "abstract_receipt_count": abstract_count,
+        "partial_shard_search": partial_shard_search,
+        "sweep_failed_shards": sweep_failed_shards,
     }
 
 
@@ -152,6 +158,10 @@ def memo_coverage_failure(
     min_search_passes = min(min_search_passes, len(receipts))
     if min_shards_searched and _int_value(summary["shards_searched"]) < min_shards_searched:
         failures.append("shards_searched")
+    if min_shards_searched and summary["partial_shard_search"] is True:
+        failures.append("partial_shard_search")
+    if min_shards_searched and _int_value(summary["sweep_failed_shards"]) > 0:
+        failures.append("sweep_failed_shards")
     if min_sources_searched and _int_value(summary["source_count"]) < min_sources_searched:
         failures.append("sources_searched")
     if min_search_passes and _int_value(summary["search_pass_count"]) < min_search_passes:
