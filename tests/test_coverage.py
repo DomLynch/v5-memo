@@ -132,12 +132,14 @@ def test_fullraw_health_uses_search_service_health_endpoint(monkeypatch: MonkeyP
             "url": request.full_url,  # type: ignore[attr-defined]
             "timeout": timeout,
             "has_body": bool(getattr(request, "data", None)),
+            "authorization": request.get_header("Authorization"),  # type: ignore[attr-defined]
         })
         if getattr(request, "data", None):
             return FakeResponse(_search_body())
         return FakeResponse(_health_body())
 
     monkeypatch.setenv("V5_MEMO_FULL_RAW_HEALTH_TIMEOUT", "1.5")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", "test-token")
     monkeypatch.setattr("v5_memo.coverage.urlopen", fake_urlopen)
 
     health = full_raw_search_health("http://127.0.0.1:9902/search")
@@ -150,8 +152,18 @@ def test_fullraw_health_uses_search_service_health_endpoint(monkeypatch: MonkeyP
     assert health.query_smoke_ok is True
     assert health.source_count == 5
     assert seen == [
-        {"url": "http://127.0.0.1:9902/health", "timeout": 1.5, "has_body": False},
-        {"url": "http://127.0.0.1:9902/search", "timeout": 1.5, "has_body": True},
+        {
+            "url": "http://127.0.0.1:9902/health",
+            "timeout": 1.5,
+            "has_body": False,
+            "authorization": "Bearer test-token",
+        },
+        {
+            "url": "http://127.0.0.1:9902/search",
+            "timeout": 1.5,
+            "has_body": True,
+            "authorization": "Bearer test-token",
+        },
     ]
 
 

@@ -103,7 +103,7 @@ def full_raw_search_health(url: str | None = None) -> SearchBackendHealth:
         return SearchBackendHealth(configured=False, ok=False, error="missing V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL")
     health_url = _health_url(search_url)
     try:
-        request = Request(health_url, headers={"User-Agent": "v5-memo/0.1"}, method="GET")
+        request = Request(health_url, headers=_full_raw_headers(), method="GET")
         with urlopen(request, timeout=_health_timeout()) as response:
             data: Any = json.loads(response.read().decode("utf-8"))
     except (HTTPError, URLError, TimeoutError, ValueError, OSError) as exc:
@@ -190,6 +190,19 @@ def _health_url(search_url: str) -> str:
     return urlunparse(parsed._replace(path="/health", query="", fragment=""))
 
 
+def _full_raw_headers(*, content_type: bool = False) -> dict[str, str]:
+    headers = {"User-Agent": "v5-memo/0.1"}
+    if content_type:
+        headers["Content-Type"] = "application/json"
+    token = (
+        os.environ.get("V5_MEMO_FULL_RAW_INDEX_TOKEN", "").strip()
+        or os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "").strip()
+    )
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def _full_raw_query_smoke(search_url: str) -> dict[str, object]:
     query = os.environ.get("V5_MEMO_FULL_RAW_HEALTH_SMOKE_QUERY", "metformin longevity").strip()
     if not query:
@@ -201,16 +214,7 @@ def _full_raw_query_smoke(search_url: str) -> dict[str, object]:
         "cache_only": True,
         "queue_if_missing": False,
     }
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "v5-memo/0.1",
-    }
-    token = (
-        os.environ.get("V5_MEMO_FULL_RAW_INDEX_TOKEN", "").strip()
-        or os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "").strip()
-    )
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    headers = _full_raw_headers(content_type=True)
     try:
         request = Request(
             search_url,
