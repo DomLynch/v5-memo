@@ -2342,6 +2342,23 @@ def sweep_cache_entry_can_answer_request(
     )
 
 
+def _admit_sweep_key(
+    key: str,
+    *,
+    sweep_inflight: set[str],
+    sweep_queued: set[str],
+    max_inflight: int,
+) -> str:
+    if key in sweep_inflight:
+        return "running"
+    if len(sweep_inflight) >= max(1, max_inflight):
+        sweep_queued.add(key)
+        return "queued"
+    sweep_queued.discard(key)
+    sweep_inflight.add(key)
+    return "queued"
+
+
 def shard_coverage_gate_response(
     receipt: dict[str, object],
     *,
@@ -2684,6 +2701,7 @@ def run_server() -> None:
     catalog_cache: tuple[float, list[ShardCatalogEntry]] = (0.0, [])
     sweep_cache: dict[str, SweepCacheEntry] = {}
     sweep_inflight: set[str] = set()
+    sweep_queued: set[str] = set()
     sweep_lock = threading.RLock()
 
     def current_catalog() -> list[ShardCatalogEntry]:
@@ -2794,11 +2812,14 @@ def run_server() -> None:
         ):
             return "hit"
         with sweep_lock:
-            if key in sweep_inflight:
-                return "running"
-            if len(sweep_inflight) >= sweep_max_inflight:
-                return "busy"
-            sweep_inflight.add(key)
+            status = _admit_sweep_key(
+                key,
+                sweep_inflight=sweep_inflight,
+                sweep_queued=sweep_queued,
+                max_inflight=sweep_max_inflight,
+            )
+            if status != "queued" or key not in sweep_inflight:
+                return status
 
         def worker() -> None:
             try:
@@ -2904,6 +2925,7 @@ def run_server() -> None:
             finally:
                 with sweep_lock:
                     sweep_inflight.discard(key)
+                    sweep_queued.discard(key)
 
         threading.Thread(target=worker, daemon=True).start()
         return "queued"

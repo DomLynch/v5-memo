@@ -335,6 +335,36 @@ def test_completed_disk_sweep_cache_beats_stale_memory_partial() -> None:
     assert selected.receipt["shards_searched"] == 1525
 
 
+def test_sweep_admission_queues_without_exceeding_inflight_limit() -> None:
+    inflight = {"active"}
+    queued: set[str] = set()
+
+    assert fullraw_index._admit_sweep_key(
+        "cold-water",
+        sweep_inflight=inflight,
+        sweep_queued=queued,
+        max_inflight=1,
+    ) == "queued"
+    assert inflight == {"active"}
+    assert queued == {"cold-water"}
+    assert fullraw_index._admit_sweep_key(
+        "active",
+        sweep_inflight=inflight,
+        sweep_queued=queued,
+        max_inflight=1,
+    ) == "running"
+
+    inflight.clear()
+    assert fullraw_index._admit_sweep_key(
+        "cold-water",
+        sweep_inflight=inflight,
+        sweep_queued=queued,
+        max_inflight=1,
+    ) == "queued"
+    assert inflight == {"cold-water"}
+    assert queued == set()
+
+
 def test_complete_sweep_retries_failed_shards() -> None:
     receipt = {
         "sweep_failed_paths": ("shard_a.sqlite", "shard_b.sqlite"),
