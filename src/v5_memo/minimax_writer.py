@@ -430,6 +430,7 @@ Rules:
 - For intervention topics, include at least one promise-side title query using words
   like expected/designed/protocol/augment/mimic and one outcome-side title query using
   words like blunts/null/reduced/impaired/attenuated for the same intervention.
+- Outcome-side queries should name observed endpoints/results, not pathway-only proxies unless the seed topic names that proxy.
 - Do not spend most queries on pathway-only mechanisms; mechanism queries must still
   include the shared intervention, construct, product, model, or program.
 - Prefer same intervention/construct/program across evidence objects.

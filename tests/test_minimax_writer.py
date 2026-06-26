@@ -619,7 +619,7 @@ def test_minimax_planner_returns_json_queries_plus_original_seeds() -> None:
     assert isinstance(request_data, bytes)
     body = json.loads(request_data.decode("utf-8"))
     assert body["model"] == "MiniMax-M3"
-    assert "academic corpus search queries" in body["system"]
+    assert "academic corpus search queries" in body["system"] and "observed endpoints/results" in body["messages"][0]["content"][0]["text"]
 
 
 def test_minimax_planner_from_env_uses_v5_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
