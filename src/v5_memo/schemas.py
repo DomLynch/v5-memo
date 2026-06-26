@@ -77,6 +77,7 @@ class InsightCandidate:
     receipt_roles: tuple[ReceiptRole, ...] = ()
     claim_cards: tuple[ClaimCard, ...] = ()
     evidence_graph: tuple[EvidenceNode, ...] = ()
+    scorecard: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
