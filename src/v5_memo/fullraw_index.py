@@ -488,7 +488,11 @@ class FullRawFtsIndex:
             if not terms:
                 return []
             match_query = _fts_match_query(self._expanded_term_groups(terms))
+            rank_mode = _rank_mode(rank_mode)
             order_by = _search_order_by(rank_mode)
+            row_limit = max(1, min(limit, 200))
+            if rank_mode == "relevance":
+                row_limit = min(200, max(row_limit, limit * 5, 50))
             if timeout_seconds is not None and timeout_seconds > 0:
                 deadline = time.monotonic() + timeout_seconds
                 self._conn.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
@@ -507,12 +511,16 @@ class FullRawFtsIndex:
                     ORDER BY {order_by}
                     LIMIT ?
                     """,
-                    (match_query, year_min, year_max, max(1, min(limit, 200))),
+                    (match_query, year_min, year_max, row_limit),
                 ).fetchall()
             finally:
                 if timeout_seconds is not None and timeout_seconds > 0:
                     self._conn.set_progress_handler(None, 0)
-        return [_row_to_hit(row) for row in rows]
+        hits = [_row_to_hit(row) for row in rows]
+        if rank_mode == "relevance":
+            hits = [_with_query_fit_score(hit, terms) for hit in hits]
+            return _rank_limited_hits(hits, limit=limit)
+        return hits[: max(1, min(limit, 200))]
 
     def _expanded_term_groups(self, terms: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
         groups: list[tuple[str, ...]] = []
@@ -3659,6 +3667,42 @@ def _row_to_hit(row: sqlite3.Row) -> dict[str, object]:
         "cited_by_count": _int_or_none(row["cited_by_count"]),
         "score": round(-rank, 6),
     }
+
+
+def _with_query_fit_score(hit: dict[str, object], terms: tuple[str, ...]) -> dict[str, object]:
+    if not terms:
+        return hit
+    title = _clean(hit.get("title"))
+    abstract = _clean(hit.get("abstract"))
+    title_terms = set(_fts_terms(title))
+    abstract_terms = set(_fts_terms(abstract))
+    title_hits = sum(1 for term in terms if term in title_terms)
+    abstract_hits = sum(1 for term in terms if term in abstract_terms)
+    phrase_score = _ordered_window_score(_fts_terms(title), terms) * 2 + _ordered_window_score(
+        _fts_terms(abstract),
+        terms,
+    )
+    all_title_bonus = 10 if title_hits == len(terms) else 0
+    fit_score = 3 * title_hits + abstract_hits + phrase_score + all_title_bonus
+    if fit_score <= 0:
+        return hit
+    return {**hit, "score": round(_hit_score(hit) + fit_score, 6)}
+
+
+def _ordered_window_score(text_terms: tuple[str, ...], query_terms: tuple[str, ...]) -> int:
+    if len(text_terms) < 2 or len(query_terms) < 2:
+        return 0
+    text_windows = {
+        tuple(text_terms[index:index + size])
+        for size in range(2, min(3, len(query_terms)) + 1)
+        for index in range(0, len(text_terms) - size + 1)
+    }
+    return sum(
+        len(window)
+        for size in range(2, min(3, len(query_terms)) + 1)
+        for index in range(0, len(query_terms) - size + 1)
+        if (window := tuple(query_terms[index:index + size])) in text_windows
+    )
 
 
 def _hit_score(hit: dict[str, object]) -> float:

@@ -62,6 +62,33 @@ def test_fullraw_index_builds_searchable_ranked_index(tmp_path: Path) -> None:
     assert hits[0]["doi"] == "10.example/guidance"
 
 
+def test_fullraw_relevance_prefers_construct_fit_over_loose_token_overlap(tmp_path: Path) -> None:
+    index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
+    try:
+        index.index_files([_raw(tmp_path, "semantic_scholar", [
+            {
+                "doi": "https://doi.org/10.example/water-resistance",
+                "title": "Effects of aquatic exercise training using water-resistance equipment in elderly",
+                "abstract": "Cold immersion protocols differ from water resistance training.",
+                "cited_by_count": 200,
+            },
+            {
+                "doi": "https://doi.org/10.example/cwi-recovery",
+                "title": "Cold Water Immersion and Contrast Water Therapy Do Not Improve Short-Term Recovery Following Resistance Training",
+                "abstract": "Cold water immersion was tested after resistance training.",
+                "cited_by_count": 3,
+            },
+        ])], commit_interval=1)
+        hits = index.search("cold water immersion resistance training", limit=2)
+    finally:
+        index.close()
+
+    assert [hit["doi"] for hit in hits] == [
+        "10.example/cwi-recovery",
+        "10.example/water-resistance",
+    ]
+
+
 def test_fullraw_index_enriches_abstract_only_rows(tmp_path: Path) -> None:
     paper, abstract = tmp_path / "paper.jsonl.gz", tmp_path / "abstract.jsonl.gz"
     _gz(paper, [{"corpusid": 123, "title": "Resveratrol exercise training adaptation"}])
