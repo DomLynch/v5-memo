@@ -2353,6 +2353,15 @@ def sweep_cache_entry_can_answer_request(
     )
 
 
+def _should_force_cache_queue(
+    *,
+    shard_dir_configured: bool,
+    require_complete_search: bool,
+    sweep_enabled: bool,
+) -> bool:
+    return shard_dir_configured and require_complete_search and sweep_enabled
+
+
 def _admit_sweep_key(
     key: str,
     *,
@@ -3091,6 +3100,13 @@ def run_server() -> None:
                     isinstance(raw_queue_if_missing, str)
                     and raw_queue_if_missing.strip().casefold() in {"1", "true", "yes", "on"}
                 )
+                if _should_force_cache_queue(
+                    shard_dir_configured=shard_dir is not None,
+                    require_complete_search=require_complete_search,
+                    sweep_enabled=sweep_enabled,
+                ):
+                    cache_only = True
+                    queue_if_missing = True
             except (TypeError, ValueError, json.JSONDecodeError):
                 _write_json(self, 400, {"error": "bad request"})
                 return

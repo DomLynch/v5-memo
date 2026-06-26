@@ -304,6 +304,19 @@ def test_sweep_cache_only_can_answer_agent_poll() -> None:
     )
 
 
+def test_complete_shard_service_forces_cache_queue() -> None:
+    assert fullraw_index._should_force_cache_queue(
+        shard_dir_configured=True,
+        require_complete_search=True,
+        sweep_enabled=True,
+    )
+    assert not fullraw_index._should_force_cache_queue(
+        shard_dir_configured=True,
+        require_complete_search=False,
+        sweep_enabled=True,
+    )
+
+
 def test_completed_disk_sweep_cache_beats_stale_memory_partial() -> None:
     memory_entry = fullraw_index.SweepCacheEntry(
         created_at=time.time(),
