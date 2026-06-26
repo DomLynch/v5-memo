@@ -151,6 +151,8 @@ def test_full_raw_client_posts_to_configured_search_service(monkeypatch: object)
     assert headers["Authorization"] == "Bearer raw-token"
     assert payloads[0]["search_pass"] == "core"
     assert payloads[0]["limit"] == 50
+    assert payloads[0]["cache_only"] is True
+    assert payloads[0]["queue_if_missing"] is True
     assert payloads[0]["timeout_seconds"] == 7.0
     assert any(payload["query"] == "nad exercise" for payload in payloads)
     assert hits[0].source == "fullraw:semantic_scholar"
@@ -347,10 +349,10 @@ def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) ->
 
     hits = client.search("management forecast disclosure", limit=3)
 
-    assert [payload.get("cache_only") for payload in payloads] == [None, True, None]
+    assert [payload.get("cache_only") for payload in payloads] == [True, True]
     assert payloads[1].get("queue_if_missing") is True
     assert timeouts[0] == 60.0
-    assert timeouts[1] <= 1.0
+    assert timeouts[1] == 60.0
     assert hits[0].doi == "10.123/deep"
     assert hits[0].metadata["shard_receipt"] == {
         "shards_total": 100,
@@ -389,7 +391,8 @@ def test_full_raw_client_keeps_sufficient_foreground_hit(monkeypatch: object) ->
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del timeout
         payload = json.loads(cast(bytes, request.data).decode("utf-8"))
-        assert payload.get("cache_only") is not True
+        assert payload.get("cache_only") is True
+        assert payload.get("queue_if_missing") is True
         return FakeResponse({
             "meta": {
                 "count": 1,
@@ -472,7 +475,7 @@ def test_full_raw_client_recovers_non_strict_coverage_error_from_sweep(
 
     hits = client.search("metformin longevity", limit=3)
 
-    assert [payload.get("cache_only") for payload in payloads] == [None, True]
+    assert [payload.get("cache_only") for payload in payloads] == [True]
     assert hits[0].doi == "10.123/metformin"
 
 
@@ -536,8 +539,8 @@ def test_full_raw_client_uses_cache_only_after_strict_foreground_timeout(
 
     hits = client.search("management forecast disclosure", limit=3)
 
-    assert [payload.get("cache_only") for payload in payloads] == [None, True]
-    assert payloads[1].get("queue_if_missing") is True
+    assert [payload.get("cache_only") for payload in payloads] == [True]
+    assert payloads[0].get("queue_if_missing") is True
     assert hits[0].doi == "10.123/recovered"
 
 def test_full_raw_client_retries_connection_reset_during_cache_poll(
@@ -587,7 +590,7 @@ def test_full_raw_client_retries_connection_reset_during_cache_poll(
 
     hits = client.search("management forecast disclosure", limit=3)
 
-    assert [payload.get("cache_only") for payload in payloads] == [None, True, True]
+    assert [payload.get("cache_only") for payload in payloads] == [True, True]
     assert hits[0].doi == "10.123/recovered"
 
 def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None:
@@ -688,6 +691,23 @@ def test_full_raw_client_can_fail_closed_on_narrow_shard_receipt(monkeypatch: ob
 
     assert client.search("management forecast disclosure", limit=3) == []
 
+
+def test_full_raw_client_rejects_partial_or_failed_full_research_receipt() -> None:
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        min_shards_searched=1525,
+        min_sources_searched=5,
+    )
+    receipt = {
+        "shards_total": 1525,
+        "shards_searched": 1525,
+        "sources_searched": {str(idx): 1 for idx in range(5)},
+    }
+
+    assert not client._receipt_is_sufficient({**receipt, "partial_shard_search": True})
+    assert not client._receipt_is_sufficient({**receipt, "sweep_failed_shards": 1})
+
+
 def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "secret")
@@ -697,6 +717,23 @@ def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) ->
     assert client.configured is True
     assert client._search_url == "http://127.0.0.1:9902/search"
     assert client._token == "secret"
+    assert client._require_auth is True
+
+
+def test_full_raw_client_from_env_uses_index_token_fullraw_defaults(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_TOKEN", raising=False)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", "index-secret")
+
+    client = FullRawCorpusSearchClient.from_env()
+
+    assert client.configured is True
+    assert client._search_url == "http://127.0.0.1:9903/search"
+    assert client._token == "index-secret"
+    assert client._min_shards_searched == 1525
+    assert client._min_sources_searched == 5
     assert client._require_auth is True
 
 def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> None:

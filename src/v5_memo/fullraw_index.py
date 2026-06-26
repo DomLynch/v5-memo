@@ -2277,6 +2277,25 @@ def sweep_cache_entry_is_terminal(entry: SweepCacheEntry) -> bool:
     return _int_or_none(entry.receipt.get("sweep_remaining_shards")) == 0
 
 
+def _sweep_cache_entry_progress(entry: SweepCacheEntry) -> int:
+    return _int_or_none(entry.receipt.get("shards_searched")) or 0
+
+
+def _prefer_sweep_cache_entry(
+    memory_entry: SweepCacheEntry | None,
+    disk_entry: SweepCacheEntry | None,
+) -> SweepCacheEntry | None:
+    if memory_entry is None:
+        return disk_entry
+    if disk_entry is None:
+        return memory_entry
+    if sweep_cache_entry_is_terminal(disk_entry) and not sweep_cache_entry_is_terminal(memory_entry):
+        return disk_entry
+    if _sweep_cache_entry_progress(disk_entry) > _sweep_cache_entry_progress(memory_entry):
+        return disk_entry
+    return memory_entry
+
+
 def sweep_cache_entry_is_ready(
     entry: SweepCacheEntry,
     *,
@@ -2732,14 +2751,17 @@ def run_server() -> None:
 
     def sweep_cache_get(key: str) -> SweepCacheEntry | None:
         with sweep_lock:
-            entry = sweep_cache.get(key)
-            if entry is not None and (sweep_ttl <= 0 or time.time() - entry.created_at <= sweep_ttl):
-                return entry
+            memory_entry = sweep_cache.get(key)
+            if memory_entry is not None and sweep_ttl > 0 and time.time() - memory_entry.created_at > sweep_ttl:
+                memory_entry = None
+            if memory_entry is not None and sweep_cache_entry_is_terminal(memory_entry):
+                return memory_entry
         cache_path = _sweep_cache_path(sweep_cache_dir, key)
-        if cache_path is None or not cache_path.exists():
-            return None
-        entry = _load_sweep_cache(cache_path, ttl_seconds=sweep_ttl)
-        if entry is not None:
+        disk_entry = None
+        if cache_path is not None and cache_path.exists():
+            disk_entry = _load_sweep_cache(cache_path, ttl_seconds=sweep_ttl)
+        entry = _prefer_sweep_cache_entry(memory_entry, disk_entry)
+        if entry is not None and entry is not memory_entry:
             with sweep_lock:
                 sweep_cache[key] = entry
         return entry

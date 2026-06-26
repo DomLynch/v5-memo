@@ -1422,6 +1422,55 @@ def test_pipeline_fails_closed_when_memo_coverage_is_too_narrow() -> None:
     )
 
 
+def test_pipeline_fails_closed_on_partial_or_failed_fullraw_coverage() -> None:
+    class PartialSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            receipt = {
+                "shards_total": 1525,
+                "shards_searched": 1525,
+                "partial_shard_search": True,
+                "sweep_failed_shards": 1,
+                "sources_searched": {str(idx): 1 for idx in range(5)},
+            }
+            return [
+                CorpusHit(
+                    hit_id="partial-1",
+                    title="NAD salvage links sleep fragmentation to mitochondrial stress",
+                    abstract="Sleep fragmentation reduced resilience through NAD salvage and mitochondrial stress.",
+                    source="fullraw:openalex",
+                    year=2024,
+                    doi="10.partial/1",
+                    metadata={"shard_receipt": receipt, "search_pass": "focused"},
+                ),
+                CorpusHit(
+                    hit_id="partial-2",
+                    title="NAD salvage predicts exercise response through mitochondrial repair",
+                    abstract="Exercise improved resilience when NAD salvage and mitochondrial repair markers moved together.",
+                    source="fullraw:pubmed",
+                    year=2023,
+                    doi="10.partial/2",
+                    metadata={"shard_receipt": receipt, "search_pass": "broad"},
+                ),
+            ]
+
+    with pytest.raises(MemoBuildError, match="coverage too narrow") as exc:
+        build_alpha_memo(
+            topic="longevity resilience",
+            seed_queries=["nad mitochondrial"],
+            searcher=PartialSearch(),
+            min_alpha_tier="discovery_seed",
+            min_shards_searched=1525,
+            min_sources_searched=5,
+            min_search_passes=2,
+        )
+
+    assert exc.value.failure.details["failures"] == (
+        "partial_shard_search",
+        "sweep_failed_shards",
+    )
+
+
 def test_pipeline_blocks_title_only_elite_memos() -> None:
     class TitleOnlySearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
