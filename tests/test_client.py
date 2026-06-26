@@ -908,10 +908,8 @@ def test_hybrid_search_merges_and_dedupes_sources() -> None:
         source="openalex:full-corpus",
         doi="10.only",
     )
-    weak_first_surface = CorpusHit("weak", "Adjacent paper", "weak abstract", "fullraw")
-
     hits = HybridCorpusSearchClient([
-        StaticSearch([shared, weak_first_surface]),
+        StaticSearch([shared, CorpusHit("weak", "Adjacent paper", "weak abstract", "fullraw")]),
         StaticSearch([openalex_duplicate, openalex_only]),
     ]).search("nad salvage mitochondrial stress", limit=2)
 

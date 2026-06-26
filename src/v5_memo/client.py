@@ -559,8 +559,7 @@ class HybridCorpusSearchClient:
                 continue
             for rank, hit in enumerate(hits, start=1):
                 score = _rerank_score(hit, seed_terms=seed_terms, variant_terms=seed_terms, rank=rank)
-                current = best.get(hit.source_key)
-                if current is None or score > current[0]:
+                if score > best.get(hit.source_key, (-1.0, hit))[0]:
                     best[hit.source_key] = (score, hit)
         return [hit for _, hit in sorted(best.values(), key=lambda item: item[0], reverse=True)[:limit]]
 
