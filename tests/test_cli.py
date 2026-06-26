@@ -9,6 +9,20 @@ from v5_memo.__main__ import _alpha_shape_queries, _topic_anchored_queries, main
 from v5_memo.client import ResearkaSearchClient
 from v5_memo.schemas import CorpusHit, MemoBuildError
 
+_COVERAGE_THRESHOLD_ENV = (
+    "V5_MEMO_MEMO_MIN_SHARDS_SEARCHED",
+    "V5_MEMO_MEMO_MIN_SOURCES_SEARCHED",
+    "V5_MEMO_MEMO_MIN_SEARCH_PASSES",
+    "V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED",
+    "V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cli_coverage_threshold_env(monkeypatch: MonkeyPatch) -> None:
+    for name in _COVERAGE_THRESHOLD_ENV:
+        monkeypatch.delenv(name, raising=False)
+
 
 class EmptyFullRaw:
     configured = False
