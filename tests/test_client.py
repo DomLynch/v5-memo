@@ -259,6 +259,18 @@ def test_full_raw_rerank_prefers_title_owned_hits_over_abstract_only_hits() -> N
         rank=1,
     )
 
+def test_openalex_rerank_uses_token_coverage_not_substrings() -> None:
+    substring_only = CorpusHit("a", "Resistance training", "The method adapted metrics.", "openalex")
+    token_match = CorpusHit("b", "Resistance training adaptation", "The trial reported adaptation.", "openalex")
+    terms = ("adaptation",)
+
+    assert _rerank_score(token_match, seed_terms=terms, variant_terms=terms, rank=2) > _rerank_score(
+        substring_only,
+        seed_terms=terms,
+        variant_terms=terms,
+        rank=1,
+    )
+
 def test_full_raw_client_filters_hits_without_rare_query_anchor(monkeypatch: object) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del request, timeout
