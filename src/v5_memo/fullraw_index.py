@@ -55,7 +55,7 @@ _STOP = frozenset(
 )
 _BACKEND = "v5-fullraw-indexed-fts5"
 _FULL_COVERAGE_PREFIX_SHARDS = max(1, int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS", "32")))
-_SWEEP_STRATEGY = "profile_relaxed_v7"
+_SWEEP_STRATEGY = "profile_relaxed_v8"
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
@@ -1478,22 +1478,13 @@ def _sweep_search_passes(
     rank_mode: str,
 ) -> tuple[SweepSearchPass, ...]:
     focused = _profile_relaxed_sweep_query(query, entries)
-    broad = _broad_sweep_query(focused)
     requested_rank_mode = _rank_mode(rank_mode)
     passes = (
         SweepSearchPass("focused", focused, requested_rank_mode),
-        SweepSearchPass("broad", broad, requested_rank_mode),
         SweepSearchPass("citation_heavy", focused, "citation"),
         SweepSearchPass("recency", focused, "recency"),
     )
     return tuple(pass_item for pass_item in passes if _fts_terms(pass_item.query))
-
-
-def _broad_sweep_query(query: str) -> str:
-    terms = list(_fts_terms(query))
-    if len(terms) <= 2:
-        return " ".join(terms)
-    return " ".join(_spread_terms(terms, 2))
 
 
 def _term_aliases(term: str) -> set[str]:
