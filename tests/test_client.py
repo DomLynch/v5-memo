@@ -903,19 +903,19 @@ def test_hybrid_search_merges_and_dedupes_sources() -> None:
     )
     openalex_only = CorpusHit(
         hit_id="10.only",
-        title="OpenAlex only",
-        abstract="mitochondrial stress",
+        title="NAD salvage mitochondrial stress",
+        abstract="NAD salvage mitochondrial stress",
         source="openalex:full-corpus",
         doi="10.only",
     )
+    weak_first_surface = CorpusHit("weak", "Adjacent paper", "weak abstract", "fullraw")
 
     hits = HybridCorpusSearchClient([
-        StaticSearch([shared]),
+        StaticSearch([shared, weak_first_surface]),
         StaticSearch([openalex_duplicate, openalex_only]),
-    ]).search("nad", limit=5)
+    ]).search("nad salvage mitochondrial stress", limit=2)
 
-    assert [hit.doi for hit in hits] == ["10.same", "10.only"]
-    assert hits[0].source == "researka:corpus"
+    assert [hit.doi for hit in hits] == ["10.only", "10.same"]
 
 def test_hybrid_search_skips_failed_backend() -> None:
     class FailingSearch:

@@ -547,7 +547,8 @@ class HybridCorpusSearchClient:
         self._searchers = searchers
 
     def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
-        best: dict[str, CorpusHit] = {}
+        seed_terms = _query_terms(query)
+        best: dict[str, tuple[float, CorpusHit]] = {}
         for searcher in self._searchers:
             search = getattr(searcher, "search", None)
             if not callable(search):
@@ -556,11 +557,12 @@ class HybridCorpusSearchClient:
                 hits = search(query, limit=limit)
             except SearchBackendError:
                 continue
-            for hit in hits:
-                best.setdefault(hit.source_key, hit)
-                if len(best) >= limit:
-                    break
-        return list(best.values())[:limit]
+            for rank, hit in enumerate(hits, start=1):
+                score = _rerank_score(hit, seed_terms=seed_terms, variant_terms=seed_terms, rank=rank)
+                current = best.get(hit.source_key)
+                if current is None or score > current[0]:
+                    best[hit.source_key] = (score, hit)
+        return [hit for _, hit in sorted(best.values(), key=lambda item: item[0], reverse=True)[:limit]]
 
 
 def _load_researka_token() -> str:
