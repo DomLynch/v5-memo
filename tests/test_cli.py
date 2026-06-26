@@ -172,7 +172,7 @@ def test_fullraw_cli_inherits_search_service_coverage_thresholds(
     main()
 
     assert "Alpha memo" in capsys.readouterr().out
-    assert seen["seed_queries"] == [*_alpha_shape_queries("metformin resistance training adaptation"), "metformin resistance training adaptation"]
+    assert seen["seed_queries"] == ["metformin resistance training adaptation", *_alpha_shape_queries("metformin resistance training adaptation")]
     assert seen["min_shards_searched"] == 50
     assert seen["min_sources_searched"] == 2
 
@@ -495,9 +495,8 @@ def test_planned_cli_drops_queries_that_lose_specific_topic_anchor(
     assert "Alpha memo" in capsys.readouterr().out
     assert seen == {
         "seed_queries": [
-            "cold water immersion augment resistance protocol",
-            "cold water immersion blunts resistance",
-            "cold water immersion resistance training adaptation", "cold water immersion blunts hypertrophy resistance trained men",
+            "cold water immersion resistance training adaptation",
+            "cold water immersion blunts hypertrophy resistance trained men",
         ],
         "anchor_queries": ["cold water immersion resistance training adaptation"],
     }
