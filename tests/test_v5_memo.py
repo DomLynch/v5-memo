@@ -107,6 +107,38 @@ def test_miner_emits_claim_cards_before_prose() -> None:
     assert "**Claim ledger:**" in memo
 
 
+def test_miner_adds_receipt_backed_evidence_graph_context() -> None:
+    hits = [
+        _hit(
+            "promise",
+            "Resveratrol exercise training mechanism improves mitochondrial capacity",
+            "Mouse mechanism paper reported resveratrol improved exercise training mitochondrial function.",
+        ),
+        _hit(
+            "outcome",
+            "Resveratrol exercise training trial blunted adaptation",
+            "Randomized human outcome trial observed resveratrol reduced exercise training adaptation.",
+        ),
+        _hit(
+            "consensus",
+            "Systematic review of resveratrol exercise training adaptation",
+            "Systematic review summarized resveratrol exercise training adaptation evidence.",
+        ),
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic="resveratrol exercise training adaptation",
+        required_anchor_terms=("resveratrol",),
+    )[0]
+    memo = render_memo(candidate, bind_receipts(candidate, hits))
+
+    assert candidate.receipt_ids == ("promise", "outcome", "consensus")
+    assert [node.role for node in candidate.evidence_graph] == ["primary", "counter", "consensus"]
+    assert "`consensus`: consensus" in memo
+    assert "Evidence graph" in memo
+
+
 def test_two_receipts_do_not_inflate_evidence_without_support_quality() -> None:
     score = score_connection(
         bridge_terms=("foo", "bar"),

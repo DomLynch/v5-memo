@@ -6,7 +6,7 @@ from collections import Counter
 from collections.abc import Sequence
 from itertools import combinations
 
-from v5_memo.schemas import ClaimCard, CorpusHit, InsightCandidate, ReceiptRole
+from v5_memo.schemas import ClaimCard, CorpusHit, EvidenceNode, InsightCandidate, ReceiptRole
 from v5_memo.scorer import score_connection
 
 _WORD = re.compile(r"[a-z][a-z0-9]{2,}")
@@ -193,12 +193,29 @@ def mine_insights(
         if tier == "discovery_seed" and not include_discovery:
             continue
         receipt_roles = _receipt_roles(left, right, shape_reasons)
-        claim_cards = _claim_cards(left, right, receipt_roles)
+        evidence_graph = _evidence_graph(
+            clean_hits,
+            left,
+            right,
+            bridge,
+            pair_anchor_terms,
+            shape_reasons,
+            receipt_roles,
+        )
+        graph_receipt_ids = tuple(node.receipt_id for node in evidence_graph)
+        hits_by_id = {hit.hit_id: hit for hit in clean_hits}
+        claim_cards = _claim_cards_for_roles(hits_by_id, receipt_roles)
+        context_claim_cards = _claim_cards_for_graph(
+            hits_by_id,
+            tuple(node for node in evidence_graph if node.receipt_id not in {left.hit_id, right.hit_id}),
+        )
+        if context_claim_cards:
+            claim_cards = (*claim_cards, *context_claim_cards)
         score = score_connection(
             bridge_terms=bridge,
             bridge_doc_counts=doc_counts,
             unique_source_count=len(source_keys),
-            receipt_count=2,
+            receipt_count=len(graph_receipt_ids),
             has_tension=bool(tension_terms),
             shape_score=len(shape_reasons),
             shape_reasons=shape_reasons,
@@ -209,7 +226,7 @@ def mine_insights(
             thesis=_thesis(topic, bridge, left, right, tension_terms),
             bridge_terms=bridge,
             tension_terms=tension_terms,
-            receipt_ids=(left.hit_id, right.hit_id),
+            receipt_ids=graph_receipt_ids,
             score=score.score,
             novelty_score=score.novelty_score,
             evidence_score=score.evidence_score,
@@ -221,6 +238,7 @@ def mine_insights(
             ),
             receipt_roles=receipt_roles,
             claim_cards=claim_cards,
+            evidence_graph=evidence_graph,
         ))
     return sorted(candidates, key=_candidate_rank, reverse=True)[
         :max(0, max_candidates)
@@ -699,11 +717,108 @@ def _claim_cards(
     roles: tuple[ReceiptRole, ...],
 ) -> tuple[ClaimCard, ...]:
     by_id = {left.hit_id: left, right.hit_id: right}
+    return _claim_cards_for_roles(by_id, roles)
+
+
+def _claim_cards_for_roles(
+    by_id: dict[str, CorpusHit],
+    roles: tuple[ReceiptRole, ...],
+) -> tuple[ClaimCard, ...]:
     return tuple(
         _claim_card(by_id[role.receipt_id], role)
         for role in roles
         if role.receipt_id in by_id
     )
+
+
+def _claim_cards_for_graph(
+    by_id: dict[str, CorpusHit],
+    graph: tuple[EvidenceNode, ...],
+) -> tuple[ClaimCard, ...]:
+    return tuple(
+        _claim_card(by_id[node.receipt_id], ReceiptRole(node.receipt_id, node.role, node.reason))
+        for node in graph
+        if node.receipt_id in by_id
+    )
+
+
+def _evidence_graph(
+    hits: Sequence[CorpusHit],
+    left: CorpusHit,
+    right: CorpusHit,
+    bridge_terms: tuple[str, ...],
+    pair_anchor_terms: frozenset[str],
+    shape_reasons: tuple[str, ...],
+    receipt_roles: tuple[ReceiptRole, ...],
+) -> tuple[EvidenceNode, ...]:
+    nodes = [
+        EvidenceNode(role.receipt_id, _graph_role(role.role), role.reason)
+        for role in receipt_roles
+    ]
+    seen = {node.receipt_id for node in nodes}
+    bridge_set = set(bridge_terms) - pair_anchor_terms
+    if not bridge_set:
+        return tuple(nodes)
+    for role in ("mechanism", "boundary", "replication", "consensus"):
+        hit = _context_hit(
+            hits,
+            seen=seen,
+            bridge_terms=bridge_set,
+            shape_reasons=shape_reasons,
+            role=role,
+        )
+        if hit is None:
+            continue
+        seen.add(hit.hit_id)
+        nodes.append(EvidenceNode(hit.hit_id, role, f"{role} context for evidence graph"))
+    return tuple(nodes)
+
+
+def _graph_role(role: str) -> str:
+    if role in {"promise", "positive_signal", "aggregate_signal"}:
+        return "primary"
+    if role in {"outcome", "negative_signal", "null_signal", "tail_risk"}:
+        return "counter"
+    return "primary"
+
+
+def _context_hit(
+    hits: Sequence[CorpusHit],
+    *,
+    seen: set[str],
+    bridge_terms: set[str],
+    shape_reasons: tuple[str, ...],
+    role: str,
+) -> CorpusHit | None:
+    candidates: list[tuple[int, CorpusHit]] = []
+    for hit in hits:
+        if hit.hit_id in seen:
+            continue
+        terms = _raw_terms(hit.text)
+        overlap = bridge_terms & terms
+        if len(overlap) < min(2, len(bridge_terms)):
+            continue
+        if not _hit_matches_graph_role(hit, terms, role, shape_reasons):
+            continue
+        candidates.append((len(overlap), hit))
+    return max(candidates, key=lambda item: (item[0], item[1].year or 0))[1] if candidates else None
+
+
+def _hit_matches_graph_role(
+    hit: CorpusHit,
+    terms: frozenset[str],
+    role: str,
+    shape_reasons: tuple[str, ...],
+) -> bool:
+    if role == "mechanism":
+        return _design_type(terms) == "mechanistic_model" or bool(terms & {"mechanism", "pathway", "signaling"})
+    if role == "boundary":
+        return bool(terms & (_BOUNDARY | _TIMING | _TAIL))
+    if role == "replication":
+        return bool(_direction_polarity(hit))
+    if role == "consensus":
+        return _design_type(terms) == "synthesis" or _is_synthesis_hit(hit)
+    return False
 
 
 def _claim_card(hit: CorpusHit, role: ReceiptRole) -> ClaimCard:

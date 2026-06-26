@@ -34,6 +34,12 @@ _TOPIC_FILTER_DROP = frozenset(
     ).split()
 )
 _SHAPE_CONTEXT_TERMS = frozenset({"exercise", "resistance", "strength", "training"})
+_ALPHA_QUERY_TERMS = frozenset({
+    "activate", "activates", "activated", "augment", "augments", "augmented",
+    "blunted", "blunts", "designed", "expected", "impaired", "mimic", "mimics",
+    "null", "observed", "placebo", "protocol", "randomized", "reduced", "reduces",
+    "attenuated", "attenuates", "unchanged",
+})
 
 
 class DemoSearch:
@@ -174,6 +180,8 @@ def main() -> None:
         if not explicit_queries:
             planned_queries = [query for query in queries if query not in set(base_queries)]
             planned_queries = _topic_anchored_queries(planned_queries, args.topic)
+            if fullraw_backed and args.min_shards_searched >= 512:
+                planned_queries = _alpha_shaped_planned_queries(planned_queries)
             shape_queries = _alpha_shape_queries(args.topic)
             topic_has_anchors = bool(query_anchor_terms(base_queries))
             if topic_has_anchors:
@@ -181,7 +189,7 @@ def main() -> None:
                 planned = [query for query in planned_queries if not fullraw_backed or first_anchor <= set(_topic_filter_terms(query))]
                 queries = _dedupe_queries([*base_queries, *(planned[:2] or shape_queries if fullraw_backed else [*shape_queries, *planned])])
             else:
-                queries = planned_queries or base_queries
+                queries = planned_queries or ([] if fullraw_backed else base_queries)
     elif fullraw_backed and not explicit_queries and query_anchor_terms(base_queries) and len(_topic_filter_terms(args.topic)) < 3:
         queries = _dedupe_queries([*base_queries, *_alpha_shape_queries(args.topic)])
     anchor_queries = base_queries
@@ -228,6 +236,10 @@ def _topic_anchored_queries(queries: Sequence[str], topic: str) -> list[str]:
         if len(topic_anchors & set(_topic_filter_terms(query))) >= required_overlap
     ]
     return filtered
+
+
+def _alpha_shaped_planned_queries(queries: Sequence[str]) -> list[str]:
+    return [query for query in queries if set(_topic_filter_terms(query)) & _ALPHA_QUERY_TERMS]
 
 
 def _alpha_shape_queries(topic: str) -> list[str]:
