@@ -317,6 +317,27 @@ def test_complete_shard_service_forces_cache_queue() -> None:
     )
 
 
+def test_sweep_cache_key_ignores_result_limit() -> None:
+    first = fullraw_index._sweep_cache_key(
+        "cold water immersion",
+        limit=10,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        sweep_shard_limit=1525,
+    )
+    second = fullraw_index._sweep_cache_key(
+        "cold water immersion",
+        limit=25,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        sweep_shard_limit=1525,
+    )
+
+    assert first == second
+
+
 def test_completed_disk_sweep_cache_beats_stale_memory_partial() -> None:
     memory_entry = fullraw_index.SweepCacheEntry(
         created_at=time.time(),
