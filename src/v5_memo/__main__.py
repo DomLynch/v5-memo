@@ -277,7 +277,7 @@ def _topic_filter_terms(topic: str) -> tuple[str, ...]:
             continue
         seen.add(raw)
         out.append(raw)
-    return tuple(out[:4])
+    return tuple(out[:5])
 
 
 def _int_env(name: str) -> int:

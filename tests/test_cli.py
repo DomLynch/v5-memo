@@ -565,8 +565,8 @@ def test_planned_cli_drops_queries_that_lose_specific_topic_anchor(
     assert seen == {
         "seed_queries": [
             "cold water immersion resistance training adaptation",
-            "cold water immersion augment resistance protocol",
-            "cold water immersion blunts resistance",
+            "cold water immersion augment resistance training protocol",
+            "cold water immersion blunts resistance training",
         ],
         "anchor_queries": ["cold water immersion resistance training adaptation"],
     }
