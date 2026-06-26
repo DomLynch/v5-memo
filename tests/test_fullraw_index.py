@@ -242,6 +242,58 @@ def test_sweep_cache_only_can_answer_agent_poll() -> None:
     )
 
 
+def test_complete_sweep_retries_failed_shards() -> None:
+    receipt = {
+        "sweep_failed_paths": ("shard_a.sqlite", "shard_b.sqlite"),
+        "sweep_remaining_shards": 4,
+    }
+
+    assert fullraw_index._sweep_failed_path_strings_for_mode(
+        receipt,
+        require_complete_sweep=True,
+    ) == set()
+    assert fullraw_index._sweep_failed_path_strings_for_mode(
+        receipt,
+        require_complete_sweep=False,
+    ) == {"shard_a.sqlite", "shard_b.sqlite"}
+    assert fullraw_index._sweep_remaining_shard_count(
+        selected_shards=10,
+        completed_shards=6,
+        failed_shards=2,
+        require_complete_sweep=True,
+    ) == 4
+    assert fullraw_index._sweep_remaining_shard_count(
+        selected_shards=10,
+        completed_shards=6,
+        failed_shards=2,
+        require_complete_sweep=False,
+    ) == 2
+
+
+def test_shard_catalog_cache_round_trips_entries(tmp_path: Path) -> None:
+    entry = ShardCatalogEntry(
+        path=tmp_path / "batch_00001" / "fullraw_shard_0000.sqlite",
+        batch_id=1,
+        shard_id=0,
+        sources=("openalex", "pubmed"),
+        files_completed=3,
+        papers_inserted=42,
+        bytes_used=1024,
+        year_min=1999,
+        year_max=2025,
+        cited_by_min=0,
+        cited_by_max=100,
+        cited_by_avg=12.5,
+        topic_terms=("metformin", "longevity"),
+    )
+    cache_path = tmp_path / "catalog.json"
+
+    fullraw_index.write_shard_catalog_cache(cache_path, [entry])
+    loaded = fullraw_index.load_shard_catalog_cache(cache_path)
+
+    assert loaded == [entry]
+
+
 def test_select_search_shard_entries_balances_sources_and_rotates_by_query(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     entries = [_entry(tmp_path, idx, "openalex" if idx < 4 else "pubmed") for idx in range(8)]
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "4")

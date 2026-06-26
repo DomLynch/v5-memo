@@ -2050,6 +2050,72 @@ def build_shard_catalog(
     return out
 
 
+def _shard_catalog_entry_payload(entry: ShardCatalogEntry) -> dict[str, object]:
+    return {
+        "path": str(entry.path),
+        "batch_id": entry.batch_id,
+        "shard_id": entry.shard_id,
+        "sources": list(entry.sources),
+        "files_completed": entry.files_completed,
+        "papers_inserted": entry.papers_inserted,
+        "bytes_used": entry.bytes_used,
+        "year_min": entry.year_min,
+        "year_max": entry.year_max,
+        "cited_by_min": entry.cited_by_min,
+        "cited_by_max": entry.cited_by_max,
+        "cited_by_avg": entry.cited_by_avg,
+        "topic_terms": list(entry.topic_terms),
+    }
+
+
+def _shard_catalog_entry_from_payload(payload: dict[str, object]) -> ShardCatalogEntry | None:
+    path = _clean(payload.get("path"))
+    if not path:
+        return None
+    batch_id = _int_or_none(payload.get("batch_id"))
+    shard_id = _int_or_none(payload.get("shard_id"))
+    return ShardCatalogEntry(
+        path=Path(path),
+        batch_id=batch_id if batch_id is not None else -1,
+        shard_id=shard_id if shard_id is not None else -1,
+        sources=_string_tuple(payload.get("sources")),
+        files_completed=_int_or_none(payload.get("files_completed")) or 0,
+        papers_inserted=_int_or_none(payload.get("papers_inserted")) or 0,
+        bytes_used=_int_or_none(payload.get("bytes_used")) or 0,
+        year_min=_int_or_none(payload.get("year_min")),
+        year_max=_int_or_none(payload.get("year_max")),
+        cited_by_min=_int_or_none(payload.get("cited_by_min")) or 0,
+        cited_by_max=_int_or_none(payload.get("cited_by_max")) or 0,
+        cited_by_avg=round(_float_or_none(payload.get("cited_by_avg")) or 0.0, 3),
+        topic_terms=_string_tuple(payload.get("topic_terms")),
+    )
+
+
+def load_shard_catalog_cache(path: Path) -> list[ShardCatalogEntry] | None:
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    raw_entries = payload.get("entries") if isinstance(payload, dict) else None
+    if not isinstance(raw_entries, list):
+        return None
+    entries = [
+        entry
+        for raw_entry in raw_entries
+        if isinstance(raw_entry, dict)
+        for entry in [_shard_catalog_entry_from_payload(raw_entry)]
+        if entry is not None
+    ]
+    return entries or None
+
+
+def write_shard_catalog_cache(path: Path, entries: list[ShardCatalogEntry]) -> None:
+    _write_json_file(path, {
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "entries": [_shard_catalog_entry_payload(entry) for entry in entries],
+    })
+
+
 def shard_coverage_receipt(
     entries: list[ShardCatalogEntry],
     selected: list[ShardCatalogEntry],
@@ -2487,6 +2553,8 @@ def run_server() -> None:
     ) or 10.0
     sweep_shard_timeout_seconds = max(0.1, min(sweep_shard_timeout_seconds, sweep_timeout_seconds))
     search_shard_timeout_seconds = _float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_SUBPROCESS_TIMEOUT", ""))
+    shard_catalog_path_config = os.environ.get("V5_MEMO_FULL_RAW_SHARD_CATALOG_PATH", "").strip()
+    shard_catalog_path = Path(shard_catalog_path_config) if shard_catalog_path_config else None
     sweep_cache_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR", "").strip()
     sweep_cache_dir = Path(sweep_cache_dir_config) if sweep_cache_dir_config else None
     manifest_path = Path(
@@ -2514,7 +2582,14 @@ def run_server() -> None:
         now = time.monotonic()
         if catalog_cache[1] and now - catalog_cache[0] < shard_catalog_ttl:
             return catalog_cache[1]
+        if shard_catalog_path is not None and shard_catalog_path.exists():
+            cached_catalog = load_shard_catalog_cache(shard_catalog_path)
+            if cached_catalog is not None:
+                catalog_cache = (now, cached_catalog)
+                return cached_catalog
         catalog = build_shard_catalog(shard_dir, trust_filenames=trust_shard_filenames)
+        if shard_catalog_path is not None:
+            write_shard_catalog_cache(shard_catalog_path, catalog)
         catalog_cache = (now, catalog)
         return catalog
 
@@ -2628,7 +2703,10 @@ def run_server() -> None:
                 planned_receipt = shard_coverage_receipt(catalog, sweep_entries)
                 sweep_passes = _sweep_search_passes(query, sweep_entries, rank_mode=rank_mode)
                 completed_path_strings = _sweep_completed_path_strings(existing.receipt if existing else {})
-                failed_path_strings = _sweep_failed_path_strings(existing.receipt if existing else {})
+                failed_path_strings = _sweep_failed_path_strings_for_mode(
+                    existing.receipt if existing else {},
+                    require_complete_sweep=sweep_require_complete,
+                )
                 merged_hits = list(existing.hits if existing else [])
                 previous_passes = _int_or_none((existing.receipt if existing else {}).get("sweep_passes")) or 0
                 completed_pass_roles = list(
@@ -2658,7 +2736,7 @@ def run_server() -> None:
                     )
                     completed_pass_roles.append(pass_plan.role)
                     completed_path_strings.update(str(path) for path in completed_paths)
-                    if not timed_out:
+                    if not timed_out and not sweep_require_complete:
                         failed_path_strings.update(
                             str(entry.path) for entry in pass_entries if str(entry.path) not in completed_path_strings
                         )
@@ -2673,9 +2751,11 @@ def run_server() -> None:
                     receipt["sweep_max_passes"] = sweep_max_passes
                     receipt["sweep_failed_shards"] = len(failed_path_strings)
                     receipt["sweep_failed_paths"] = sorted(failed_path_strings)
-                    receipt["sweep_remaining_shards"] = max(
-                        0,
-                        len(sweep_entries) - len(completed_path_strings) - len(failed_path_strings),
+                    receipt["sweep_remaining_shards"] = _sweep_remaining_shard_count(
+                        selected_shards=len(sweep_entries),
+                        completed_shards=len(completed_path_strings),
+                        failed_shards=len(failed_path_strings),
+                        require_complete_sweep=sweep_require_complete,
                     )
                     receipt["sweep_timed_out"] = timed_out
                     receipt["sweep_timeout_seconds"] = sweep_timeout_seconds
@@ -2897,7 +2977,7 @@ def run_server() -> None:
                         partial_progress = (
                             cache_only
                             and queue_if_missing
-                            and sweep_status in {"queued", "running"}
+                            and sweep_status in {"busy", "queued", "running"}
                             and not receipt_is_sufficient(receipt)
                         )
                         coverage_gate = shard_coverage_gate_response(
@@ -3398,6 +3478,27 @@ def _sweep_failed_path_strings(receipt: dict[str, object]) -> set[str]:
     if not isinstance(value, list | tuple):
         return set()
     return {str(path) for path in value if str(path)}
+
+
+def _sweep_failed_path_strings_for_mode(
+    receipt: dict[str, object],
+    *,
+    require_complete_sweep: bool,
+) -> set[str]:
+    return set() if require_complete_sweep else _sweep_failed_path_strings(receipt)
+
+
+def _sweep_remaining_shard_count(
+    *,
+    selected_shards: int,
+    completed_shards: int,
+    failed_shards: int,
+    require_complete_sweep: bool,
+) -> int:
+    outstanding = selected_shards - completed_shards
+    if not require_complete_sweep:
+        outstanding -= failed_shards
+    return max(0, outstanding)
 
 
 def _load_sweep_cache(path: Path, *, ttl_seconds: float) -> SweepCacheEntry | None:
