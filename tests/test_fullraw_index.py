@@ -528,8 +528,9 @@ def test_shard_search_materializes_before_isolated_worker(
     materialized = tmp_path / "local.sqlite"
     searched: list[Path] = []
 
-    def fake_materialized(path: Path) -> Path:
+    def fake_materialized(path: Path, *, preserve: set[Path] | None = None) -> Path:
         assert path == original
+        assert preserve == set()
         return materialized
 
     def fake_search(path: Path, *_args: object) -> list[dict[str, object]]:
@@ -553,6 +554,56 @@ def test_shard_search_materializes_before_isolated_worker(
     assert searched == [materialized]
     assert completed_paths == [original]
     assert hits[0]["title"] == "Metformin longevity"
+    assert timed_out is False
+
+
+def test_shard_search_preserves_materialized_batch_before_worker_search(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    remote_a = tmp_path / "remote-a.sqlite"
+    remote_b = tmp_path / "remote-b.sqlite"
+    local_a = tmp_path / "local-a.sqlite"
+    local_b = tmp_path / "local-b.sqlite"
+    live_cache_paths: set[Path] = set()
+    preserve_seen_for_b: set[Path] | None = None
+
+    def fake_materialized(path: Path, *, preserve: set[Path] | None = None) -> Path:
+        nonlocal preserve_seen_for_b
+        preserve = preserve or set()
+        if path == remote_a:
+            live_cache_paths.add(local_a)
+            return local_a
+        if path == remote_b:
+            preserve_seen_for_b = set(preserve)
+            if local_a not in preserve:
+                live_cache_paths.discard(local_a)
+            live_cache_paths.add(local_b)
+            return local_b
+        raise AssertionError(path)
+
+    def fake_search(path: Path, *_args: object) -> list[dict[str, object]]:
+        if path not in live_cache_paths:
+            raise OSError(f"evicted before search: {path}")
+        return [{"title": path.stem, "score": 1.0}]
+
+    monkeypatch.setattr(fullraw_index, "_materialized_shard_path", fake_materialized)
+    monkeypatch.setattr(fullraw_index, "_search_one_shard_for_pool", fake_search)
+
+    hits, completed_paths, timed_out, _metrics = fullraw_index._search_shard_paths_with_paths_and_receipt(
+        [remote_a, remote_b],
+        "metformin longevity",
+        limit=2,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        workers=2,
+        timeout_seconds=5,
+    )
+
+    assert preserve_seen_for_b == {local_a}
+    assert completed_paths == [remote_a, remote_b]
+    assert {hit["title"] for hit in hits} == {"local-a", "local-b"}
     assert timed_out is False
 
 
