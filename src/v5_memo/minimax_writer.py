@@ -300,6 +300,9 @@ Tension terms:
 Scores:
 signal={candidate.score}, novelty={candidate.novelty_score}, evidence={candidate.evidence_score}
 
+Scorecard:
+{_scorecard_block(candidate)}
+
 Selector tier:
 {candidate_alpha_tier(candidate)}
 
@@ -546,6 +549,7 @@ def _candidate_block(
         f"Evidence graph: {_inline_evidence_graph(candidate)}\n"
         f"Claim cards: {_inline_claim_cards(candidate)}\n"
         f"Score: {candidate.score}\n"
+        f"Scorecard: {_inline_scorecard(candidate)}\n"
         f"Receipts:\n{receipts}"
     )
 
@@ -584,6 +588,21 @@ def _inline_evidence_graph(candidate: InsightCandidate) -> str:
     if not candidate.evidence_graph:
         return "none assigned"
     return "; ".join(f"{node.receipt_id}={node.role}" for node in candidate.evidence_graph)
+
+
+def _scorecard_block(candidate: InsightCandidate) -> str:
+    if not candidate.scorecard:
+        return "- none assigned"
+    return "\n".join(
+        f"- {key}: {value}"
+        for key, value in sorted(candidate.scorecard.items())
+    )
+
+
+def _inline_scorecard(candidate: InsightCandidate) -> str:
+    if not candidate.scorecard:
+        return "none assigned"
+    return "; ".join(f"{key}={value}" for key, value in sorted(candidate.scorecard.items()))
 
 
 def _claim_card_block(candidate: InsightCandidate) -> str:

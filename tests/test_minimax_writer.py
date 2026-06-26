@@ -194,6 +194,7 @@ def test_minimax_prompt_includes_structured_claim_ledger() -> None:
         novelty_score=70,
         evidence_score=75,
         reasons=("tier:publishable_alpha",),
+        scorecard={"directional_contrast": 85, "novelty_vs_corpus": 67},
         claim_cards=(
             ClaimCard(
                 receipt_id="h1",
@@ -218,6 +219,9 @@ def test_minimax_prompt_includes_structured_claim_ledger() -> None:
     assert "Evidence graph:" in prompt
     assert "h1: primary" in prompt
     assert "Claim ledger:" in prompt
+    assert "Scorecard:" in prompt
+    assert "- directional_contrast: 85" in prompt
+    assert "- novelty_vs_corpus: 67" in prompt
     assert "design=randomized_trial" in prompt
     assert "support=direct/high" in prompt
 

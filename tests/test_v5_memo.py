@@ -88,6 +88,8 @@ def test_mines_bridge_and_renders_receipt_bound_memo() -> None:
     assert "mitochondrial" in candidate.bridge_terms
     assert "nad" in candidate.bridge_terms
     assert candidate.score >= 60
+    assert candidate.scorecard["construct_match"] >= 50
+    assert candidate.scorecard["novelty_vs_corpus"] >= 0
     assert "shape:directional_reversal" in candidate.reasons
     assert "Alpha hypothesis" in memo
     assert "longevity resilience may be hiding" in memo
@@ -166,6 +168,8 @@ def test_two_receipts_do_not_inflate_evidence_without_support_quality() -> None:
     )
 
     assert score.evidence_score < 85
+    assert score.scorecard["evidence_directness"] == score.evidence_score
+    assert score.scorecard["directional_contrast"] == 25
     assert "thin_claim_support" in score.reasons
 
 

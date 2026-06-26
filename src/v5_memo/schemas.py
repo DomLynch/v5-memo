@@ -74,6 +74,7 @@ class InsightCandidate:
     novelty_score: int
     evidence_score: int
     reasons: tuple[str, ...]
+    scorecard: Mapping[str, int] = field(default_factory=dict)
     receipt_roles: tuple[ReceiptRole, ...] = ()
     claim_cards: tuple[ClaimCard, ...] = ()
     evidence_graph: tuple[EvidenceNode, ...] = ()

@@ -230,6 +230,7 @@ def mine_insights(
             score=score.score,
             novelty_score=score.novelty_score,
             evidence_score=score.evidence_score,
+            scorecard=score.scorecard,
             reasons=(
                 *score.reasons,
                 *coupling_reasons,
