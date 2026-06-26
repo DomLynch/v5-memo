@@ -547,20 +547,75 @@ class HybridCorpusSearchClient:
 
     def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
         seed_terms = _query_terms(query)
-        best: dict[str, tuple[float, CorpusHit]] = {}
+        best: dict[str, tuple[float, str, CorpusHit]] = {}
+        backend_order: list[str] = []
         for searcher in self._searchers:
             search = getattr(searcher, "search", None)
             if not callable(search):
                 continue
+            backend = _hybrid_backend_name(searcher)
             try:
                 hits = search(query, limit=limit)
             except SearchBackendError:
                 continue
+            if hits and backend not in backend_order:
+                backend_order.append(backend)
             for rank, hit in enumerate(hits, start=1):
                 score = _rerank_score(hit, seed_terms=seed_terms, variant_terms=seed_terms, rank=rank)
-                if score > best.get(hit.source_key, (-1.0, hit))[0]:
-                    best[hit.source_key] = (score, hit)
-        return [hit for _, hit in sorted(best.values(), key=lambda item: item[0], reverse=True)[:limit]]
+                current = best.get(hit.source_key)
+                if current is None or score > current[0]:
+                    best[hit.source_key] = (
+                        score,
+                        backend,
+                        replace(
+                            hit,
+                            metadata={
+                                **hit.metadata,
+                                "hybrid_backend": backend,
+                                "hybrid_rerank_score": round(score, 4),
+                            },
+                        ),
+                    )
+        return _balanced_hybrid_hits(list(best.values()), backend_order, limit=limit)
+
+
+def _hybrid_backend_name(searcher: object) -> str:
+    name = searcher.__class__.__name__.replace("CorpusSearchClient", "")
+    return re.sub(r"(?<!^)([A-Z])", r"_\1", name).casefold()
+
+
+def _balanced_hybrid_hits(
+    scored_hits: Sequence[tuple[float, str, CorpusHit]],
+    backend_order: Sequence[str],
+    *,
+    limit: int,
+) -> list[CorpusHit]:
+    if limit <= 0:
+        return []
+    by_backend = {
+        backend: sorted(
+            (item for item in scored_hits if item[1] == backend),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        for backend in backend_order
+    }
+    selected: dict[str, tuple[float, str, CorpusHit]] = {}
+    for backend in backend_order:
+        if len(selected) >= limit:
+            break
+        for item in by_backend.get(backend, ()):
+            if item[2].source_key not in selected:
+                selected[item[2].source_key] = item
+                break
+    for item in sorted(scored_hits, key=lambda candidate: candidate[0], reverse=True):
+        if len(selected) >= limit:
+            break
+        selected.setdefault(item[2].source_key, item)
+    return [
+        hit
+        for _, _, hit in sorted(selected.values(), key=lambda item: item[0], reverse=True)
+    ][:limit]
 
 
 def _load_researka_token() -> str:
