@@ -938,6 +938,43 @@ def test_hybrid_search_skips_failed_backend() -> None:
 
     assert [hit.doi for hit in hits] == ["10.good"]
 
+
+def test_hybrid_search_keeps_backend_diversity_before_score_fill() -> None:
+    class FullRawStaticSearch:
+        def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
+            del query
+            return [
+                CorpusHit(
+                    hit_id=f"fullraw-{index}",
+                    title="Metformin longevity exercise adaptation",
+                    abstract="Metformin longevity exercise adaptation.",
+                    source="fullraw:openalex",
+                    doi=f"10.fullraw/{index}",
+                )
+                for index in range(limit)
+            ]
+
+    class OpenAlexStaticSearch:
+        def search(self, query: str, *, limit: int = 25) -> list[CorpusHit]:
+            del query, limit
+            return [
+                CorpusHit(
+                    hit_id="openalex-rare",
+                    title="Metformin mitochondrial translation boundary",
+                    abstract="Observed translational boundary in human evidence.",
+                    source="openalex:full-corpus",
+                    doi="10.openalex/rare",
+                )
+            ]
+
+    hits = HybridCorpusSearchClient([FullRawStaticSearch(), OpenAlexStaticSearch()]).search(
+        "metformin longevity exercise adaptation",
+        limit=3,
+    )
+
+    assert any(hit.source.startswith("openalex") for hit in hits)
+
+
 def test_openalex_client_fans_out_dedupes_and_reranks(monkeypatch: object) -> None:
     captured_queries: list[str] = []
 

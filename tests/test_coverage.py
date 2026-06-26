@@ -1,7 +1,25 @@
 import pytest
 from pytest import MonkeyPatch
 
-from v5_memo.coverage import current_search_coverage, require_full_raw_corpus
+from v5_memo.coverage import (
+    current_search_coverage,
+    full_raw_search_health,
+    require_full_raw_corpus,
+)
+
+
+class FakeResponse:
+    def __init__(self, body: str) -> None:
+        self._body = body
+
+    def __enter__(self) -> "FakeResponse":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._body.encode("utf-8")
 
 
 def test_coverage_does_not_claim_raw_450m_without_explicit_service(
@@ -25,14 +43,58 @@ def test_require_full_raw_corpus_fails_closed(monkeypatch: MonkeyPatch) -> None:
 
 def test_require_full_raw_corpus_accepts_explicit_service(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9999/search")
+    monkeypatch.setattr(
+        "v5_memo.coverage.urlopen",
+        lambda request, timeout: FakeResponse(
+            '{"ok": true, "backend": "v5-fullraw-fts", "papers_indexed": 123, '
+            '"files_indexed": 3, "files_total": 4, "complete": false}'
+        ),
+    )
 
     require_full_raw_corpus()
 
 
 def test_coverage_reports_configured_full_raw_endpoint(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9999/search")
+    monkeypatch.setattr(
+        "v5_memo.coverage.urlopen",
+        lambda request, timeout: FakeResponse(
+            '{"ok": true, "backend": "v5-fullraw-fts", "papers_indexed": 123, '
+            '"files_indexed": 3, "files_total": 4, "complete": false}'
+        ),
+    )
 
     coverage = current_search_coverage()
 
     assert coverage.full_raw_local_corpus is True
-    assert "configured through http://127.0.0.1:9999/search" in coverage.summary
+    assert "healthy v5-fullraw-fts at http://127.0.0.1:9999/search" in coverage.summary
+
+
+def test_coverage_rejects_env_only_fullraw_endpoint(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9999/search")
+
+    coverage = current_search_coverage()
+
+    assert coverage.full_raw_local_corpus is False
+
+
+def test_fullraw_health_uses_search_service_health_endpoint(monkeypatch: MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_urlopen(request: object, timeout: float) -> FakeResponse:
+        seen["url"] = request.full_url  # type: ignore[attr-defined]
+        seen["timeout"] = timeout
+        return FakeResponse(
+            '{"ok": true, "backend": "v5-fullraw-fts", "papers_indexed": 456, '
+            '"files_indexed": 7, "files_total": 9, "complete": true}'
+        )
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_HEALTH_TIMEOUT", "1.5")
+    monkeypatch.setattr("v5_memo.coverage.urlopen", fake_urlopen)
+
+    health = full_raw_search_health("http://127.0.0.1:9902/search")
+
+    assert health.ok is True
+    assert health.papers_indexed == 456
+    assert health.complete is True
+    assert seen == {"url": "http://127.0.0.1:9902/health", "timeout": 1.5}
