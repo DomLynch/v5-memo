@@ -580,7 +580,20 @@ def test_sweep_passes_do_not_invent_side_queries(tmp_path: Path) -> None:
     assert [item.role for item in passes] == ["focused", "citation_heavy", "recency"]
     assert all("risk" not in item.query and "patients" not in item.query for item in passes)
     assert fullraw_index._sweep_search_passes("metformin blunts muscle hypertrophy progressive resistance training", entries, rank_mode="relevance")[0].query.startswith("metformin ")
-    cwi_passes = fullraw_index._sweep_search_passes("cold water immersion resistance training", entries, rank_mode="relevance")
+    cwi_entries = [
+        ShardCatalogEntry(
+            path=(tmp_path / f"cwi_{idx}.sqlite"),
+            batch_id=idx,
+            shard_id=0,
+            sources=("openalex",),
+            files_completed=1,
+            papers_inserted=10,
+            bytes_used=6,
+            topic_terms=("water", "resistance", "training"),
+        )
+        for idx in range(4)
+    ]
+    cwi_passes = fullraw_index._sweep_search_passes("cold water immersion resistance training", cwi_entries, rank_mode="relevance")
     assert {item.query for item in cwi_passes} == {"cold immersion training"}
     assert all(item.query != "water resistance training" for item in cwi_passes)
 

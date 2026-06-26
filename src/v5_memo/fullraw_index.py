@@ -55,7 +55,7 @@ _STOP = frozenset(
 )
 _BACKEND = "v5-fullraw-indexed-fts5"
 _FULL_COVERAGE_PREFIX_SHARDS = max(1, int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS", "32")))
-_SWEEP_STRATEGY = "profile_relaxed_v8"
+_SWEEP_STRATEGY = "profile_relaxed_v9"
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
@@ -1463,8 +1463,11 @@ def _profile_relaxed_sweep_query(
     ranked = sorted(positive_terms, key=lambda term: (-profile_counts[term], terms.index(term)))
     candidate_terms = set(ranked[: max(max_terms, min(len(ranked), max_terms + 2))])
     first = terms[0]
-    if profile_counts[first] == 0 and (len(first) <= 3 or len(first) >= 6) and not first.endswith(("tion", "sion", "ity", "ary", "acy", "ness")):
+    if len(first) > 2:
         candidate_terms.add(first)
+    rare_terms = [term for term in terms[1:] if profile_counts[term] == 0 and len(term) > 3]
+    if rare_terms:
+        candidate_terms.add(rare_terms[0])
     ordered = [term for term in terms if term in candidate_terms]
     if len(ordered) > max_terms:
         ordered = _spread_terms(ordered, max_terms)
