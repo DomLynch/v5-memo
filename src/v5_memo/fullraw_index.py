@@ -3011,6 +3011,7 @@ def run_server() -> None:
         def log_message(self, fmt: str, *args: object) -> None:
             return
 
+    ThreadingHTTPServer.allow_reuse_address = True
     ThreadingHTTPServer((host, port), Handler).serve_forever()
 
 
