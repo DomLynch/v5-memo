@@ -188,7 +188,7 @@ def test_fullraw_cli_inherits_search_service_coverage_thresholds(
 
     assert "Alpha memo" in capsys.readouterr().out
     assert seen["seed_queries"] == ["metformin resistance training adaptation"]
-    assert (seen["max_hits"], seen["min_shards_searched"], seen["min_sources_searched"]) == (5, 50, 2)
+    assert (seen["per_query_limit"], seen["max_hits"], seen["min_shards_searched"], seen["min_sources_searched"]) == (10, 20, 50, 2)
 
 
 def test_cli_explicit_zero_disables_inherited_coverage_threshold(
