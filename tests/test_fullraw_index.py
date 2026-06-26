@@ -365,6 +365,33 @@ def test_sweep_admission_queues_without_exceeding_inflight_limit() -> None:
     assert queued == set()
 
 
+def test_queued_sweep_job_promotes_when_lane_frees() -> None:
+    inflight: set[str] = set()
+    queued = {"cold-water"}
+    job = fullraw_index.SweepJob(
+        key="cold-water",
+        query="cold water immersion",
+        limit=10,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        catalog=[],
+    )
+    queued_jobs = {"cold-water": job}
+
+    next_job = fullraw_index._take_next_queued_sweep_job(
+        sweep_inflight=inflight,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_inflight=1,
+    )
+
+    assert next_job == job
+    assert inflight == {"cold-water"}
+    assert queued == set()
+    assert queued_jobs == {}
+
+
 def test_complete_sweep_retries_failed_shards() -> None:
     receipt = {
         "sweep_failed_paths": ("shard_a.sqlite", "shard_b.sqlite"),
