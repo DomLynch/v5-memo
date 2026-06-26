@@ -5,7 +5,7 @@ from collections.abc import Callable, Sequence
 
 from v5_memo.binder import bind_receipts
 from v5_memo.gate import meets_publish_bar, memo_coverage_failure, no_alpha_failure
-from v5_memo.miner import mine_insights, query_anchor_terms
+from v5_memo.miner import _tokens, mine_insights, query_anchor_terms
 from v5_memo.retriever import CorpusSearcher, collect_seed_hits
 from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult
 from v5_memo.writer import render_memo
@@ -38,18 +38,22 @@ def build_alpha_memo(
     )
     if anchor_queries is None:
         anchor_terms = _anchor_terms_for_queries(seed_queries)
+        primary_anchor_terms = _primary_anchor_terms_for_single_query(seed_queries)
     else:
         anchor_terms = _anchor_terms_for_queries(anchor_queries)
+        primary_anchor_terms = _primary_anchor_terms_for_single_query(anchor_queries)
     mined_candidates: list[InsightCandidate] = mine_insights(
         hits,
         topic=topic,
         required_anchor_terms=anchor_terms,
         include_discovery=min_alpha_tier == "discovery_seed",
     )
+    hits_by_id = {hit.hit_id: hit for hit in hits}
     publishable_candidates = [
         candidate
         for candidate in mined_candidates
         if meets_publish_bar(candidate, min_alpha_tier)
+        and _candidate_preserves_primary_anchor(candidate, hits_by_id, primary_anchor_terms)
     ]
     candidates = _apply_selector(publishable_candidates, hits, memo_selector)
     coverage_failures: list[MemoBuildError] = []
@@ -110,3 +114,27 @@ def _anchor_terms_for_queries(queries: Sequence[str]) -> tuple[str, ...]:
                 seen.add(term)
                 out.append(term)
     return tuple(out)
+
+
+def _primary_anchor_terms_for_single_query(queries: Sequence[str]) -> frozenset[str]:
+    if len(queries) != 1:
+        return frozenset()
+    return frozenset(query_anchor_terms([queries[0]], limit=1))
+
+
+def _candidate_preserves_primary_anchor(
+    candidate: InsightCandidate,
+    hits_by_id: dict[str, CorpusHit],
+    primary_anchor_terms: frozenset[str],
+) -> bool:
+    if not primary_anchor_terms:
+        return True
+    receipts = [
+        hits_by_id[receipt_id]
+        for receipt_id in candidate.receipt_ids
+        if receipt_id in hits_by_id
+    ]
+    return bool(receipts) and all(
+        _tokens(hit.text) & primary_anchor_terms
+        for hit in receipts
+    )

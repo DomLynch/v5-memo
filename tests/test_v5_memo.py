@@ -389,6 +389,101 @@ def test_pipeline_filters_to_requested_tier_before_selector(monkeypatch: pytest.
     assert result.candidate == elite
 
 
+def test_pipeline_filters_primary_anchor_drift_before_selector(monkeypatch: pytest.MonkeyPatch) -> None:
+    hits = [
+        _hit("bad-a", "Mitochondrial DNA depletion in childhood muscle", "mtDNA depletion caused myopathy."),
+        _hit("bad-b", "Mitochondrial DNA mutator mice show oxidative aging", "mtDNA mutator mice increased hydrogen peroxide."),
+        _hit("good-a", "Metformin protocol expected training augmentation", "Metformin was expected to augment training."),
+        _hit("good-b", "Metformin outcome observed training blunting", "Metformin blunted resistance training adaptation."),
+    ]
+    bad = InsightCandidate(
+        topic="metformin exercise training mitochondrial adaptation",
+        thesis="Drift.",
+        bridge_terms=("mitochondrial", "dna"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("bad-a", "bad-b"),
+        score=99,
+        novelty_score=99,
+        evidence_score=99,
+        reasons=("tier:elite_alpha",),
+    )
+    good = InsightCandidate(
+        topic="metformin exercise training mitochondrial adaptation",
+        thesis="Anchored.",
+        bridge_terms=("metformin", "training"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("good-a", "good-b"),
+        score=80,
+        novelty_score=80,
+        evidence_score=80,
+        reasons=("tier:elite_alpha",),
+    )
+    seen: list[InsightCandidate] = []
+
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return hits
+
+    def selector(candidates: Sequence[InsightCandidate], _hits: Sequence[CorpusHit]) -> Sequence[InsightCandidate]:
+        seen.extend(candidates)
+        return list(candidates)
+
+    monkeypatch.setattr("v5_memo.pipeline.mine_insights", lambda *_args, **_kwargs: [bad, good])
+
+    result = build_alpha_memo(
+        topic="metformin exercise training mitochondrial adaptation",
+        seed_queries=["metformin exercise training mitochondrial adaptation"],
+        searcher=FakeSearch(),
+        memo_selector=selector,
+        min_alpha_tier="elite_alpha",
+    )
+
+    assert seen == [good]
+    assert result.candidate == good
+
+
+@pytest.mark.parametrize(
+    ("topic", "primary"),
+    [
+        ("GlyNAC aging glutathione older adults deficiency", "GlyNAC"),
+        ("sodium bicarbonate exercise performance fatigue lactate", "sodium"),
+        ("earnings guidance analyst forecast accuracy", "earnings"),
+    ],
+)
+def test_pipeline_primary_anchor_guard_is_topic_agnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    topic: str,
+    primary: str,
+) -> None:
+    hits = [
+        _hit("a", f"{primary} protocol expected improvement", f"{primary} expected improvement."),
+        _hit("b", f"{primary} outcome observed blunting", f"{primary} observed blunting."),
+    ]
+    candidate = InsightCandidate(
+        topic=topic,
+        thesis="Anchored.",
+        bridge_terms=(primary.casefold().rstrip("s"),),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("a", "b"),
+        score=80,
+        novelty_score=80,
+        evidence_score=80,
+        reasons=("tier:publishable_alpha",),
+    )
+
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return hits
+
+    monkeypatch.setattr("v5_memo.pipeline.mine_insights", lambda *_args, **_kwargs: [candidate])
+
+    result = build_alpha_memo(topic=topic, seed_queries=[topic], searcher=FakeSearch())
+
+    assert result.candidate == candidate
+
+
 def test_pipeline_selector_cannot_veto_with_invented_receipt_pair() -> None:
     class FakeSearch:
         def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
