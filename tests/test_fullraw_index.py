@@ -198,7 +198,7 @@ def test_sweep_cache_entry_ready_rejects_insufficient_partial_hits() -> None:
     assert fullraw_index.sweep_cache_entry_is_ready(entry, min_shards_searched=512, min_sources_searched=5, require_complete_search=True, require_complete_sweep=True)
 
 
-def test_sweep_cache_can_answer_normal_agent_request() -> None:
+def test_sweep_cache_only_can_answer_agent_poll() -> None:
     entry = fullraw_index.SweepCacheEntry(
         created_at=time.time(),
         hits=[{"title": "Metformin for Longevity and Sarcopenia"}],
@@ -216,8 +216,14 @@ def test_sweep_cache_can_answer_normal_agent_request() -> None:
         },
     )
 
+    assert not fullraw_index.sweep_cache_entry_can_answer_request(
+        entry,
+        min_shards_searched=150,
+        min_sources_searched=5,
+    )
     assert fullraw_index.sweep_cache_entry_can_answer_request(
         entry,
+        cache_only=True,
         min_shards_searched=150,
         min_sources_searched=5,
     )

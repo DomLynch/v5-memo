@@ -2147,6 +2147,7 @@ def sweep_cache_entry_is_ready(
 def sweep_cache_entry_can_answer_request(
     entry: SweepCacheEntry | None,
     *,
+    cache_only: bool = False,
     resume_cached: bool = False,
     min_shards_searched: int = 0,
     min_sources_searched: int = 0,
@@ -2154,7 +2155,7 @@ def sweep_cache_entry_can_answer_request(
     require_complete_sweep: bool = False,
 ) -> bool:
     return (
-        entry is not None
+        cache_only and entry is not None
         and not resume_cached
         and sweep_cache_entry_is_ready(
             entry,
@@ -2848,6 +2849,7 @@ def run_server() -> None:
             sweep_status = "disabled"
             if sweep_cache_entry_can_answer_request(
                 cached,
+                cache_only=cache_only,
                 resume_cached=resume_cached,
                 min_shards_searched=min_shards_searched,
                 min_sources_searched=min_sources_searched,
@@ -2966,14 +2968,6 @@ def run_server() -> None:
                         rank_mode=rank_mode,
                         catalog=catalog,
                     )
-                    if (
-                        not hits
-                        and sweep_status == "hit"
-                        and (cached := sweep_cache_get(cache_key)) is not None
-                        and sweep_entry_is_ready(cached)
-                    ):
-                        hits = cached.hits
-                        receipt = auth_receipt(cached.receipt)
             coverage_gate = shard_coverage_gate_response(
                 receipt,
                 min_shards_searched=min_shards_searched,
