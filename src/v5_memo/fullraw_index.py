@@ -2399,6 +2399,16 @@ def _take_next_queued_sweep_job(
     return None
 
 
+def _queue_sweep_job(sweep_queued_jobs: dict[str, SweepJob], key: str, job: SweepJob) -> None:
+    if key not in sweep_queued_jobs:
+        sweep_queued_jobs[key] = job
+        return
+    existing = tuple((queued_key, queued_job) for queued_key, queued_job in sweep_queued_jobs.items() if queued_key != key)
+    sweep_queued_jobs.clear()
+    sweep_queued_jobs[key] = job
+    sweep_queued_jobs.update(existing)
+
+
 def shard_coverage_gate_response(
     receipt: dict[str, object],
     *,
@@ -2999,7 +3009,7 @@ def run_server() -> None:
                 max_inflight=sweep_max_inflight,
             )
             if status == "queued" and key not in sweep_inflight:
-                sweep_queued_jobs[key] = job
+                _queue_sweep_job(sweep_queued_jobs, key, job)
                 return status
             if status != "queued":
                 return status
