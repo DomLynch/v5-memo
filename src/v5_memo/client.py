@@ -43,7 +43,7 @@ _FULLRAW_CORE_DROP = {
     "response",
     "responses", "exercise", "exercises",
     "result",
-    "results", "recovery", "hypertrophy",
+    "results", "recovery",
 }
 _FULLRAW_PAIR_DROP = _FULLRAW_CORE_DROP | {
     "adult",
@@ -58,7 +58,7 @@ _FULLRAW_PAIR_DROP = _FULLRAW_CORE_DROP | {
     "trained",
     "expected",
 }
-_FULLRAW_RARE_ANCHOR_DROP = {"resistance", "strength", "training"}
+_FULLRAW_RARE_ANCHOR_DROP = {"hypertrophy", "resistance", "strength", "training"}
 _DOI_BACKFILL_PRIORITY_TERMS = {
     "attenuate",
     "attenuated",

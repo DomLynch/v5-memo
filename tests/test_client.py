@@ -1016,7 +1016,7 @@ def test_openalex_client_fans_out_dedupes_and_reranks(monkeypatch: object) -> No
         ("metformin augment strength training seniors", 5, ("metformin augment",)),
         ("nmn supplementation vo2max adaptation trained cyclists", 5, ("nmn vo2max",)),
         ("metformin resistance training adaptation", 6, ("metformin resistance training", "metformin resistance")),
-        ("metformin expected to augment resistance training hypertrophy protocol", 4, ("metformin augment",)),
+        ("metformin blunts muscle hypertrophy progressive resistance training", 4, ("metformin hypertrophy",)),
     ],
 )
 def test_fullraw_search_passes_preserve_key_recall_shapes(query: str, limit: int, expected: tuple[str, ...]) -> None:
