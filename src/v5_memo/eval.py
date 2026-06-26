@@ -17,6 +17,7 @@ from v5_memo.schemas import CorpusHit
 class EvalCaseResult:
     name: str
     passed: bool
+    expected_positive: bool
     expected_ids: tuple[str, ...]
     selected_ids: tuple[str, ...]
     expected_tier: str
@@ -30,16 +31,31 @@ class EvalReport:
     cases: int
     passed: int
     failed: int
+    positive_cases: int
+    negative_cases: int
+    false_positive_count: int
+    missed_positive_count: int
     results: tuple[EvalCaseResult, ...]
 
 
 def evaluate_golden_cases(path: Path) -> EvalReport:
     results = tuple(_evaluate_case(case) for case in _load_cases(path))
     passed = sum(1 for result in results if result.passed)
+    positive_cases = sum(1 for result in results if result.expected_positive)
+    false_positive_count = sum(
+        1 for result in results if not result.expected_positive and result.selected_ids
+    )
+    missed_positive_count = sum(
+        1 for result in results if result.expected_positive and not result.selected_ids
+    )
     return EvalReport(
         cases=len(results),
         passed=passed,
         failed=len(results) - passed,
+        positive_cases=positive_cases,
+        negative_cases=len(results) - positive_cases,
+        false_positive_count=false_positive_count,
+        missed_positive_count=missed_positive_count,
         results=results,
     )
 
@@ -73,6 +89,7 @@ def _evaluate_case(case: Mapping[str, Any]) -> EvalCaseResult:
             and selected_tier == expected_tier
             and (not expected_shape or expected_shape in selected_reasons)
         ),
+        expected_positive=bool(expected_ids),
         expected_ids=expected_ids,
         selected_ids=selected_ids,
         expected_tier=expected_tier,

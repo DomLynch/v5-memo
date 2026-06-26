@@ -105,6 +105,36 @@ def test_miner_emits_claim_cards_before_prose() -> None:
     assert by_role["outcome"].population == "human"
     assert by_role["outcome"].support_type == "direct"
     assert "**Claim ledger:**" in memo
+    assert "**Scorecard:**" in memo
+    assert "directional_contrast" in candidate.scorecard
+
+
+def test_score_connection_exposes_transparent_scorecard() -> None:
+    score = score_connection(
+        bridge_terms=("metformin", "training"),
+        bridge_doc_counts={"metformin": 2, "training": 2},
+        unique_source_count=2,
+        receipt_count=3,
+        has_tension=True,
+        shape_reasons=("shape:expectation_reversal",),
+        support_quality=30,
+    )
+
+    assert set(score.scorecard) == {
+        "retrieval_fit",
+        "construct_match",
+        "directional_contrast",
+        "evidence_directness",
+        "method_strength",
+        "independence",
+        "novelty_vs_corpus",
+        "novelty_vs_prior_memos",
+        "falsifiability",
+        "memo_usefulness",
+    }
+    assert score.score >= 70
+    assert score.scorecard["directional_contrast"] >= 80
+    assert "transparent_scorecard" in score.reasons
 
 
 def test_miner_adds_receipt_backed_evidence_graph_context() -> None:

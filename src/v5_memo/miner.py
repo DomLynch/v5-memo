@@ -239,6 +239,7 @@ def mine_insights(
             receipt_roles=receipt_roles,
             claim_cards=claim_cards,
             evidence_graph=evidence_graph,
+            scorecard=score.scorecard,
         ))
     return sorted(candidates, key=_candidate_rank, reverse=True)[
         :max(0, max_candidates)

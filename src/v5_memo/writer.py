@@ -29,6 +29,9 @@ def render_alpha_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]
         f"**Signal score:** `{candidate.score}` "
         f"(novelty `{candidate.novelty_score}`, evidence `{candidate.evidence_score}`)",
         "",
+        "**Scorecard:**",
+        *_scorecard_lines(candidate),
+        "",
         f"**Evidence bridge:** {bridge}.",
         "",
         f"**Tension:** {tension}.",
@@ -136,3 +139,9 @@ def _claim_card_lines(candidate: InsightCandidate) -> list[str]:
         )
         for card in candidate.claim_cards
     ]
+
+
+def _scorecard_lines(candidate: InsightCandidate) -> list[str]:
+    if not candidate.scorecard:
+        return ["- no structured scorecard assigned"]
+    return [f"- {key}: {value}" for key, value in sorted(candidate.scorecard.items())]

@@ -4,7 +4,12 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from v5_memo.binder import bind_receipts
-from v5_memo.gate import meets_publish_bar, memo_coverage_failure, no_alpha_failure
+from v5_memo.gate import (
+    candidate_quality_score,
+    meets_publish_bar,
+    memo_coverage_failure,
+    no_alpha_failure,
+)
 from v5_memo.miner import _tokens, mine_insights, query_anchor_terms
 from v5_memo.retriever import CorpusSearcher, collect_seed_hits
 from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult
@@ -50,12 +55,12 @@ def build_alpha_memo(
         max_candidates=25 if memo_selector is not None else 8,
     )
     hits_by_id = {hit.hit_id: hit for hit in hits}
-    publishable_candidates = [
+    publishable_candidates = _rank_candidates([
         candidate
         for candidate in mined_candidates
         if meets_publish_bar(candidate, min_alpha_tier)
         and _candidate_preserves_primary_anchor(candidate, hits_by_id, primary_anchor_terms)
-    ]
+    ])
     candidates = _apply_selector(publishable_candidates, hits, memo_selector)
     coverage_failures: list[MemoBuildError] = []
     for candidate in candidates:
@@ -95,15 +100,48 @@ def _apply_selector(
     hits: Sequence[CorpusHit],
     selector: MemoSelector | None,
 ) -> Sequence[InsightCandidate]:
+    ranked = _rank_candidates(candidates)
     if selector is None:
-        return candidates
-    by_receipts = {candidate.receipt_ids: candidate for candidate in candidates}
+        return ranked
+    slate = _selector_slate(ranked)
+    by_receipts = {candidate.receipt_ids: candidate for candidate in slate}
+    choices = list(selector(slate, hits))
+    if not choices:
+        return []
     selected: list[InsightCandidate] = []
-    for candidate in selector(candidates, hits):
+    for candidate in choices:
         original = by_receipts.get(candidate.receipt_ids)
         if original is not None and original not in selected:
             selected.append(original)
-    return selected or candidates
+    return selected or ranked
+
+
+def _rank_candidates(candidates: Sequence[InsightCandidate]) -> list[InsightCandidate]:
+    return sorted(candidates, key=candidate_quality_score, reverse=True)
+
+
+def _selector_slate(candidates: Sequence[InsightCandidate]) -> tuple[InsightCandidate, ...]:
+    ranked = _rank_candidates(candidates)
+    selected: list[InsightCandidate] = []
+    for candidate in ranked[:3]:
+        selected.append(candidate)
+    for shape in (
+        "shape:expectation_reversal",
+        "shape:promise_outcome_reversal",
+        "shape:directional_reversal",
+        "shape:boundary_condition",
+        "shape:denominator_split",
+        "shape:timing_split",
+        "shape:measurement_mismatch",
+    ):
+        for candidate in ranked:
+            if shape in candidate.reasons and candidate not in selected:
+                selected.append(candidate)
+                break
+    for candidate in ranked:
+        if candidate not in selected:
+            selected.append(candidate)
+    return tuple(selected[:12])
 
 
 def _anchor_terms_for_queries(queries: Sequence[str]) -> tuple[str, ...]:

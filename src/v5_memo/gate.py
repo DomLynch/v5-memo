@@ -16,6 +16,15 @@ _MIN_NOVELTY_BY_TIER = {
     "publishable_alpha": 0,
     "elite_alpha": 35,
 }
+_SHAPE_QUALITY_BONUS = {
+    "shape:promise_outcome_reversal": 180,
+    "shape:expectation_reversal": 170,
+    "shape:directional_reversal": 120,
+    "shape:boundary_condition": 100,
+    "shape:denominator_split": 90,
+    "shape:timing_split": 80,
+    "shape:measurement_mismatch": 60,
+}
 
 
 def candidate_alpha_tier(candidate: InsightCandidate) -> str:
@@ -34,6 +43,29 @@ def meets_publish_bar(candidate: InsightCandidate, min_alpha_tier: str) -> bool:
         meets_min_alpha_tier(candidate, min_alpha_tier)
         and candidate.score >= _MIN_SCORE_BY_TIER[min_alpha_tier]
         and candidate.novelty_score >= _MIN_NOVELTY_BY_TIER[min_alpha_tier]
+    )
+
+
+def candidate_quality_score(candidate: InsightCandidate) -> int:
+    """Pre-writer strength score for selector slate ordering."""
+    shape_bonus = max(
+        (
+            _SHAPE_QUALITY_BONUS[reason]
+            for reason in candidate.reasons
+            if reason in _SHAPE_QUALITY_BONUS
+        ),
+        default=0,
+    )
+    direct_claims = sum(1 for card in candidate.claim_cards if card.support_type == "direct")
+    return (
+        _TIER_RANK[candidate_alpha_tier(candidate)] * 1000
+        + shape_bonus
+        + candidate.score
+        + candidate.novelty_score // 2
+        + candidate.evidence_score // 2
+        + min(len(candidate.receipt_roles), 3) * 15
+        + min(len(candidate.evidence_graph), 3) * 10
+        + min(direct_claims, 3) * 5
     )
 
 
