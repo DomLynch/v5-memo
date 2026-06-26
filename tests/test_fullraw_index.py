@@ -119,20 +119,22 @@ def test_shard_search_returns_partial_hits_on_timeout(tmp_path: Path, monkeypatc
     assert [hit["doi"] for hit in hits] == ["10.example/fast"]
 
     called: list[Path] = []
+    timeouts: list[object] = []
 
     def counting_search(path: Path, *args: object, **kwargs: object) -> list[dict[str, object]]:
-        del args, kwargs
+        del kwargs
         called.append(path)
+        timeouts.append(args[-1])
         return []
 
     monkeypatch.setattr(fullraw_index, "_search_one_shard", counting_search)
     many_paths = [tmp_path / f"many_{idx}.sqlite" for idx in range(200)]
     fullraw_index._search_shard_paths_with_paths(
-        many_paths, "metformin", limit=5, year_min=1900, year_max=2100, rank_mode="relevance", timeout_seconds=0.01
+        many_paths, "metformin", limit=5, year_min=1900, year_max=2100, rank_mode="relevance", timeout_seconds=0.01, shard_timeout_seconds=30
     )
     assert len(called) <= fullraw_index._FULL_COVERAGE_PREFIX_SHARDS
     assert many_paths[-1] not in called
-
+    assert timeouts == [30] * len(called)
 
 def test_foreground_receipt_counts_only_completed_shards(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     entries = [_entry(tmp_path, idx, "openalex") for idx in range(4)]
