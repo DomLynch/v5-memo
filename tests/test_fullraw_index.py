@@ -607,6 +607,20 @@ def test_shard_search_preserves_materialized_batch_before_worker_search(
     assert timed_out is False
 
 
+def test_materialized_shard_path_does_not_recache_local_cache_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    cached = cache_dir / "abcd-fullraw_shard_0001.sqlite"
+    cached.write_text("already local")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+
+    assert fullraw_index._shard_cache_path(cached) is None
+    assert fullraw_index._materialized_shard_path(cached) == cached
+
+
 def test_shard_catalog_cache_round_trips_entries(tmp_path: Path) -> None:
     entry = ShardCatalogEntry(
         path=tmp_path / "batch_00001" / "fullraw_shard_0000.sqlite",

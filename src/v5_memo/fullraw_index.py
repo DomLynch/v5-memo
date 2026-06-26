@@ -1797,8 +1797,16 @@ def _shard_cache_path(path: Path) -> Path | None:
     cache_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", "").strip()
     if not cache_dir_config:
         return None
+    cache_dir = Path(cache_dir_config)
+    path_abs = path if path.is_absolute() else path.absolute()
+    cache_dir_abs = cache_dir if cache_dir.is_absolute() else cache_dir.absolute()
+    try:
+        if os.path.commonpath((str(path_abs), str(cache_dir_abs))) == str(cache_dir_abs):
+            return None
+    except ValueError:
+        pass
     cache_name = f"{hashlib.sha256(str(path).encode()).hexdigest()[:16]}-{path.name}"
-    return Path(cache_dir_config) / cache_name
+    return cache_dir / cache_name
 
 
 def _cached_materialized_shard_path(path: Path) -> Path | None:
