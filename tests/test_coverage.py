@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import pytest
 from pytest import MonkeyPatch
 
@@ -20,6 +22,45 @@ class FakeResponse:
 
     def read(self) -> bytes:
         return self._body.encode("utf-8")
+
+
+def _health_body(*, complete: bool = True) -> str:
+    return (
+        '{"ok": true, "backend": "v5-fullraw-fts", "papers_indexed": 123, '
+        f'"files_indexed": {4 if complete else 3}, "files_total": 4, '
+        f'"complete": {str(complete).lower()}, '
+        '"shard_receipt": {"partial_shard_search": false, "sweep_failed_shards": 0, '
+        '"shards_searched": 1525, "shards_total": 1525, '
+        '"sources_searched": {"openalex": 1, "pubmed": 1, "semantic_scholar": 1, '
+        '"semantic_scholar_abstracts": 1, "biorxiv": 1}}}'
+    )
+
+
+def _search_body(*, partial: bool = False, hits: int = 1) -> str:
+    return (
+        '{"meta": {"count": '
+        f"{hits}, "
+        '"shard_receipt": {"partial_shard_search": '
+        f"{str(partial).lower()}, "
+        '"sweep_failed_shards": 0, "shards_searched": 1525, "shards_total": 1525, '
+        '"sources_searched": {"openalex": 1, "pubmed": 1, "semantic_scholar": 1, '
+        '"semantic_scholar_abstracts": 1, "biorxiv": 1}}}, '
+        '"results": [{"title": "Metformin longevity"}]}'
+    )
+
+
+def _fake_fullraw_urlopen(
+    *,
+    health: str | None = None,
+    search: str | None = None,
+) -> Callable[[object, float], FakeResponse]:
+    def fake_urlopen(request: object, timeout: float) -> FakeResponse:
+        del timeout
+        data = getattr(request, "data", None)
+        body = (search or _search_body()) if data else (health or _health_body())
+        return FakeResponse(body)
+
+    return fake_urlopen
 
 
 def test_coverage_does_not_claim_raw_450m_without_explicit_service(
@@ -45,11 +86,7 @@ def test_require_full_raw_corpus_accepts_complete_explicit_service(monkeypatch: 
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9999/search")
     monkeypatch.setattr(
         "v5_memo.coverage.urlopen",
-        lambda request, timeout: FakeResponse(
-            '{"ok": true, "backend": "v5-fullraw-fts", "papers_indexed": 123, '
-            '"files_indexed": 4, "files_total": 4, "complete": true, '
-            '"shard_receipt": {"partial_shard_search": false, "sweep_failed_shards": 0}}'
-        ),
+        _fake_fullraw_urlopen(search=_search_body()),
     )
 
     require_full_raw_corpus()
@@ -59,10 +96,7 @@ def test_require_full_raw_corpus_rejects_incomplete_service(monkeypatch: MonkeyP
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9999/search")
     monkeypatch.setattr(
         "v5_memo.coverage.urlopen",
-        lambda request, timeout: FakeResponse(
-            '{"ok": true, "backend": "v5-fullraw-fts", "papers_indexed": 123, '
-            '"files_indexed": 3, "files_total": 4, "complete": false}'
-        ),
+        _fake_fullraw_urlopen(health=_health_body(complete=False), search=_search_body()),
     )
 
     with pytest.raises(RuntimeError, match="Full local raw 450M"):
@@ -73,11 +107,7 @@ def test_coverage_reports_configured_full_raw_endpoint(monkeypatch: MonkeyPatch)
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9999/search")
     monkeypatch.setattr(
         "v5_memo.coverage.urlopen",
-        lambda request, timeout: FakeResponse(
-            '{"ok": true, "backend": "v5-fullraw-fts", "papers_indexed": 123, '
-            '"files_indexed": 4, "files_total": 4, "complete": true, '
-            '"shard_receipt": {"partial_shard_search": false, "sweep_failed_shards": 0}}'
-        ),
+        _fake_fullraw_urlopen(search=_search_body()),
     )
 
     coverage = current_search_coverage()
@@ -95,17 +125,17 @@ def test_coverage_rejects_env_only_fullraw_endpoint(monkeypatch: MonkeyPatch) ->
 
 
 def test_fullraw_health_uses_search_service_health_endpoint(monkeypatch: MonkeyPatch) -> None:
-    seen: dict[str, object] = {}
+    seen: list[dict[str, object]] = []
 
     def fake_urlopen(request: object, timeout: float) -> FakeResponse:
-        seen["url"] = request.full_url  # type: ignore[attr-defined]
-        seen["timeout"] = timeout
-        return FakeResponse(
-            '{"ok": true, "backend": "v5-fullraw-fts", "papers_indexed": 456, '
-            '"files_indexed": 9, "files_total": 9, "complete": true, '
-            '"shard_receipt": {"partial_shard_search": false, "sweep_failed_shards": 0, '
-            '"sources_searched": {"openalex": 1, "pubmed": 1}}}'
-        )
+        seen.append({
+            "url": request.full_url,  # type: ignore[attr-defined]
+            "timeout": timeout,
+            "has_body": bool(getattr(request, "data", None)),
+        })
+        if getattr(request, "data", None):
+            return FakeResponse(_search_body())
+        return FakeResponse(_health_body())
 
     monkeypatch.setenv("V5_MEMO_FULL_RAW_HEALTH_TIMEOUT", "1.5")
     monkeypatch.setattr("v5_memo.coverage.urlopen", fake_urlopen)
@@ -113,9 +143,30 @@ def test_fullraw_health_uses_search_service_health_endpoint(monkeypatch: MonkeyP
     health = full_raw_search_health("http://127.0.0.1:9902/search")
 
     assert health.ok is True
-    assert health.papers_indexed == 456
+    assert health.papers_indexed == 123
     assert health.complete is True
     assert health.partial_shard_search is False
     assert health.sweep_failed_shards == 0
-    assert health.source_count == 2
-    assert seen == {"url": "http://127.0.0.1:9902/health", "timeout": 1.5}
+    assert health.query_smoke_ok is True
+    assert health.source_count == 5
+    assert seen == [
+        {"url": "http://127.0.0.1:9902/health", "timeout": 1.5, "has_body": False},
+        {"url": "http://127.0.0.1:9902/search", "timeout": 1.5, "has_body": True},
+    ]
+
+
+def test_fullraw_health_rejects_static_health_without_complete_query_smoke(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "v5_memo.coverage.urlopen",
+        _fake_fullraw_urlopen(search=_search_body(partial=True)),
+    )
+
+    health = full_raw_search_health("http://127.0.0.1:9902/search")
+
+    assert health.ok is False
+    assert health.complete is True
+    assert health.query_smoke_ok is False
+    assert health.partial_shard_search is True
+    assert health.error == "query smoke incomplete or partial"

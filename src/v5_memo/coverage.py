@@ -35,6 +35,11 @@ class SearchBackendHealth:
     partial_shard_search: bool = False
     sweep_failed_shards: int = 0
     source_count: int = 0
+    hits: int = 0
+    query_smoke_ok: bool = False
+    query_smoke: str = ""
+    shards_searched: int = 0
+    shards_total: int = 0
     error: str = ""
 
 
@@ -120,7 +125,7 @@ def full_raw_search_health(url: str | None = None) -> SearchBackendHealth:
     partial_shard_search = receipt.get("partial_shard_search") is True
     sweep_failed_shards = _int_value(receipt.get("sweep_failed_shards"))
     complete = data.get("complete") is True
-    ok = bool(
+    static_ok = bool(
         data.get("ok") is True
         and backend
         and papers_indexed > 0
@@ -128,6 +133,37 @@ def full_raw_search_health(url: str | None = None) -> SearchBackendHealth:
         and not partial_shard_search
         and sweep_failed_shards == 0
     )
+    smoke = _full_raw_query_smoke(search_url)
+    raw_smoke_receipt = smoke.get("receipt")
+    smoke_receipt: dict[str, object] = (
+        raw_smoke_receipt if isinstance(raw_smoke_receipt, dict) else {}
+    )
+    smoke_sources = smoke_receipt.get("sources_searched")
+    smoke_source_count = (
+        sum(1 for value in smoke_sources.values() if _int_value(value))
+        if isinstance(smoke_sources, dict)
+        else 0
+    )
+    smoke_failed = _int_value(smoke_receipt.get("sweep_failed_shards"))
+    smoke_partial = smoke_receipt.get("partial_shard_search") is True
+    smoke_shards = _int_value(smoke_receipt.get("shards_searched"))
+    smoke_total = _int_value(smoke_receipt.get("shards_total"))
+    min_shards = _full_raw_min_shards(smoke_total)
+    min_sources = _full_raw_min_sources()
+    hits = _int_value(smoke.get("hits"))
+    smoke_ok = bool(
+        hits > 0
+        and smoke_shards >= min_shards
+        and not smoke_partial
+        and smoke_failed == 0
+        and smoke_source_count >= min_sources
+    )
+    ok = static_ok and smoke_ok
+    error = ""
+    if not static_ok:
+        error = "health incomplete, partial, failed, or missing ok/backend/papers_indexed"
+    elif not smoke_ok:
+        error = str(smoke.get("error") or "query smoke incomplete or partial")
     return SearchBackendHealth(
         configured=True,
         ok=ok,
@@ -137,16 +173,78 @@ def full_raw_search_health(url: str | None = None) -> SearchBackendHealth:
         files_indexed=files_indexed,
         files_total=files_total,
         complete=complete,
-        partial_shard_search=partial_shard_search,
-        sweep_failed_shards=sweep_failed_shards,
-        source_count=source_count,
-        error="" if ok else "health incomplete, partial, failed, or missing ok/backend/papers_indexed",
+        partial_shard_search=smoke_partial or partial_shard_search,
+        sweep_failed_shards=max(sweep_failed_shards, smoke_failed),
+        source_count=smoke_source_count or source_count,
+        hits=hits,
+        query_smoke_ok=smoke_ok,
+        query_smoke=str(smoke.get("query") or ""),
+        shards_searched=smoke_shards,
+        shards_total=smoke_total,
+        error=error,
     )
 
 
 def _health_url(search_url: str) -> str:
     parsed = urlparse(search_url)
     return urlunparse(parsed._replace(path="/health", query="", fragment=""))
+
+
+def _full_raw_query_smoke(search_url: str) -> dict[str, object]:
+    query = os.environ.get("V5_MEMO_FULL_RAW_HEALTH_SMOKE_QUERY", "metformin longevity").strip()
+    if not query:
+        return {"query": "", "hits": 0, "receipt": {}, "error": "missing smoke query"}
+    payload = {
+        "query": query,
+        "limit": 1,
+        "rank_mode": "relevance",
+        "cache_only": True,
+        "queue_if_missing": False,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "v5-memo/0.1",
+    }
+    token = (
+        os.environ.get("V5_MEMO_FULL_RAW_INDEX_TOKEN", "").strip()
+        or os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "").strip()
+    )
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        request = Request(
+            search_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urlopen(request, timeout=_health_timeout()) as response:
+            data: Any = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, ValueError, OSError) as exc:
+        return {"query": query, "hits": 0, "receipt": {}, "error": str(exc)}
+    if not isinstance(data, dict):
+        return {"query": query, "hits": 0, "receipt": {}, "error": "smoke response is not an object"}
+    meta = data.get("meta")
+    receipt = meta.get("shard_receipt") if isinstance(meta, dict) else {}
+    results = data.get("results")
+    return {
+        "query": query,
+        "hits": len(results) if isinstance(results, list) else 0,
+        "receipt": receipt if isinstance(receipt, dict) else {},
+        "error": str(data.get("error") or ""),
+    }
+
+
+def _full_raw_min_shards(shards_total: int) -> int:
+    configured = _int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED")
+    if configured > 0:
+        return configured
+    return shards_total if shards_total > 0 else 1
+
+
+def _full_raw_min_sources() -> int:
+    configured = _int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED")
+    return configured if configured > 0 else 5
 
 
 def _health_timeout() -> float:
@@ -169,3 +267,10 @@ def _int_value(value: object) -> int:
         except ValueError:
             return 0
     return 0
+
+
+def _int_env(name: str) -> int:
+    try:
+        return max(0, int(os.environ.get(name, "0")))
+    except ValueError:
+        return 0
