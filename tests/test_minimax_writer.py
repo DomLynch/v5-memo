@@ -17,7 +17,7 @@ from v5_memo.minimax_writer import (
     parse_minimax_selection,
     validate_minimax_memo,
 )
-from v5_memo.schemas import ClaimCard, CorpusHit, InsightCandidate, ReceiptRole
+from v5_memo.schemas import ClaimCard, CorpusHit, EvidenceNode, InsightCandidate, ReceiptRole
 
 
 class FakeResponse:
@@ -205,10 +205,16 @@ def test_minimax_prompt_includes_structured_claim_ledger() -> None:
                 quote="Human trial observed a reduced outcome.",
             ),
         ),
+        evidence_graph=(
+            EvidenceNode("h1", "primary", "primary direct trial"),
+            EvidenceNode("h2", "counter", "counter receipt"),
+        ),
     )
 
     prompt = build_minimax_prompt(candidate, _receipts())
 
+    assert "Evidence graph:" in prompt
+    assert "h1: primary" in prompt
     assert "Claim ledger:" in prompt
     assert "design=randomized_trial" in prompt
     assert "support=direct/high" in prompt
@@ -329,6 +335,7 @@ def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
     assert "contradiction, boundary condition, inversion" in prompt
     assert "Selector tier:" in prompt
     assert "Receipt roles:" in prompt
+    assert "Evidence graph:" in prompt
     assert "metric mismatch" in prompt
     assert "cross-domain transfer" in prompt
 
