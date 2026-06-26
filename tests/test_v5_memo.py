@@ -1,14 +1,14 @@
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 from v5_memo.binder import bind_receipts
-from v5_memo.gate import candidate_alpha_tier
+from v5_memo.gate import candidate_alpha_tier, memo_coverage_failure
 from v5_memo.miner import mine_insights, query_anchor_terms
-from v5_memo.pipeline import build_alpha_memo
+from v5_memo.pipeline import _selector_slate, build_alpha_memo
 from v5_memo.publisher import build_researka_payload
 from v5_memo.retriever import collect_seed_hits
 from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult
@@ -59,6 +59,23 @@ def _hits() -> list[CorpusHit]:
 
 def _hit(hit_id: str, title: str, abstract: str) -> CorpusHit:
     return CorpusHit(hit_id=hit_id, title=title, abstract=abstract, source="openalex", doi=f"10.{hit_id}")
+
+
+class _StaticSearch:
+    def __init__(self, hits: Sequence[CorpusHit]) -> None:
+        self._hits = hits
+
+    def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+        del query, limit
+        return self._hits
+
+
+class _FunctionSearch:
+    def __init__(self, search: Callable[[str, int], Sequence[CorpusHit]]) -> None:
+        self._search = search
+
+    def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+        return self._search(query, limit)
 
 
 def test_mines_bridge_and_renders_receipt_bound_memo() -> None:
@@ -205,48 +222,25 @@ def test_binder_rejects_duplicate_titles_with_different_ids() -> None:
 
 
 def test_collect_seed_hits_dedupes_across_seed_queries() -> None:
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del limit
-            return [
-                CorpusHit(
-                    hit_id="shared",
-                    title="Shared NAD salvage hit",
-                    abstract=query,
-                    source="researka",
-                    doi="10.shared",
-                ),
-                CorpusHit(
-                    hit_id=query,
-                    title=f"Unique {query}",
-                    abstract="mitochondrial bridge",
-                    source="researka",
-                    doi=f"10.{query}",
-                ),
-            ]
+    def search(query: str, limit: int) -> Sequence[CorpusHit]:
+        del limit
+        return [
+            CorpusHit("shared", "Shared NAD salvage hit", query, "researka", doi="10.shared"),
+            CorpusHit(query, f"Unique {query}", "mitochondrial bridge", "researka", doi=f"10.{query}"),
+        ]
 
-    hits = collect_seed_hits(FakeSearch(), ["nad", "mitochondrial"], per_query_limit=2)
+    hits = collect_seed_hits(_FunctionSearch(search), ["nad", "mitochondrial"], per_query_limit=2)
 
     assert [hit.hit_id for hit in hits] == ["shared", "nad", "mitochondrial"]
     assert hits[0].metadata["seed_queries"] == ("nad", "mitochondrial")
 
 
 def test_collect_seed_hits_balances_planned_query_budget() -> None:
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            return [
-                CorpusHit(
-                    hit_id=f"{query}-{index}",
-                    title=f"{query} hit {index}",
-                    abstract="receipt",
-                    source="fullraw",
-                    doi=f"10.{query}/{index}",
-                )
-                for index in range(limit)
-            ]
-
     hits = collect_seed_hits(
-        FakeSearch(),
+        _FunctionSearch(lambda query, limit: [
+            CorpusHit(f"{query}-{index}", f"{query} hit {index}", "receipt", "fullraw", doi=f"10.{query}/{index}")
+            for index in range(limit)
+        ]),
         ["noisy-first-query", "later-reversal-query"],
         per_query_limit=10,
         max_hits=6,
@@ -256,27 +250,22 @@ def test_collect_seed_hits_balances_planned_query_budget() -> None:
 
 
 def test_collect_seed_hits_skips_late_seed_failure_after_hits() -> None:
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            if query == "bad" and limit:
-                raise RuntimeError("backend miss")
-            return [_hit(query, f"{query} title", "receipt")]
+    def search(query: str, limit: int) -> Sequence[CorpusHit]:
+        if query == "bad" and limit:
+            raise RuntimeError("backend miss")
+        return [_hit(query, f"{query} title", "receipt")]
 
-    assert [hit.hit_id for hit in collect_seed_hits(FakeSearch(), ["good", "bad"])] == ["good"]
-    assert [hit.hit_id for hit in collect_seed_hits(FakeSearch(), ["bad", "good"])] == ["good"]
-    assert collect_seed_hits(FakeSearch(), ["bad"]) == []
+    searcher = _FunctionSearch(search)
+    assert [hit.hit_id for hit in collect_seed_hits(searcher, ["good", "bad"])] == ["good"]
+    assert [hit.hit_id for hit in collect_seed_hits(searcher, ["bad", "good"])] == ["good"]
+    assert collect_seed_hits(searcher, ["bad"]) == []
 
 
 def test_pipeline_builds_best_memo() -> None:
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return _hits()
-
     result = build_alpha_memo(
         topic="longevity resilience",
         seed_queries=["sleep nad", "exercise nad"],
-        searcher=FakeSearch(),
+        searcher=_StaticSearch(_hits()),
     )
 
     assert result.candidate.score >= 60
@@ -285,27 +274,14 @@ def test_pipeline_builds_best_memo() -> None:
 
 
 def test_pipeline_anchors_cover_late_planned_query_angles() -> None:
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del limit
-            if "resveratrol" not in query:
-                return []
-            return [
-                CorpusHit(
-                    hit_id="promise",
-                    title="Resveratrol improves mitochondrial function and exercise performance",
-                    abstract="Resveratrol activated a mitochondrial mechanism and improved running performance.",
-                    source="openalex",
-                    doi="10.promise",
-                ),
-                CorpusHit(
-                    hit_id="outcome",
-                    title="Resveratrol exercise training trial blunted cardiovascular adaptation",
-                    abstract="Randomized trial observed resveratrol blunted exercise training adaptation.",
-                    source="semantic_scholar",
-                    doi="10.outcome",
-                ),
-            ]
+    def search(query: str, limit: int) -> Sequence[CorpusHit]:
+        del limit
+        if "resveratrol" not in query:
+            return []
+        return [
+            CorpusHit("promise", "Resveratrol improves mitochondrial function and exercise performance", "Resveratrol activated a mitochondrial mechanism and improved running performance.", "openalex", doi="10.promise"),
+            CorpusHit("outcome", "Resveratrol exercise training trial blunted cardiovascular adaptation", "Randomized trial observed resveratrol blunted exercise training adaptation.", "semantic_scholar", doi="10.outcome"),
+        ]
 
     result = build_alpha_memo(
         topic="longevity exercise adaptation supplement reversal",
@@ -314,7 +290,7 @@ def test_pipeline_anchors_cover_late_planned_query_angles() -> None:
             "NMN NAD skeletal muscle attenuation",
             "resveratrol exercise training adaptation blunted",
         ],
-        searcher=FakeSearch(),
+        searcher=_FunctionSearch(search),
         min_alpha_tier="elite_alpha",
     )
 
@@ -345,16 +321,11 @@ def test_pipeline_anchors_to_original_seed_before_planner_drift() -> None:
         ),
     ]
 
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return hits
-
     result = build_alpha_memo(
         topic="resveratrol exercise adaptation",
         seed_queries=["arabidopsis tor cotyledon greening"],
         anchor_queries=["resveratrol exercise training adaptation"],
-        searcher=FakeSearch(),
+        searcher=_StaticSearch(hits),
     )
 
     assert result.candidate.receipt_ids == ("promise", "outcome")
@@ -375,31 +346,21 @@ def test_pipeline_does_not_fallback_to_planner_anchors_when_seed_is_broad() -> N
         ),
     ]
 
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return hits
-
     result = build_alpha_memo(
         topic="longevity exercise adaptation supplement reversal",
         seed_queries=["arabidopsis tor cotyledon greening"],
         anchor_queries=["longevity exercise adaptation intervention reversal"],
-        searcher=FakeSearch(),
+        searcher=_StaticSearch(hits),
     )
 
     assert result.candidate.receipt_ids == ("promise", "outcome")
 
 
 def test_pipeline_accepts_custom_memo_writer() -> None:
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return _hits()
-
     result = build_alpha_memo(
         topic="longevity resilience",
         seed_queries=["sleep nad", "exercise nad"],
-        searcher=FakeSearch(),
+        searcher=_StaticSearch(_hits()),
         memo_writer=lambda candidate, receipts: f"custom: {candidate.topic} / {len(receipts)}",
     )
 
@@ -437,11 +398,6 @@ def test_pipeline_filters_to_requested_tier_before_selector(monkeypatch: pytest.
     )
     seen: list[InsightCandidate] = []
 
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return hits
-
     def fake_mine(*_args: object, **_kwargs: object) -> list[InsightCandidate]:
         return [low, elite]
 
@@ -454,7 +410,7 @@ def test_pipeline_filters_to_requested_tier_before_selector(monkeypatch: pytest.
     result = build_alpha_memo(
         topic="tool reliability",
         seed_queries=["tool"],
-        searcher=FakeSearch(),
+        searcher=_StaticSearch(hits),
         memo_selector=selector,
         min_alpha_tier="elite_alpha",
     )
@@ -463,18 +419,7 @@ def test_pipeline_filters_to_requested_tier_before_selector(monkeypatch: pytest.
     assert result.candidate == elite
 
 
-def test_pipeline_selector_slate_surfaces_diverse_alpha_shapes(monkeypatch: pytest.MonkeyPatch) -> None:
-    hits = [
-        _hit(f"dup-{idx}-a", f"Tool reliability metric {idx}", f"Tool reliability metric {idx}.")
-        for idx in range(4)
-    ] + [
-        _hit(f"dup-{idx}-b", f"Tool deployment reliability {idx}", f"Tool deployment reliability {idx}.")
-        for idx in range(4)
-    ] + [
-        _hit("rev-a", "Protocol expected tool reliability augmentation", "Tool protocol expected reliability augmentation."),
-        _hit("rev-b", "Outcome observed tool reliability blunting", "Tool outcome observed reliability blunting."),
-    ]
-
+def test_pipeline_selector_slate_surfaces_diverse_alpha_shapes() -> None:
     def candidate(left: str, right: str, score: int, shape: str) -> InsightCandidate:
         return InsightCandidate(
             topic="tool reliability",
@@ -490,43 +435,19 @@ def test_pipeline_selector_slate_surfaces_diverse_alpha_shapes(monkeypatch: pyte
 
     duplicates = [
         candidate(f"dup-{idx}-a", f"dup-{idx}-b", 99 - idx, "shape:measurement_mismatch")
-        for idx in range(4)
+        for idx in range(10)
     ]
     reversal = candidate("rev-a", "rev-b", 80, "shape:expectation_reversal")
-    seen: list[InsightCandidate] = []
+    ranked = [*duplicates, reversal]
 
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return hits
-
-    def selector(candidates: Sequence[InsightCandidate], _hits: Sequence[CorpusHit]) -> Sequence[InsightCandidate]:
-        seen.extend(candidates)
-        return [reversal]
-
-    monkeypatch.setattr("v5_memo.pipeline.mine_insights", lambda *_args, **_kwargs: [*duplicates, reversal])
-
-    result = build_alpha_memo(
-        topic="tool reliability",
-        seed_queries=["tool reliability"],
-        searcher=FakeSearch(),
-        memo_selector=selector,
-        min_alpha_tier="elite_alpha",
-    )
-
-    assert seen[:4] == [*duplicates[:3], reversal]
-    assert result.candidate == reversal
+    assert ranked.index(reversal) == 10
+    assert list(_selector_slate(ranked)).index(reversal) == 3
 
 
 def test_pipeline_mines_broader_slate_when_selector_is_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
-
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return _hits()
 
     def fake_mine(*_args: object, **kwargs: object) -> list[InsightCandidate]:
         captured.update(kwargs)
@@ -538,7 +459,7 @@ def test_pipeline_mines_broader_slate_when_selector_is_present(
         build_alpha_memo(
             topic="longevity resilience",
             seed_queries=["sleep nad", "exercise nad"],
-            searcher=FakeSearch(),
+            searcher=_StaticSearch(_hits()),
             memo_selector=lambda candidates, _hits: candidates,
         )
 
@@ -576,11 +497,6 @@ def test_pipeline_filters_primary_anchor_drift_before_selector(monkeypatch: pyte
     )
     seen: list[InsightCandidate] = []
 
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return hits
-
     def selector(candidates: Sequence[InsightCandidate], _hits: Sequence[CorpusHit]) -> Sequence[InsightCandidate]:
         seen.extend(candidates)
         return list(candidates)
@@ -590,7 +506,7 @@ def test_pipeline_filters_primary_anchor_drift_before_selector(monkeypatch: pyte
     result = build_alpha_memo(
         topic="metformin exercise training mitochondrial adaptation",
         seed_queries=["metformin exercise training mitochondrial adaptation"],
-        searcher=FakeSearch(),
+        searcher=_StaticSearch(hits),
         memo_selector=selector,
         min_alpha_tier="elite_alpha",
     )
@@ -628,24 +544,14 @@ def test_pipeline_primary_anchor_guard_is_topic_agnostic(
         reasons=("tier:publishable_alpha",),
     )
 
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return hits
-
     monkeypatch.setattr("v5_memo.pipeline.mine_insights", lambda *_args, **_kwargs: [candidate])
 
-    result = build_alpha_memo(topic=topic, seed_queries=[topic], searcher=FakeSearch())
+    result = build_alpha_memo(topic=topic, seed_queries=[topic], searcher=_StaticSearch(hits))
 
     assert result.candidate == candidate
 
 
 def test_pipeline_selector_cannot_veto_with_invented_receipt_pair() -> None:
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return _hits()
-
     invented = InsightCandidate(
         topic="longevity resilience",
         thesis="Invented candidate.",
@@ -661,7 +567,7 @@ def test_pipeline_selector_cannot_veto_with_invented_receipt_pair() -> None:
     result = build_alpha_memo(
         topic="longevity resilience",
         seed_queries=["sleep nad", "exercise nad"],
-        searcher=FakeSearch(),
+        searcher=_StaticSearch(_hits()),
         memo_selector=lambda _candidates, _hits: [invented],
     )
 
@@ -669,16 +575,11 @@ def test_pipeline_selector_cannot_veto_with_invented_receipt_pair() -> None:
 
 
 def test_pipeline_selector_empty_choice_fails_closed() -> None:
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return _hits()
-
     with pytest.raises(MemoBuildError, match="no receipt-bound") as exc:
         build_alpha_memo(
             topic="longevity resilience",
             seed_queries=["sleep nad", "exercise nad"],
-            searcher=FakeSearch(),
+            searcher=_StaticSearch(_hits()),
             memo_selector=lambda _candidates, _hits: [],
     )
 
@@ -1232,16 +1133,11 @@ def test_pipeline_filters_publishable_seed_when_elite_required() -> None:
         ),
     ]
 
-    class FakeSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            return hits
-
     with pytest.raises(MemoBuildError, match="no receipt-bound") as exc:
         build_alpha_memo(
             topic="longevity sauna cardiovascular risk",
             seed_queries=["sauna hypertension"],
-            searcher=FakeSearch(),
+            searcher=_StaticSearch(hits),
             min_alpha_tier="elite_alpha",
     )
     assert exc.value.failure.details["min_alpha_tier"] == "elite_alpha"
@@ -1423,49 +1319,25 @@ def test_pipeline_fails_closed_when_memo_coverage_is_too_narrow() -> None:
 
 
 def test_pipeline_fails_closed_on_partial_or_failed_fullraw_coverage() -> None:
-    class PartialSearch:
-        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
-            del query, limit
-            receipt = {
-                "shards_total": 1525,
-                "shards_searched": 1525,
-                "partial_shard_search": True,
-                "sweep_failed_shards": 1,
-                "sources_searched": {str(idx): 1 for idx in range(5)},
-            }
-            return [
-                CorpusHit(
-                    hit_id="partial-1",
-                    title="NAD salvage links sleep fragmentation to mitochondrial stress",
-                    abstract="Sleep fragmentation reduced resilience through NAD salvage and mitochondrial stress.",
-                    source="fullraw:openalex",
-                    year=2024,
-                    doi="10.partial/1",
-                    metadata={"shard_receipt": receipt, "search_pass": "focused"},
-                ),
-                CorpusHit(
-                    hit_id="partial-2",
-                    title="NAD salvage predicts exercise response through mitochondrial repair",
-                    abstract="Exercise improved resilience when NAD salvage and mitochondrial repair markers moved together.",
-                    source="fullraw:pubmed",
-                    year=2023,
-                    doi="10.partial/2",
-                    metadata={"shard_receipt": receipt, "search_pass": "broad"},
-                ),
-            ]
+    receipt = {
+        "shards_total": 1525,
+        "shards_searched": 1525,
+        "partial_shard_search": True,
+        "sweep_failed_shards": 1,
+        "sources_searched": {str(idx): 1 for idx in range(5)},
+    }
+    failure = memo_coverage_failure(
+        topic="longevity resilience",
+        receipts=[
+            CorpusHit("partial-1", "A", "B", "fullraw", metadata={"shard_receipt": receipt}),
+            CorpusHit("partial-2", "C", "D", "fullraw", metadata={"shard_receipt": receipt}),
+        ],
+        min_shards_searched=1525,
+        min_sources_searched=5,
+    )
 
-    with pytest.raises(MemoBuildError, match="coverage too narrow") as exc:
-        build_alpha_memo(
-            topic="longevity resilience",
-            seed_queries=["nad mitochondrial"],
-            searcher=PartialSearch(),
-            min_alpha_tier="discovery_seed",
-            min_shards_searched=1525,
-            min_sources_searched=5,
-            min_search_passes=2,
-        )
-
-    assert exc.value.failure.details["failures"] == (
+    assert failure is not None
+    assert failure.details["failures"] == (
         "partial_shard_search",
         "sweep_failed_shards",
     )
