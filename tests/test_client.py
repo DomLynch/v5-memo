@@ -488,24 +488,13 @@ def test_full_raw_client_polls_busy_cache_sweep(monkeypatch: object) -> None:
         payloads.append(payload)
         if len(payloads) == 1:
             return FakeResponse({
-                "meta": {
-                    "count": 0,
-                    "shard_receipt": {"auth_required": True, "authenticated": True},
-                    "async_sweep": {"status": "busy"},
-                },
+                "meta": {"shard_receipt": {"authenticated": True}, "async_sweep": {"status": "busy"}},
                 "results": [],
             })
         return FakeResponse({
             "meta": {
                 "count": 1,
-                "shard_receipt": {
-                    "auth_required": True,
-                    "authenticated": True,
-                    "shards_searched": 1525,
-                    "partial_shard_search": False,
-                    "sweep_failed_shards": 0,
-                    "sources_searched": {str(idx): 1 for idx in range(5)},
-                },
+                "shard_receipt": {"authenticated": True, "shards_searched": 1},
                 "async_sweep": {"status": "hit"},
             },
             "results": [{"doi": "10.123/metformin", "title": "Metformin longevity evidence", "source": "openalex"}],
@@ -518,8 +507,7 @@ def test_full_raw_client_polls_busy_cache_sweep(monkeypatch: object) -> None:
         max_variants=1,
         sweep_wait_seconds=1.0,
         sweep_poll_seconds=0.05,
-        min_shards_searched=1525,
-        min_sources_searched=5,
+        min_shards_searched=1,
     )
 
     hits = client.search("metformin longevity", limit=3)

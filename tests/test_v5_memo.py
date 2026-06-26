@@ -297,25 +297,12 @@ def test_pipeline_anchors_cover_late_planned_query_angles() -> None:
     assert result.candidate.receipt_ids == ("promise", "outcome")
 
 
-def test_pipeline_stops_retrieval_once_publishable_candidate_exists(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_pipeline_stops_retrieval_once_publishable_candidate_exists() -> None:
     calls: list[str] = []
     hits = [
-        _hit("promise", "Metformin expected training augmentation", "Metformin was expected to augment training."),
-        _hit("outcome", "Metformin observed training blunting", "Metformin blunted training adaptation."),
+        _hit("promise", "Metformin protocol expected training augmentation", "Metformin was expected to augment resistance training adaptation."),
+        _hit("outcome", "Metformin trial observed training blunting", "Metformin blunted resistance training adaptation."),
     ]
-    candidate = InsightCandidate(
-        topic="metformin training",
-        thesis="Metformin expected training help but observed blunting.",
-        bridge_terms=("metformin", "training"),
-        tension_terms=("expected", "blunted"),
-        receipt_ids=("promise", "outcome"),
-        score=90,
-        novelty_score=90,
-        evidence_score=90,
-        reasons=("tier:elite_alpha", "shape:expectation_reversal"),
-    )
 
     def search(query: str, limit: int) -> Sequence[CorpusHit]:
         del limit
@@ -323,17 +310,15 @@ def test_pipeline_stops_retrieval_once_publishable_candidate_exists(
         assert query != "slow"
         return hits
 
-    monkeypatch.setattr("v5_memo.pipeline.mine_insights", lambda *_args, **_kwargs: [candidate])
-
     result = build_alpha_memo(
         topic="metformin training",
-        seed_queries=["good", "slow"],
+        seed_queries=["metformin training", "slow"],
         searcher=_FunctionSearch(search),
         min_alpha_tier="elite_alpha",
     )
 
-    assert calls == ["good"]
-    assert result.candidate == candidate
+    assert calls == ["metformin training"]
+    assert result.candidate.receipt_ids == ("promise", "outcome")
 
 
 def test_pipeline_anchors_to_original_seed_before_planner_drift() -> None:
