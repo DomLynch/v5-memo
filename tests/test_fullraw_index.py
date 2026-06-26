@@ -520,6 +520,42 @@ def test_complete_sweep_retries_failed_shards() -> None:
     ) == 2
 
 
+def test_shard_search_materializes_before_isolated_worker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / "remote.sqlite"
+    materialized = tmp_path / "local.sqlite"
+    searched: list[Path] = []
+
+    def fake_materialized(path: Path) -> Path:
+        assert path == original
+        return materialized
+
+    def fake_search(path: Path, *_args: object) -> list[dict[str, object]]:
+        searched.append(path)
+        return [{"title": "Metformin longevity", "score": 1.0}]
+
+    monkeypatch.setattr(fullraw_index, "_materialized_shard_path", fake_materialized)
+    monkeypatch.setattr(fullraw_index, "_search_one_shard_for_pool", fake_search)
+
+    hits, completed_paths, timed_out, _metrics = fullraw_index._search_shard_paths_with_paths_and_receipt(
+        [original],
+        "metformin longevity",
+        limit=1,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        workers=1,
+        timeout_seconds=5,
+    )
+
+    assert searched == [materialized]
+    assert completed_paths == [original]
+    assert hits[0]["title"] == "Metformin longevity"
+    assert timed_out is False
+
+
 def test_shard_catalog_cache_round_trips_entries(tmp_path: Path) -> None:
     entry = ShardCatalogEntry(
         path=tmp_path / "batch_00001" / "fullraw_shard_0000.sqlite",

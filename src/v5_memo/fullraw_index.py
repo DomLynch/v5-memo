@@ -1128,20 +1128,31 @@ def _search_shard_paths_with_paths_and_receipt(
             timed_out = True
             break
         batch = search_paths[start:start + worker_count]
-        pool = ThreadPoolExecutor(max_workers=max(1, min(worker_count, len(batch))))
+        search_pairs: list[tuple[Path, Path]] = []
+        for path in batch:
+            if deadline is not None and time.monotonic() >= deadline:
+                timed_out = True
+                break
+            try:
+                search_pairs.append((path, _materialized_shard_path(path)))
+            except OSError:
+                continue
+        if timed_out or not search_pairs:
+            break
+        pool = ThreadPoolExecutor(max_workers=max(1, min(worker_count, len(search_pairs))))
         try:
             futures = {
                 pool.submit(
                     _search_one_shard_for_pool,
-                    path,
+                    search_path,
                     query,
                     limit,
                     year_min,
                     year_max,
                     rank_mode,
                     per_shard_timeout,
-                ): path
-                for path in batch
+                ): original_path
+                for original_path, search_path in search_pairs
             }
             remaining = None if deadline is None else max(0.05, deadline - time.monotonic())
             for future in as_completed(futures, timeout=remaining):
