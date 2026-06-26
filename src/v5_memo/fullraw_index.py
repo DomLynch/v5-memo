@@ -28,6 +28,7 @@ from concurrent.futures import (
 from concurrent.futures import (
     TimeoutError as FuturesTimeoutError,
 )
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1109,7 +1110,16 @@ def _search_shard_paths_with_paths_and_receipt(
         pool = ThreadPoolExecutor(max_workers=max(1, min(worker_count, len(batch))))
         try:
             futures = {
-                pool.submit(_search_one_shard, path, query, limit, year_min, year_max, rank_mode, per_shard_timeout): path
+                pool.submit(
+                    _search_one_shard_for_pool,
+                    path,
+                    query,
+                    limit,
+                    year_min,
+                    year_max,
+                    rank_mode,
+                    per_shard_timeout,
+                ): path
                 for path in batch
             }
             remaining = None if deadline is None else max(0.05, deadline - time.monotonic())
@@ -1117,7 +1127,7 @@ def _search_shard_paths_with_paths_and_receipt(
                 path = futures[future]
                 try:
                     hits = future.result()
-                except (OSError, sqlite3.Error):
+                except (OSError, TimeoutError, sqlite3.Error, subprocess.SubprocessError):
                     continue
                 completed_paths.append(path)
                 hit_groups.append(hits)
@@ -1647,6 +1657,86 @@ def _search_one_shard(
         )
     finally:
         index.close()
+
+
+def _search_one_shard_for_pool(
+    path: Path,
+    query: str,
+    limit: int,
+    year_min: int,
+    year_max: int,
+    rank_mode: str,
+    timeout_seconds: float | None = None,
+) -> list[dict[str, object]]:
+    if os.environ.get("V5_MEMO_FULL_RAW_SEARCH_ISOLATED", "").casefold() in {"1", "true", "yes"}:
+        return _search_one_shard_isolated(
+            path,
+            query,
+            limit,
+            year_min,
+            year_max,
+            rank_mode,
+            timeout_seconds,
+        )
+    return _search_one_shard(path, query, limit, year_min, year_max, rank_mode, timeout_seconds)
+
+
+def _search_one_shard_isolated(
+    path: Path,
+    query: str,
+    limit: int,
+    year_min: int,
+    year_max: int,
+    rank_mode: str,
+    timeout_seconds: float | None = None,
+) -> list[dict[str, object]]:
+    child_timeout = max(0.1, timeout_seconds or 30.0)
+    code = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "from v5_memo.fullraw_index import _search_one_shard\n"
+        "path=Path(sys.argv[1])\n"
+        "query=sys.argv[2]\n"
+        "limit=int(sys.argv[3])\n"
+        "year_min=int(sys.argv[4])\n"
+        "year_max=int(sys.argv[5])\n"
+        "rank_mode=sys.argv[6]\n"
+        "timeout=float(sys.argv[7]) if sys.argv[7] else None\n"
+        "print(json.dumps(_search_one_shard(path, query, limit, year_min, year_max, rank_mode, timeout)))\n"
+    )
+    env = os.environ.copy()
+    env["V5_MEMO_FULL_RAW_SEARCH_ISOLATED"] = "0"
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            code,
+            str(path),
+            query,
+            str(limit),
+            str(year_min),
+            str(year_max),
+            rank_mode,
+            "" if timeout_seconds is None else str(timeout_seconds),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=child_timeout + 1.0)
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        with suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=1.0)
+        raise TimeoutError(f"isolated shard search timed out: {path}") from exc
+    if proc.returncode != 0:
+        raise sqlite3.Error((stderr or stdout or "isolated shard search failed").strip()[:500])
+    payload = json.loads(stdout)
+    if not isinstance(payload, list):
+        raise sqlite3.Error("isolated shard search returned non-list payload")
+    return [hit for hit in payload if isinstance(hit, dict)]
 
 
 def _materialized_shard_path(path: Path, *, preserve: set[Path] | None = None) -> Path:

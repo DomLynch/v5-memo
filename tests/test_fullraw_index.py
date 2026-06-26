@@ -1,6 +1,7 @@
 import gzip
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -135,6 +136,45 @@ def test_shard_search_returns_partial_hits_on_timeout(tmp_path: Path, monkeypatc
     assert len(called) <= fullraw_index._FULL_COVERAGE_PREFIX_SHARDS
     assert many_paths[-1] not in called
     assert timeouts == [30] * len(called)
+
+
+def test_isolated_shard_search_kills_timed_out_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProcess:
+        returncode = None
+        killed = False
+        waited = False
+
+        def communicate(self, *, timeout: float) -> tuple[str, str]:
+            raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
+
+        def kill(self) -> None:
+            self.killed = True
+
+        def wait(self, *, timeout: float) -> None:
+            del timeout
+            self.waited = True
+            raise subprocess.TimeoutExpired(cmd="fake", timeout=1)
+
+    fake = FakeProcess()
+    monkeypatch.setattr("v5_memo.fullraw_index.subprocess.Popen", lambda *args, **kwargs: fake)
+
+    with pytest.raises(TimeoutError):
+        fullraw_index._search_one_shard_isolated(
+            tmp_path / "stuck.sqlite",
+            "metformin",
+            5,
+            1900,
+            2100,
+            "relevance",
+            0.01,
+        )
+
+    assert fake.killed is True
+    assert fake.waited is True
+
 
 def test_foreground_receipt_counts_only_completed_shards(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     entries = [_entry(tmp_path, idx, "openalex") for idx in range(4)]
