@@ -387,6 +387,46 @@ def test_full_raw_client_waits_for_zero_hit_foreground_sweep(monkeypatch: object
     assert hits[0].doi == "10.123/sweep"
 
 
+def test_full_raw_client_bounds_wait_on_queued_sweep(monkeypatch: MonkeyPatch) -> None:
+    payloads: list[dict[str, object]] = []
+    now = 0.0
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payloads.append(json.loads(cast(bytes, request.data).decode("utf-8")))
+        return FakeResponse({
+            "meta": {"shard_receipt": {"authenticated": True}, "async_sweep": {"status": "queued"}},
+            "results": [],
+        })
+
+    def fake_monotonic() -> float:
+        return now
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    monkeypatch.setattr("v5_memo.client.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("v5_memo.client.time.sleep", fake_sleep)
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="raw-token",
+        max_variants=1,
+        sweep_wait_seconds=0.15,
+        sweep_poll_seconds=0.05,
+        min_shards_searched=1,
+        strict=True,
+    )
+
+    with pytest.raises(SearchBackendError, match="coverage too narrow"):
+        client.search("cold water immersion resistance training", limit=3)
+
+    assert [payload.get("cache_only") for payload in payloads] == [True, True, True, True]
+    assert {payload.get("queue_if_missing") for payload in payloads} == {True}
+    assert now == pytest.approx(0.15)
+
+
 def test_full_raw_client_keeps_sufficient_foreground_hit(monkeypatch: object) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del timeout
