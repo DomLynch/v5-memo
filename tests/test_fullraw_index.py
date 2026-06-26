@@ -304,6 +304,37 @@ def test_sweep_cache_only_can_answer_agent_poll() -> None:
     )
 
 
+def test_completed_disk_sweep_cache_beats_stale_memory_partial() -> None:
+    memory_entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[],
+        receipt={
+            "shards_searched": 889,
+            "shards_total": 1525,
+            "partial_shard_search": True,
+            "sweep_remaining_shards": 636,
+        },
+    )
+    disk_entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time() - 3600,
+        hits=[{"title": "Metformin longevity"}],
+        receipt={
+            "shards_searched": 1525,
+            "shards_total": 1525,
+            "partial_shard_search": False,
+            "sweep_remaining_shards": 0,
+            "sweep_failed_shards": 0,
+            "source_count_searched": 5,
+        },
+    )
+
+    selected = fullraw_index._prefer_sweep_cache_entry(memory_entry, disk_entry)
+
+    assert selected is disk_entry
+    assert selected.receipt["partial_shard_search"] is False
+    assert selected.receipt["shards_searched"] == 1525
+
+
 def test_complete_sweep_retries_failed_shards() -> None:
     receipt = {
         "sweep_failed_paths": ("shard_a.sqlite", "shard_b.sqlite"),
