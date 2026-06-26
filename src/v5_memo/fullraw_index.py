@@ -1100,6 +1100,10 @@ def _search_shard_paths_with_paths_and_receipt(
         else paths
     )
     deadline = time.monotonic() + timeout_seconds if timeout_seconds else None
+    per_shard_timeout = shard_timeout_seconds
+    if timeout_seconds and per_shard_timeout:
+        batches = max(1, -(-len(search_paths) // worker_count))
+        per_shard_timeout = min(per_shard_timeout, max(0.1, timeout_seconds / batches))
     for start in range(0, len(search_paths), worker_count):
         if deadline is not None and time.monotonic() >= deadline:
             timed_out = True
@@ -1108,7 +1112,7 @@ def _search_shard_paths_with_paths_and_receipt(
         pool = ThreadPoolExecutor(max_workers=max(1, min(worker_count, len(batch))))
         try:
             futures = {
-                pool.submit(_search_one_shard, path, query, limit, year_min, year_max, rank_mode, shard_timeout_seconds): path
+                pool.submit(_search_one_shard, path, query, limit, year_min, year_max, rank_mode, per_shard_timeout): path
                 for path in batch
             }
             remaining = None if deadline is None else max(0.05, deadline - time.monotonic())
@@ -2484,6 +2488,7 @@ def run_server() -> None:
         os.environ.get("V5_MEMO_FULL_RAW_SWEEP_SHARD_TIMEOUT_SECONDS", "")
     ) or 10.0
     sweep_shard_timeout_seconds = max(0.1, min(sweep_shard_timeout_seconds, sweep_timeout_seconds))
+    search_shard_timeout_seconds = _float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_SUBPROCESS_TIMEOUT", ""))
     sweep_cache_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR", "").strip()
     sweep_cache_dir = Path(sweep_cache_dir_config) if sweep_cache_dir_config else None
     manifest_path = Path(
@@ -2552,7 +2557,7 @@ def run_server() -> None:
                 year_max=year_max,
                 rank_mode=rank_mode,
                 timeout_seconds=timeout_seconds,
-                shard_timeout_seconds=timeout_seconds,
+                shard_timeout_seconds=search_shard_timeout_seconds or timeout_seconds,
             )
         assert index is not None
         return (
