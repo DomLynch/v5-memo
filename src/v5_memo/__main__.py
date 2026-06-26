@@ -163,7 +163,9 @@ def main() -> None:
     else:
         base_queries = [args.topic]
     queries = base_queries
-    if planner_mode == "minimax":
+    if planner_mode == "minimax" and not (
+        fullraw_backed and not explicit_queries and len(_topic_filter_terms(args.topic)) >= 3
+    ):
         queries = MiniMaxM3SearchPlanner.from_env().plan(
             topic=args.topic,
             seed_queries=base_queries,
@@ -180,7 +182,7 @@ def main() -> None:
                 queries = _dedupe_queries([*base_queries, *(planned[:2] or shape_queries if fullraw_backed else [*shape_queries, *planned])])
             else:
                 queries = planned_queries or base_queries
-    elif fullraw_backed and not explicit_queries and query_anchor_terms(base_queries):
+    elif fullraw_backed and not explicit_queries and query_anchor_terms(base_queries) and len(_topic_filter_terms(args.topic)) < 3:
         queries = _dedupe_queries([*base_queries, *_alpha_shape_queries(args.topic)])
     anchor_queries = base_queries
     if not explicit_queries and not query_anchor_terms(base_queries):
