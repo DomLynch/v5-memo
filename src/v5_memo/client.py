@@ -394,6 +394,11 @@ class FullRawCorpusSearchClient:
                 current = best.get(scored.source_key)
                 if current is None or score > current[0]:
                     best[scored.source_key] = (score, scored)
+            if self._uses_cache_sweep_contract() and len(best) >= min(limit, 5):
+                self._log_progress(
+                    f"fullraw complete variant supplied enough hits; variants={variant_index}/{len(search_passes)}"
+                )
+                break
             if len(best) >= limit:
                 break
         self._log_progress(f"fullraw query done in {time.monotonic() - started:.1f}s; hits={len(best)}")

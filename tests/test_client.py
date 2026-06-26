@@ -766,6 +766,51 @@ def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: objec
     assert receipt["search_passes"] == ("focused", "broad")
     assert receipt["rank_modes"] == ("relevance",)
 
+
+def test_full_raw_client_stops_variants_after_complete_sweep_has_enough_hits(
+    monkeypatch: object,
+) -> None:
+    requested: list[dict[str, object]] = []
+    receipt = {
+        "shards_total": 1525,
+        "shards_searched": 1525,
+        "partial_shard_search": False,
+        "sweep_failed_shards": 0,
+        "sources_searched": {str(index): 1 for index in range(5)},
+    }
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        requested.append(payload)
+        return FakeResponse({
+            "meta": {"count": 5, "shard_receipt": receipt},
+            "results": [
+                {
+                    "doi": f"10.123/complete-{index}",
+                    "title": f"Management forecast disclosure complete sweep {index}",
+                    "abstract": "Management forecast disclosure evidence.",
+                    "year": 2024,
+                    "source": "openalex",
+                }
+                for index in range(5)
+            ],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=4,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+    )
+
+    hits = client.search("management forecast disclosure", limit=10)
+
+    assert len(hits) == 5
+    assert [payload["search_pass"] for payload in requested] == ["focused"]
+
+
 def test_full_raw_client_can_fail_closed_on_narrow_shard_receipt(monkeypatch: object) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del request, timeout
