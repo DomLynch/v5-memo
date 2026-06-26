@@ -36,6 +36,9 @@ def render_alpha_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]
         "**Receipt roles:**",
         *_receipt_role_lines(candidate),
         "",
+        "**Claim ledger:**",
+        *_claim_card_lines(candidate),
+        "",
         "**Why it matters:**",
         (
             "This is a receipt-bound lead for investigation: two independent "
@@ -75,6 +78,9 @@ def render_discovery_seed(candidate: InsightCandidate, receipts: Sequence[Corpus
         "**Receipt roles:**",
         *_receipt_role_lines(candidate),
         "",
+        "**Claim ledger:**",
+        *_claim_card_lines(candidate),
+        "",
         "**Receipts:**",
     ]
     lines.extend(_receipt_line(index, hit) for index, hit in enumerate(receipts, start=1))
@@ -101,4 +107,17 @@ def _receipt_role_lines(candidate: InsightCandidate) -> list[str]:
     return [
         f"- `{role.receipt_id}`: {role.role} ({role.reason})"
         for role in candidate.receipt_roles
+    ]
+
+
+def _claim_card_lines(candidate: InsightCandidate) -> list[str]:
+    if not candidate.claim_cards:
+        return ["- no structured claim cards assigned"]
+    return [
+        (
+            f"- `{card.receipt_id}`: {card.role}; design={card.design}; "
+            f"population={card.population}; outcome={card.outcome}; "
+            f"direction={card.direction}; support={card.support_type}/{card.confidence}"
+        )
+        for card in candidate.claim_cards
     ]

@@ -371,6 +371,9 @@ Selector tier:
 Receipt roles:
 {_role_block(candidate)}
 
+Claim ledger:
+{_claim_card_block(candidate)}
+
 Locked receipts:
 {receipt_block}
 """
@@ -583,6 +586,7 @@ def _candidate_block(
         f"Reasons: {', '.join(candidate.reasons) or 'none'}\n"
         f"Tier: {candidate_alpha_tier(candidate)}\n"
         f"Receipt roles: {_inline_roles(candidate)}\n"
+        f"Claim cards: {_inline_claim_cards(candidate)}\n"
         f"Score: {candidate.score}\n"
         f"Receipts:\n{receipts}"
     )
@@ -607,6 +611,29 @@ def _inline_roles(candidate: InsightCandidate) -> str:
     if not candidate.receipt_roles:
         return "none assigned"
     return "; ".join(f"{role.receipt_id}={role.role}" for role in candidate.receipt_roles)
+
+
+def _claim_card_block(candidate: InsightCandidate) -> str:
+    if not candidate.claim_cards:
+        return "- none assigned"
+    return "\n".join(
+        (
+            f"- {card.receipt_id}: role={card.role}; design={card.design}; "
+            f"population={card.population}; outcome={card.outcome}; "
+            f"direction={card.direction}; support={card.support_type}/{card.confidence}; "
+            f"quote={card.quote}"
+        )
+        for card in candidate.claim_cards
+    )
+
+
+def _inline_claim_cards(candidate: InsightCandidate) -> str:
+    if not candidate.claim_cards:
+        return "none assigned"
+    return "; ".join(
+        f"{card.receipt_id}:{card.role}/{card.design}/{card.population}/{card.direction}"
+        for card in candidate.claim_cards
+    )
 
 
 def _anthropic_text(data: Mapping[str, Any]) -> str:

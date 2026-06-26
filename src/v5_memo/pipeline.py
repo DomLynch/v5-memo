@@ -47,6 +47,7 @@ def build_alpha_memo(
         topic=topic,
         required_anchor_terms=anchor_terms,
         include_discovery=min_alpha_tier == "discovery_seed",
+        max_candidates=25 if memo_selector is not None else 8,
     )
     hits_by_id = {hit.hit_id: hit for hit in hits}
     publishable_candidates = [
