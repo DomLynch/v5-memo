@@ -143,7 +143,7 @@ def main() -> None:
         ])
         searcher = HybridCorpusSearchClient(searchers)
     else:
-        searcher = OpenAlexFullCorpusSearchClient.from_env(strict=True)
+        searcher = OpenAlexFullCorpusSearchClient.from_env(strict=False)
     memo_writer = render_memo
     if writer_mode == "minimax":
         memo_writer = MiniMaxM3MemoWriter.from_env().render
