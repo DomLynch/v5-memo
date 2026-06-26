@@ -94,6 +94,8 @@ def _fullraw_retrieval_coverage(receipts: Sequence[CorpusHit]) -> dict[str, obje
     search_passes: set[str] = set()
     auth_required = False
     authenticated = False
+    partial_shard_search = False
+    sweep_failed_shards = 0
     fullraw_count = 0
     for hit in receipts:
         if hit.source.startswith("fullraw:"):
@@ -101,6 +103,8 @@ def _fullraw_retrieval_coverage(receipts: Sequence[CorpusHit]) -> dict[str, obje
         raw_receipt = hit.metadata.get("shard_receipt")
         receipt = raw_receipt if isinstance(raw_receipt, Mapping) else {}
         shards_searched = max(shards_searched, _int_value(receipt.get("shards_searched")))
+        partial_shard_search = partial_shard_search or receipt.get("partial_shard_search") is True
+        sweep_failed_shards += _int_value(receipt.get("sweep_failed_shards"))
         auth_required = auth_required or receipt.get("auth_required") is True
         authenticated = authenticated or receipt.get("authenticated") is True
         raw_sources = receipt.get("sources_searched")
@@ -119,6 +123,8 @@ def _fullraw_retrieval_coverage(receipts: Sequence[CorpusHit]) -> dict[str, obje
         "auth_required": auth_required,
         "authenticated": authenticated,
         "shards_searched": shards_searched,
+        "partial_shard_search": partial_shard_search,
+        "sweep_failed_shards": sweep_failed_shards,
         "sources_searched": sorted(sources),
         "search_passes": sorted(search_passes),
     }

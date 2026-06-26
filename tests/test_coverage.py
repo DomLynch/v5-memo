@@ -41,7 +41,21 @@ def test_require_full_raw_corpus_fails_closed(monkeypatch: MonkeyPatch) -> None:
         require_full_raw_corpus()
 
 
-def test_require_full_raw_corpus_accepts_explicit_service(monkeypatch: MonkeyPatch) -> None:
+def test_require_full_raw_corpus_accepts_complete_explicit_service(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9999/search")
+    monkeypatch.setattr(
+        "v5_memo.coverage.urlopen",
+        lambda request, timeout: FakeResponse(
+            '{"ok": true, "backend": "v5-fullraw-fts", "papers_indexed": 123, '
+            '"files_indexed": 4, "files_total": 4, "complete": true, '
+            '"shard_receipt": {"partial_shard_search": false, "sweep_failed_shards": 0}}'
+        ),
+    )
+
+    require_full_raw_corpus()
+
+
+def test_require_full_raw_corpus_rejects_incomplete_service(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9999/search")
     monkeypatch.setattr(
         "v5_memo.coverage.urlopen",
@@ -51,7 +65,8 @@ def test_require_full_raw_corpus_accepts_explicit_service(monkeypatch: MonkeyPat
         ),
     )
 
-    require_full_raw_corpus()
+    with pytest.raises(RuntimeError, match="Full local raw 450M"):
+        require_full_raw_corpus()
 
 
 def test_coverage_reports_configured_full_raw_endpoint(monkeypatch: MonkeyPatch) -> None:
@@ -60,7 +75,8 @@ def test_coverage_reports_configured_full_raw_endpoint(monkeypatch: MonkeyPatch)
         "v5_memo.coverage.urlopen",
         lambda request, timeout: FakeResponse(
             '{"ok": true, "backend": "v5-fullraw-fts", "papers_indexed": 123, '
-            '"files_indexed": 3, "files_total": 4, "complete": false}'
+            '"files_indexed": 4, "files_total": 4, "complete": true, '
+            '"shard_receipt": {"partial_shard_search": false, "sweep_failed_shards": 0}}'
         ),
     )
 
@@ -86,7 +102,9 @@ def test_fullraw_health_uses_search_service_health_endpoint(monkeypatch: MonkeyP
         seen["timeout"] = timeout
         return FakeResponse(
             '{"ok": true, "backend": "v5-fullraw-fts", "papers_indexed": 456, '
-            '"files_indexed": 7, "files_total": 9, "complete": true}'
+            '"files_indexed": 9, "files_total": 9, "complete": true, '
+            '"shard_receipt": {"partial_shard_search": false, "sweep_failed_shards": 0, '
+            '"sources_searched": {"openalex": 1, "pubmed": 1}}}'
         )
 
     monkeypatch.setenv("V5_MEMO_FULL_RAW_HEALTH_TIMEOUT", "1.5")
@@ -97,4 +115,7 @@ def test_fullraw_health_uses_search_service_health_endpoint(monkeypatch: MonkeyP
     assert health.ok is True
     assert health.papers_indexed == 456
     assert health.complete is True
+    assert health.partial_shard_search is False
+    assert health.sweep_failed_shards == 0
+    assert health.source_count == 2
     assert seen == {"url": "http://127.0.0.1:9902/health", "timeout": 1.5}

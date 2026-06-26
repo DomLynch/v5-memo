@@ -3145,7 +3145,7 @@ def run_server() -> None:
                 require_complete_sweep=sweep_require_complete,
             ):
                 assert cached is not None
-                hits = cached.hits
+                hits = cached.hits[:limit]
                 receipt = auth_receipt(cached.receipt)
                 sweep_status = "hit"
             else:
@@ -3170,7 +3170,7 @@ def run_server() -> None:
                                 sweep_cache_entry_is_terminal(cached)
                                 and receipt_is_sufficient(cached.receipt)
                             ):
-                                hits = cached.hits
+                                hits = cached.hits[:limit]
                             elif resume_cached:
                                 sweep_status = "running"
                         elif resume_cached and cached is not None:
@@ -3179,7 +3179,7 @@ def run_server() -> None:
                                 sweep_cache_entry_is_terminal(cached)
                                 and receipt_is_sufficient(cached.receipt)
                             ):
-                                hits = cached.hits
+                                hits = cached.hits[:limit]
                     else:
                         with sweep_lock:
                             sweep_status = "running" if cache_key in sweep_inflight else "miss"
@@ -3656,7 +3656,6 @@ def _sweep_cache_key(
     payload = json.dumps(
         {
             "query": query,
-            "limit": limit,
             "year_min": year_min,
             "year_max": year_max,
             "rank_mode": _rank_mode(rank_mode),

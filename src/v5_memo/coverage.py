@@ -32,6 +32,9 @@ class SearchBackendHealth:
     files_indexed: int = 0
     files_total: int = 0
     complete: bool = False
+    partial_shard_search: bool = False
+    sweep_failed_shards: int = 0
+    source_count: int = 0
     error: str = ""
 
 
@@ -106,7 +109,25 @@ def full_raw_search_health(url: str | None = None) -> SearchBackendHealth:
     files_indexed = _int_value(data.get("files_indexed"))
     files_total = _int_value(data.get("files_total"))
     backend = str(data.get("backend") or "")
-    ok = bool(data.get("ok") is True and backend and papers_indexed > 0)
+    shard_receipt = data.get("shard_receipt")
+    receipt = shard_receipt if isinstance(shard_receipt, dict) else {}
+    sources = receipt.get("sources_searched")
+    source_count = (
+        sum(1 for value in sources.values() if _int_value(value))
+        if isinstance(sources, dict)
+        else 0
+    )
+    partial_shard_search = receipt.get("partial_shard_search") is True
+    sweep_failed_shards = _int_value(receipt.get("sweep_failed_shards"))
+    complete = data.get("complete") is True
+    ok = bool(
+        data.get("ok") is True
+        and backend
+        and papers_indexed > 0
+        and complete
+        and not partial_shard_search
+        and sweep_failed_shards == 0
+    )
     return SearchBackendHealth(
         configured=True,
         ok=ok,
@@ -115,8 +136,11 @@ def full_raw_search_health(url: str | None = None) -> SearchBackendHealth:
         papers_indexed=papers_indexed,
         files_indexed=files_indexed,
         files_total=files_total,
-        complete=data.get("complete") is True,
-        error="" if ok else "health missing ok/backend/papers_indexed",
+        complete=complete,
+        partial_shard_search=partial_shard_search,
+        sweep_failed_shards=sweep_failed_shards,
+        source_count=source_count,
+        error="" if ok else "health incomplete, partial, failed, or missing ok/backend/papers_indexed",
     )
 
 

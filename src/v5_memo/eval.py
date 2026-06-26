@@ -30,16 +30,25 @@ class EvalReport:
     cases: int
     passed: int
     failed: int
+    positive_cases: int
+    negative_cases: int
+    false_positive_failures: int
     results: tuple[EvalCaseResult, ...]
 
 
 def evaluate_golden_cases(path: Path) -> EvalReport:
     results = tuple(_evaluate_case(case) for case in _load_cases(path))
     passed = sum(1 for result in results if result.passed)
+    negative_cases = sum(1 for result in results if not result.expected_ids)
     return EvalReport(
         cases=len(results),
         passed=passed,
         failed=len(results) - passed,
+        positive_cases=len(results) - negative_cases,
+        negative_cases=negative_cases,
+        false_positive_failures=sum(
+            1 for result in results if not result.expected_ids and result.selected_ids
+        ),
         results=results,
     )
 

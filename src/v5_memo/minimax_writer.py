@@ -271,6 +271,8 @@ Hard rules:
 - Avoid generic phrases such as "more research is needed" unless tied to a receipt-specific test.
 - In "What would break the idea", name one concrete next-step uncertainty or
   study design that would resolve the boundary.
+- Include a concise Claim ledger section before Receipts. Each claim must use the
+  supplied claim-card receipt ID and support type; do not invent unsupported claims.
 - Use this exact receipt-owned title first line: # Alpha memo: {title}
 - Output Markdown only.
 - Keep it under 450 words.
@@ -281,6 +283,7 @@ Required structure:
 ## The 2+2=5 angle
 ## Why this could matter
 ## What would break the idea
+## Claim ledger
 ## Receipts
 ## Safety note
 
@@ -481,7 +484,26 @@ def validate_minimax_memo(
         )
     if candidate is not None:
         _validate_receipt_owned_title(text, receipts, candidate)
+        _validate_claim_ledger(text, candidate)
     return text + "\n"
+
+
+def _validate_claim_ledger(markdown: str, candidate: InsightCandidate) -> None:
+    if not candidate.claim_cards:
+        return
+    if "## Claim ledger" not in markdown:
+        raise MemoFormatError("MiniMax memo missing required claim ledger")
+    ledger = markdown.split("## Claim ledger", 1)[1].split("## Receipts", 1)[0]
+    missing = [
+        card.receipt_id
+        for card in candidate.claim_cards
+        if card.receipt_id not in ledger or card.support_type not in ledger
+    ]
+    if missing:
+        raise MemoFormatError(
+            "MiniMax memo claim ledger missing receipt/support entries: "
+            + ", ".join(dict.fromkeys(missing))
+        )
 
 
 def _receipt_block(index: int, hit: CorpusHit) -> str:
