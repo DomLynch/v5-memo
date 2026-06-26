@@ -473,6 +473,25 @@ def test_repolled_queued_sweep_job_gets_next_lane_without_reordering_rest() -> N
     assert list(queued_jobs) == ["older", "later"]
 
 
+def test_priority_sweep_job_gets_next_lane_before_background_queue() -> None:
+    older = fullraw_index.SweepJob("older", "older query", 10, 1900, 2100, "relevance", [])
+    target = fullraw_index.SweepJob("target", "target query", 10, 1900, 2100, "relevance", [])
+    later = fullraw_index.SweepJob("later", "later query", 10, 1900, 2100, "relevance", [])
+    queued = {"older", "target", "later"}
+    queued_jobs = {"older": older, "later": later}
+
+    fullraw_index._queue_sweep_job_with_priority(queued_jobs, "target", target, priority=True)
+    next_job = fullraw_index._take_next_queued_sweep_job(
+        sweep_inflight=set(),
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_inflight=1,
+    )
+
+    assert next_job == target
+    assert list(queued_jobs) == ["older", "later"]
+
+
 def test_complete_sweep_retries_failed_shards() -> None:
     receipt = {
         "sweep_failed_paths": ("shard_a.sqlite", "shard_b.sqlite"),

@@ -2402,7 +2402,17 @@ def _take_next_queued_sweep_job(
 
 
 def _queue_sweep_job(sweep_queued_jobs: dict[str, SweepJob], key: str, job: SweepJob) -> None:
-    if key not in sweep_queued_jobs:
+    _queue_sweep_job_with_priority(sweep_queued_jobs, key, job, priority=key in sweep_queued_jobs)
+
+
+def _queue_sweep_job_with_priority(
+    sweep_queued_jobs: dict[str, SweepJob],
+    key: str,
+    job: SweepJob,
+    *,
+    priority: bool,
+) -> None:
+    if not priority and key not in sweep_queued_jobs:
         sweep_queued_jobs[key] = job
         return
     existing = tuple((queued_key, queued_job) for queued_key, queued_job in sweep_queued_jobs.items() if queued_key != key)
@@ -2985,6 +2995,7 @@ def run_server() -> None:
         year_max: int,
         rank_mode: str,
         catalog: list[ShardCatalogEntry],
+        priority: bool = False,
     ) -> str:
         if not sweep_enabled or shard_dir is None:
             return "disabled"
@@ -3011,7 +3022,7 @@ def run_server() -> None:
                 max_inflight=sweep_max_inflight,
             )
             if status == "queued" and key not in sweep_inflight:
-                _queue_sweep_job(sweep_queued_jobs, key, job)
+                _queue_sweep_job_with_priority(sweep_queued_jobs, key, job, priority=priority)
                 return status
             if status != "queued":
                 return status
@@ -3185,6 +3196,7 @@ def run_server() -> None:
                             year_max=year_max,
                             rank_mode=rank_mode,
                             catalog=catalog,
+                            priority=True,
                         )
                         if sweep_status == "hit" and (cached := sweep_cache_get(cache_key)) is not None:
                             receipt = auth_receipt(cached.receipt)
