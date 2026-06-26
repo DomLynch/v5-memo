@@ -463,6 +463,61 @@ def test_pipeline_filters_to_requested_tier_before_selector(monkeypatch: pytest.
     assert result.candidate == elite
 
 
+def test_pipeline_selector_slate_surfaces_diverse_alpha_shapes(monkeypatch: pytest.MonkeyPatch) -> None:
+    hits = [
+        _hit(f"dup-{idx}-a", f"Tool reliability metric {idx}", f"Tool reliability metric {idx}.")
+        for idx in range(4)
+    ] + [
+        _hit(f"dup-{idx}-b", f"Tool deployment reliability {idx}", f"Tool deployment reliability {idx}.")
+        for idx in range(4)
+    ] + [
+        _hit("rev-a", "Protocol expected tool reliability augmentation", "Tool protocol expected reliability augmentation."),
+        _hit("rev-b", "Outcome observed tool reliability blunting", "Tool outcome observed reliability blunting."),
+    ]
+
+    def candidate(left: str, right: str, score: int, shape: str) -> InsightCandidate:
+        return InsightCandidate(
+            topic="tool reliability",
+            thesis=shape,
+            bridge_terms=("tool", "reliability"),
+            tension_terms=("positive", "negative"),
+            receipt_ids=(left, right),
+            score=score,
+            novelty_score=90,
+            evidence_score=90,
+            reasons=(shape, "tier:elite_alpha"),
+        )
+
+    duplicates = [
+        candidate(f"dup-{idx}-a", f"dup-{idx}-b", 99 - idx, "shape:measurement_mismatch")
+        for idx in range(4)
+    ]
+    reversal = candidate("rev-a", "rev-b", 80, "shape:expectation_reversal")
+    seen: list[InsightCandidate] = []
+
+    class FakeSearch:
+        def search(self, query: str, *, limit: int = 25) -> Sequence[CorpusHit]:
+            del query, limit
+            return hits
+
+    def selector(candidates: Sequence[InsightCandidate], _hits: Sequence[CorpusHit]) -> Sequence[InsightCandidate]:
+        seen.extend(candidates)
+        return [reversal]
+
+    monkeypatch.setattr("v5_memo.pipeline.mine_insights", lambda *_args, **_kwargs: [*duplicates, reversal])
+
+    result = build_alpha_memo(
+        topic="tool reliability",
+        seed_queries=["tool reliability"],
+        searcher=FakeSearch(),
+        memo_selector=selector,
+        min_alpha_tier="elite_alpha",
+    )
+
+    assert seen[:4] == [*duplicates[:3], reversal]
+    assert result.candidate == reversal
+
+
 def test_pipeline_mines_broader_slate_when_selector_is_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

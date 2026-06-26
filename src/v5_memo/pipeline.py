@@ -97,6 +97,7 @@ def _apply_selector(
 ) -> Sequence[InsightCandidate]:
     if selector is None:
         return candidates
+    candidates = _selector_slate(candidates)
     by_receipts = {candidate.receipt_ids: candidate for candidate in candidates}
     selected: list[InsightCandidate] = []
     for candidate in selector(candidates, hits):
@@ -104,6 +105,36 @@ def _apply_selector(
         if original is not None and original not in selected:
             selected.append(original)
     return selected or candidates
+
+
+def _selector_slate(candidates: Sequence[InsightCandidate]) -> Sequence[InsightCandidate]:
+    """Preserve rank while surfacing one strong candidate per evidence shape."""
+    selected: list[InsightCandidate] = []
+    seen: set[tuple[str, ...]] = set()
+
+    def add(candidate: InsightCandidate) -> None:
+        if candidate.receipt_ids not in seen:
+            seen.add(candidate.receipt_ids)
+            selected.append(candidate)
+
+    for candidate in candidates[:3]:
+        add(candidate)
+    shape_keys = (
+        "shape:expectation_reversal",
+        "shape:promise_outcome_reversal",
+        "shape:directional_reversal",
+        "shape:boundary_condition",
+        "shape:denominator_split",
+        "shape:timing_split",
+        "shape:measurement_mismatch",
+    )
+    for shape in shape_keys:
+        match = next((candidate for candidate in candidates if shape in candidate.reasons), None)
+        if match is not None:
+            add(match)
+    for candidate in candidates:
+        add(candidate)
+    return selected
 
 
 def _anchor_terms_for_queries(queries: Sequence[str]) -> tuple[str, ...]:
