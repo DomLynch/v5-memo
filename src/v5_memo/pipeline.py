@@ -30,18 +30,30 @@ def build_alpha_memo(
     min_search_passes: int = 0,
 ) -> MemoResult:
     """Build the best receipt-bound memo from seed queries."""
-    hits = collect_seed_hits(
-        searcher,
-        seed_queries,
-        per_query_limit=per_query_limit,
-        max_hits=max_hits,
-    )
     if anchor_queries is None:
         anchor_terms = _anchor_terms_for_queries(seed_queries)
         primary_anchor_terms = _primary_anchor_terms_for_single_query(seed_queries)
     else:
         anchor_terms = _anchor_terms_for_queries(anchor_queries)
         primary_anchor_terms = _primary_anchor_terms_for_single_query(anchor_queries)
+
+    def has_publishable_candidate(partial_hits: Sequence[CorpusHit]) -> bool:
+        mined = mine_insights(
+            partial_hits,
+            topic=topic,
+            required_anchor_terms=anchor_terms,
+            include_discovery=min_alpha_tier == "discovery_seed",
+            max_candidates=25 if memo_selector is not None else 8,
+        )
+        return bool(_publishable_candidates(mined, partial_hits, min_alpha_tier, primary_anchor_terms))
+
+    hits = collect_seed_hits(
+        searcher,
+        seed_queries,
+        per_query_limit=per_query_limit,
+        max_hits=max_hits,
+        stop_when=has_publishable_candidate if len(seed_queries) > 1 else None,
+    )
     mined_candidates: list[InsightCandidate] = mine_insights(
         hits,
         topic=topic,
@@ -49,13 +61,12 @@ def build_alpha_memo(
         include_discovery=min_alpha_tier == "discovery_seed",
         max_candidates=25 if memo_selector is not None else 8,
     )
-    hits_by_id = {hit.hit_id: hit for hit in hits}
-    publishable_candidates = [
-        candidate
-        for candidate in mined_candidates
-        if meets_publish_bar(candidate, min_alpha_tier)
-        and _candidate_preserves_primary_anchor(candidate, hits_by_id, primary_anchor_terms)
-    ]
+    publishable_candidates = _publishable_candidates(
+        mined_candidates,
+        hits,
+        min_alpha_tier,
+        primary_anchor_terms,
+    )
     candidates = _apply_selector(publishable_candidates, hits, memo_selector)
     coverage_failures: list[MemoBuildError] = []
     for candidate in candidates:
@@ -88,6 +99,21 @@ def build_alpha_memo(
             mined_candidates=mined_candidates,
         )
     )
+
+
+def _publishable_candidates(
+    mined_candidates: Sequence[InsightCandidate],
+    hits: Sequence[CorpusHit],
+    min_alpha_tier: str,
+    primary_anchor_terms: frozenset[str],
+) -> list[InsightCandidate]:
+    hits_by_id = {hit.hit_id: hit for hit in hits}
+    return [
+        candidate
+        for candidate in mined_candidates
+        if meets_publish_bar(candidate, min_alpha_tier)
+        and _candidate_preserves_primary_anchor(candidate, hits_by_id, primary_anchor_terms)
+    ]
 
 
 def _apply_selector(

@@ -1,7 +1,7 @@
 """Search fan-out helpers for V5 memo."""
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Protocol
 
@@ -18,6 +18,7 @@ def collect_seed_hits(
     *,
     per_query_limit: int = 25,
     max_hits: int = 100,
+    stop_when: Callable[[Sequence[CorpusHit]], bool] | None = None,
 ) -> list[CorpusHit]:
     """Search multiple seeds and dedupe before mining insights."""
     seen: dict[str, int] = {}
@@ -46,4 +47,6 @@ def collect_seed_hits(
             out.append(replace(hit, metadata={**hit.metadata, "seed_queries": (query,)}))
             if len(out) >= max_hits:
                 return out
+        if stop_when is not None and stop_when(out):
+            return out
     return out
