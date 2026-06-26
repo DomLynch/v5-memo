@@ -1008,7 +1008,7 @@ def test_openalex_client_fans_out_dedupes_and_reranks(monkeypatch: object) -> No
 @pytest.mark.parametrize(
     ("query", "limit", "expected"),
     [
-        ("cold water immersion attenuates muscle mass strength resistance training", 8, ("attenuates resistance",)),
+        ("post exercise cold water immersion blunts muscle hypertrophy", 4, ("cold water immersion blunts muscle hypertrophy",)),
         ("resveratrol exercise training adaptation", 5, ("resveratrol", "resveratrol training")),
         ("resveratrol sirt1 pgc 1a mitochondrial biogenesis endurance training", 5, ("resveratrol mitochondrial",)),
         ("metformin augment strength training seniors", 5, ("metformin augment",)),
