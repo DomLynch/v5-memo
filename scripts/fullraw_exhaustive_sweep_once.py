@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import traceback
+from dataclasses import asdict
 from pathlib import Path
 
 from v5_memo.fullraw_index import (
@@ -173,7 +174,7 @@ def main() -> int:
                     "sweep_timeout_seconds": timeout_seconds,
                     "sweep_shard_timeout_seconds": shard_timeout_seconds,
                     "sweep_strategy": _SWEEP_STRATEGY,
-                    "sweep_search_passes": tuple(pass_item.__dict__ for pass_item in sweep_passes),
+                    "sweep_search_passes": tuple(asdict(pass_item) for pass_item in sweep_passes),
                     "sweep_completed_pass_roles": tuple(completed_pass_roles),
                     "sweep_pass_role": pass_plan.role,
                     "sweep_pass_query": pass_plan.query,
