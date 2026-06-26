@@ -698,10 +698,10 @@ def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> Non
 
     client = FullRawCorpusSearchClient.from_env()
 
-    assert client._timeout == 180.0
+    assert client._timeout == 60.0
     assert client._max_variants == 4
     assert client._search_budget_seconds == 900.0
-    assert client._sweep_wait_seconds == 180.0
+    assert client._sweep_wait_seconds == 60.0
     assert client._sweep_poll_seconds == 2.0
     assert client._progress is True
 
