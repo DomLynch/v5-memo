@@ -205,9 +205,12 @@ def mine_insights(
         graph_receipt_ids = tuple(node.receipt_id for node in evidence_graph)
         hits_by_id = {hit.hit_id: hit for hit in clean_hits}
         claim_cards = _claim_cards_for_roles(hits_by_id, receipt_roles)
-        graph_claim_cards = _claim_cards_for_graph(hits_by_id, evidence_graph)
-        if graph_claim_cards:
-            claim_cards = graph_claim_cards
+        context_claim_cards = _claim_cards_for_graph(
+            hits_by_id,
+            tuple(node for node in evidence_graph if node.receipt_id not in {left.hit_id, right.hit_id}),
+        )
+        if context_claim_cards:
+            claim_cards = (*claim_cards, *context_claim_cards)
         score = score_connection(
             bridge_terms=bridge,
             bridge_doc_counts=doc_counts,
@@ -755,7 +758,7 @@ def _evidence_graph(
     seen = {node.receipt_id for node in nodes}
     bridge_set = set(bridge_terms) - pair_anchor_terms
     if not bridge_set:
-        bridge_set = set(bridge_terms)
+        return tuple(nodes)
     for role in ("mechanism", "boundary", "replication", "consensus"):
         hit = _context_hit(
             hits,
@@ -810,7 +813,7 @@ def _hit_matches_graph_role(
     if role == "mechanism":
         return _design_type(terms) == "mechanistic_model" or bool(terms & {"mechanism", "pathway", "signaling"})
     if role == "boundary":
-        return bool(terms & (_BOUNDARY | _TIMING | _TAIL)) or "shape:boundary_condition" in shape_reasons
+        return bool(terms & (_BOUNDARY | _TIMING | _TAIL))
     if role == "replication":
         return bool(_direction_polarity(hit))
     if role == "consensus":

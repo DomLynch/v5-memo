@@ -33,6 +33,9 @@ def render_alpha_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]
         "",
         f"**Tension:** {tension}.",
         "",
+        "**Evidence graph:**",
+        *_evidence_graph_lines(candidate),
+        "",
         "**Receipt roles:**",
         *_receipt_role_lines(candidate),
         "",
@@ -75,6 +78,9 @@ def render_discovery_seed(candidate: InsightCandidate, receipts: Sequence[Corpus
         "",
         "**Status:** Not publishable alpha until selector evidence reaches publishable tier.",
         "",
+        "**Evidence graph:**",
+        *_evidence_graph_lines(candidate),
+        "",
         "**Receipt roles:**",
         *_receipt_role_lines(candidate),
         "",
@@ -107,6 +113,15 @@ def _receipt_role_lines(candidate: InsightCandidate) -> list[str]:
     return [
         f"- `{role.receipt_id}`: {role.role} ({role.reason})"
         for role in candidate.receipt_roles
+    ]
+
+
+def _evidence_graph_lines(candidate: InsightCandidate) -> list[str]:
+    if not candidate.evidence_graph:
+        return ["- graph: no structured graph assigned"]
+    return [
+        f"- `{node.receipt_id}`: {node.role} ({node.reason})"
+        for node in candidate.evidence_graph
     ]
 
 

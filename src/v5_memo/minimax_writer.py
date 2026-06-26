@@ -371,6 +371,9 @@ Selector tier:
 Receipt roles:
 {_role_block(candidate)}
 
+Evidence graph:
+{_evidence_graph_block(candidate)}
+
 Claim ledger:
 {_claim_card_block(candidate)}
 
@@ -586,6 +589,7 @@ def _candidate_block(
         f"Reasons: {', '.join(candidate.reasons) or 'none'}\n"
         f"Tier: {candidate_alpha_tier(candidate)}\n"
         f"Receipt roles: {_inline_roles(candidate)}\n"
+        f"Evidence graph: {_inline_evidence_graph(candidate)}\n"
         f"Claim cards: {_inline_claim_cards(candidate)}\n"
         f"Score: {candidate.score}\n"
         f"Receipts:\n{receipts}"
@@ -611,6 +615,21 @@ def _inline_roles(candidate: InsightCandidate) -> str:
     if not candidate.receipt_roles:
         return "none assigned"
     return "; ".join(f"{role.receipt_id}={role.role}" for role in candidate.receipt_roles)
+
+
+def _evidence_graph_block(candidate: InsightCandidate) -> str:
+    if not candidate.evidence_graph:
+        return "- none assigned"
+    return "\n".join(
+        f"- {node.receipt_id}: {node.role} ({node.reason})"
+        for node in candidate.evidence_graph
+    )
+
+
+def _inline_evidence_graph(candidate: InsightCandidate) -> str:
+    if not candidate.evidence_graph:
+        return "none assigned"
+    return "; ".join(f"{node.receipt_id}={node.role}" for node in candidate.evidence_graph)
 
 
 def _claim_card_block(candidate: InsightCandidate) -> str:
