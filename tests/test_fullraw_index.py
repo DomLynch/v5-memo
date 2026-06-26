@@ -76,8 +76,6 @@ def test_fullraw_index_enriches_abstract_only_rows(tmp_path: Path) -> None:
         index.close()
     assert hits[0]["semantic_scholar_id"] == "123"
     assert "blunted mitochondrial" in str(hits[0]["abstract"])
-
-
 def test_fullraw_index_quarantines_corrupt_source_file(tmp_path: Path) -> None:
     bad_path = tmp_path / "bad.jsonl.gz"
     bad_path.write_bytes(gzip.compress(b'{"display_name":"truncated"}\n')[:-8])
@@ -160,7 +158,6 @@ def test_foreground_receipt_counts_only_completed_shards(tmp_path: Path, monkeyp
     assert receipt["foreground_completed_shards"] == 2
     assert receipt["shards_searched"] == 2
     assert receipt["partial_shard_search"] is True
-
 
 def test_sweep_cache_entry_ready_rejects_insufficient_partial_hits() -> None:
     receipt = {

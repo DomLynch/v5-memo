@@ -1102,8 +1102,7 @@ def _search_shard_paths_with_paths_and_receipt(
     deadline = time.monotonic() + timeout_seconds if timeout_seconds else None
     per_shard_timeout = shard_timeout_seconds
     if timeout_seconds and per_shard_timeout:
-        batches = max(1, -(-len(search_paths) // worker_count))
-        per_shard_timeout = min(per_shard_timeout, max(0.1, timeout_seconds / batches))
+        per_shard_timeout = min(per_shard_timeout, max(0.1, timeout_seconds / max(1, -(-len(search_paths) // worker_count))))
     for start in range(0, len(search_paths), worker_count):
         if deadline is not None and time.monotonic() >= deadline:
             timed_out = True
