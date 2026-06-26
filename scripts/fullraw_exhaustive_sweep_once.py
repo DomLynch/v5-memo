@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sys
 import time
 import traceback
@@ -49,7 +50,17 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _install_signal_logging() -> None:
+    def handle_signal(signum: int, _frame: object) -> None:
+        _json_event(event="signal", signal=signal.Signals(signum).name)
+        raise SystemExit(128 + signum)
+
+    for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, handle_signal)
+
+
 def main() -> int:
+    _install_signal_logging()
     parser = argparse.ArgumentParser()
     parser.add_argument("--query", default=os.environ.get("QUERY", "").strip())
     parser.add_argument("--limit", type=int, default=int(os.environ.get("LIMIT", "5")))
