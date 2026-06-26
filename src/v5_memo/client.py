@@ -1167,7 +1167,8 @@ def _rerank_score(
 def _coverage(terms: tuple[str, ...], text: str) -> float:
     if not terms:
         return 0.0
-    return sum(1 for term in terms if term in text) / len(terms)
+    text_terms = set(_query_terms(text))
+    return sum(1 for term in terms if term in text_terms) / len(terms)
 
 
 def _int_or_none(value: object) -> int | None:
