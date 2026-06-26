@@ -34,6 +34,7 @@ _REQUIRED_MEMO_SECTIONS = (
     "## The 2+2=5 angle",
     "## Why this could matter",
     "## What would break the idea",
+    "## Claim ledger",
     "## Receipts",
     "## Safety note",
 )
@@ -489,10 +490,10 @@ def validate_minimax_memo(
 
 
 def _validate_claim_ledger(markdown: str, candidate: InsightCandidate) -> None:
-    if not candidate.claim_cards:
-        return
     if "## Claim ledger" not in markdown:
         raise MemoFormatError("MiniMax memo missing required claim ledger")
+    if not candidate.claim_cards:
+        return
     ledger = markdown.split("## Claim ledger", 1)[1].split("## Receipts", 1)[0]
     missing = [
         card.receipt_id

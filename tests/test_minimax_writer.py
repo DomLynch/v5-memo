@@ -159,6 +159,8 @@ Sleep fragmentation and exercise response share the same receipt-bound bridge.
 The bridge gives a testable resilience hypothesis.
 ## What would break the idea
 The idea breaks if follow-up receipts do not connect the bridge terms.
+## Claim ledger
+- receipt-bound claim: 10.1/sleep-nad support=direct
 ## Receipts
 - 10.1/sleep-nad
 - 10.2/exercise-nad
@@ -230,6 +232,8 @@ Angle.
 Matter.
 ## What would break the idea
 Break.
+## Claim ledger
+- receipt-bound claim: 10.1/sleep-nad support=direct
 ## Receipts
 - 10.1/sleep-nad
 - 10.2/exercise-nad
@@ -265,6 +269,8 @@ The point is the bridge, not a broad claim.
 It is a receipt-bound signal.
 ## What would break the idea
 A direct receipt could resolve the split.
+## Claim ledger
+- receipt-bound claim: 10.1/sleep-nad support=direct
 ## Receipts
 - 10.1/sleep-nad
 - 10.2/exercise-nad
@@ -286,6 +292,8 @@ The point is the bridge, not broad phrasing.
 It is a receipt-bound signal.
 ## What would break the idea
 A direct receipt could resolve the split.
+## Claim ledger
+- receipt-bound claim: 10.1/sleep-nad support=direct
 ## Receipts
 - 10.1/sleep-nad
 - 10.2/exercise-nad
@@ -421,8 +429,31 @@ x
 x
 ## What would break the idea
 x
+## Claim ledger
+- receipt-bound claim: 10.1/sleep-nad support=direct
 ## Receipts
 - 10.1/sleep-nad
+## Safety note
+x""",
+            _receipts(),
+        )
+
+
+def test_minimax_memo_validation_rejects_missing_claim_ledger() -> None:
+    with pytest.raises(ValueError, match="## Claim ledger"):
+        validate_minimax_memo(
+            """# Alpha memo: x
+## Core signal
+x
+## The 2+2=5 angle
+x
+## Why this could matter
+x
+## What would break the idea
+x
+## Receipts
+- 10.1/sleep-nad
+- 10.2/exercise-nad
 ## Safety note
 x""",
             _receipts(),
@@ -441,6 +472,8 @@ x
 x
 ## What would break the idea
 See 10.5555/not-in-receipts.
+## Claim ledger
+- receipt-bound claim: 10.1/sleep-nad support=direct
 ## Receipts
 - 10.1/sleep-nad
 - 10.2/exercise-nad
@@ -462,6 +495,8 @@ x
 x
 ## What would break the idea
 x
+## Claim ledger
+- receipt-bound claim: 10.1/sleep-nad support=direct
 ## Receipts
 - {receipt_line}
 - `10.2/exercise-nad`
@@ -513,6 +548,8 @@ The receipts split by muscle type.
 It is a hypothesis.
 ## What would break the idea
 A direct receipt would break it.
+## Claim ledger
+- receipt-bound claim: 10.1016/j.molmet.2022.101615 support=direct
 ## Receipts
 - 10.1016/j.molmet.2022.101615
 - 10.1152/ajpendo.1984.246.4.e297
@@ -534,6 +571,8 @@ The receipts split by muscle type.
 It is a hypothesis.
 ## What would break the idea
 A direct low-protein receipt would break it.
+## Claim ledger
+- receipt-bound claim: 10.1016/j.molmet.2022.101615 support=direct
 ## Receipts
 - 10.1016/j.molmet.2022.101615
 - 10.1152/ajpendo.1984.246.4.e297
@@ -557,6 +596,8 @@ The title is still receipt-owned despite light grammar.
 It is a receipt-bound signal.
 ## What would break the idea
 A direct receipt could reverse the direction.
+## Claim ledger
+- receipt-bound claim: 10.1113/jphysiol.2013.258061 support=direct
 ## Receipts
 - 10.1113/jphysiol.2013.258061
 - 10.1016/j.cell.2006.11.013
@@ -611,6 +652,8 @@ This is only a receipt preservation check.
 It keeps non-DOI receipts traceable.
 ## What would break the idea
 A missing source-local ID breaks it.
+## Claim ledger
+- receipt-bound claim: W7070693264 support=direct
 ## Receipts
 - W7070693264
 ## Safety note
