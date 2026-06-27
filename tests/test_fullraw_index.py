@@ -733,6 +733,16 @@ def test_sweep_admission_queues_without_exceeding_inflight_limit() -> None:
     assert inflight == {"active"}
     assert queued == {"cold-water"}
     assert fullraw_index._admit_sweep_key(
+        "priority-cold-water",
+        sweep_inflight=inflight,
+        sweep_queued=queued,
+        max_inflight=1,
+        priority=True,
+        allow_priority_burst=True,
+    ) == "queued"
+    assert inflight == {"active", "priority-cold-water"}
+    assert "priority-cold-water" not in queued
+    assert fullraw_index._admit_sweep_key(
         "active",
         sweep_inflight=inflight,
         sweep_queued=queued,
