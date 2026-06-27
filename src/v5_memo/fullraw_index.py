@@ -2417,10 +2417,17 @@ def _admit_sweep_key(
     sweep_inflight: set[str],
     sweep_queued: set[str],
     max_inflight: int,
+    priority: bool = False,
+    allow_priority_burst: bool = False,
 ) -> str:
     if key in sweep_inflight:
         return "running"
-    if len(sweep_inflight) >= max(1, max_inflight):
+    inflight_limit = max(1, max_inflight)
+    if len(sweep_inflight) >= inflight_limit:
+        if priority and allow_priority_burst and len(sweep_inflight) < inflight_limit + 1:
+            sweep_queued.discard(key)
+            sweep_inflight.add(key)
+            return "queued"
         sweep_queued.add(key)
         return "queued"
     sweep_queued.discard(key)
@@ -3074,6 +3081,8 @@ def run_server() -> None:
                 sweep_inflight=sweep_inflight,
                 sweep_queued=sweep_queued,
                 max_inflight=sweep_max_inflight,
+                priority=priority,
+                allow_priority_burst=sweep_priority_burst,
             )
             if status == "queued" and key not in sweep_inflight:
                 _queue_sweep_job_with_priority(sweep_queued_jobs, key, job, priority=priority)
