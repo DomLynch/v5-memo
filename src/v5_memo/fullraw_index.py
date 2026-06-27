@@ -1568,6 +1568,20 @@ def _sweep_search_passes(
     return tuple(pass_item for pass_item in passes if _fts_terms(pass_item.query))
 
 
+def _sweep_cache_query(
+    query: str,
+    entries: list[ShardCatalogEntry],
+    *,
+    sweep_shard_limit: int,
+    rank_mode: str,
+) -> str:
+    if entries and sweep_shard_limit >= len(entries):
+        passes = _sweep_search_passes(query, entries, rank_mode=rank_mode)
+        if passes:
+            return passes[0].query
+    return query
+
+
 def _term_aliases(term: str) -> set[str]:
     aliases = {term}
     for canonical, expansions in _DEFAULT_TERM_MAP:
@@ -2446,6 +2460,41 @@ def sweep_cache_entry_can_answer_request(
     )
 
 
+def _normalize_sweep_cache_query(query: str) -> str:
+    return " ".join(_fts_terms(query))
+
+
+def _sweep_cache_entry_queries(entry: SweepCacheEntry) -> set[str]:
+    receipt = entry.receipt
+    queries = {
+        str(receipt.get("sweep_query") or ""),
+        str(receipt.get("sweep_original_query") or ""),
+    }
+    raw_passes = receipt.get("sweep_search_passes")
+    if isinstance(raw_passes, list | tuple):
+        queries.update(
+            str(pass_item.get("query") or "")
+            for pass_item in raw_passes
+            if isinstance(pass_item, dict)
+        )
+    return {query for raw in queries if (query := _normalize_sweep_cache_query(raw))}
+
+
+def _sweep_cache_entry_matches_request(
+    entry: SweepCacheEntry,
+    *,
+    query: str,
+    sweep_shard_limit: int,
+    sweep_strategy: str,
+) -> bool:
+    receipt = entry.receipt
+    if sweep_strategy and receipt.get("sweep_strategy") != sweep_strategy:
+        return False
+    if _int_or_none(receipt.get("sweep_shard_limit")) != sweep_shard_limit:
+        return False
+    return _normalize_sweep_cache_query(query) in _sweep_cache_entry_queries(entry)
+
+
 def _should_force_cache_queue(
     *,
     shard_dir_configured: bool,
@@ -2982,6 +3031,27 @@ def run_server() -> None:
                 sweep_cache[key] = entry
         return entry
 
+    def compatible_sweep_cache_get(key: str, cache_query: str) -> SweepCacheEntry | None:
+        entry = sweep_cache_get(key)
+        if entry is not None or sweep_cache_dir is None:
+            return entry
+        best: SweepCacheEntry | None = None
+        for path in sweep_cache_dir.glob("*.json"):
+            if path.name == f"{key}.json":
+                continue
+            candidate = _load_sweep_cache(path, ttl_seconds=sweep_ttl)
+            if candidate is None or not _sweep_cache_entry_matches_request(
+                candidate,
+                query=cache_query,
+                sweep_shard_limit=sweep_shard_limit,
+                sweep_strategy=_SWEEP_STRATEGY,
+            ):
+                continue
+            best = _prefer_sweep_cache_entry(best, candidate)
+        if best is not None:
+            sweep_cache_put(key, best, final=sweep_cache_entry_is_terminal(best))
+        return best
+
     def sweep_cache_put(key: str, entry: SweepCacheEntry, *, final: bool = True) -> None:
         with sweep_lock:
             sweep_cache[key] = entry
@@ -3306,8 +3376,14 @@ def run_server() -> None:
                 return
             started = time.monotonic()
             catalog = current_catalog() if shard_dir is not None else []
-            cache_key = _sweep_cache_key(
+            cache_query = _sweep_cache_query(
                 query,
+                catalog,
+                sweep_shard_limit=sweep_shard_limit,
+                rank_mode=rank_mode,
+            )
+            cache_key = _sweep_cache_key(
+                cache_query,
                 limit=limit,
                 year_min=year_min,
                 year_max=year_max,
@@ -3319,7 +3395,7 @@ def run_server() -> None:
                 sweep_shard_timeout_seconds=sweep_shard_timeout_seconds,
                 sweep_strategy=_SWEEP_STRATEGY,
             )
-            cached = sweep_cache_get(cache_key) if catalog else None
+            cached = compatible_sweep_cache_get(cache_key, cache_query) if catalog else None
             resume_cached = (
                 cached is not None
                 and cache_only
@@ -3921,10 +3997,6 @@ def _sweep_cache_key(
             "year_max": year_max,
             "rank_mode": _rank_mode(rank_mode),
             "sweep_shard_limit": sweep_shard_limit,
-            "sweep_pass_shard_limit": sweep_pass_shard_limit,
-            "sweep_max_passes": sweep_max_passes,
-            "sweep_timeout_seconds": sweep_timeout_seconds,
-            "sweep_shard_timeout_seconds": sweep_shard_timeout_seconds,
             "sweep_strategy": sweep_strategy,
         },
         sort_keys=True,

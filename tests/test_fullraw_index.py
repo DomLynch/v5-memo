@@ -8,6 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -468,8 +469,8 @@ def test_sweep_cache_key_ignores_result_limit() -> None:
     assert first == second
 
 
-def test_sweep_cache_key_changes_when_sweep_contract_changes() -> None:
-    stale = fullraw_index._sweep_cache_key(
+def test_sweep_cache_key_ignores_runtime_knobs() -> None:
+    shorter_runtime = fullraw_index._sweep_cache_key(
         "metformin resistance training",
         limit=10,
         year_min=1900,
@@ -481,7 +482,7 @@ def test_sweep_cache_key_changes_when_sweep_contract_changes() -> None:
         sweep_timeout_seconds=3600.0,
         sweep_shard_timeout_seconds=90.0,
     )
-    current = fullraw_index._sweep_cache_key(
+    longer_runtime = fullraw_index._sweep_cache_key(
         "metformin resistance training",
         limit=10,
         year_min=1900,
@@ -494,7 +495,87 @@ def test_sweep_cache_key_changes_when_sweep_contract_changes() -> None:
         sweep_shard_timeout_seconds=20.0,
     )
 
-    assert stale != current
+    assert shorter_runtime == longer_runtime
+
+
+def test_sweep_cache_key_changes_when_research_contract_changes() -> None:
+    current = fullraw_index._sweep_cache_key(
+        "metformin resistance training",
+        limit=10,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        sweep_shard_limit=1525,
+    )
+    different_rank = fullraw_index._sweep_cache_key(
+        "metformin resistance training",
+        limit=10,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="recency",
+        sweep_shard_limit=1525,
+    )
+    different_coverage = fullraw_index._sweep_cache_key(
+        "metformin resistance training",
+        limit=10,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        sweep_shard_limit=512,
+    )
+
+    assert current != different_rank
+    assert current != different_coverage
+
+
+def test_full_sweep_cache_query_uses_canonical_pass(tmp_path: Path) -> None:
+    entries = [
+        replace(_entry(tmp_path, idx, "openalex"), topic_terms=("cold", "immersion", "training"))
+        for idx in range(4)
+    ]
+
+    verbose = fullraw_index._sweep_cache_query(
+        "cold water immersion training adaptation",
+        entries,
+        sweep_shard_limit=4,
+        rank_mode="relevance",
+    )
+    compact = fullraw_index._sweep_cache_query(
+        "cold immersion training",
+        entries,
+        sweep_shard_limit=4,
+        rank_mode="relevance",
+    )
+
+    assert verbose == compact
+
+
+def test_sweep_cache_matcher_accepts_compatible_pass_query() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Cold water immersion after training"}],
+        receipt={
+            "sweep_shard_limit": 1525,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_original_query": "cold water immersion training adaptation",
+            "sweep_search_passes": (
+                {"role": "focused", "query": "cold immersion training"},
+            ),
+        },
+    )
+
+    assert fullraw_index._sweep_cache_entry_matches_request(
+        entry,
+        query="cold immersion training",
+        sweep_shard_limit=1525,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+    assert not fullraw_index._sweep_cache_entry_matches_request(
+        entry,
+        query="resveratrol exercise adaptation",
+        sweep_shard_limit=1525,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
 
 
 def test_completed_disk_sweep_cache_beats_stale_memory_partial() -> None:
