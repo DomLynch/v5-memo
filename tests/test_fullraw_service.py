@@ -134,5 +134,6 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "TimeoutStopFailureMode=kill" in config.read_text()
     assert "KillMode=control-group" in config.read_text()
     assert "SendSIGKILL=yes" in config.read_text()
+    assert "Environment=V5_MEMO_FULL_RAW_SEARCH_ISOLATED=0" in config.read_text()
     assert "Environment=V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST=0" in config.read_text()
     assert "Environment=V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS=128" in config.read_text()
