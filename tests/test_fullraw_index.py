@@ -5,6 +5,7 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -495,6 +496,72 @@ def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
     assert body["meta"]["async_sweep"]["status"] == "hit"
     assert body["meta"]["shard_receipt"]["shards_searched"] == 2
     assert body["results"][0]["title"] == "Metformin for Longevity and Sarcopenia"
+
+
+def test_strict_cache_only_probe_respects_no_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog_path = tmp_path / "catalog.json"
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    shard_dir = tmp_path / "remote-shards"
+    shard_dir.mkdir()
+    entries = [_entry(shard_dir, idx, "openalex" if idx else "pubmed") for idx in range(2)]
+    fullraw_index.write_shard_catalog_cache(catalog_path, entries)
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_HOST", "127.0.0.1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_PORT", str(port))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", "test-token")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_DIR", str(shard_dir))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_CATALOG_PATH", str(catalog_path))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_ASYNC_SWEEP", "1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_REQUIRE_COMPLETE_SEARCH", "1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_REQUIRE_COMPLETE", "1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT", "2")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", "2")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", "2")
+    monkeypatch.setattr(fullraw_index, "load_or_build_manifest", lambda *_args, **_kwargs: [])
+    thread = threading.Thread(target=fullraw_index.run_server, daemon=True)
+    thread.start()
+
+    payload = json.dumps(
+        {
+            "query": "metformin longevity",
+            "limit": 10,
+            "rank_mode": "relevance",
+            "cache_only": True,
+            "queue_if_missing": False,
+        }
+    ).encode()
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/search",
+        data=payload,
+        headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+        method="POST",
+    )
+    body: dict[str, object] | None = None
+    for _ in range(50):
+        try:
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                body = json.loads(resp.read().decode())
+            break
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 422
+            body = json.loads(exc.read().decode())
+            break
+        except OSError:
+            time.sleep(0.05)
+    else:  # pragma: no cover - defensive test guard
+        raise AssertionError("server did not start")
+
+    assert body is not None
+    assert body["error"] == "coverage_too_narrow"
 
 
 def test_sweep_cache_write_preserves_highest_progress(tmp_path: Path) -> None:
