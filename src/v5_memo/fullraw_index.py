@@ -2600,6 +2600,29 @@ def _queue_sweep_job_with_priority(
     _trim_sweep_queue(sweep_queued_jobs, sweep_queued=sweep_queued, max_queue=max_queue)
 
 
+def _sweep_queue_summary(
+    sweep_inflight: set[str],
+    sweep_queued_jobs: dict[str, SweepJob],
+    *,
+    max_inflight: int,
+    max_queue: int,
+    priority_burst: bool,
+    enabled: bool,
+) -> dict[str, object]:
+    queued_count = len(sweep_queued_jobs)
+    priority_queued = sum(1 for job in sweep_queued_jobs.values() if job.priority)
+    return {
+        "enabled": enabled,
+        "inflight_count": len(sweep_inflight),
+        "queued_count": queued_count,
+        "priority_queued_count": priority_queued,
+        "background_queued_count": max(0, queued_count - priority_queued),
+        "max_inflight": max_inflight,
+        "max_queue": max_queue,
+        "priority_burst": priority_burst,
+    }
+
+
 def shard_coverage_gate_response(
     receipt: dict[str, object],
     *,
