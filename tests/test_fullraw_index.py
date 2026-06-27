@@ -1,8 +1,11 @@
 import gzip
 import json
 import os
+import socket
 import subprocess
+import threading
 import time
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -394,6 +397,104 @@ def test_completed_disk_sweep_cache_beats_stale_memory_partial() -> None:
     assert selected is disk_entry
     assert selected.receipt["partial_shard_search"] is False
     assert selected.receipt["shards_searched"] == 1525
+
+
+def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog_path = tmp_path / "catalog.json"
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    shard_dir = tmp_path / "remote-shards"
+    shard_dir.mkdir()
+    entries = [_entry(shard_dir, idx, "openalex" if idx else "pubmed") for idx in range(2)]
+    fullraw_index.write_shard_catalog_cache(catalog_path, entries)
+    key = fullraw_index._sweep_cache_key(
+        "metformin longevity",
+        limit=10,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        sweep_shard_limit=2,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+    cache_path = fullraw_index._sweep_cache_path(cache_dir, key)
+    assert cache_path is not None
+    fullraw_index._write_sweep_cache(
+        cache_path,
+        fullraw_index.SweepCacheEntry(
+            created_at=time.time(),
+            hits=[{"title": "Metformin for Longevity and Sarcopenia"}],
+            receipt={
+                "shards_searched": 2,
+                "shards_total": 2,
+                "partial_shard_search": False,
+                "sweep_remaining_shards": 0,
+                "sweep_failed_shards": 0,
+                "sources_searched": {"openalex": 1, "pubmed": 1},
+                "sweep_search_passes": (
+                    {"role": "focused"},
+                    {"role": "citation_heavy"},
+                    {"role": "recency"},
+                ),
+                "sweep_completed_pass_roles": ("focused", "citation_heavy", "recency"),
+            },
+        ),
+    )
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+
+    def fail_stats(*_args: object, **_kwargs: object) -> fullraw_index.IndexStats:
+        raise AssertionError("cache-only hit should not aggregate remote shard stats")
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_HOST", "127.0.0.1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_PORT", str(port))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", "test-token")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_DIR", str(shard_dir))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_CATALOG_PATH", str(catalog_path))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_ASYNC_SWEEP", "1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_REQUIRE_COMPLETE_SEARCH", "1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_REQUIRE_COMPLETE", "1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT", "2")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", "2")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", "2")
+    monkeypatch.setattr(fullraw_index, "load_or_build_manifest", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(fullraw_index, "aggregate_shard_stats", fail_stats)
+    thread = threading.Thread(target=fullraw_index.run_server, daemon=True)
+    thread.start()
+
+    payload = json.dumps(
+        {
+            "query": "metformin longevity",
+            "limit": 10,
+            "rank_mode": "relevance",
+            "cache_only": True,
+            "queue_if_missing": True,
+        }
+    ).encode()
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/search",
+        data=payload,
+        headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+        method="POST",
+    )
+    for _ in range(50):
+        try:
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                body = json.loads(resp.read().decode())
+            break
+        except OSError:
+            time.sleep(0.05)
+    else:  # pragma: no cover - defensive test guard
+        raise AssertionError("server did not start")
+
+    assert body["meta"]["async_sweep"]["status"] == "hit"
+    assert body["meta"]["shard_receipt"]["shards_searched"] == 2
+    assert body["results"][0]["title"] == "Metformin for Longevity and Sarcopenia"
 
 
 def test_sweep_cache_write_preserves_highest_progress(tmp_path: Path) -> None:

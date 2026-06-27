@@ -3202,6 +3202,28 @@ def run_server() -> None:
                 hits = cached.hits[:limit]
                 receipt = auth_receipt(cached.receipt)
                 sweep_status = "hit"
+                if cache_only:
+                    _write_json(self, 200, {
+                        "meta": {
+                            "count": len(hits),
+                            "elapsed_seconds": round(time.monotonic() - started, 3),
+                            "backend": _BACKEND,
+                            "rank_mode": rank_mode,
+                            "shard_receipt": receipt,
+                            "cache_only": True,
+                            "async_sweep": {
+                                "enabled": sweep_enabled and bool(catalog),
+                                "status": sweep_status,
+                                "cache_key": cache_key if sweep_enabled and catalog else "",
+                                "scope": "relevant",
+                                "shard_limit": sweep_shard_limit,
+                                "strategy": _SWEEP_STRATEGY,
+                                **sweep_queue_state(cache_key),
+                            },
+                        },
+                        "results": hits,
+                    })
+                    return
             else:
                 if cache_only:
                     hits = []
