@@ -2338,8 +2338,11 @@ def sweep_cache_entry_is_ready(
     min_sources_searched: int = 0,
     require_complete_search: bool = False,
     require_complete_sweep: bool = False,
+    sweep_strategy: str = "",
 ) -> bool:
     if not entry.hits:
+        return False
+    if sweep_strategy and entry.receipt.get("sweep_strategy") != sweep_strategy:
         return False
     if shard_coverage_gate_response(
         entry.receipt,
@@ -2363,6 +2366,7 @@ def sweep_cache_entry_can_answer_request(
     min_sources_searched: int = 0,
     require_complete_search: bool = False,
     require_complete_sweep: bool = False,
+    sweep_strategy: str = "",
 ) -> bool:
     return (
         cache_only and entry is not None
@@ -2373,6 +2377,7 @@ def sweep_cache_entry_can_answer_request(
             min_sources_searched=min_sources_searched,
             require_complete_search=require_complete_search,
             require_complete_sweep=require_complete_sweep,
+            sweep_strategy=sweep_strategy,
         )
     )
 
@@ -3109,6 +3114,7 @@ def run_server() -> None:
             min_sources_searched=min_sources_searched,
             require_complete_search=require_complete_search,
             require_complete_sweep=sweep_require_complete,
+            sweep_strategy=_SWEEP_STRATEGY,
         )
 
     class Handler(BaseHTTPRequestHandler):
@@ -3220,6 +3226,7 @@ def run_server() -> None:
                 min_sources_searched=min_sources_searched,
                 require_complete_search=require_complete_search,
                 require_complete_sweep=sweep_require_complete,
+                sweep_strategy=_SWEEP_STRATEGY,
             ):
                 assert cached is not None
                 hits = cached.hits[:limit]

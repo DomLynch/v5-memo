@@ -293,6 +293,53 @@ def test_sweep_cache_entry_ready_rejects_insufficient_partial_hits() -> None:
     assert fullraw_index.sweep_cache_entry_is_ready(entry, min_shards_searched=512, min_sources_searched=5, require_complete_search=True, require_complete_sweep=True)
 
 
+def test_sweep_cache_entry_ready_rejects_stale_strategy() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Cold water immersion after resistance training"}],
+        receipt={
+            "shards_searched": 1525,
+            "shards_total": 1525,
+            "partial_shard_search": False,
+            "sweep_remaining_shards": 0,
+            "sweep_failed_shards": 0,
+            "sources_searched": {
+                "biorxiv": 1,
+                "openalex": 1,
+                "pubmed": 1,
+                "semantic_scholar": 1,
+                "semantic_scholar_abstracts": 1,
+            },
+            "sweep_strategy": "old_profile",
+        },
+    )
+
+    assert fullraw_index.sweep_cache_entry_is_ready(
+        entry,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        require_complete_search=True,
+        require_complete_sweep=True,
+    )
+    assert not fullraw_index.sweep_cache_entry_is_ready(
+        entry,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        require_complete_search=True,
+        require_complete_sweep=True,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+    assert not fullraw_index.sweep_cache_entry_can_answer_request(
+        entry,
+        cache_only=True,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        require_complete_search=True,
+        require_complete_sweep=True,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
 def test_sweep_cache_only_can_answer_agent_poll() -> None:
     entry = fullraw_index.SweepCacheEntry(
         created_at=time.time(),
@@ -440,6 +487,7 @@ def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
                     {"role": "recency"},
                 ),
                 "sweep_completed_pass_roles": ("focused", "citation_heavy", "recency"),
+                "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
             },
         ),
     )
