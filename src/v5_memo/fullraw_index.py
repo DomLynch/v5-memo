@@ -1123,14 +1123,15 @@ def _search_shard_paths_with_paths_and_receipt(
         if timeout_seconds
         else paths
     )
-    worker_count = _cache_fit_worker_count(search_paths, worker_count)
     deadline = time.monotonic() + timeout_seconds if timeout_seconds else None
     per_shard_timeout = shard_timeout_seconds
-    for start in range(0, len(search_paths), worker_count):
+    start = 0
+    while start < len(search_paths):
         if deadline is not None and time.monotonic() >= deadline:
             timed_out = True
             break
-        batch = search_paths[start:start + worker_count]
+        batch = _cache_fit_path_batch(search_paths, start=start, worker_count=worker_count)
+        start += len(batch)
         search_pairs: list[tuple[Path, Path]] = []
         for path in batch:
             if deadline is not None and time.monotonic() >= deadline:
@@ -1176,23 +1177,27 @@ def _search_shard_paths_with_paths_and_receipt(
     return hits, completed_paths, timed_out, metrics
 
 
-def _cache_fit_worker_count(paths: list[Path], requested_workers: int) -> int:
+def _cache_fit_path_batch(paths: list[Path], *, start: int, worker_count: int) -> list[Path]:
+    batch = paths[start:start + worker_count]
     max_cache_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
     if max_cache_bytes is None or max_cache_bytes <= 0:
-        return requested_workers
+        return batch
     max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
     if os.environ.get("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "").casefold() in {"1", "true", "yes"}:
         max_inflight += 1
-    effective_cache_bytes = max(1, max_cache_bytes // max(1, max_inflight))
-    largest = 0
-    for path in paths:
+    budget = max(1, max_cache_bytes // max(1, max_inflight))
+    out: list[Path] = []
+    total = 0
+    for path in batch:
         try:
-            largest = max(largest, path.stat().st_size)
+            size = max(0, path.stat().st_size)
         except OSError:
-            continue
-    if largest <= 0:
-        return requested_workers
-    return max(1, min(requested_workers, effective_cache_bytes // largest))
+            size = 0
+        if out and total + size > budget:
+            break
+        out.append(path)
+        total += size
+    return out or batch[:1]
 
 
 def _merge_hit_groups(
