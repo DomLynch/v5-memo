@@ -8,6 +8,7 @@ from pytest import MonkeyPatch
 from v5_memo.__main__ import (
     _alpha_shape_queries,
     _alpha_shaped_planned_queries,
+    _dedupe_queries,
     _topic_anchored_queries,
     main,
 )
@@ -140,6 +141,24 @@ def test_alpha_shaped_planner_queries_prefer_direct_evidence_language() -> None:
         "metformin attenuated healthspan extension germ-free mice",
         "metformin impairs exercise-induced mitochondrial biogenesis older adults",
     ])[0] == "metformin impairs exercise-induced mitochondrial biogenesis older adults"
+
+
+def test_alpha_shaped_planner_queries_prefer_high_signal_failure_terms() -> None:
+    assert _alpha_shaped_planned_queries([
+        "urolithin mitochondrial aging",
+        "urolithin primary endpoint failed subgroup",
+    ])[0] == "urolithin primary endpoint failed subgroup"
+
+
+def test_dedupe_queries_collapses_near_duplicate_fullraw_shapes() -> None:
+    assert _dedupe_queries([
+        "urolithin A mitochondrial aging",
+        "urolithin mitochondrial aging",
+        "urolithin human trial",
+    ]) == [
+        "urolithin A mitochondrial aging",
+        "urolithin human trial",
+    ]
 
 
 def test_cli_forwards_memo_coverage_thresholds_from_env(

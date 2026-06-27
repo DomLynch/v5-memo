@@ -192,6 +192,24 @@ def test_full_raw_client_relaxes_strict_long_queries(monkeypatch: object) -> Non
     assert hits[0].doi == "10.123/forecast"
     assert hits[0].metadata["search_variant"] == "management forecast"
 
+
+def test_fullraw_search_passes_compact_near_duplicate_queries() -> None:
+    with_article = _fullraw_search_passes("urolithin A mitochondrial aging", limit=4)
+    plain = _fullraw_search_passes("urolithin mitochondrial aging", limit=4)
+
+    assert [item.query for item in with_article] == [item.query for item in plain]
+
+
+def test_fullraw_search_passes_prefer_topic_anchor_pairs() -> None:
+    queries = [
+        item.query
+        for item in _fullraw_search_passes("cold water immersion resistance training", limit=4)
+    ]
+
+    assert "water resistance" not in queries
+    assert any(query.startswith("cold ") for query in queries)
+
+
 def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
     receipt = {
         "shards_total": 100,

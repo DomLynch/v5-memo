@@ -22,7 +22,7 @@ from v5_memo.minimax_writer import (
     MiniMaxM3SearchPlanner,
 )
 from v5_memo.pipeline import build_alpha_memo
-from v5_memo.retriever import CorpusSearcher
+from v5_memo.retriever import CorpusSearcher, _seed_query_key
 from v5_memo.schemas import CorpusHit
 from v5_memo.writer import render_memo
 
@@ -38,8 +38,9 @@ _SHAPE_CONTEXT_TERMS = frozenset({"exercise", "resistance", "strength", "trainin
 _ALPHA_QUERY_TERMS = frozenset({
     "activate", "activates", "activated", "augment", "augments", "augmented",
     "blunted", "blunts", "designed", "expected", "impair", "impaired", "impairs",
-    "mimic", "mimics",
-    "null", "observed", "placebo", "protocol", "randomized", "reduced", "reduces",
+    "failed", "failure", "mimic", "mimics",
+    "null", "observed", "placebo", "primary", "endpoint", "protocol", "randomized",
+    "reduced", "reduces", "replication", "subgroup",
     "attenuate", "attenuated", "attenuates", "unchanged",
 })
 _DIRECT_EVIDENCE_QUERY_TERMS = frozenset({
@@ -288,11 +289,12 @@ def _alpha_shape_queries(topic: str) -> list[str]:
 
 def _dedupe_queries(queries: Sequence[str]) -> list[str]:
     out: list[str] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, ...]] = set()
     for query in queries:
         clean = " ".join(query.split())
-        if clean and clean not in seen:
-            seen.add(clean)
+        key = _seed_query_key(clean)
+        if clean and key and key not in seen:
+            seen.add(key)
             out.append(clean)
     return out
 

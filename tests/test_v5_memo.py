@@ -253,6 +253,34 @@ def test_collect_seed_hits_balances_planned_query_budget() -> None:
     assert any(hit.hit_id.startswith("later-reversal-query") for hit in hits)
 
 
+def test_collect_seed_hits_dedupes_near_duplicate_seed_queries() -> None:
+    searched: list[tuple[str, int]] = []
+
+    def search(query: str, limit: int) -> Sequence[CorpusHit]:
+        searched.append((query, limit))
+        return [
+            CorpusHit(f"{query}-{index}", f"{query} hit {index}", "receipt", "fullraw")
+            for index in range(limit)
+        ]
+
+    hits = collect_seed_hits(
+        _FunctionSearch(search),
+        [
+            "urolithin A mitochondrial aging",
+            "urolithin mitochondrial aging",
+            "urolithin human trial",
+        ],
+        per_query_limit=10,
+        max_hits=3,
+    )
+
+    assert searched == [
+        ("urolithin A mitochondrial aging", 2),
+        ("urolithin human trial", 2),
+    ]
+    assert len(hits) == 3
+
+
 def test_collect_seed_hits_skips_late_seed_failure_after_hits() -> None:
     def search(query: str, limit: int) -> Sequence[CorpusHit]:
         if query == "bad" and limit:
