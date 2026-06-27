@@ -122,7 +122,9 @@ def test_iter_raw_file_hits_reads_local_pubmed_xml_fixture(tmp_path: Path) -> No
 
 
 def test_strict_5tb_service_keeps_secret_env_file() -> None:
-    config = Path(__file__).resolve().parents[1] / "deploy" / "v5-memo-fullraw-index-strict-5tb.conf"
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
+    config = deploy_dir / "v5-memo-fullraw-index-strict-5tb.conf"
+    env_example = (deploy_dir / "v5-memo-fullraw-shards.env.example").read_text()
     env_files = [line for line in config.read_text().splitlines() if line.startswith("EnvironmentFile")]
 
     assert env_files[:3] == [
@@ -140,3 +142,5 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "Environment=V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT=1" in config.read_text()
     assert "Environment=V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST=0" in config.read_text()
     assert "Environment=V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS=128" in config.read_text()
+    assert "V5_MEMO_FULL_RAW_SEARCH_ISOLATED=0" in env_example
+    assert "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT=128" in env_example
