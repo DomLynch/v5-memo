@@ -144,3 +144,5 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "Environment=V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS=128" in config.read_text()
     assert "V5_MEMO_FULL_RAW_SEARCH_ISOLATED=0" in env_example
     assert "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT=128" in env_example
+    assert "V5_MEMO_FULL_RAW_INDEX_PATH=/mnt/HC_Volume_106011525/v5-memo/index/fullraw_index.sqlite" in env_example
+    assert "V5_MEMO_FULL_RAW_SHARD_DIR=/mnt/HC_Volume_106011525/v5-memo/fullraw-fts-remote" in env_example
