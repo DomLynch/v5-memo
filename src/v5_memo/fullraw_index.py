@@ -4109,6 +4109,12 @@ def _write_sweep_cache(path: Path, entry: SweepCacheEntry) -> None:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
         try:
             current = _load_sweep_cache(path, ttl_seconds=0) if path.exists() else None
+            result_limit = _int_or_none(entry.receipt.get("sweep_result_limit"))
+            if current is not None and result_limit is not None and not _sweep_cache_entry_has_result_limit(
+                current,
+                result_limit,
+            ):
+                current = None
             selected = _prefer_sweep_cache_entry(entry, current)
             assert selected is not None
             _write_json_file(tmp_path, {

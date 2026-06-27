@@ -860,6 +860,41 @@ def test_sweep_cache_write_preserves_highest_progress(tmp_path: Path) -> None:
     assert selected.receipt["sweep_remaining_shards"] == 1013
 
 
+def test_sweep_cache_write_replaces_incompatible_low_hit_terminal_cache(tmp_path: Path) -> None:
+    cache_path = tmp_path / "sweeps" / "cold-immersion.json"
+    low_hit_terminal = fullraw_index.SweepCacheEntry(
+        created_at=time.time() - 60,
+        hits=[{"title": f"Cold immersion training {index}"} for index in range(3)],
+        receipt={
+            "shards_searched": 1525,
+            "shards_total": 1525,
+            "partial_shard_search": False,
+            "sweep_remaining_shards": 0,
+        },
+    )
+    mining_partial = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": f"Cold immersion training {index}"} for index in range(10)],
+        receipt={
+            "shards_searched": 301,
+            "shards_total": 1525,
+            "partial_shard_search": True,
+            "sweep_remaining_shards": 1224,
+            "sweep_result_limit": 10,
+        },
+    )
+
+    fullraw_index._write_sweep_cache(cache_path, low_hit_terminal)
+    fullraw_index._write_sweep_cache(cache_path, mining_partial)
+
+    selected = fullraw_index._load_sweep_cache(cache_path, ttl_seconds=0)
+
+    assert selected is not None
+    assert len(selected.hits) == 10
+    assert selected.receipt["shards_searched"] == 301
+    assert selected.receipt["sweep_result_limit"] == 10
+
+
 def test_sweep_admission_queues_without_exceeding_inflight_limit() -> None:
     inflight = {"active"}
     queued: set[str] = set()
