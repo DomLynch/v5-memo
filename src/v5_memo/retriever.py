@@ -27,7 +27,9 @@ def collect_seed_hits(
     for query in seed_queries:
         try:
             hits = searcher.search(query, limit=query_limit)
-        except RuntimeError:
+        except RuntimeError as exc:
+            if str(exc).startswith("Full raw corpus search coverage too narrow"):
+                raise
             continue
         for hit in hits:
             key = hit.source_key

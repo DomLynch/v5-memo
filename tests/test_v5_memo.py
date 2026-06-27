@@ -265,6 +265,15 @@ def test_collect_seed_hits_skips_late_seed_failure_after_hits() -> None:
     assert collect_seed_hits(searcher, ["bad"]) == []
 
 
+def test_collect_seed_hits_propagates_fullraw_coverage_failure() -> None:
+    def search(query: str, limit: int) -> Sequence[CorpusHit]:
+        del query, limit
+        raise RuntimeError("Full raw corpus search coverage too narrow: {'shards_searched': 32}")
+
+    with pytest.raises(RuntimeError, match="coverage too narrow"):
+        collect_seed_hits(_FunctionSearch(search), ["metformin", "metformin blunts"])
+
+
 def test_pipeline_builds_best_memo() -> None:
     result = build_alpha_memo(
         topic="longevity resilience",
