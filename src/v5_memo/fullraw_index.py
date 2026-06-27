@@ -54,7 +54,7 @@ _STOP = frozenset(
         "made el en la los metode pada penelitian"
     ).split()
 )
-_BACKEND = "v5-fullraw-indexed-fts5"
+_BACKEND = "researka-fullraw-indexed-fts5"
 _FULLRAW_LEGACY_PREFIX = "V5_MEMO_FULL_RAW_"
 _FULLRAW_GENERIC_PREFIX = "RESEARKA_FULLRAW_"
 _FULLRAW_SPECIAL_ALIASES = {
