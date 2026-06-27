@@ -1009,6 +1009,43 @@ def test_shard_search_preserves_materialized_batch_before_worker_search(
     assert timed_out is False
 
 
+def test_shard_search_caps_worker_batch_to_cache_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    remotes = [tmp_path / f"remote-{idx}.sqlite" for idx in range(4)]
+    for path in remotes:
+        path.write_bytes(b"x" * 6)
+    preserve_sizes: list[int] = []
+
+    def fake_materialized(path: Path, *, preserve: set[Path] | None = None) -> Path:
+        preserve_sizes.append(len(preserve or set()))
+        return tmp_path / f"local-{path.stem}.sqlite"
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "12")
+    monkeypatch.setattr(fullraw_index, "_materialized_shard_path", fake_materialized)
+    monkeypatch.setattr(
+        fullraw_index,
+        "_search_one_shard_for_pool",
+        lambda path, *_args: [{"title": path.stem, "score": 1.0}],
+    )
+
+    _hits, completed_paths, timed_out, _metrics = fullraw_index._search_shard_paths_with_paths_and_receipt(
+        remotes,
+        "metformin longevity",
+        limit=4,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        workers=4,
+        timeout_seconds=5,
+    )
+
+    assert preserve_sizes == [0, 1, 0, 1]
+    assert completed_paths == remotes
+    assert timed_out is False
+
+
 def test_materialized_shard_path_does_not_recache_local_cache_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

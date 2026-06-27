@@ -1123,6 +1123,7 @@ def _search_shard_paths_with_paths_and_receipt(
         if timeout_seconds
         else paths
     )
+    worker_count = _cache_fit_worker_count(search_paths, worker_count)
     deadline = time.monotonic() + timeout_seconds if timeout_seconds else None
     per_shard_timeout = shard_timeout_seconds
     for start in range(0, len(search_paths), worker_count):
@@ -1173,6 +1174,21 @@ def _search_shard_paths_with_paths_and_receipt(
             pool.shutdown(wait=True, cancel_futures=True)
     hits, metrics = _merge_hit_groups_with_receipt(hit_groups, limit=limit)
     return hits, completed_paths, timed_out, metrics
+
+
+def _cache_fit_worker_count(paths: list[Path], requested_workers: int) -> int:
+    max_cache_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
+    if max_cache_bytes is None or max_cache_bytes <= 0:
+        return requested_workers
+    largest = 0
+    for path in paths:
+        try:
+            largest = max(largest, path.stat().st_size)
+        except OSError:
+            continue
+    if largest <= 0:
+        return requested_workers
+    return max(1, min(requested_workers, max_cache_bytes // largest))
 
 
 def _merge_hit_groups(
