@@ -2481,20 +2481,40 @@ def _queue_sweep_job(sweep_queued_jobs: dict[str, SweepJob], key: str, job: Swee
     _queue_sweep_job_with_priority(sweep_queued_jobs, key, job, priority=key in sweep_queued_jobs)
 
 
+def _trim_sweep_queue(
+    sweep_queued_jobs: dict[str, SweepJob],
+    *,
+    sweep_queued: set[str] | None = None,
+    max_queue: int = 0,
+) -> None:
+    while max_queue > 0 and len(sweep_queued_jobs) > max_queue:
+        drop_key = next(
+            (queued_key for queued_key in reversed(sweep_queued_jobs) if not sweep_queued_jobs[queued_key].priority),
+            next(reversed(sweep_queued_jobs)),
+        )
+        sweep_queued_jobs.pop(drop_key, None)
+        if sweep_queued is not None:
+            sweep_queued.discard(drop_key)
+
+
 def _queue_sweep_job_with_priority(
     sweep_queued_jobs: dict[str, SweepJob],
     key: str,
     job: SweepJob,
     *,
     priority: bool,
+    sweep_queued: set[str] | None = None,
+    max_queue: int = 0,
 ) -> None:
     if not priority and key not in sweep_queued_jobs:
         sweep_queued_jobs[key] = job
+        _trim_sweep_queue(sweep_queued_jobs, sweep_queued=sweep_queued, max_queue=max_queue)
         return
     existing = tuple((queued_key, queued_job) for queued_key, queued_job in sweep_queued_jobs.items() if queued_key != key)
     sweep_queued_jobs.clear()
     sweep_queued_jobs[key] = job
     sweep_queued_jobs.update(existing)
+    _trim_sweep_queue(sweep_queued_jobs, sweep_queued=sweep_queued, max_queue=max_queue)
 
 
 def shard_coverage_gate_response(
