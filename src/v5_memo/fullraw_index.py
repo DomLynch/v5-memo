@@ -2414,15 +2414,15 @@ def _take_next_queued_sweep_job(
     sweep_queued: set[str],
     sweep_queued_jobs: dict[str, SweepJob],
     max_inflight: int,
+    allow_priority_burst: bool = False,
 ) -> SweepJob | None:
     inflight_limit = max(1, max_inflight)
     for key in tuple(sweep_queued_jobs):
         job = sweep_queued_jobs.pop(key)
         if key not in sweep_queued:
             continue
-        if len(sweep_inflight) >= inflight_limit and (
-            not job.priority or len(sweep_inflight) >= inflight_limit + 1
-        ):
+        can_burst = allow_priority_burst and job.priority
+        if len(sweep_inflight) >= inflight_limit and (not can_burst or len(sweep_inflight) >= inflight_limit + 1):
             sweep_queued_jobs[key] = job
             return None
         sweep_queued.discard(key)
@@ -2767,6 +2767,7 @@ def run_server() -> None:
     sweep_pass_shard_limit = max(1, min(sweep_pass_shard_limit, sweep_shard_limit))
     sweep_max_passes = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_PASSES") or 1
     sweep_max_passes = max(1, min(sweep_max_passes, sweep_shard_limit))
+    sweep_priority_burst = os.environ.get("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "").casefold() in {"1", "true", "yes"}
     sweep_timeout_seconds = _float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SWEEP_TIMEOUT_SECONDS", "")) or 300.0
     sweep_timeout_seconds = max(1.0, min(sweep_timeout_seconds, 3600.0))
     sweep_shard_timeout_seconds = _float_or_none(
@@ -3011,6 +3012,7 @@ def run_server() -> None:
                         sweep_queued=sweep_queued,
                         sweep_queued_jobs=sweep_queued_jobs,
                         max_inflight=sweep_max_inflight,
+                        allow_priority_burst=sweep_priority_burst,
                     )
                 if next_job is not None:
                     start_sweep_worker(next_job)
@@ -3062,6 +3064,7 @@ def run_server() -> None:
                     sweep_queued=sweep_queued,
                     sweep_queued_jobs=sweep_queued_jobs,
                     max_inflight=sweep_max_inflight,
+                    allow_priority_burst=sweep_priority_burst,
                 )
                 if next_job is None:
                     return status
