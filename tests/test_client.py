@@ -210,6 +210,26 @@ def test_fullraw_search_passes_prefer_topic_anchor_pairs() -> None:
     assert any(query.startswith("cold ") for query in queries)
 
 
+def test_full_raw_client_from_env_prefers_generic_researka_fullraw_names(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("RESEARKA_FULLRAW_SEARCH_URL", "http://127.0.0.1:9903/search")
+    monkeypatch.setenv("RESEARKA_FULLRAW_TOKEN", "generic-token")
+    monkeypatch.setenv("RESEARKA_FULLRAW_MIN_SHARDS_SEARCHED", "1525")
+    monkeypatch.setenv("RESEARKA_FULLRAW_MIN_SOURCES_SEARCHED", "5")
+    monkeypatch.setenv("RESEARKA_FULLRAW_MAX_VARIANTS", "3")
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_TOKEN", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", raising=False)
+
+    client = FullRawCorpusSearchClient.from_env()
+
+    assert client.configured is True
+    assert client._search_url == "http://127.0.0.1:9903/search"
+    assert client._token == "generic-token"
+    assert client._min_shards_searched == 1525
+    assert client._min_sources_searched == 5
+    assert client._max_variants == 3
+
+
 def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
     receipt = {
         "shards_total": 100,

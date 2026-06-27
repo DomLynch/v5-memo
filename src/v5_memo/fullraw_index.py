@@ -55,7 +55,33 @@ _STOP = frozenset(
     ).split()
 )
 _BACKEND = "v5-fullraw-indexed-fts5"
-_FULL_COVERAGE_PREFIX_SHARDS = max(1, int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS", "32")))
+_FULLRAW_LEGACY_PREFIX = "V5_MEMO_FULL_RAW_"
+_FULLRAW_GENERIC_PREFIX = "RESEARKA_FULLRAW_"
+_FULLRAW_SPECIAL_ALIASES = {
+    "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL": ("RESEARKA_FULLRAW_SEARCH_URL",),
+    "V5_MEMO_FULL_RAW_CORPUS_TOKEN": ("RESEARKA_FULLRAW_TOKEN",),
+    "V5_MEMO_FULL_RAW_INDEX_TOKEN": ("RESEARKA_FULLRAW_INDEX_TOKEN", "RESEARKA_FULLRAW_TOKEN"),
+    "V5_MEMO_FULL_RAW_TOKEN": ("RESEARKA_FULLRAW_TOKEN",),
+}
+
+
+def _fullraw_env_names(name: str) -> tuple[str, ...]:
+    if not name.startswith(_FULLRAW_LEGACY_PREFIX):
+        return (name,)
+    suffix = name.removeprefix(_FULLRAW_LEGACY_PREFIX)
+    candidates = (*_FULLRAW_SPECIAL_ALIASES.get(name, ()), f"{_FULLRAW_GENERIC_PREFIX}{suffix}", name)
+    return tuple(dict.fromkeys(candidates))
+
+
+def _fullraw_env(name: str, default: str = "") -> str:
+    for candidate in _fullraw_env_names(name):
+        value = os.environ.get(candidate)
+        if value is not None and value != "":
+            return value
+    return default
+
+
+_FULL_COVERAGE_PREFIX_SHARDS = max(1, int(_fullraw_env("V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS", "32")))
 _SWEEP_STRATEGY = "profile_relaxed_v9"
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _DEFAULT_TERM_MAP = (
@@ -1116,7 +1142,7 @@ def _search_shard_paths_with_paths_and_receipt(
     hit_groups: list[list[dict[str, object]]] = []
     completed_paths: list[Path] = []
     timed_out = False
-    worker_count = workers if workers is not None else int(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "8"))
+    worker_count = workers if workers is not None else int(_fullraw_env("V5_MEMO_FULL_RAW_SEARCH_WORKERS", "8"))
     worker_count = max(1, min(worker_count, len(paths) or 1))
     search_paths = (
         paths[: min(len(paths), max(worker_count * 4, _FULL_COVERAGE_PREFIX_SHARDS))]
@@ -1183,7 +1209,7 @@ def _cache_fit_path_batch(paths: list[Path], *, start: int, worker_count: int) -
     if max_cache_bytes is None or max_cache_bytes <= 0:
         return batch
     max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
-    if os.environ.get("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "").casefold() in {"1", "true", "yes"}:
+    if _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "").casefold() in {"1", "true", "yes"}:
         max_inflight += 1
     budget = max(1, max_cache_bytes // max(1, max_inflight))
     out: list[Path] = []
@@ -1284,7 +1310,7 @@ def select_search_shard_paths(paths: list[Path]) -> list[Path]:
     limit = _positive_int_env("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT")
     if limit is None or limit >= len(paths):
         return paths
-    order = os.environ.get("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "newest").casefold()
+    order = _fullraw_env("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "newest").casefold()
     if order in {"oldest", "first"}:
         return paths[:limit]
     if order == "spread" and limit > 1:
@@ -1305,7 +1331,7 @@ def select_search_shard_entries(
         limit = max(limit, min_required)
     if limit is None or limit >= len(entries):
         return _frontload_spread_entries(entries)
-    order = os.environ.get("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "balanced").casefold()
+    order = _fullraw_env("V5_MEMO_FULL_RAW_SEARCH_SHARD_ORDER", "balanced").casefold()
     if order in {"oldest", "first", "newest", "spread"}:
         paths = select_search_shard_paths([entry.path for entry in entries])
         by_path = {entry.path: entry for entry in entries}
@@ -1735,7 +1761,7 @@ def _search_one_shard_for_pool(
     rank_mode: str,
     timeout_seconds: float | None = None,
 ) -> list[dict[str, object]]:
-    if os.environ.get("V5_MEMO_FULL_RAW_SEARCH_ISOLATED", "").casefold() in {"1", "true", "yes"}:
+    if _fullraw_env("V5_MEMO_FULL_RAW_SEARCH_ISOLATED", "").casefold() in {"1", "true", "yes"}:
         return _search_one_shard_isolated(
             path,
             query,
@@ -1834,7 +1860,7 @@ def _materialized_shard_path(path: Path, *, preserve: set[Path] | None = None) -
 
 
 def _shard_cache_path(path: Path) -> Path | None:
-    cache_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", "").strip()
+    cache_dir_config = _fullraw_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", "").strip()
     if not cache_dir_config:
         return None
     cache_dir = Path(cache_dir_config)
@@ -2798,33 +2824,33 @@ def _build_shard_worker(job: ShardBuildJob) -> ShardBuildResult:
 
 
 def run_server() -> None:
-    host = os.environ.get("V5_MEMO_FULL_RAW_INDEX_HOST", "127.0.0.1")
-    port = int(os.environ.get("V5_MEMO_FULL_RAW_INDEX_PORT", "9902"))
+    host = _fullraw_env("V5_MEMO_FULL_RAW_INDEX_HOST", "127.0.0.1")
+    port = int(_fullraw_env("V5_MEMO_FULL_RAW_INDEX_PORT", "9902"))
     index_path = Path(
-        os.environ.get("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite")
+        _fullraw_env("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite")
     )
-    shard_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SHARD_DIR", "").strip()
+    shard_dir_config = _fullraw_env("V5_MEMO_FULL_RAW_SHARD_DIR", "").strip()
     shard_dir = Path(shard_dir_config) if shard_dir_config else None
-    trust_shard_filenames = os.environ.get(
+    trust_shard_filenames = _fullraw_env(
         "V5_MEMO_FULL_RAW_SHARD_TRUST_FILENAMES", ""
     ).casefold() in {"1", "true", "yes"}
-    shard_manifest_stats = os.environ.get(
+    shard_manifest_stats = _fullraw_env(
         "V5_MEMO_FULL_RAW_SHARD_MANIFEST_STATS", ""
     ).casefold() in {"1", "true", "yes"}
-    fast_health = os.environ.get("V5_MEMO_FULL_RAW_FAST_HEALTH", "").casefold() in {"1", "true", "yes"}
+    fast_health = _fullraw_env("V5_MEMO_FULL_RAW_FAST_HEALTH", "").casefold() in {"1", "true", "yes"}
     shard_catalog_ttl = _float_or_none(
-        os.environ.get("V5_MEMO_FULL_RAW_SHARD_CATALOG_TTL_SECONDS", "")
+        _fullraw_env("V5_MEMO_FULL_RAW_SHARD_CATALOG_TTL_SECONDS", "")
     ) or 60.0
     min_shards_searched = _positive_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED") or 0
     min_sources_searched = _positive_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED") or 0
-    require_complete_search = os.environ.get(
+    require_complete_search = _fullraw_env(
         "V5_MEMO_FULL_RAW_REQUIRE_COMPLETE_SEARCH", ""
     ).casefold() in {"1", "true", "yes"}
-    sweep_require_complete = os.environ.get(
+    sweep_require_complete = _fullraw_env(
         "V5_MEMO_FULL_RAW_SWEEP_REQUIRE_COMPLETE", ""
     ).casefold() in {"1", "true", "yes"}
-    sweep_enabled = os.environ.get("V5_MEMO_FULL_RAW_ASYNC_SWEEP", "").casefold() in {"1", "true", "yes"}
-    sweep_ttl = _float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS", "")) or 86400.0
+    sweep_enabled = _fullraw_env("V5_MEMO_FULL_RAW_ASYNC_SWEEP", "").casefold() in {"1", "true", "yes"}
+    sweep_ttl = _float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS", "")) or 86400.0
     sweep_workers = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKERS") or 1
     sweep_max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
     sweep_max_queue = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_QUEUE") or 0
@@ -2833,27 +2859,27 @@ def run_server() -> None:
     sweep_pass_shard_limit = max(1, min(sweep_pass_shard_limit, sweep_shard_limit))
     sweep_max_passes = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_PASSES") or 1
     sweep_max_passes = max(1, min(sweep_max_passes, sweep_shard_limit))
-    sweep_priority_burst = os.environ.get("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "").casefold() in {"1", "true", "yes"}
-    sweep_timeout_seconds = _float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SWEEP_TIMEOUT_SECONDS", "")) or 300.0
+    sweep_priority_burst = _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "").casefold() in {"1", "true", "yes"}
+    sweep_timeout_seconds = _float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_TIMEOUT_SECONDS", "")) or 300.0
     sweep_timeout_seconds = max(1.0, min(sweep_timeout_seconds, 3600.0))
     sweep_shard_timeout_seconds = _float_or_none(
-        os.environ.get("V5_MEMO_FULL_RAW_SWEEP_SHARD_TIMEOUT_SECONDS", "")
+        _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_TIMEOUT_SECONDS", "")
     ) or 10.0
     sweep_shard_timeout_seconds = max(0.1, min(sweep_shard_timeout_seconds, sweep_timeout_seconds))
-    search_shard_timeout_seconds = _float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SEARCH_SUBPROCESS_TIMEOUT", ""))
-    shard_catalog_path_config = os.environ.get("V5_MEMO_FULL_RAW_SHARD_CATALOG_PATH", "").strip()
+    search_shard_timeout_seconds = _float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SEARCH_SUBPROCESS_TIMEOUT", ""))
+    shard_catalog_path_config = _fullraw_env("V5_MEMO_FULL_RAW_SHARD_CATALOG_PATH", "").strip()
     shard_catalog_path = Path(shard_catalog_path_config) if shard_catalog_path_config else None
-    sweep_cache_dir_config = os.environ.get("V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR", "").strip()
+    sweep_cache_dir_config = _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR", "").strip()
     sweep_cache_dir = Path(sweep_cache_dir_config) if sweep_cache_dir_config else None
     manifest_path = Path(
-        os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json")
+        _fullraw_env("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json")
     )
-    rclone_bin = os.environ.get("V5_MEMO_FULL_RAW_RCLONE", "rclone")
-    refresh = os.environ.get("V5_MEMO_FULL_RAW_REFRESH_MANIFEST", "").casefold() in {"1", "true", "yes"}
+    rclone_bin = _fullraw_env("V5_MEMO_FULL_RAW_RCLONE", "rclone")
+    refresh = _fullraw_env("V5_MEMO_FULL_RAW_REFRESH_MANIFEST", "").casefold() in {"1", "true", "yes"}
     files = load_or_build_manifest(manifest_path, refresh=refresh, rclone_bin=rclone_bin)
     token = (
-        os.environ.get("V5_MEMO_FULL_RAW_INDEX_TOKEN", "")
-        or os.environ.get("V5_MEMO_FULL_RAW_TOKEN", "")
+        _fullraw_env("V5_MEMO_FULL_RAW_INDEX_TOKEN", "")
+        or _fullraw_env("V5_MEMO_FULL_RAW_TOKEN", "")
     ).strip()
     index = None if shard_dir else FullRawFtsIndex(index_path)
     if index is not None:
@@ -3505,62 +3531,62 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     build = subparsers.add_parser("build")
-    build.add_argument("--index-path", default=os.environ.get("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite"))
-    build.add_argument("--manifest", default=os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
+    build.add_argument("--index-path", default=_fullraw_env("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite"))
+    build.add_argument("--manifest", default=_fullraw_env("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
     build.add_argument("--refresh-manifest", action="store_true")
-    build.add_argument("--rclone-bin", default=os.environ.get("V5_MEMO_FULL_RAW_RCLONE", "rclone"))
+    build.add_argument("--rclone-bin", default=_fullraw_env("V5_MEMO_FULL_RAW_RCLONE", "rclone"))
     build.add_argument("--max-files", type=int)
     build.add_argument("--time-budget-seconds", type=float)
     build.add_argument("--commit-interval", type=int, default=1000)
     build.add_argument(
         "--min-free-gb",
         type=float,
-        default=float(os.environ.get("V5_MEMO_FULL_RAW_INDEX_MIN_FREE_GB", "40")),
+        default=float(_fullraw_env("V5_MEMO_FULL_RAW_INDEX_MIN_FREE_GB", "40")),
     )
 
-    shard_dir_default = os.environ.get(
+    shard_dir_default = _fullraw_env(
         "V5_MEMO_FULL_RAW_SHARD_DIR",
-        os.environ.get("V5_MEMO_FULL_RAW_SHARD_BUILD_DIR", "/var/lib/v5-memo/fullraw-shards"),
+        _fullraw_env("V5_MEMO_FULL_RAW_SHARD_BUILD_DIR", "/var/lib/v5-memo/fullraw-shards"),
     )
     build_shards_parser = subparsers.add_parser("build-shards")
     build_shards_parser.add_argument("--shard-dir", default=shard_dir_default)
-    build_shards_parser.add_argument("--manifest", default=os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
+    build_shards_parser.add_argument("--manifest", default=_fullraw_env("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
     build_shards_parser.add_argument("--refresh-manifest", action="store_true")
-    build_shards_parser.add_argument("--rclone-bin", default=os.environ.get("V5_MEMO_FULL_RAW_RCLONE", "rclone"))
-    build_shards_parser.add_argument("--shards", type=int, default=int(os.environ.get("V5_MEMO_FULL_RAW_SHARDS", "4")))
-    build_shards_parser.add_argument("--workers", type=int, default=int(os.environ.get("V5_MEMO_FULL_RAW_SHARD_WORKERS", "4")))
+    build_shards_parser.add_argument("--rclone-bin", default=_fullraw_env("V5_MEMO_FULL_RAW_RCLONE", "rclone"))
+    build_shards_parser.add_argument("--shards", type=int, default=int(_fullraw_env("V5_MEMO_FULL_RAW_SHARDS", "4")))
+    build_shards_parser.add_argument("--workers", type=int, default=int(_fullraw_env("V5_MEMO_FULL_RAW_SHARD_WORKERS", "4")))
     build_shards_parser.add_argument("--max-files", type=int)
     build_shards_parser.add_argument("--time-budget-seconds", type=float)
     build_shards_parser.add_argument("--commit-interval", type=int, default=1000)
     build_shards_parser.add_argument(
         "--min-free-gb",
         type=float,
-        default=float(os.environ.get("V5_MEMO_FULL_RAW_INDEX_MIN_FREE_GB", "40")),
+        default=float(_fullraw_env("V5_MEMO_FULL_RAW_INDEX_MIN_FREE_GB", "40")),
     )
 
     build_upload_parser = subparsers.add_parser("build-upload-shards")
     build_upload_parser.add_argument("--shard-dir", default=shard_dir_default)
-    build_upload_parser.add_argument("--upload-remote", default=os.environ.get("V5_MEMO_FULL_RAW_SHARD_REMOTE", ""))
-    build_upload_parser.add_argument("--manifest", default=os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
+    build_upload_parser.add_argument("--upload-remote", default=_fullraw_env("V5_MEMO_FULL_RAW_SHARD_REMOTE", ""))
+    build_upload_parser.add_argument("--manifest", default=_fullraw_env("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
     build_upload_parser.add_argument("--refresh-manifest", action="store_true")
-    build_upload_parser.add_argument("--rclone-bin", default=os.environ.get("V5_MEMO_FULL_RAW_RCLONE", "rclone"))
-    build_upload_parser.add_argument("--batch-files", type=int, default=int(os.environ.get("V5_MEMO_FULL_RAW_SHARD_BATCH_FILES", "16")))
-    build_upload_parser.add_argument("--shards", type=int, default=int(os.environ.get("V5_MEMO_FULL_RAW_SHARDS", "4")))
-    build_upload_parser.add_argument("--workers", type=int, default=int(os.environ.get("V5_MEMO_FULL_RAW_SHARD_WORKERS", "4")))
+    build_upload_parser.add_argument("--rclone-bin", default=_fullraw_env("V5_MEMO_FULL_RAW_RCLONE", "rclone"))
+    build_upload_parser.add_argument("--batch-files", type=int, default=int(_fullraw_env("V5_MEMO_FULL_RAW_SHARD_BATCH_FILES", "16")))
+    build_upload_parser.add_argument("--shards", type=int, default=int(_fullraw_env("V5_MEMO_FULL_RAW_SHARDS", "4")))
+    build_upload_parser.add_argument("--workers", type=int, default=int(_fullraw_env("V5_MEMO_FULL_RAW_SHARD_WORKERS", "4")))
     build_upload_parser.add_argument("--max-files", type=int)
-    build_upload_parser.add_argument("--source-filter", default=os.environ.get("V5_MEMO_FULL_RAW_SOURCE_FILTER", ""))
-    build_upload_parser.add_argument("--batch-id-offset", type=int, default=int(os.environ.get("V5_MEMO_FULL_RAW_BATCH_ID_OFFSET", "0")))
+    build_upload_parser.add_argument("--source-filter", default=_fullraw_env("V5_MEMO_FULL_RAW_SOURCE_FILTER", ""))
+    build_upload_parser.add_argument("--batch-id-offset", type=int, default=int(_fullraw_env("V5_MEMO_FULL_RAW_BATCH_ID_OFFSET", "0")))
     build_upload_parser.add_argument("--commit-interval", type=int, default=1000)
     build_upload_parser.add_argument(
         "--min-free-gb",
         type=float,
-        default=float(os.environ.get("V5_MEMO_FULL_RAW_INDEX_MIN_FREE_GB", "40")),
+        default=float(_fullraw_env("V5_MEMO_FULL_RAW_INDEX_MIN_FREE_GB", "40")),
     )
     build_upload_parser.add_argument("--keep-local", action="store_true")
 
     search = subparsers.add_parser("search")
     search.add_argument("query")
-    search.add_argument("--index-path", default=os.environ.get("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite"))
+    search.add_argument("--index-path", default=_fullraw_env("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite"))
     search.add_argument("--limit", type=int, default=10)
 
     search_shards_parser = subparsers.add_parser("search-shards")
@@ -3572,15 +3598,15 @@ def main() -> None:
 
     explain = subparsers.add_parser("explain")
     explain.add_argument("query")
-    explain.add_argument("--index-path", default=os.environ.get("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite"))
+    explain.add_argument("--index-path", default=_fullraw_env("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite"))
 
     stats = subparsers.add_parser("stats")
-    stats.add_argument("--index-path", default=os.environ.get("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite"))
-    stats.add_argument("--manifest", default=os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
+    stats.add_argument("--index-path", default=_fullraw_env("V5_MEMO_FULL_RAW_INDEX_PATH", "/var/lib/v5-memo/fullraw_index.sqlite"))
+    stats.add_argument("--manifest", default=_fullraw_env("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
 
     stats_shards = subparsers.add_parser("stats-shards")
     stats_shards.add_argument("--shard-dir", default=shard_dir_default)
-    stats_shards.add_argument("--manifest", default=os.environ.get("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
+    stats_shards.add_argument("--manifest", default=_fullraw_env("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json"))
 
     backfill_profiles = subparsers.add_parser("backfill-shard-profiles")
     backfill_profiles.add_argument("--shard-dir", default=shard_dir_default)
@@ -3588,7 +3614,7 @@ def main() -> None:
     backfill_profiles.add_argument("--force", action="store_true")
     backfill_profiles.add_argument("--dry-run", action="store_true")
     backfill_profiles.add_argument("--upload-remote", default="")
-    backfill_profiles.add_argument("--rclone-bin", default=os.environ.get("V5_MEMO_FULL_RAW_RCLONE", "rclone"))
+    backfill_profiles.add_argument("--rclone-bin", default=_fullraw_env("V5_MEMO_FULL_RAW_RCLONE", "rclone"))
     backfill_profiles.add_argument("--verify-sqlite", action="store_true")
     backfill_profiles.add_argument("--progress-interval", type=int, default=25)
 
@@ -3598,25 +3624,25 @@ def main() -> None:
     warm_cache.add_argument(
         "--sweep-shard-limit",
         type=int,
-        default=int(os.environ.get("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT", "96")),
+        default=int(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT", "96")),
     )
     warm_cache.add_argument(
         "--pass-shard-limit",
         type=int,
-        default=int(os.environ.get("V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT", "10")),
+        default=int(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT", "10")),
     )
     warm_cache.add_argument(
         "--target-ready",
         type=int,
-        default=int(os.environ.get("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", "50")),
+        default=int(_fullraw_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", "50")),
     )
     warm_cache.add_argument("--max-shards", type=int)
     warm_cache.add_argument("--max-seconds", type=float)
-    warm_cache.add_argument("--cache-dir", default=os.environ.get("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", ""))
+    warm_cache.add_argument("--cache-dir", default=_fullraw_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", ""))
     warm_cache.add_argument(
         "--cache-max-gb",
         type=float,
-        default=_float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_GB", "")),
+        default=_float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_GB", "")),
     )
     warm_cache.add_argument("--trust-filenames", action="store_true")
     warm_cache.add_argument("--progress-interval", type=int, default=5)
@@ -4104,7 +4130,7 @@ def _int_or_none(value: object) -> int | None:
 
 
 def _positive_int_env(name: str) -> int | None:
-    raw = os.environ.get(name, "").strip()
+    raw = _fullraw_env(name, "").strip()
     if not raw:
         return None
     try:

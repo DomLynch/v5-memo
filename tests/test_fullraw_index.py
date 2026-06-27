@@ -35,6 +35,16 @@ def _raw(tmp_path: Path, name: str, rows: list[dict[str, object]]) -> RawFile:
     return RawFile(source="openalex", format="openalex_jsonl", remote=f"file://{path}")
 
 
+def test_fullraw_server_env_prefers_generic_researka_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT", "2")
+    monkeypatch.setenv("RESEARKA_FULLRAW_MIN_SHARDS_SEARCHED", "1525")
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", raising=False)
+
+    assert fullraw_index._positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") == 2
+    assert fullraw_index._positive_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED") == 1525
+
+
 def _entry(tmp_path: Path, index: int, source: str) -> ShardCatalogEntry:
     path = tmp_path / f"batch_{index:05d}" / "fullraw_shard_0000.sqlite"
     path.parent.mkdir(parents=True, exist_ok=True)

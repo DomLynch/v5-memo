@@ -75,6 +75,29 @@ _FULLRAW_QUERY_FILLER_DROP = {
     "study",
     "studies",
 }
+_FULLRAW_LEGACY_PREFIX = "V5_MEMO_FULL_RAW_"
+_FULLRAW_GENERIC_PREFIX = "RESEARKA_FULLRAW_"
+_FULLRAW_SPECIAL_ALIASES = {
+    "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL": ("RESEARKA_FULLRAW_SEARCH_URL",),
+    "V5_MEMO_FULL_RAW_CORPUS_TOKEN": ("RESEARKA_FULLRAW_TOKEN",),
+    "V5_MEMO_FULL_RAW_INDEX_TOKEN": ("RESEARKA_FULLRAW_INDEX_TOKEN", "RESEARKA_FULLRAW_TOKEN"),
+}
+
+
+def _fullraw_env_names(name: str) -> tuple[str, ...]:
+    if not name.startswith(_FULLRAW_LEGACY_PREFIX):
+        return (name,)
+    suffix = name.removeprefix(_FULLRAW_LEGACY_PREFIX)
+    candidates = (*_FULLRAW_SPECIAL_ALIASES.get(name, ()), f"{_FULLRAW_GENERIC_PREFIX}{suffix}", name)
+    return tuple(dict.fromkeys(candidates))
+
+
+def _fullraw_env(name: str, default: str = "") -> str:
+    for candidate in _fullraw_env_names(name):
+        value = os.environ.get(candidate)
+        if value is not None and value != "":
+            return value
+    return default
 _DOI_BACKFILL_PRIORITY_TERMS = {
     "attenuate",
     "attenuated",
@@ -308,10 +331,10 @@ class FullRawCorpusSearchClient:
     @classmethod
     def from_env(cls, *, strict: bool = False) -> FullRawCorpusSearchClient:
         token = (
-            os.environ.get("V5_MEMO_FULL_RAW_INDEX_TOKEN", "").strip()
-            or os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "").strip()
+            _fullraw_env("V5_MEMO_FULL_RAW_INDEX_TOKEN", "").strip()
+            or _fullraw_env("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "").strip()
         )
-        search_url = os.environ.get("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "")
+        search_url = _fullraw_env("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "")
         if not search_url and token:
             search_url = "http://127.0.0.1:9903/search"
         default_min_shards = 1525 if token else 0
@@ -1263,18 +1286,18 @@ def _float_or_none(value: object) -> float | None:
 
 
 def _float_env(name: str, default: float) -> float:
-    parsed = _float_or_none(os.environ.get(name, ""))
+    parsed = _float_or_none(_fullraw_env(name, ""))
     return parsed if parsed is not None else default
 
 
 def _int_env(name: str, default: int) -> int:
-    parsed = _int_or_none(os.environ.get(name, ""))
+    parsed = _int_or_none(_fullraw_env(name, ""))
     return parsed if parsed is not None else default
 
 
 def _bool_env(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
+    value = _fullraw_env(name, "")
+    if value == "":
         return default
     return value.strip().casefold() in {"1", "true", "yes", "on"}
 
