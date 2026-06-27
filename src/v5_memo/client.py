@@ -58,6 +58,17 @@ _FULLRAW_PAIR_DROP = _FULLRAW_CORE_DROP | {
     "expected",
 }
 _FULLRAW_RARE_ANCHOR_DROP = {"hypertrophy", "resistance", "strength", "training"}
+_FULLRAW_QUERY_FILLER_DROP = {
+    "clinical",
+    "controlled",
+    "determine",
+    "efficacy",
+    "healthy",
+    "participants",
+    "randomized",
+    "study",
+    "studies",
+}
 _DOI_BACKFILL_PRIORITY_TERMS = {
     "attenuate",
     "attenuated",
@@ -1080,7 +1091,7 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
         clean = " ".join(variant.split())
         if not clean:
             return False
-        key = (clean, rank_mode)
+        key = (_fullraw_variant_key(clean), rank_mode)
         if key in seen:
             return False
         seen.add(key)
@@ -1131,10 +1142,15 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
 
 def _fullraw_core_variant(query: str) -> str:
     terms = _query_terms(query)
-    core = tuple(term for term in terms if term not in _FULLRAW_CORE_DROP)
-    if len(core) >= 2 and len(core) < len(terms):
-        return " ".join(core)
+    core = tuple(term for term in terms if term not in _FULLRAW_CORE_DROP and term not in _FULLRAW_QUERY_FILLER_DROP)
+    if len(core) >= 2 and (len(core) < len(terms) or len(core) > 5):
+        return " ".join(core[:5])
     return ""
+
+
+def _fullraw_variant_key(query: str) -> str:
+    terms = tuple(term for term in dict.fromkeys(_query_terms(query)) if term not in _FULLRAW_QUERY_FILLER_DROP)
+    return " ".join(sorted(terms or _query_terms(query)))
 
 
 def _fullraw_pair_variants(query: str, *, limit: int) -> list[str]:
