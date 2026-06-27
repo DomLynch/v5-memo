@@ -614,9 +614,12 @@ def test_full_raw_client_does_not_fanout_after_strict_coverage_miss(monkeypatch:
         strict=True,
     )
 
-    with pytest.raises(SearchBackendError, match="coverage too narrow"):
+    with pytest.raises(SearchBackendError, match="coverage too narrow") as exc:
         client.search("metformin resistance training adaptation", limit=3)
 
+    message = str(exc.value)
+    assert "shards_searched': 32" in message
+    assert "sweep_completed_paths" not in message
     assert len(payloads) == 1
     assert payloads[0]["query"] == "metformin resistance training"
 
