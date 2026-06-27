@@ -890,6 +890,56 @@ def test_full_raw_client_stops_variants_after_complete_sweep_has_enough_hits(
     assert requested[0]["priority"] is True
 
 
+def test_full_raw_client_keeps_trusted_hits_when_auxiliary_variant_is_unverified(
+    monkeypatch: object,
+) -> None:
+    requested: list[dict[str, object]] = []
+    receipt = {
+        "shards_total": 1525,
+        "shards_searched": 1525,
+        "partial_shard_search": False,
+        "sweep_failed_shards": 0,
+        "sources_searched": {str(index): 1 for index in range(5)},
+    }
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        requested.append(payload)
+        if len(requested) == 1:
+            return FakeResponse({
+                "meta": {"count": 3, "shard_receipt": receipt},
+                "results": [
+                    {
+                        "doi": f"10.123/complete-{index}",
+                        "title": f"Cold immersion training complete sweep {index}",
+                        "abstract": "Cold immersion training adaptation evidence.",
+                        "year": 2024,
+                        "source": "openalex",
+                    }
+                    for index in range(3)
+                ],
+            })
+        return FakeResponse({
+            "meta": {"count": 0, "shard_receipt": {"authenticated": True}},
+            "results": [],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=4,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        strict=True,
+    )
+
+    hits = client.search("cold immersion training", limit=10)
+
+    assert len(hits) == 3
+    assert [payload["search_pass"] for payload in requested] == ["focused", "broad"]
+
+
 def test_full_raw_client_can_fail_closed_on_narrow_shard_receipt(monkeypatch: object) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del request, timeout

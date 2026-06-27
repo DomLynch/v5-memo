@@ -408,6 +408,8 @@ class FullRawCorpusSearchClient:
                 if self._uses_cache_sweep_contract() and str(exc).startswith(
                     "Full raw corpus search coverage too narrow"
                 ):
+                    if best:
+                        break
                     raise
                 if best:
                     break
