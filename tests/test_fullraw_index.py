@@ -985,6 +985,62 @@ def test_sweep_cache_write_replaces_incompatible_low_hit_terminal_cache(tmp_path
     assert selected.receipt["sweep_result_limit"] == 10
 
 
+def test_resumable_sweep_jobs_from_cache_prefers_high_progress_partial(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "sweeps"
+    catalog = [_entry(tmp_path, 1, "openalex")]
+
+    def sweep_entry(
+        query: str,
+        shards: int,
+        remaining: int,
+        *,
+        strategy: str = fullraw_index._SWEEP_STRATEGY,
+        pass_limit: int = 8,
+    ) -> fullraw_index.SweepCacheEntry:
+        return fullraw_index.SweepCacheEntry(
+            created_at=time.time() + shards,
+            hits=[{"title": query}],
+            receipt={
+                "shards_searched": shards,
+                "partial_shard_search": remaining > 0,
+                "sweep_failed_shards": 0,
+                "sweep_original_query": query,
+                "sweep_strategy": strategy,
+                "sweep_shard_limit": 1525,
+                "sweep_pass_shard_limit": pass_limit,
+                "sweep_result_limit": 10,
+                "sweep_remaining_shards": remaining,
+                "sweep_year_min": 1990,
+                "sweep_year_max": 2026,
+                "sweep_rank_mode": "relevance",
+            },
+        )
+
+    fullraw_index._write_sweep_cache(cache_dir / "low.json", sweep_entry("low query", 400, 1125))
+    fullraw_index._write_sweep_cache(cache_dir / "high.json", sweep_entry("high query", 1400, 125))
+    fullraw_index._write_sweep_cache(cache_dir / "high-alias.json", sweep_entry("high query", 1399, 126))
+    fullraw_index._write_sweep_cache(cache_dir / "done.json", sweep_entry("done query", 1525, 0))
+    fullraw_index._write_sweep_cache(cache_dir / "old.json", sweep_entry("old query", 1408, 117, strategy="old"))
+    fullraw_index._write_sweep_cache(cache_dir / "wrong-pass.json", sweep_entry("wrong pass", 1409, 116, pass_limit=32))
+
+    jobs = fullraw_index._resumable_sweep_jobs_from_cache(
+        cache_dir,
+        catalog=catalog,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=8,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+        ttl_seconds=0,
+        capacity=3,
+    )
+
+    assert [job.key for job in jobs] == ["high", "low"]
+    assert jobs[0].query == "high query"
+    assert jobs[0].year_min == 1990
+    assert jobs[0].year_max == 2026
+    assert jobs[0].rank_mode == "relevance"
+    assert jobs[0].catalog == catalog
+
+
 def test_sweep_admission_queues_without_exceeding_inflight_limit() -> None:
     inflight = {"active"}
     queued: set[str] = set()

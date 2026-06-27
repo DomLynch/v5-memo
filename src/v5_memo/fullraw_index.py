@@ -2503,6 +2503,65 @@ def _sweep_cache_entry_has_result_limit(entry: SweepCacheEntry, result_limit: in
     return (_int_or_none(entry.receipt.get("sweep_result_limit")) or len(entry.hits)) >= result_limit
 
 
+def _resumable_sweep_jobs_from_cache(
+    sweep_cache_dir: Path | None,
+    *,
+    catalog: list[ShardCatalogEntry],
+    sweep_shard_limit: int,
+    sweep_pass_shard_limit: int,
+    sweep_strategy: str,
+    ttl_seconds: float,
+    capacity: int,
+) -> list[SweepJob]:
+    if sweep_cache_dir is None or capacity <= 0:
+        return []
+    jobs: list[tuple[int, float, SweepJob]] = []
+    for path in sweep_cache_dir.glob("*.json"):
+        entry = _load_sweep_cache(path, ttl_seconds=ttl_seconds)
+        if entry is None or sweep_cache_entry_is_terminal(entry):
+            continue
+        receipt = entry.receipt
+        if receipt.get("sweep_strategy") != sweep_strategy:
+            continue
+        if _int_or_none(receipt.get("sweep_shard_limit")) != sweep_shard_limit:
+            continue
+        if _int_or_none(receipt.get("sweep_pass_shard_limit")) != sweep_pass_shard_limit:
+            continue
+        query = str(receipt.get("sweep_original_query") or receipt.get("sweep_query") or "").strip()
+        if not query:
+            continue
+        jobs.append((
+            _sweep_cache_entry_progress(entry),
+            entry.created_at,
+            SweepJob(
+                key=path.stem,
+                query=query,
+                limit=max(
+                    _SWEEP_MIN_RESULT_LIMIT,
+                    _int_or_none(receipt.get("sweep_result_limit")) or len(entry.hits),
+                ),
+                year_min=_int_or_none(receipt.get("sweep_year_min")) or 1900,
+                year_max=_int_or_none(receipt.get("sweep_year_max")) or 2100,
+                rank_mode=_rank_mode(
+                    receipt.get("sweep_rank_mode") or receipt.get("sweep_pass_rank_mode")
+                ),
+                catalog=catalog,
+            ),
+        ))
+    jobs.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    resumed: list[SweepJob] = []
+    resumed_queries: set[str] = set()
+    for _progress, _created_at, job in jobs:
+        normalized_query = _normalize_sweep_cache_query(job.query)
+        if normalized_query in resumed_queries:
+            continue
+        resumed_queries.add(normalized_query)
+        resumed.append(job)
+        if len(resumed) >= capacity:
+            break
+    return resumed
+
+
 def _should_force_cache_queue(
     *,
     shard_dir_configured: bool,
@@ -3186,6 +3245,9 @@ def run_server() -> None:
                     receipt = shard_coverage_receipt(job.catalog, searched_entries)
                     _add_planned_sweep_receipt(receipt, planned_receipt)
                     receipt["sweep_scope"] = "relevant"
+                    receipt["sweep_year_min"] = job.year_min
+                    receipt["sweep_year_max"] = job.year_max
+                    receipt["sweep_rank_mode"] = job.rank_mode
                     receipt["sweep_shard_limit"] = sweep_shard_limit
                     receipt["sweep_result_limit"] = job.limit
                     receipt["sweep_selected_shards"] = len(sweep_entries)
@@ -3316,6 +3378,30 @@ def run_server() -> None:
             sweep_queued_jobs.pop(key, None)
         start_sweep_worker(job)
         return "queued"
+
+    def resume_partial_sweeps_on_startup() -> None:
+        if not sweep_enabled or shard_dir is None:
+            return
+        catalog = current_catalog()
+        capacity = max(0, sweep_max_inflight + (1 if sweep_priority_burst else 0) + sweep_max_queue)
+        for job in _resumable_sweep_jobs_from_cache(
+            sweep_cache_dir,
+            catalog=catalog,
+            sweep_shard_limit=sweep_shard_limit,
+            sweep_pass_shard_limit=sweep_pass_shard_limit,
+            sweep_strategy=_SWEEP_STRATEGY,
+            ttl_seconds=sweep_ttl,
+            capacity=capacity,
+        ):
+            enqueue_sweep(
+                key=job.key,
+                query=job.query,
+                limit=job.limit,
+                year_min=job.year_min,
+                year_max=job.year_max,
+                rank_mode=job.rank_mode,
+                catalog=catalog,
+            )
 
     def auth_receipt(receipt: dict[str, object]) -> dict[str, object]:
         return {
@@ -3672,6 +3758,7 @@ def run_server() -> None:
         def log_message(self, fmt: str, *args: object) -> None:
             return
 
+    resume_partial_sweeps_on_startup()
     ThreadingHTTPServer.allow_reuse_address = True
     ThreadingHTTPServer((host, port), Handler).serve_forever()
 
