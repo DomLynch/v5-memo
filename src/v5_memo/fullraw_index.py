@@ -174,6 +174,7 @@ class SweepJob:
     year_max: int
     rank_mode: str
     catalog: list[ShardCatalogEntry]
+    priority: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -2409,12 +2410,16 @@ def _take_next_queued_sweep_job(
     sweep_queued_jobs: dict[str, SweepJob],
     max_inflight: int,
 ) -> SweepJob | None:
-    if len(sweep_inflight) >= max(1, max_inflight):
-        return None
+    inflight_limit = max(1, max_inflight)
     for key in tuple(sweep_queued_jobs):
         job = sweep_queued_jobs.pop(key)
         if key not in sweep_queued:
             continue
+        if len(sweep_inflight) >= inflight_limit and (
+            not job.priority or len(sweep_inflight) >= inflight_limit + 1
+        ):
+            sweep_queued_jobs[key] = job
+            return None
         sweep_queued.discard(key)
         sweep_inflight.add(key)
         return job
@@ -3034,6 +3039,7 @@ def run_server() -> None:
             year_max=year_max,
             rank_mode=rank_mode,
             catalog=catalog,
+            priority=priority,
         )
         with sweep_lock:
             status = _admit_sweep_key(
@@ -3044,7 +3050,17 @@ def run_server() -> None:
             )
             if status == "queued" and key not in sweep_inflight:
                 _queue_sweep_job_with_priority(sweep_queued_jobs, key, job, priority=priority)
-                return status
+                if not priority:
+                    return status
+                next_job = _take_next_queued_sweep_job(
+                    sweep_inflight=sweep_inflight,
+                    sweep_queued=sweep_queued,
+                    sweep_queued_jobs=sweep_queued_jobs,
+                    max_inflight=sweep_max_inflight,
+                )
+                if next_job is None:
+                    return status
+                job = next_job
             if status != "queued":
                 return status
             sweep_queued_jobs.pop(key, None)

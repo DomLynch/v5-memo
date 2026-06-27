@@ -693,6 +693,63 @@ def test_priority_sweep_job_gets_next_lane_before_background_queue() -> None:
     assert list(queued_jobs) == ["older", "later"]
 
 
+def test_priority_sweep_job_can_use_one_burst_lane() -> None:
+    inflight = {"background"}
+    queued = {"target"}
+    target = fullraw_index.SweepJob("target", "target query", 10, 1900, 2100, "relevance", [], priority=True)
+    queued_jobs = {"target": target}
+
+    next_job = fullraw_index._take_next_queued_sweep_job(
+        sweep_inflight=inflight,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_inflight=1,
+    )
+
+    assert next_job == target
+    assert inflight == {"background", "target"}
+    assert queued == set()
+    assert queued_jobs == {}
+
+
+def test_background_sweep_job_cannot_use_priority_burst_lane() -> None:
+    inflight = {"background"}
+    queued = {"target"}
+    target = fullraw_index.SweepJob("target", "target query", 10, 1900, 2100, "relevance", [])
+    queued_jobs = {"target": target}
+
+    next_job = fullraw_index._take_next_queued_sweep_job(
+        sweep_inflight=inflight,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_inflight=1,
+    )
+
+    assert next_job is None
+    assert inflight == {"background"}
+    assert queued == {"target"}
+    assert queued_jobs == {"target": target}
+
+
+def test_priority_burst_lane_is_bounded() -> None:
+    inflight = {"background", "first-priority"}
+    queued = {"target"}
+    target = fullraw_index.SweepJob("target", "target query", 10, 1900, 2100, "relevance", [], priority=True)
+    queued_jobs = {"target": target}
+
+    next_job = fullraw_index._take_next_queued_sweep_job(
+        sweep_inflight=inflight,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_inflight=1,
+    )
+
+    assert next_job is None
+    assert inflight == {"background", "first-priority"}
+    assert queued == {"target"}
+    assert queued_jobs == {"target": target}
+
+
 def test_complete_sweep_retries_failed_shards() -> None:
     receipt = {
         "sweep_failed_paths": ("shard_a.sqlite", "shard_b.sqlite"),
