@@ -119,3 +119,14 @@ def test_iter_raw_file_hits_reads_local_pubmed_xml_fixture(tmp_path: Path) -> No
     assert hits[0]["pmid"] == "123"
     assert hits[0]["doi"] == "10.raw/pubmed"
     assert hits[0]["source"] == "pubmed"
+
+
+def test_strict_5tb_service_keeps_secret_env_file() -> None:
+    config = Path(__file__).resolve().parents[1] / "deploy" / "v5-memo-fullraw-index-strict-5tb.conf"
+    env_files = [line for line in config.read_text().splitlines() if line.startswith("EnvironmentFile")]
+
+    assert env_files[:3] == [
+        "EnvironmentFile=",
+        "EnvironmentFile=/etc/v5-memo/env",
+        "EnvironmentFile=/etc/v5-memo/fullraw-effective.env",
+    ]
