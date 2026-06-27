@@ -146,6 +146,8 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "Environment=V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS=128" in config.read_text()
     assert "Environment=V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/fullraw-sweep-cache" in config.read_text()
     assert "Environment=V5_MEMO_FULL_RAW_SHARD_CATALOG_PATH=/var/lib/v5-memo/fullraw-shard-catalog.json" in config.read_text()
+    assert "Environment=V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR=/var/cache/v5-memo/fullraw-local-shard-cache" in config.read_text()
+    assert "Environment=V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES=12884901888" in config.read_text()
     assert "V5_MEMO_FULL_RAW_SEARCH_ISOLATED=0" in env_example
     assert "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT=32" in env_example
     assert "V5_MEMO_FULL_RAW_INDEX_PATH=/var/lib/v5-memo/index/fullraw_index.sqlite" in env_example
@@ -154,3 +156,5 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "V5_MEMO_FULL_RAW_SHARD_CATALOG_PATH=/var/lib/v5-memo/fullraw-shard-catalog.json" in env_example
     assert "V5_MEMO_FULL_RAW_SWEEP_TIMEOUT_SECONDS=120" in env_example
     assert "V5_MEMO_FULL_RAW_SWEEP_SHARD_TIMEOUT_SECONDS=20" in env_example
+    assert "V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR=/var/cache/v5-memo/fullraw-local-shard-cache" in env_example
+    assert "V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES=12884901888" in env_example
