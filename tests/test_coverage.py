@@ -103,6 +103,23 @@ def test_require_full_raw_corpus_rejects_incomplete_service(monkeypatch: MonkeyP
         require_full_raw_corpus()
 
 
+def test_require_full_raw_corpus_accepts_strict_sweep_service(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9999/search")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", "1525")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", "5")
+    health = (
+        '{"ok": true, "backend": "v5-fullraw-indexed-fts5", "fast_health": true, '
+        '"complete": false, "coverage_requirements": {"min_shards_searched": 1525, '
+        '"min_sources_searched": 5, "require_complete_search": 1, "sweep_require_complete": 1}}'
+    )
+    monkeypatch.setattr(
+        "v5_memo.coverage.urlopen",
+        _fake_fullraw_urlopen(health=health, search=_search_body()),
+    )
+
+    require_full_raw_corpus()
+
+
 def test_coverage_reports_configured_full_raw_endpoint(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9999/search")
     monkeypatch.setattr(

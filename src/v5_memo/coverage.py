@@ -125,11 +125,18 @@ def full_raw_search_health(url: str | None = None) -> SearchBackendHealth:
     partial_shard_search = receipt.get("partial_shard_search") is True
     sweep_failed_shards = _int_value(receipt.get("sweep_failed_shards"))
     complete = data.get("complete") is True
+    requirements = data.get("coverage_requirements")
+    strict_sweep_ready = (
+        isinstance(requirements, dict)
+        and _int_value(requirements.get("min_shards_searched")) >= _full_raw_min_shards(0)
+        and _int_value(requirements.get("min_sources_searched")) >= _full_raw_min_sources()
+        and _int_value(requirements.get("require_complete_search")) == 1
+        and _int_value(requirements.get("sweep_require_complete")) == 1
+    )
     static_ok = bool(
         data.get("ok") is True
         and backend
-        and papers_indexed > 0
-        and complete
+        and ((papers_indexed > 0 and complete) or strict_sweep_ready)
         and not partial_shard_search
         and sweep_failed_shards == 0
     )
