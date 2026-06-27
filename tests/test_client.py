@@ -809,6 +809,7 @@ def test_full_raw_client_stops_variants_after_complete_sweep_has_enough_hits(
 
     assert len(hits) == 5
     assert [payload["search_pass"] for payload in requested] == ["focused"]
+    assert requested[0]["priority"] is True
 
 
 def test_full_raw_client_can_fail_closed_on_narrow_shard_receipt(monkeypatch: object) -> None:

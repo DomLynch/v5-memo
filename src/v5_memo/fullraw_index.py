@@ -3154,6 +3154,11 @@ def run_server() -> None:
                     isinstance(raw_queue_if_missing, str)
                     and raw_queue_if_missing.strip().casefold() in {"1", "true", "yes", "on"}
                 )
+                raw_priority = payload.get("priority")
+                priority = raw_priority is True or (
+                    isinstance(raw_priority, str)
+                    and raw_priority.strip().casefold() in {"1", "true", "yes", "on"}
+                )
                 if _should_force_cache_queue(
                     shard_dir_configured=shard_dir is not None,
                     require_complete_search=require_complete_search,
@@ -3239,7 +3244,7 @@ def run_server() -> None:
                             year_max=year_max,
                             rank_mode=rank_mode,
                             catalog=catalog,
-                            priority=True,
+                            priority=priority,
                         )
                         if sweep_status == "hit" and (cached := sweep_cache_get(cache_key)) is not None:
                             receipt = auth_receipt(cached.receipt)
