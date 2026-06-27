@@ -584,6 +584,43 @@ def test_full_raw_client_does_not_wait_on_unqueued_busy_sweep(monkeypatch: objec
     assert len(payloads) == 1
 
 
+def test_full_raw_client_does_not_fanout_after_strict_coverage_miss(monkeypatch: object) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payloads.append(json.loads(cast(bytes, request.data).decode("utf-8")))
+        return FakeResponse({
+            "meta": {
+                "shard_receipt": {
+                    "authenticated": True,
+                    "shards_searched": 32,
+                    "shards_total": 1525,
+                    "partial_shard_search": True,
+                    "sources_searched": {"openalex": 32},
+                },
+                "async_sweep": {"status": "queued"},
+            },
+            "results": [],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="raw-token",
+        max_variants=3,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        strict=True,
+    )
+
+    with pytest.raises(SearchBackendError, match="coverage too narrow"):
+        client.search("metformin resistance training adaptation", limit=3)
+
+    assert len(payloads) == 1
+    assert payloads[0]["query"] == "metformin resistance training"
+
+
 def test_full_raw_client_tries_next_strict_variant_after_failure(monkeypatch: object) -> None:
     queries: list[object] = []
 

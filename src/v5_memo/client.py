@@ -364,7 +364,11 @@ class FullRawCorpusSearchClient:
             variant_started = time.monotonic()
             try:
                 hits = self._search_variant(search_pass, limit=per_variant_limit)
-            except SearchBackendError:
+            except SearchBackendError as exc:
+                if self._uses_cache_sweep_contract() and str(exc).startswith(
+                    "Full raw corpus search coverage too narrow"
+                ):
+                    raise
                 if best:
                     break
                 if variant_index < len(search_passes):
