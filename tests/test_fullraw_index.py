@@ -576,12 +576,51 @@ def test_sweep_cache_matcher_accepts_compatible_pass_query() -> None:
     assert fullraw_index._sweep_cache_entry_matches_request(
         entry,
         query="cold immersion training",
+        result_limit=1,
         sweep_shard_limit=1525,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
     )
     assert not fullraw_index._sweep_cache_entry_matches_request(
         entry,
         query="resveratrol exercise adaptation",
+        result_limit=1,
+        sweep_shard_limit=1525,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
+def test_sweep_cache_matcher_rejects_low_limit_legacy_cache() -> None:
+    legacy_entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": f"Cold immersion training {index}"} for index in range(3)],
+        receipt={
+            "sweep_shard_limit": 1525,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_query": "cold immersion training",
+        },
+    )
+    marked_entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": f"Cold immersion training {index}"} for index in range(3)],
+        receipt={
+            "sweep_result_limit": 10,
+            "sweep_shard_limit": 1525,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_query": "cold immersion training",
+        },
+    )
+
+    assert not fullraw_index._sweep_cache_entry_matches_request(
+        legacy_entry,
+        query="cold immersion training",
+        result_limit=10,
+        sweep_shard_limit=1525,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+    assert fullraw_index._sweep_cache_entry_matches_request(
+        marked_entry,
+        query="cold immersion training",
+        result_limit=10,
         sweep_shard_limit=1525,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
     )

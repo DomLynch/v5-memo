@@ -2485,11 +2485,14 @@ def _sweep_cache_entry_matches_request(
     entry: SweepCacheEntry,
     *,
     query: str,
+    result_limit: int,
     sweep_shard_limit: int,
     sweep_strategy: str,
 ) -> bool:
     receipt = entry.receipt
     if sweep_strategy and receipt.get("sweep_strategy") != sweep_strategy:
+        return False
+    if (_int_or_none(receipt.get("sweep_result_limit")) or len(entry.hits)) < result_limit:
         return False
     if _int_or_none(receipt.get("sweep_shard_limit")) != sweep_shard_limit:
         return False
@@ -3032,10 +3035,23 @@ def run_server() -> None:
                 sweep_cache[key] = entry
         return entry
 
-    def compatible_sweep_cache_get(key: str, cache_query: str) -> SweepCacheEntry | None:
+    def compatible_sweep_cache_get(
+        key: str,
+        cache_query: str,
+        *,
+        result_limit: int,
+    ) -> SweepCacheEntry | None:
         entry = sweep_cache_get(key)
-        if entry is not None or sweep_cache_dir is None:
+        if entry is not None and _sweep_cache_entry_matches_request(
+            entry,
+            query=cache_query,
+            result_limit=result_limit,
+            sweep_shard_limit=sweep_shard_limit,
+            sweep_strategy=_SWEEP_STRATEGY,
+        ):
             return entry
+        if sweep_cache_dir is None:
+            return None
         best: SweepCacheEntry | None = None
         for path in sweep_cache_dir.glob("*.json"):
             if path.name == f"{key}.json":
@@ -3044,6 +3060,7 @@ def run_server() -> None:
             if candidate is None or not _sweep_cache_entry_matches_request(
                 candidate,
                 query=cache_query,
+                result_limit=result_limit,
                 sweep_shard_limit=sweep_shard_limit,
                 sweep_strategy=_SWEEP_STRATEGY,
             ):
@@ -3126,6 +3143,7 @@ def run_server() -> None:
                     _add_planned_sweep_receipt(receipt, planned_receipt)
                     receipt["sweep_scope"] = "relevant"
                     receipt["sweep_shard_limit"] = sweep_shard_limit
+                    receipt["sweep_result_limit"] = job.limit
                     receipt["sweep_selected_shards"] = len(sweep_entries)
                     receipt["sweep_pass_shard_limit"] = sweep_pass_shard_limit
                     receipt["sweep_pass_selected_shards"] = len(pass_entries)
@@ -3383,9 +3401,10 @@ def run_server() -> None:
                 sweep_shard_limit=sweep_shard_limit,
                 rank_mode=rank_mode,
             )
+            result_limit = max(limit, _SWEEP_MIN_RESULT_LIMIT)
             cache_key = _sweep_cache_key(
                 cache_query,
-                limit=max(limit, _SWEEP_MIN_RESULT_LIMIT),
+                limit=result_limit,
                 year_min=year_min,
                 year_max=year_max,
                 rank_mode=rank_mode,
@@ -3396,7 +3415,11 @@ def run_server() -> None:
                 sweep_shard_timeout_seconds=sweep_shard_timeout_seconds,
                 sweep_strategy=_SWEEP_STRATEGY,
             )
-            cached = compatible_sweep_cache_get(cache_key, cache_query) if catalog else None
+            cached = (
+                compatible_sweep_cache_get(cache_key, cache_query, result_limit=result_limit)
+                if catalog
+                else None
+            )
             resume_cached = (
                 cached is not None
                 and cache_only
