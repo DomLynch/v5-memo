@@ -826,6 +826,47 @@ def test_priority_sweep_job_gets_next_lane_before_background_queue() -> None:
     assert list(queued_jobs) == ["older", "later"]
 
 
+def test_sweep_queue_cap_keeps_priority_before_background() -> None:
+    older = fullraw_index.SweepJob("older", "older query", 10, 1900, 2100, "relevance", [])
+    middle = fullraw_index.SweepJob("middle", "middle query", 10, 1900, 2100, "relevance", [])
+    later = fullraw_index.SweepJob("later", "later query", 10, 1900, 2100, "relevance", [])
+    target = fullraw_index.SweepJob("target", "target query", 10, 1900, 2100, "relevance", [], priority=True)
+    queued = {"older", "middle", "later", "target"}
+    queued_jobs = {"older": older, "middle": middle, "later": later}
+
+    fullraw_index._queue_sweep_job_with_priority(
+        queued_jobs,
+        "target",
+        target,
+        priority=True,
+        sweep_queued=queued,
+        max_queue=3,
+    )
+
+    assert list(queued_jobs) == ["target", "older", "middle"]
+    assert queued == {"target", "older", "middle"}
+
+
+def test_sweep_queue_cap_drops_new_background_before_priority() -> None:
+    target = fullraw_index.SweepJob("target", "target query", 10, 1900, 2100, "relevance", [], priority=True)
+    older = fullraw_index.SweepJob("older", "older query", 10, 1900, 2100, "relevance", [])
+    later = fullraw_index.SweepJob("later", "later query", 10, 1900, 2100, "relevance", [])
+    queued = {"target", "older", "later"}
+    queued_jobs = {"target": target, "older": older}
+
+    fullraw_index._queue_sweep_job_with_priority(
+        queued_jobs,
+        "later",
+        later,
+        priority=False,
+        sweep_queued=queued,
+        max_queue=2,
+    )
+
+    assert list(queued_jobs) == ["target", "older"]
+    assert queued == {"target", "older"}
+
+
 def test_priority_sweep_job_waits_without_burst_lane() -> None:
     inflight = {"background"}
     queued = {"target"}

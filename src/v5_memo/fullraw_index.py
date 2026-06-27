@@ -2827,6 +2827,7 @@ def run_server() -> None:
     sweep_ttl = _float_or_none(os.environ.get("V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS", "")) or 86400.0
     sweep_workers = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKERS") or 1
     sweep_max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
+    sweep_max_queue = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_QUEUE") or 0
     sweep_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT") or 128
     sweep_pass_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT") or sweep_shard_limit
     sweep_pass_shard_limit = max(1, min(sweep_pass_shard_limit, sweep_shard_limit))
@@ -2870,6 +2871,7 @@ def run_server() -> None:
                 "inflight_count": len(sweep_inflight),
                 "queued_count": len(sweep_queued_jobs),
                 "max_inflight": sweep_max_inflight,
+                "max_queue": sweep_max_queue,
                 "key_running": key in sweep_inflight,
                 "key_queued": key in sweep_queued_jobs,
             }
@@ -3126,7 +3128,14 @@ def run_server() -> None:
                 allow_priority_burst=sweep_priority_burst,
             )
             if status == "queued" and key not in sweep_inflight:
-                _queue_sweep_job_with_priority(sweep_queued_jobs, key, job, priority=priority)
+                _queue_sweep_job_with_priority(
+                    sweep_queued_jobs,
+                    key,
+                    job,
+                    priority=priority,
+                    sweep_queued=sweep_queued,
+                    max_queue=sweep_max_queue,
+                )
                 if not priority:
                     return status
                 next_job = _take_next_queued_sweep_job(
