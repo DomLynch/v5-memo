@@ -4108,8 +4108,15 @@ def _write_sweep_cache(path: Path, entry: SweepCacheEntry) -> None:
     with lock_path.open("a") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
         try:
-            current = _load_sweep_cache(path, ttl_seconds=0) if path.exists() else None
             result_limit = _int_or_none(entry.receipt.get("sweep_result_limit"))
+            if result_limit is None and entry.hits:
+                result_limit = len(entry.hits)
+                entry = SweepCacheEntry(
+                    created_at=entry.created_at,
+                    hits=entry.hits,
+                    receipt={**entry.receipt, "sweep_result_limit": result_limit},
+                )
+            current = _load_sweep_cache(path, ttl_seconds=0) if path.exists() else None
             if current is not None and result_limit is not None and not _sweep_cache_entry_has_result_limit(
                 current,
                 result_limit,

@@ -880,7 +880,6 @@ def test_sweep_cache_write_replaces_incompatible_low_hit_terminal_cache(tmp_path
             "shards_total": 1525,
             "partial_shard_search": True,
             "sweep_remaining_shards": 1224,
-            "sweep_result_limit": 10,
         },
     )
 
