@@ -11,7 +11,7 @@ from v5_memo.__main__ import (
     _topic_anchored_queries,
     main,
 )
-from v5_memo.client import ResearkaSearchClient
+from v5_memo.client import ResearkaSearchClient, SearchBackendError
 from v5_memo.schemas import CorpusHit, MemoBuildError
 
 _COVERAGE_THRESHOLD_ENV = (
@@ -206,6 +206,26 @@ def test_fullraw_cli_inherits_search_service_coverage_thresholds(
         "metformin blunts resistance training",
     ]
     assert (seen["per_query_limit"], seen["max_hits"], seen["min_shards_searched"], seen["min_sources_searched"]) == (10, 20, 50, 2)
+
+
+def test_cli_prints_search_backend_error_without_traceback(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail_build_alpha_memo(**_kwargs: object) -> object:
+        raise SearchBackendError("Full raw corpus search coverage too narrow: {'shards_searched': 32}")
+
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fail_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["v5_memo", "--searcher", "fullraw", "--topic", "metformin"])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    captured = capsys.readouterr()
+    assert exc.value.code == 1
+    assert "coverage too narrow" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_cli_explicit_zero_disables_inherited_coverage_threshold(

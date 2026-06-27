@@ -12,6 +12,7 @@ from v5_memo.client import (
     HybridCorpusSearchClient,
     OpenAlexFullCorpusSearchClient,
     ResearkaSearchClient,
+    SearchBackendError,
 )
 from v5_memo.coverage import current_search_coverage, require_full_raw_corpus
 from v5_memo.miner import query_anchor_terms
@@ -208,20 +209,24 @@ def main() -> None:
     wider_recall = planner_mode == "minimax" or selector_mode == "minimax"
     per_query_limit = 10 if fullraw_backed else (50 if wider_recall else 25)
     max_hits = 20 if fullraw_backed else (500 if wider_recall else 100)
-    result = build_alpha_memo(
-        topic=args.topic,
-        seed_queries=queries,
-        searcher=searcher,
-        memo_writer=memo_writer,
-        memo_selector=memo_selector,
-        anchor_queries=anchor_queries,
-        min_alpha_tier=min_alpha_tier,
-        per_query_limit=per_query_limit,
-        max_hits=max_hits,
-        min_shards_searched=args.min_shards_searched,
-        min_sources_searched=args.min_sources_searched,
-        min_search_passes=args.min_search_passes,
-    )
+    try:
+        result = build_alpha_memo(
+            topic=args.topic,
+            seed_queries=queries,
+            searcher=searcher,
+            memo_writer=memo_writer,
+            memo_selector=memo_selector,
+            anchor_queries=anchor_queries,
+            min_alpha_tier=min_alpha_tier,
+            per_query_limit=per_query_limit,
+            max_hits=max_hits,
+            min_shards_searched=args.min_shards_searched,
+            min_sources_searched=args.min_sources_searched,
+            min_search_passes=args.min_search_passes,
+        )
+    except SearchBackendError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1) from exc
     print(result.markdown)
 
 
