@@ -2971,13 +2971,28 @@ def run_server() -> None:
     sweep_queued_jobs: dict[str, SweepJob] = {}
     sweep_lock = threading.RLock()
 
+    def sweep_queue_summary() -> dict[str, object]:
+        with sweep_lock:
+            return _sweep_queue_summary(
+                sweep_inflight,
+                sweep_queued_jobs,
+                max_inflight=sweep_max_inflight,
+                max_queue=sweep_max_queue,
+                priority_burst=sweep_priority_burst,
+                enabled=sweep_enabled and shard_dir is not None,
+            )
+
     def sweep_queue_state(key: str) -> dict[str, object]:
         with sweep_lock:
             return {
-                "inflight_count": len(sweep_inflight),
-                "queued_count": len(sweep_queued_jobs),
-                "max_inflight": sweep_max_inflight,
-                "max_queue": sweep_max_queue,
+                **_sweep_queue_summary(
+                    sweep_inflight,
+                    sweep_queued_jobs,
+                    max_inflight=sweep_max_inflight,
+                    max_queue=sweep_max_queue,
+                    priority_burst=sweep_priority_burst,
+                    enabled=sweep_enabled and shard_dir is not None,
+                ),
                 "key_running": key in sweep_inflight,
                 "key_queued": key in sweep_queued_jobs,
             }
@@ -3361,6 +3376,7 @@ def run_server() -> None:
                     "fast_health": True,
                     "complete": False,
                     "coverage_requirements": coverage_requirements(),
+                    "async_sweep": sweep_queue_summary(),
                 })
                 return
             stats = current_stats()
@@ -3376,6 +3392,7 @@ def run_server() -> None:
                 "bytes_used": stats.bytes_used,
                 "shard_receipt": current_receipt("") if shard_dir is not None else {},
                 "coverage_requirements": coverage_requirements(),
+                "async_sweep": sweep_queue_summary(),
             })
 
         def do_POST(self) -> None:

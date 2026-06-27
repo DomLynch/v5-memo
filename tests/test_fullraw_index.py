@@ -827,6 +827,97 @@ def test_strict_cache_only_probe_respects_no_queue(
     assert body["error"] == "coverage_too_narrow"
 
 
+def test_fast_health_reports_async_sweep_queue_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shard_dir = tmp_path / "remote-shards"
+    shard_dir.mkdir()
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+
+    monkeypatch.setenv("RESEARKA_FULLRAW_INDEX_HOST", "127.0.0.1")
+    monkeypatch.setenv("RESEARKA_FULLRAW_INDEX_PORT", str(port))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_DIR", str(shard_dir))
+    monkeypatch.setenv("RESEARKA_FULLRAW_FAST_HEALTH", "1")
+    monkeypatch.setenv("RESEARKA_FULLRAW_ASYNC_SWEEP", "1")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT", "2")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_MAX_QUEUE", "16")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", "1")
+    monkeypatch.setattr(fullraw_index, "load_or_build_manifest", lambda *_args, **_kwargs: [])
+
+    thread = threading.Thread(target=fullraw_index.run_server, daemon=True)
+    thread.start()
+
+    body: dict[str, object] | None = None
+    for _ in range(50):
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as resp:
+                body = json.loads(resp.read().decode())
+            break
+        except OSError:
+            time.sleep(0.05)
+    else:  # pragma: no cover - defensive test guard
+        raise AssertionError("server did not start")
+
+    assert body is not None
+    assert body["fast_health"] is True
+    assert body["async_sweep"] == {
+        "enabled": True,
+        "inflight_count": 0,
+        "queued_count": 0,
+        "priority_queued_count": 0,
+        "background_queued_count": 0,
+        "max_inflight": 2,
+        "max_queue": 16,
+        "priority_burst": True,
+    }
+
+
+def test_sweep_queue_summary_counts_priority_and_background_jobs() -> None:
+    queued_jobs = {
+        "priority": fullraw_index.SweepJob(
+            "priority",
+            "priority query",
+            10,
+            1900,
+            2100,
+            "relevance",
+            [],
+            priority=True,
+        ),
+        "background": fullraw_index.SweepJob(
+            "background",
+            "background query",
+            10,
+            1900,
+            2100,
+            "relevance",
+            [],
+        ),
+    }
+
+    assert fullraw_index._sweep_queue_summary(
+        {"running"},
+        queued_jobs,
+        max_inflight=2,
+        max_queue=16,
+        priority_burst=True,
+        enabled=True,
+    ) == {
+        "enabled": True,
+        "inflight_count": 1,
+        "queued_count": 2,
+        "priority_queued_count": 1,
+        "background_queued_count": 1,
+        "max_inflight": 2,
+        "max_queue": 16,
+        "priority_burst": True,
+    }
+
+
 def test_sweep_cache_write_preserves_highest_progress(tmp_path: Path) -> None:
     cache_path = tmp_path / "sweeps" / "metformin.json"
     older_partial = fullraw_index.SweepCacheEntry(
