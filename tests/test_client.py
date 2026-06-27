@@ -1299,6 +1299,34 @@ def test_fullraw_search_passes_preserve_key_recall_shapes(query: str, limit: int
 
     assert all(item in queries for item in expected)
 
+
+def test_fullraw_search_passes_compact_long_clinical_boilerplate() -> None:
+    queries = [
+        search_pass.query
+        for search_pass in _fullraw_search_passes(
+            "randomized controlled clinical trial healthy participants determine efficacy urolithin mitochondrial aging",
+            limit=4,
+        )
+    ]
+
+    assert queries[0] == "trial urolithin mitochondrial aging"
+    assert all("randomized controlled clinical" not in query for query in queries)
+    assert all(len(query.split()) <= 5 for query in queries)
+
+
+def test_fullraw_search_passes_dedupe_near_duplicate_shapes() -> None:
+    queries = [
+        search_pass.query
+        for search_pass in _fullraw_search_passes(
+            "urolithin mitochondrial aging mitochondrial urolithin aging",
+            limit=8,
+        )
+    ]
+
+    normalized = {" ".join(sorted(query.split())) for query in queries}
+    assert len(queries) == len(normalized)
+
+
 def test_fullraw_rerank_prefers_abstract_backed_doi_receipts(monkeypatch: MonkeyPatch) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del request, timeout

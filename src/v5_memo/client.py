@@ -59,13 +59,19 @@ _FULLRAW_PAIR_DROP = _FULLRAW_CORE_DROP | {
 }
 _FULLRAW_RARE_ANCHOR_DROP = {"hypertrophy", "resistance", "strength", "training"}
 _FULLRAW_QUERY_FILLER_DROP = {
+    "article",
+    "articles",
     "clinical",
     "controlled",
     "determine",
     "efficacy",
+    "evidence",
     "healthy",
+    "paper",
+    "papers",
     "participants",
     "randomized",
+    "research",
     "study",
     "studies",
 }
@@ -1088,7 +1094,7 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
     seen: set[tuple[str, str]] = set()
 
     def add(name: str, variant: str, rank_mode: str = "relevance") -> bool:
-        clean = " ".join(variant.split())
+        clean = _fullraw_compact_repeated_terms(" ".join(variant.split()))
         if not clean:
             return False
         key = (_fullraw_variant_key(clean), rank_mode)
@@ -1141,11 +1147,21 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
 
 
 def _fullraw_core_variant(query: str) -> str:
-    terms = _query_terms(query)
+    terms = tuple(dict.fromkeys(_query_terms(query)))
     core = tuple(term for term in terms if term not in _FULLRAW_CORE_DROP and term not in _FULLRAW_QUERY_FILLER_DROP)
-    if len(core) >= 2 and (len(core) < len(terms) or len(core) > 5):
-        return " ".join(core[:5])
+    if len(core) >= 2 and (len(core) < len(terms) or len(core) > 6):
+        return " ".join(core[:6])
+    if len(terms) >= 2 and len(terms) < len(_query_terms(query)):
+        return " ".join(terms[:6])
     return ""
+
+
+def _fullraw_compact_repeated_terms(query: str) -> str:
+    terms = _query_terms(query)
+    unique = tuple(dict.fromkeys(terms))
+    if len(unique) >= 2 and len(unique) * 2 <= len(terms):
+        return " ".join(unique)
+    return query
 
 
 def _fullraw_variant_key(query: str) -> str:
