@@ -170,7 +170,10 @@ def main() -> None:
         base_queries = [args.topic]
     queries = base_queries
     if planner_mode == "minimax" and not (
-        fullraw_backed and not explicit_queries and query_anchor_terms(base_queries)
+        fullraw_backed
+        and not explicit_queries
+        and query_anchor_terms(base_queries)
+        and _alpha_shape_queries(args.topic)
     ):
         queries = MiniMaxM3SearchPlanner.from_env().plan(
             topic=args.topic,
