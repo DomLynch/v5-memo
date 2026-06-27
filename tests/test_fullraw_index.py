@@ -694,6 +694,7 @@ def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
                 "partial_shard_search": False,
                 "sweep_remaining_shards": 0,
                 "sweep_failed_shards": 0,
+                "sweep_result_limit": 10,
                 "sources_searched": {"openalex": 1, "pubmed": 1},
                 "sweep_search_passes": (
                     {"role": "focused"},

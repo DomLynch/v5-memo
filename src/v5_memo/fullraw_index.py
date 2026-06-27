@@ -2492,11 +2492,15 @@ def _sweep_cache_entry_matches_request(
     receipt = entry.receipt
     if sweep_strategy and receipt.get("sweep_strategy") != sweep_strategy:
         return False
-    if (_int_or_none(receipt.get("sweep_result_limit")) or len(entry.hits)) < result_limit:
+    if not _sweep_cache_entry_has_result_limit(entry, result_limit):
         return False
     if _int_or_none(receipt.get("sweep_shard_limit")) != sweep_shard_limit:
         return False
     return _normalize_sweep_cache_query(query) in _sweep_cache_entry_queries(entry)
+
+
+def _sweep_cache_entry_has_result_limit(entry: SweepCacheEntry, result_limit: int) -> bool:
+    return (_int_or_none(entry.receipt.get("sweep_result_limit")) or len(entry.hits)) >= result_limit
 
 
 def _should_force_cache_queue(
@@ -3083,6 +3087,8 @@ def run_server() -> None:
         def worker() -> None:
             try:
                 existing = sweep_cache_get(job.key)
+                if existing is not None and not _sweep_cache_entry_has_result_limit(existing, job.limit):
+                    existing = None
                 sweep_entries = select_sweep_shard_entries(job.catalog, query=job.query, limit=sweep_shard_limit)
                 if len(sweep_entries) >= len(job.catalog):
                     sweep_entries = _cache_reuse_sweep_entries(sweep_entries)
@@ -3217,16 +3223,20 @@ def run_server() -> None:
     ) -> str:
         if not sweep_enabled or shard_dir is None:
             return "disabled"
+        result_limit = max(limit, _SWEEP_MIN_RESULT_LIMIT)
         existing = sweep_cache_get(key)
         if existing is not None and (
-            sweep_entry_is_ready(existing)
-            or (sweep_cache_entry_is_terminal(existing) and receipt_is_sufficient(existing.receipt))
+            _sweep_cache_entry_has_result_limit(existing, result_limit)
+            and (
+                sweep_entry_is_ready(existing)
+                or (sweep_cache_entry_is_terminal(existing) and receipt_is_sufficient(existing.receipt))
+            )
         ):
             return "hit"
         job = SweepJob(
             key=key,
             query=query,
-            limit=max(limit, _SWEEP_MIN_RESULT_LIMIT),
+            limit=result_limit,
             year_min=year_min,
             year_max=year_max,
             rank_mode=rank_mode,
