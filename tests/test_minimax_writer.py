@@ -706,6 +706,7 @@ def test_minimax_planner_returns_json_queries_plus_original_seeds() -> None:
     assert isinstance(request_data, bytes)
     body = json.loads(request_data.decode("utf-8"))
     assert body["model"] == "MiniMax-M3"
+    assert body["temperature"] == 0.0
     assert "academic corpus search queries" in body["system"] and "observed endpoints/results" in body["messages"][0]["content"][0]["text"]
 
 

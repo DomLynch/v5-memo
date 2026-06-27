@@ -164,7 +164,7 @@ class MiniMaxM3SearchPlanner:
                 "You design high-recall, high-signal academic corpus search queries. "
                 "Return only valid JSON."
             ),
-            temperature=0.1,
+            temperature=0.0,
             max_tokens=self._max_tokens,
             base_url=self._base_url,
             model=self._model,
