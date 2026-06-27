@@ -1170,7 +1170,7 @@ def _search_shard_paths_with_paths_and_receipt(
             timed_out = True
             break
         finally:
-            pool.shutdown(wait=False, cancel_futures=True)
+            pool.shutdown(wait=True, cancel_futures=True)
     hits, metrics = _merge_hit_groups_with_receipt(hit_groups, limit=limit)
     return hits, completed_paths, timed_out, metrics
 
