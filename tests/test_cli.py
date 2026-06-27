@@ -769,6 +769,54 @@ def test_strict_fullraw_drops_unshaped_planner_queries(
     assert seen == {"seed_queries": ["resveratrol blunts exercise training adaptation"]}
 
 
+def test_strict_fullraw_uses_specific_seed_before_planner_sweeps(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: dict[str, list[str]] = {}
+
+    class FakePlanner:
+        def plan(self, **_kwargs: object) -> list[str]:
+            raise AssertionError("specific strict-fullraw topics should not planner-fanout first")
+
+    class FakeFullRaw:
+        configured = True
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seed_queries = kwargs["seed_queries"]
+        assert isinstance(seed_queries, list)
+        seen["seed_queries"] = seed_queries
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", "1525")
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr("v5_memo.__main__.FullRawCorpusSearchClient.from_env", lambda strict=False: FakeFullRaw())
+    monkeypatch.setattr("v5_memo.__main__.MiniMaxM3SearchPlanner.from_env", lambda: FakePlanner())
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "minimax",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+            "--topic",
+            "metformin longevity",
+        ],
+    )
+
+    main()
+
+    assert "Alpha memo" in capsys.readouterr().out
+    assert seen == {"seed_queries": ["metformin longevity"]}
+
+
 def test_strict_fullraw_fails_fast_when_planner_has_no_alpha_shape(
     monkeypatch: MonkeyPatch,
 ) -> None:
