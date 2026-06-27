@@ -3208,6 +3208,10 @@ def run_server() -> None:
                 year_max=year_max,
                 rank_mode=rank_mode,
                 sweep_shard_limit=sweep_shard_limit,
+                sweep_pass_shard_limit=sweep_pass_shard_limit,
+                sweep_max_passes=sweep_max_passes,
+                sweep_timeout_seconds=sweep_timeout_seconds,
+                sweep_shard_timeout_seconds=sweep_shard_timeout_seconds,
                 sweep_strategy=_SWEEP_STRATEGY,
             )
             cached = sweep_cache_get(cache_key) if catalog else None
@@ -3799,6 +3803,10 @@ def _sweep_cache_key(
     year_max: int,
     rank_mode: str,
     sweep_shard_limit: int,
+    sweep_pass_shard_limit: int = 0,
+    sweep_max_passes: int = 0,
+    sweep_timeout_seconds: float = 0.0,
+    sweep_shard_timeout_seconds: float = 0.0,
     sweep_strategy: str = _SWEEP_STRATEGY,
 ) -> str:
     payload = json.dumps(
@@ -3808,6 +3816,10 @@ def _sweep_cache_key(
             "year_max": year_max,
             "rank_mode": _rank_mode(rank_mode),
             "sweep_shard_limit": sweep_shard_limit,
+            "sweep_pass_shard_limit": sweep_pass_shard_limit,
+            "sweep_max_passes": sweep_max_passes,
+            "sweep_timeout_seconds": sweep_timeout_seconds,
+            "sweep_shard_timeout_seconds": sweep_shard_timeout_seconds,
             "sweep_strategy": sweep_strategy,
         },
         sort_keys=True,

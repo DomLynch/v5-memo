@@ -458,6 +458,35 @@ def test_sweep_cache_key_ignores_result_limit() -> None:
     assert first == second
 
 
+def test_sweep_cache_key_changes_when_sweep_contract_changes() -> None:
+    stale = fullraw_index._sweep_cache_key(
+        "metformin resistance training",
+        limit=10,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=8,
+        sweep_max_passes=1525,
+        sweep_timeout_seconds=3600.0,
+        sweep_shard_timeout_seconds=90.0,
+    )
+    current = fullraw_index._sweep_cache_key(
+        "metformin resistance training",
+        limit=10,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_max_passes=1525,
+        sweep_timeout_seconds=120.0,
+        sweep_shard_timeout_seconds=20.0,
+    )
+
+    assert stale != current
+
+
 def test_completed_disk_sweep_cache_beats_stale_memory_partial() -> None:
     memory_entry = fullraw_index.SweepCacheEntry(
         created_at=time.time(),
@@ -507,6 +536,10 @@ def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
         year_max=2100,
         rank_mode="relevance",
         sweep_shard_limit=2,
+        sweep_pass_shard_limit=2,
+        sweep_max_passes=1,
+        sweep_timeout_seconds=300.0,
+        sweep_shard_timeout_seconds=10.0,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
     )
     cache_path = fullraw_index._sweep_cache_path(cache_dir, key)
