@@ -7,6 +7,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
 import pytest
@@ -167,6 +168,47 @@ def test_shard_search_returns_partial_hits_on_timeout(tmp_path: Path, monkeypatc
     assert len(called) <= fullraw_index._FULL_COVERAGE_PREFIX_SHARDS
     assert many_paths[-1] not in called
     assert timeouts == [30] * len(called)
+
+
+def test_shard_search_waits_for_running_pool_after_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shutdown_calls: list[tuple[bool, bool]] = []
+
+    class FakePool:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def submit(self, *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            return object()
+
+        def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+            shutdown_calls.append((wait, cancel_futures))
+
+    def fake_as_completed(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise FuturesTimeoutError()
+
+    shard = tmp_path / "one.sqlite"
+    shard.touch()
+    monkeypatch.setattr(fullraw_index, "ThreadPoolExecutor", FakePool)
+    monkeypatch.setattr(fullraw_index, "as_completed", fake_as_completed)
+
+    _hits, _paths, timed_out = fullraw_index._search_shard_paths_with_paths(
+        [shard],
+        "metformin",
+        limit=5,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        workers=1,
+        timeout_seconds=0.01,
+    )
+
+    assert timed_out is True
+    assert shutdown_calls == [(True, True)]
 
 
 def test_isolated_shard_search_kills_timed_out_child(
