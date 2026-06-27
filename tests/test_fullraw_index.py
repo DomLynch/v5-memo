@@ -904,6 +904,30 @@ def test_priority_burst_lane_is_bounded() -> None:
     assert queued_jobs == {"target": target}
 
 
+def test_full_sweep_order_reuses_cache_without_query_bias(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    entries = [
+        ShardCatalogEntry(tmp_path / "large-metformin.sqlite", 2, 0, ("openalex",), 1, 10, 200, topic_terms=("metformin",)),
+        ShardCatalogEntry(tmp_path / "small-cwi.sqlite", 1, 0, ("pubmed",), 1, 10, 10, topic_terms=("immersion",)),
+        ShardCatalogEntry(tmp_path / "cached-resveratrol.sqlite", 3, 0, ("biorxiv",), 1, 10, 100, topic_terms=("resveratrol",)),
+    ]
+    cached = {entries[2].path}
+
+    monkeypatch.setattr(
+        fullraw_index,
+        "_cached_materialized_shard_path",
+        lambda path: path if path in cached else None,
+    )
+
+    assert [entry.path.name for entry in fullraw_index._cache_reuse_sweep_entries(entries)] == [
+        "cached-resveratrol.sqlite",
+        "small-cwi.sqlite",
+        "large-metformin.sqlite",
+    ]
+
+
 def test_complete_sweep_retries_failed_shards() -> None:
     receipt = {
         "sweep_failed_paths": ("shard_a.sqlite", "shard_b.sqlite"),
