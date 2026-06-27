@@ -1181,6 +1181,8 @@ def _cache_fit_worker_count(paths: list[Path], requested_workers: int) -> int:
     if max_cache_bytes is None or max_cache_bytes <= 0:
         return requested_workers
     max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
+    if os.environ.get("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "").casefold() in {"1", "true", "yes"}:
+        max_inflight += 1
     effective_cache_bytes = max(1, max_cache_bytes // max(1, max_inflight))
     largest = 0
     for path in paths:

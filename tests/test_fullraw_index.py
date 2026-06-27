@@ -1046,6 +1046,23 @@ def test_shard_search_caps_worker_batch_to_cache_budget(
     assert completed_paths == remotes
     assert timed_out is False
 
+    preserve_sizes.clear()
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "1")
+    _hits, completed_paths, timed_out, _metrics = fullraw_index._search_shard_paths_with_paths_and_receipt(
+        remotes,
+        "metformin longevity",
+        limit=4,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        workers=4,
+        timeout_seconds=5,
+    )
+
+    assert preserve_sizes == [0, 0, 0, 0]
+    assert completed_paths == remotes
+    assert timed_out is False
+
 
 def test_materialized_shard_path_does_not_recache_local_cache_path(
     monkeypatch: pytest.MonkeyPatch,
