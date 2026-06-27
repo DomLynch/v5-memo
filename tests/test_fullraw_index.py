@@ -1022,7 +1022,8 @@ def test_shard_search_caps_worker_batch_to_cache_budget(
         preserve_sizes.append(len(preserve or set()))
         return tmp_path / f"local-{path.stem}.sqlite"
 
-    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "12")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "24")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT", "2")
     monkeypatch.setattr(fullraw_index, "_materialized_shard_path", fake_materialized)
     monkeypatch.setattr(
         fullraw_index,

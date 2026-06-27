@@ -1180,6 +1180,8 @@ def _cache_fit_worker_count(paths: list[Path], requested_workers: int) -> int:
     max_cache_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
     if max_cache_bytes is None or max_cache_bytes <= 0:
         return requested_workers
+    max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
+    effective_cache_bytes = max(1, max_cache_bytes // max(1, max_inflight))
     largest = 0
     for path in paths:
         try:
@@ -1188,7 +1190,7 @@ def _cache_fit_worker_count(paths: list[Path], requested_workers: int) -> int:
             continue
     if largest <= 0:
         return requested_workers
-    return max(1, min(requested_workers, max_cache_bytes // largest))
+    return max(1, min(requested_workers, effective_cache_bytes // largest))
 
 
 def _merge_hit_groups(
