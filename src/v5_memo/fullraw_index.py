@@ -1476,6 +1476,19 @@ def _cache_fit_warm_entries(
     return ordered
 
 
+def _cache_reuse_sweep_entries(entries: list[ShardCatalogEntry]) -> list[ShardCatalogEntry]:
+    def candidate_key(entry: ShardCatalogEntry) -> tuple[int, int, int, int, str]:
+        return (
+            0 if _cached_materialized_shard_path(entry.path) is not None else 1,
+            max(0, entry.bytes_used),
+            entry.batch_id,
+            entry.shard_id,
+            str(entry.path),
+        )
+
+    return sorted(entries, key=candidate_key)
+
+
 def _profile_relaxed_sweep_query(
     query: str,
     entries: list[ShardCatalogEntry],
@@ -2935,17 +2948,20 @@ def run_server() -> None:
             try:
                 existing = sweep_cache_get(job.key)
                 sweep_entries = select_sweep_shard_entries(job.catalog, query=job.query, limit=sweep_shard_limit)
-                sweep_entries = _prioritize_sweep_pass_entries(
-                    sweep_entries,
-                    sweep_pass_shard_limit,
-                    query=job.query,
-                )
-                sweep_entries = _cache_fit_warm_entries(
-                    job.catalog,
-                    sweep_entries,
-                    query=job.query,
-                    target_ready=min_shards_searched,
-                )
+                if len(sweep_entries) >= len(job.catalog):
+                    sweep_entries = _cache_reuse_sweep_entries(sweep_entries)
+                else:
+                    sweep_entries = _prioritize_sweep_pass_entries(
+                        sweep_entries,
+                        sweep_pass_shard_limit,
+                        query=job.query,
+                    )
+                    sweep_entries = _cache_fit_warm_entries(
+                        job.catalog,
+                        sweep_entries,
+                        query=job.query,
+                        target_ready=min_shards_searched,
+                    )
                 planned_receipt = shard_coverage_receipt(job.catalog, sweep_entries)
                 sweep_passes = _sweep_search_passes(job.query, sweep_entries, rank_mode=job.rank_mode)
                 completed_path_strings = _sweep_completed_path_strings(existing.receipt if existing else {})
