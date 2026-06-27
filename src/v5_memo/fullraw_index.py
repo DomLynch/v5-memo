@@ -3150,6 +3150,7 @@ def run_server() -> None:
                     and raw_cache_only.strip().casefold() in {"1", "true", "yes", "on"}
                 )
                 raw_queue_if_missing = payload.get("queue_if_missing")
+                queue_if_missing_was_provided = "queue_if_missing" in payload
                 queue_if_missing = raw_queue_if_missing is True or (
                     isinstance(raw_queue_if_missing, str)
                     and raw_queue_if_missing.strip().casefold() in {"1", "true", "yes", "on"}
@@ -3165,7 +3166,8 @@ def run_server() -> None:
                     sweep_enabled=sweep_enabled,
                 ):
                     cache_only = True
-                    queue_if_missing = True
+                    if not queue_if_missing_was_provided:
+                        queue_if_missing = True
             except (TypeError, ValueError, json.JSONDecodeError):
                 _write_json(self, 400, {"error": "bad request"})
                 return
