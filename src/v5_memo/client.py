@@ -472,7 +472,7 @@ class FullRawCorpusSearchClient:
             elif initial_error is not None:
                 raise initial_error
         if not self._receipt_is_sufficient(receipt):
-            message = f"Full raw corpus search coverage too narrow: {receipt}"
+            message = f"Full raw corpus search coverage too narrow: {_full_raw_receipt_summary(receipt)}"
             if self._strict:
                 raise SearchBackendError(message)
             self._log_progress(message)
@@ -702,6 +702,19 @@ def _full_raw_shard_receipt(data: Any) -> dict[str, object]:
     if not isinstance(receipt, dict):
         return {}
     return dict(receipt)
+
+
+def _full_raw_receipt_summary(receipt: dict[str, object]) -> dict[str, object]:
+    return {
+        "shards_searched": receipt.get("shards_searched"),
+        "shards_total": receipt.get("shards_total"),
+        "partial_shard_search": receipt.get("partial_shard_search"),
+        "sweep_failed_shards": receipt.get("sweep_failed_shards"),
+        "source_count_searched": receipt.get("source_count_searched"),
+        "sweep_remaining_shards": receipt.get("sweep_remaining_shards"),
+        "sweep_strategy": receipt.get("sweep_strategy"),
+        "authenticated": receipt.get("authenticated"),
+    }
 
 
 def _full_raw_async_sweep_status(data: Any) -> str:
