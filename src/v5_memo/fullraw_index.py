@@ -3823,11 +3823,20 @@ def _load_sweep_cache(path: Path, *, ttl_seconds: float) -> SweepCacheEntry | No
 
 def _write_sweep_cache(path: Path, entry: SweepCacheEntry) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    _write_json_file(path, {
-        "created_at": entry.created_at,
-        "hits": entry.hits,
-        "receipt": entry.receipt,
-    })
+    current = _load_sweep_cache(path, ttl_seconds=0) if path.exists() else None
+    selected = _prefer_sweep_cache_entry(entry, current)
+    assert selected is not None
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        _write_json_file(tmp_path, {
+            "created_at": selected.created_at,
+            "hits": selected.hits,
+            "receipt": selected.receipt,
+        })
+        os.replace(tmp_path, path)
+    finally:
+        with suppress(OSError):
+            tmp_path.unlink()
 
 
 def _free_bytes(path: Path) -> int:

@@ -396,6 +396,39 @@ def test_completed_disk_sweep_cache_beats_stale_memory_partial() -> None:
     assert selected.receipt["shards_searched"] == 1525
 
 
+def test_sweep_cache_write_preserves_highest_progress(tmp_path: Path) -> None:
+    cache_path = tmp_path / "sweeps" / "metformin.json"
+    older_partial = fullraw_index.SweepCacheEntry(
+        created_at=time.time() - 60,
+        hits=[],
+        receipt={
+            "shards_searched": 301,
+            "shards_total": 1525,
+            "partial_shard_search": True,
+            "sweep_remaining_shards": 1224,
+        },
+    )
+    newer_partial = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[],
+        receipt={
+            "shards_searched": 512,
+            "shards_total": 1525,
+            "partial_shard_search": True,
+            "sweep_remaining_shards": 1013,
+        },
+    )
+
+    fullraw_index._write_sweep_cache(cache_path, newer_partial)
+    fullraw_index._write_sweep_cache(cache_path, older_partial)
+
+    selected = fullraw_index._load_sweep_cache(cache_path, ttl_seconds=0)
+
+    assert selected is not None
+    assert selected.receipt["shards_searched"] == 512
+    assert selected.receipt["sweep_remaining_shards"] == 1013
+
+
 def test_sweep_admission_queues_without_exceeding_inflight_limit() -> None:
     inflight = {"active"}
     queued: set[str] = set()
