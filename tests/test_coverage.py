@@ -114,7 +114,7 @@ def test_require_full_raw_corpus_accepts_strict_sweep_service(monkeypatch: Monke
     )
     monkeypatch.setattr(
         "v5_memo.coverage.urlopen",
-        _fake_fullraw_urlopen(health=health, search=_search_body()),
+        _fake_fullraw_urlopen(health=health, search=_search_body(partial=True)),
     )
 
     require_full_raw_corpus()

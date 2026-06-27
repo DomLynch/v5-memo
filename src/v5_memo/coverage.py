@@ -165,11 +165,11 @@ def full_raw_search_health(url: str | None = None) -> SearchBackendHealth:
         and smoke_failed == 0
         and smoke_source_count >= min_sources
     )
-    ok = static_ok and smoke_ok
+    ok = static_ok and (smoke_ok or strict_sweep_ready)
     error = ""
     if not static_ok:
         error = "health incomplete, partial, failed, or missing ok/backend/papers_indexed"
-    elif not smoke_ok:
+    elif not smoke_ok and not strict_sweep_ready:
         error = str(smoke.get("error") or "query smoke incomplete or partial")
     return SearchBackendHealth(
         configured=True,
