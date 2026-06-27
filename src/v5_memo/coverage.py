@@ -49,7 +49,7 @@ def current_search_coverage() -> SearchCoverage:
     The raw 450M+ storage corpus is only treated as searchable when an explicit
     full-raw search service/index URL is configured.
     """
-    full_raw_url = os.environ.get("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "").strip()
+    full_raw_url = _full_raw_search_url()
     researka_url = os.environ.get("RESEARKA_DATABASE_URL", "").strip()
     researka_token = (
         os.environ.get("RESEARKA_DATABASE_TOKEN", "")
@@ -91,16 +91,21 @@ def require_full_raw_corpus() -> None:
         health = full_raw_search_health()
         raise RuntimeError(
             "Full local raw 450M+ corpus search is not healthy. "
-            "Set V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL to a real fullraw service with "
+            "Set RESEARKA_FULLRAW_SEARCH_URL or V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL "
+            "to a real fullraw service with "
             f"/health ok=true. Current status: {health.error or 'not configured'}"
         )
 
 
 def full_raw_search_health(url: str | None = None) -> SearchBackendHealth:
     """Probe the configured fullraw service instead of trusting env presence."""
-    search_url = (url if url is not None else os.environ.get("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "")).strip()
+    search_url = (url if url is not None else _full_raw_search_url()).strip()
     if not search_url:
-        return SearchBackendHealth(configured=False, ok=False, error="missing V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL")
+        return SearchBackendHealth(
+            configured=False,
+            ok=False,
+            error="missing RESEARKA_FULLRAW_SEARCH_URL or V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL",
+        )
     health_url = _health_url(search_url)
     try:
         request = Request(health_url, headers=_full_raw_headers(), method="GET")
@@ -197,14 +202,24 @@ def _health_url(search_url: str) -> str:
     return urlunparse(parsed._replace(path="/health", query="", fragment=""))
 
 
+def _full_raw_search_url() -> str:
+    return (
+        os.environ.get("RESEARKA_FULLRAW_SEARCH_URL", "")
+        or os.environ.get("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "")
+    ).strip()
+
+
 def _full_raw_headers(*, content_type: bool = False) -> dict[str, str]:
     headers = {"User-Agent": "v5-memo/0.1"}
     if content_type:
         headers["Content-Type"] = "application/json"
     token = (
-        os.environ.get("V5_MEMO_FULL_RAW_INDEX_TOKEN", "").strip()
-        or os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "").strip()
+        os.environ.get("RESEARKA_FULLRAW_INDEX_TOKEN", "")
+        or os.environ.get("RESEARKA_FULLRAW_TOKEN", "")
+        or os.environ.get("V5_MEMO_FULL_RAW_INDEX_TOKEN", "")
+        or os.environ.get("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "")
     )
+    token = token.strip()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
@@ -247,20 +262,27 @@ def _full_raw_query_smoke(search_url: str) -> dict[str, object]:
 
 
 def _full_raw_min_shards(shards_total: int) -> int:
-    configured = _int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED")
+    configured = _int_env("RESEARKA_FULLRAW_MIN_SHARDS_SEARCHED") or _int_env(
+        "V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED",
+    )
     if configured > 0:
         return configured
     return shards_total if shards_total > 0 else 1
 
 
 def _full_raw_min_sources() -> int:
-    configured = _int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED")
+    configured = _int_env("RESEARKA_FULLRAW_MIN_SOURCES_SEARCHED") or _int_env(
+        "V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED",
+    )
     return configured if configured > 0 else 5
 
 
 def _health_timeout() -> float:
     try:
-        return max(0.1, min(float(os.environ.get("V5_MEMO_FULL_RAW_HEALTH_TIMEOUT", "3")), 30.0))
+        return max(
+            0.1,
+            min(float(os.environ.get("RESEARKA_FULLRAW_HEALTH_TIMEOUT") or os.environ.get("V5_MEMO_FULL_RAW_HEALTH_TIMEOUT", "3")), 30.0),
+        )
     except ValueError:
         return 3.0
 
