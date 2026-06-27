@@ -5,7 +5,12 @@ from types import SimpleNamespace
 import pytest
 from pytest import MonkeyPatch
 
-from v5_memo.__main__ import _alpha_shape_queries, _topic_anchored_queries, main
+from v5_memo.__main__ import (
+    _alpha_shape_queries,
+    _alpha_shaped_planned_queries,
+    _topic_anchored_queries,
+    main,
+)
 from v5_memo.client import ResearkaSearchClient
 from v5_memo.schemas import CorpusHit, MemoBuildError
 
@@ -127,6 +132,14 @@ def test_alpha_shape_queries_add_universal_promise_and_outcome_probes() -> None:
         "metformin augment resistance training protocol",
         "metformin blunts resistance training",
     ]
+
+
+def test_alpha_shaped_planner_queries_prefer_direct_evidence_language() -> None:
+    assert _alpha_shaped_planned_queries([
+        "metformin blunts survival benefit caloric restriction mice",
+        "metformin attenuated healthspan extension germ-free mice",
+        "metformin impairs exercise-induced mitochondrial biogenesis older adults",
+    ])[0] == "metformin impairs exercise-induced mitochondrial biogenesis older adults"
 
 
 def test_cli_forwards_memo_coverage_thresholds_from_env(

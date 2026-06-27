@@ -36,10 +36,16 @@ _TOPIC_FILTER_DROP = frozenset(
 _SHAPE_CONTEXT_TERMS = frozenset({"exercise", "resistance", "strength", "training"})
 _ALPHA_QUERY_TERMS = frozenset({
     "activate", "activates", "activated", "augment", "augments", "augmented",
-    "blunted", "blunts", "designed", "expected", "impaired", "mimic", "mimics",
+    "blunted", "blunts", "designed", "expected", "impair", "impaired", "impairs",
+    "mimic", "mimics",
     "null", "observed", "placebo", "protocol", "randomized", "reduced", "reduces",
-    "attenuated", "attenuates", "unchanged",
+    "attenuate", "attenuated", "attenuates", "unchanged",
 })
+_DIRECT_EVIDENCE_QUERY_TERMS = frozenset({
+    "adult", "adults", "clinical", "cohort", "human", "humans", "older",
+    "patient", "patients", "randomized", "trial",
+})
+_MODEL_ONLY_QUERY_TERMS = frozenset({"germ", "mice", "mouse", "murine"})
 
 
 class DemoSearch:
@@ -242,7 +248,20 @@ def _topic_anchored_queries(queries: Sequence[str], topic: str) -> list[str]:
 
 
 def _alpha_shaped_planned_queries(queries: Sequence[str]) -> list[str]:
-    return [query for query in queries if set(_topic_filter_terms(query)) & _ALPHA_QUERY_TERMS]
+    shaped = [
+        query for query in queries
+        if set(_topic_filter_terms(query)) & _ALPHA_QUERY_TERMS
+    ]
+    return sorted(shaped, key=_alpha_planned_query_rank, reverse=True)
+
+
+def _alpha_planned_query_rank(query: str) -> tuple[int, int, int]:
+    terms = set(_TOPIC_TERM_RE.findall(query.casefold()))
+    return (
+        len(terms & _DIRECT_EVIDENCE_QUERY_TERMS) - len(terms & _MODEL_ONLY_QUERY_TERMS),
+        len(terms & _ALPHA_QUERY_TERMS),
+        len(terms),
+    )
 
 
 def _alpha_shape_queries(topic: str) -> list[str]:
