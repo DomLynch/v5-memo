@@ -92,6 +92,34 @@ def test_require_full_raw_corpus_accepts_complete_explicit_service(monkeypatch: 
     require_full_raw_corpus()
 
 
+def test_require_full_raw_corpus_accepts_generic_fullraw_env(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", raising=False)
+    monkeypatch.setenv("RESEARKA_FULLRAW_SEARCH_URL", "http://127.0.0.1:9999/search")
+    monkeypatch.setenv("RESEARKA_FULLRAW_TOKEN", "test-token")
+    monkeypatch.setenv("RESEARKA_FULLRAW_MIN_SHARDS_SEARCHED", "1525")
+    monkeypatch.setenv("RESEARKA_FULLRAW_MIN_SOURCES_SEARCHED", "5")
+    seen: list[dict[str, object]] = []
+
+    def fake_urlopen(request: object, timeout: float) -> FakeResponse:
+        seen.append({
+            "url": request.full_url,  # type: ignore[attr-defined]
+            "authorization": request.get_header("Authorization"),  # type: ignore[attr-defined]
+            "timeout": timeout,
+        })
+        return FakeResponse(_search_body() if getattr(request, "data", None) else _health_body())
+
+    monkeypatch.setattr("v5_memo.coverage.urlopen", fake_urlopen)
+
+    require_full_raw_corpus()
+
+    assert [row["url"] for row in seen] == [
+        "http://127.0.0.1:9999/health",
+        "http://127.0.0.1:9999/search",
+    ]
+    assert {row["authorization"] for row in seen} == {"Bearer test-token"}
+
+
 def test_require_full_raw_corpus_rejects_incomplete_service(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9999/search")
     monkeypatch.setattr(
