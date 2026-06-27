@@ -83,6 +83,7 @@ def _fullraw_env(name: str, default: str = "") -> str:
 
 _FULL_COVERAGE_PREFIX_SHARDS = max(1, int(_fullraw_env("V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS", "32")))
 _SWEEP_STRATEGY = "profile_relaxed_v9"
+_SWEEP_MIN_RESULT_LIMIT = 10
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
@@ -3207,7 +3208,7 @@ def run_server() -> None:
         job = SweepJob(
             key=key,
             query=query,
-            limit=limit,
+            limit=max(limit, _SWEEP_MIN_RESULT_LIMIT),
             year_min=year_min,
             year_max=year_max,
             rank_mode=rank_mode,
@@ -3384,7 +3385,7 @@ def run_server() -> None:
             )
             cache_key = _sweep_cache_key(
                 cache_query,
-                limit=limit,
+                limit=max(limit, _SWEEP_MIN_RESULT_LIMIT),
                 year_min=year_min,
                 year_max=year_max,
                 rank_mode=rank_mode,
@@ -3993,6 +3994,7 @@ def _sweep_cache_key(
     payload = json.dumps(
         {
             "query": query,
+            "result_limit": max(limit, _SWEEP_MIN_RESULT_LIMIT),
             "year_min": year_min,
             "year_max": year_max,
             "rank_mode": _rank_mode(rank_mode),
