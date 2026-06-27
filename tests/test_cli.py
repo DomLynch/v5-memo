@@ -834,26 +834,15 @@ def test_strict_fullraw_uses_specific_seed_before_planner_sweeps(
     ]}
 
 
-def test_strict_fullraw_uses_planner_when_seed_has_no_alpha_shape(
+def test_strict_fullraw_does_not_planner_fanout_for_broad_one_anchor_seed(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     seen: dict[str, list[str]] = {}
 
     class FakePlanner:
-        def plan(
-            self,
-            *,
-            topic: str,
-            seed_queries: Sequence[str],
-            limit: int = 8,
-        ) -> list[str]:
-            del topic, seed_queries, limit
-            return [
-                "rapamycin blunts exercise training adaptation",
-                "metformin blunts exercise training adaptation",
-                "metformin broad longevity review",
-            ]
+        def plan(self, **_kwargs: object) -> list[str]:
+            raise AssertionError("broad strict-fullraw seed should fail fast, not planner-fanout")
 
     class FakeFullRaw:
         configured = True
@@ -890,10 +879,7 @@ def test_strict_fullraw_uses_planner_when_seed_has_no_alpha_shape(
     main()
 
     assert "Alpha memo" in capsys.readouterr().out
-    assert seen == {"seed_queries": [
-        "metformin longevity",
-        "metformin blunts exercise training adaptation",
-    ]}
+    assert seen == {"seed_queries": ["metformin longevity"]}
 
 
 def test_strict_fullraw_fails_fast_when_planner_has_no_alpha_shape(

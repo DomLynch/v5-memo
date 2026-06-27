@@ -175,11 +175,13 @@ def main() -> None:
     else:
         base_queries = [args.topic]
     queries = base_queries
+    base_anchor_terms = query_anchor_terms(base_queries)
+    shape_queries = _alpha_shape_queries(args.topic)
+    strict_fullraw_auto = fullraw_backed and not explicit_queries
     if planner_mode == "minimax" and not (
-        fullraw_backed
-        and not explicit_queries
-        and query_anchor_terms(base_queries)
-        and _alpha_shape_queries(args.topic)
+        strict_fullraw_auto
+        and base_anchor_terms
+        and (shape_queries or len(base_anchor_terms) == 1)
     ):
         queries = MiniMaxM3SearchPlanner.from_env().plan(
             topic=args.topic,
@@ -191,7 +193,6 @@ def main() -> None:
             planned_queries = _topic_anchored_queries(planned_queries, args.topic)
             if fullraw_backed and args.min_shards_searched >= 512:
                 planned_queries = _alpha_shaped_planned_queries(planned_queries)
-            shape_queries = _alpha_shape_queries(args.topic)
             topic_has_anchors = bool(query_anchor_terms(base_queries))
             if topic_has_anchors:
                 first_anchor = set(query_anchor_terms(base_queries, limit=1))
@@ -200,7 +201,7 @@ def main() -> None:
             else:
                 queries = planned_queries or ([] if fullraw_backed else base_queries)
     if fullraw_backed and not explicit_queries:
-        queries = _dedupe_queries([*queries, *_alpha_shape_queries(args.topic)])
+        queries = _dedupe_queries([*queries, *shape_queries])
     anchor_queries = base_queries
     if not explicit_queries and not query_anchor_terms(base_queries):
         anchor_queries = queries
