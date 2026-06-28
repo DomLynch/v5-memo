@@ -127,6 +127,39 @@ def test_miner_emits_claim_cards_before_prose() -> None:
     assert "**Claim ledger:**" in memo
 
 
+def test_miner_marks_human_intervention_receipts_direct() -> None:
+    hits = [
+        _hit(
+            "negative",
+            "Cold-water immersion attenuates strength training adaptation",
+            (
+                "In a randomized crossover design, 11 participants performed two 8-week "
+                "training periods with cold-water immersion after each session."
+            ),
+        ),
+        _hit(
+            "positive",
+            "Cold-water immersion supports adaptation to strength training",
+            (
+                "Seventeen trained male students volunteered for a strength training "
+                "study with repeated cold-water immersion after training sessions; "
+                "strength outcomes improved at retention."
+            ),
+        ),
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic="cold water immersion resistance training adaptation",
+        required_anchor_terms=("training",),
+    )[0]
+
+    assert {(card.design, card.population, card.support_type) for card in candidate.claim_cards} == {
+        ("randomized_trial", "human", "direct"),
+        ("intervention_study", "human", "direct"),
+    }
+
+
 def test_miner_adds_receipt_backed_evidence_graph_context() -> None:
     hits = [
         _hit(

@@ -827,7 +827,8 @@ def _claim_card(hit: CorpusHit, role: ReceiptRole) -> ClaimCard:
     design = _design_type(terms)
     population = _population_type(terms)
     direction = "/".join(sorted(_direction_polarity(hit))) or "unclear"
-    support_type = "direct" if design in {"randomized_trial", "cohort"} and population == "human" else "indirect"
+    direct_designs = {"randomized_trial", "cohort", "intervention_study"}
+    support_type = "direct" if design in direct_designs and population == "human" else "indirect"
     confidence = "high" if support_type == "direct" and direction != "unclear" else "medium" if direction != "unclear" else "low"
     return ClaimCard(
         receipt_id=hit.hit_id,
@@ -847,6 +848,11 @@ def _design_type(terms: frozenset[str]) -> str:
         return "randomized_trial"
     if terms & {"cohort", "prospective", "longitudinal"}:
         return "cohort"
+    if terms & {"intervention", "protocol", "session", "sessions", "training"} and terms & {
+        "athlete", "athletes", "participant", "participants", "student", "students",
+        "subject", "subjects", "volunteer", "volunteered", "volunteers",
+    }:
+        return "intervention_study"
     if terms & {"review", "meta", "systematic"}:
         return "synthesis"
     if terms & {"mouse", "mice", "rat", "rats", "cell", "cells"}:
@@ -855,7 +861,11 @@ def _design_type(terms: frozenset[str]) -> str:
 
 
 def _population_type(terms: frozenset[str]) -> str:
-    if terms & {"human", "humans", "patient", "patients", "adult", "adults", "men", "women"}:
+    if terms & {
+        "athlete", "athletes", "human", "humans", "participant", "participants",
+        "patient", "patients", "adult", "adults", "men", "women", "student",
+        "students", "subject", "subjects", "volunteer", "volunteered", "volunteers",
+    }:
         return "human"
     if terms & {"mouse", "mice", "rat", "rats", "animal", "animals"}:
         return "animal"
