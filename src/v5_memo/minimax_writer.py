@@ -277,6 +277,15 @@ Hard rules:
   or post-intervention exposure into "during" unless a receipt says during.
 - If receipts split by endpoint or metric, say it is not a direct contradiction
   unless both receipts measure the same endpoint family.
+- Do not say receipts point in "opposite directions" unless protocol, design,
+  population, and endpoint are directly comparable. When they differ, frame the
+  signal as a bounded protocol/design contrast and quantify the gap.
+- For intervention receipts, state concrete protocol/design gaps when present:
+  timing, dose/duration, study length, between-group/period versus within-subject,
+  unilateral versus whole-body, and endpoint window.
+- If a receipt reports overall gains but the relevant comparison favors control,
+  non-treated, or comparator arms, label it mixed/comparator-favored in the claim
+  ledger rather than simply positive.
 - Respect receipt roles: if a receipt is labeled promise, protocol, intent, or
   mechanism, describe it as expected/designed/hypothesized/framed, not as an observed result or confirmed endpoint.
 - Use source-appropriate descriptors from the receipts, not generic prestige labels:
