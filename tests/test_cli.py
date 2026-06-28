@@ -133,6 +133,11 @@ def test_alpha_shape_queries_add_universal_promise_and_outcome_probes() -> None:
         "metformin augment resistance training protocol",
         "metformin blunts resistance training",
     ]
+    assert _alpha_shape_queries("resveratrol blunts exercise training") == [
+        "resveratrol mimics exercise training",
+        "resveratrol augment exercise training protocol",
+        "resveratrol blunts exercise training",
+    ]
 
 
 def test_alpha_shaped_planner_queries_prefer_direct_evidence_language() -> None:

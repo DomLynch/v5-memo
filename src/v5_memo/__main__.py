@@ -43,6 +43,11 @@ _ALPHA_QUERY_TERMS = frozenset({
     "reduced", "reduces", "replication", "subgroup",
     "attenuate", "attenuated", "attenuates", "unchanged",
 })
+_NEGATIVE_ALPHA_QUERY_TERMS = frozenset({
+    "attenuate", "attenuated", "attenuates", "blunted", "blunts", "failed",
+    "failure", "impair", "impaired", "impairs", "null", "reduced", "reduces",
+    "unchanged",
+})
 _DIRECT_EVIDENCE_QUERY_TERMS = frozenset({
     "adult", "adults", "clinical", "cohort", "human", "humans", "older",
     "patient", "patients", "randomized", "trial",
@@ -273,6 +278,9 @@ def _alpha_planned_query_rank(query: str) -> tuple[int, int, int]:
 
 def _alpha_shape_queries(topic: str) -> list[str]:
     terms = list(_topic_filter_terms(topic))
+    has_negative_shape = bool(set(terms) & _NEGATIVE_ALPHA_QUERY_TERMS)
+    cleaned_terms = [term for term in terms if term not in _ALPHA_QUERY_TERMS]
+    terms = cleaned_terms or terms
     if len(terms) < 2:
         return []
     split_at = next(
@@ -281,10 +289,13 @@ def _alpha_shape_queries(topic: str) -> list[str]:
     )
     anchor = " ".join(terms[:split_at])
     rest = " ".join(terms[split_at:])
-    return [
+    queries = [
         f"{anchor} augment {rest} protocol",
         f"{anchor} blunts {rest}",
     ]
+    if has_negative_shape and set(terms) & _SHAPE_CONTEXT_TERMS:
+        queries.insert(0, f"{anchor} mimics {rest}")
+    return queries
 
 
 def _dedupe_queries(queries: Sequence[str]) -> list[str]:
