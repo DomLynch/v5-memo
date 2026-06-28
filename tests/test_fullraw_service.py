@@ -143,7 +143,7 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "Environment=RESEARKA_FULLRAW_SEARCH_ISOLATED=0" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=16" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKERS=4" in config.read_text()
-    assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=2" in config.read_text()
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=1" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=1" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=16" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=120" in config.read_text()
