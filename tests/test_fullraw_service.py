@@ -143,6 +143,8 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
         "RESEARKA_FULLRAW_SWEEP_WORKERS=8\n"
         "RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=2\n"
         "RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0\n"
+        "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote\n"
+        "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto\n"
     )
     assert "TimeoutStopSec=120" in config.read_text()
     assert "TimeoutStopFailureMode=kill" in config.read_text()
