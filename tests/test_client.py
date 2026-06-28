@@ -408,6 +408,68 @@ def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) ->
     }
 
 
+def test_full_raw_client_reuses_completed_low_limit_exhaustive_cache(monkeypatch: object) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        payloads.append(payload)
+        if payload["limit"] == 25:
+            return FakeResponse({
+                "meta": {
+                    "shard_receipt": {"authenticated": True},
+                    "async_sweep": {"status": "running"},
+                },
+                "results": [],
+            })
+        return FakeResponse({
+            "meta": {
+                "count": 10,
+                "shard_receipt": {
+                    "authenticated": True,
+                    "partial_shard_search": False,
+                    "shards_searched": 1525,
+                    "shards_total": 1525,
+                    "sweep_failed_shards": 0,
+                    "sources_searched": {
+                        "biorxiv": 1,
+                        "openalex": 1,
+                        "pubmed": 1,
+                        "semantic_scholar": 1,
+                        "semantic_scholar_abstracts": 1,
+                    },
+                },
+                "async_sweep": {"status": "hit"},
+            },
+            "results": [{
+                "doi": "10.123/metformin",
+                "title": "Metformin impairs resistance training adaptation",
+                "abstract": "Metformin blunted resistance training adaptation.",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="token",
+        max_variants=1,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        strict=True,
+    )
+
+    hits = client.search("metformin resistance training adaptation", limit=25)
+
+    assert [payload["limit"] for payload in payloads] == [25, 10]
+    assert [payload["top_k"] for payload in payloads] == [25, 10]
+    assert hits[0].doi == "10.123/metformin"
+    receipt = cast(dict[str, object], hits[0].metadata["shard_receipt"])
+    assert receipt["shards_searched"] == 1525
+
+
 def test_full_raw_client_waits_for_zero_hit_foreground_sweep(monkeypatch: object) -> None:
     payloads: list[dict[str, object]] = []
 

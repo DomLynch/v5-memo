@@ -116,6 +116,7 @@ _DOI_BACKFILL_PRIORITY_TERMS = {
     "reduced",
     "trial",
 }
+_FULLRAW_COMPLETED_CACHE_FALLBACK_LIMIT = 10
 
 
 class OpenAlexFullCorpusSearchClient:
@@ -471,10 +472,11 @@ class FullRawCorpusSearchClient:
             print(message, file=sys.stderr, flush=True)
 
     def _search_variant(self, search_pass: FullRawSearchPass, *, limit: int) -> list[CorpusHit]:
+        request_limit = max(1, min(limit, 200))
         payload = {
             "query": search_pass.query[:1024],
-            "limit": max(1, min(limit, 200)),
-            "top_k": max(1, min(limit, 200)),
+            "limit": request_limit,
+            "top_k": request_limit,
             "year_min": self._year_min,
             "year_max": self._year_max,
             "corpus": "full_raw_450m_plus",
@@ -508,6 +510,23 @@ class FullRawCorpusSearchClient:
                 receipt = _full_raw_shard_receipt(data)
             elif initial_error is not None:
                 raise initial_error
+        if not self._receipt_is_sufficient(receipt) and request_limit > _FULLRAW_COMPLETED_CACHE_FALLBACK_LIMIT:
+            fallback_payload = {
+                **payload,
+                "limit": _FULLRAW_COMPLETED_CACHE_FALLBACK_LIMIT,
+                "top_k": _FULLRAW_COMPLETED_CACHE_FALLBACK_LIMIT,
+                "cache_only": True,
+                "queue_if_missing": True,
+            }
+            try:
+                fallback_data = self._request_search(fallback_payload)
+            except SearchBackendError:
+                fallback_data = {}
+            fallback_receipt = _full_raw_shard_receipt(fallback_data)
+            if self._receipt_is_sufficient(fallback_receipt):
+                self._log_progress("fullraw using completed low-limit exhaustive cache")
+                data = fallback_data
+                receipt = fallback_receipt
         if not self._receipt_is_sufficient(receipt):
             message = f"Full raw corpus search coverage too narrow: {_full_raw_receipt_summary(receipt)}"
             if self._strict:
