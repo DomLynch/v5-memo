@@ -1205,6 +1205,56 @@ def test_researka_payload_submits_human_title_and_plain_doi_citations() -> None:
     assert "10.1000/runners" in body
 
 
+def test_researka_payload_strips_markdown_wrapped_doi_receipt_labels() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Cold immersion adaptation signal.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("attenuated",),
+        receipt_ids=("10.1123/ijspp.2019-0965", "10.1519/jsc.0000000000000434"),
+        score=100,
+        novelty_score=70,
+        evidence_score=95,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="10.1123/ijspp.2019-0965",
+            title="Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?",
+            abstract="Cold-water immersion attenuated adaptation after strength training.",
+            source="fullraw:semantic_scholar",
+            doi="10.1123/ijspp.2019-0965",
+        ),
+        CorpusHit(
+            hit_id="10.1519/jsc.0000000000000434",
+            title="Strength Training Adaptations After Cold-Water Immersion",
+            abstract="Strength training adaptations were measured after cold-water immersion.",
+            source="fullraw:semantic_scholar",
+            doi="10.1519/jsc.0000000000000434",
+        ),
+    ]
+    markdown = """
+# Alpha memo: Cold-water immersion after strength training
+
+## Receipts
+- **10.1123/ijspp.2019-0965**: first receipt.
+- **10.1519/jsc.0000000000000434**: second receipt.
+""".strip()
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="performance",
+    )
+    body = cast(str, payload["body_markdown"])
+
+    assert "10.1123/ijspp.2019-0965**" not in body
+    assert "10.1519/jsc.0000000000000434**" not in body
+    assert "**10.1123/ijspp.2019-0965**" not in body
+    assert "10.1123/ijspp.2019-0965 -" in body
+    assert "10.1519/jsc.0000000000000434 -" in body
+
+
 def test_researka_payload_uses_receipt_title_for_bridge_only_alpha_title() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion resistance training adaptation",
