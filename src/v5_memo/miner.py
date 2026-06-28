@@ -103,7 +103,7 @@ def mine_insights(
     topic: str,
     required_anchor_terms: Sequence[str] = (),
     include_discovery: bool = False,
-    max_candidates: int = 5,
+    max_candidates: int = 30,
 ) -> list[InsightCandidate]:
     """Return ranked alpha candidates from source-diverse hit pairs."""
     clean_hits = _dedupe_hits(hits)

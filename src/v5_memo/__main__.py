@@ -6,7 +6,9 @@ import json
 import os
 import re
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
+from pathlib import Path
 
 from v5_memo.client import (
     FullRawCorpusSearchClient,
@@ -23,9 +25,9 @@ from v5_memo.minimax_writer import (
     MiniMaxM3SearchPlanner,
 )
 from v5_memo.pipeline import build_alpha_memo
-from v5_memo.publisher import build_researka_payload, submit_researka
+from v5_memo.publisher import build_researka_payload, load_researka_submit_config, submit_researka
 from v5_memo.retriever import CorpusSearcher, _seed_query_key
-from v5_memo.schemas import CorpusHit
+from v5_memo.schemas import CorpusHit, MemoBuildError, MemoResult
 from v5_memo.writer import render_memo
 
 _TOPIC_TERM_RE = re.compile(r"[a-z][a-z0-9]{2,}")
@@ -109,7 +111,11 @@ def main() -> None:
     parser.add_argument("--min-shards-searched", type=int)
     parser.add_argument("--min-sources-searched", type=int)
     parser.add_argument("--min-search-passes", type=int)
+    parser.add_argument("--output-dir", default="")
+    parser.add_argument("--emit-discovery-on-fail", action="store_true")
+    parser.add_argument("--publish", action="store_true")
     parser.add_argument("--submit-researka", action="store_true")
+    parser.add_argument("--publish-receipt-path", default="")
     parser.add_argument("--researka-agent-id", default=os.environ.get("V5_MEMO_RESEARKA_AGENT_ID", ""))
     parser.add_argument("--researka-domain-slug", default=os.environ.get("V5_MEMO_RESEARKA_DOMAIN_SLUG", ""))
     parser.add_argument("--researka-api-base", default=os.environ.get("V5_MEMO_RESEARKA_API_BASE", "https://api.researka.org"))
@@ -142,9 +148,7 @@ def main() -> None:
     planner_mode = args.planner or ("minimax" if args.searcher == "smart" else "seed")
     writer_mode = args.writer or ("minimax" if args.searcher == "smart" else "template")
     selector_mode = args.selector or ("minimax" if writer_mode == "minimax" else "deterministic")
-    alpha_tier = args.min_alpha_tier or (
-        "elite" if args.searcher == "smart" or selector_mode == "minimax" else "publishable"
-    )
+    alpha_tier = args.min_alpha_tier or "publishable"
     min_alpha_tier = "discovery_seed" if alpha_tier == "discovery" else f"{alpha_tier}_alpha"
 
     searcher: CorpusSearcher
@@ -221,15 +225,33 @@ def main() -> None:
     wider_recall = planner_mode == "minimax" or selector_mode == "minimax"
     per_query_limit = 10 if fullraw_backed else (50 if wider_recall else 25)
     max_hits = 20 if fullraw_backed else (500 if wider_recall else 100)
+    build_kwargs = {
+        "topic": args.topic,
+        "seed_queries": queries,
+        "searcher": searcher,
+        "memo_writer": memo_writer,
+        "memo_selector": memo_selector,
+        "anchor_queries": anchor_queries,
+        "min_alpha_tier": min_alpha_tier,
+        "per_query_limit": per_query_limit,
+        "max_hits": max_hits,
+        "min_shards_searched": args.min_shards_searched,
+        "min_sources_searched": args.min_sources_searched,
+        "min_search_passes": args.min_search_passes,
+    }
     try:
+        result = build_alpha_memo(**build_kwargs)
+    except MemoBuildError:
+        if not args.emit_discovery_on_fail:
+            raise
         result = build_alpha_memo(
             topic=args.topic,
             seed_queries=queries,
             searcher=searcher,
-            memo_writer=memo_writer,
-            memo_selector=memo_selector,
+            memo_writer=render_memo,
+            memo_selector=None,
             anchor_queries=anchor_queries,
-            min_alpha_tier=min_alpha_tier,
+            min_alpha_tier="discovery_seed",
             per_query_limit=per_query_limit,
             max_hits=max_hits,
             min_shards_searched=args.min_shards_searched,
@@ -239,27 +261,36 @@ def main() -> None:
     except SearchBackendError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from exc
-    if args.submit_researka:
-        agent_key = _researka_submit_key()
-        if not agent_key or not args.researka_agent_id.strip() or not args.researka_domain_slug.strip():
-            print(
-                "Researka submit requires V5_MEMO_RESEARKA_AGENT_KEY, "
-                "V5_MEMO_RESEARKA_AGENT_ID, and V5_MEMO_RESEARKA_DOMAIN_SLUG",
-                file=sys.stderr,
-            )
+    memo_path = _write_memo(args.output_dir, result) if args.output_dir else None
+    if args.submit_researka or args.publish:
+        config = load_researka_submit_config(
+            agent_id=args.researka_agent_id,
+            domain_slug=args.researka_domain_slug,
+            api_base=args.researka_api_base,
+        )
+        if config.missing:
+            error = {"error": "missing_researka_submit_config", "missing": config.missing}
+            _write_json(args.publish_receipt_path, error)
+            print(f"Researka submit requires {', '.join(config.missing)}", file=sys.stderr)
             raise SystemExit(3)
+        if _is_discovery_seed(result):
+            error = {"error": "discovery_seed_not_submitted", "tier": "discovery_seed"}
+            _write_json(args.publish_receipt_path, error)
+            print("Discovery seed output was not submitted to Researka", file=sys.stderr)
+            raise SystemExit(4)
         payload = build_researka_payload(
             result,
-            author_agent_id=args.researka_agent_id.strip(),
-            domain_slug=args.researka_domain_slug.strip(),
+            author_agent_id=config.agent_id,
+            domain_slug=config.domain_slug,
         )
         response = submit_researka(
             payload,
-            agent_key=agent_key,
-            api_base=args.researka_api_base,
+            agent_key=config.agent_key,
+            api_base=config.api_base,
         )
+        _write_json(args.publish_receipt_path, response)
         print(json.dumps(response, sort_keys=True), file=sys.stderr)
-    print(result.markdown)
+    print(memo_path if memo_path is not None else result.markdown)
 
 
 def _require_full_raw_or_exit() -> None:
@@ -378,16 +409,27 @@ def _optional_int_env(name: str) -> int | None:
         return None
 
 
-def _researka_submit_key() -> str:
-    for name in (
-        "V5_MEMO_RESEARKA_AGENT_KEY",
-        "V5_MEMO_RESEARKA_API_KEY",
-        "RESEARKA_AGENT_KEY",
-        "RESEARKA_API_KEY",
-    ):
-        if value := os.environ.get(name, "").strip():
-            return value
-    return ""
+def _write_memo(output_dir: str, result: MemoResult) -> Path:
+    target_dir = Path(output_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    heading = next((line[2:] for line in result.markdown.splitlines() if line.startswith("# ")), "v5 memo")
+    slug = re.sub(r"[^a-z0-9]+", "-", heading.casefold()).strip("-")[:90] or "v5-memo"
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    path = target_dir / f"{stamp}-{slug}.md"
+    path.write_text(result.markdown.strip() + "\n", encoding="utf-8")
+    return path
+
+
+def _write_json(path: str, payload: Mapping[str, object]) -> None:
+    if not path:
+        return
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+
+def _is_discovery_seed(result: MemoResult) -> bool:
+    return any(reason == "tier:discovery_seed" for reason in result.candidate.reasons)
 
 
 if __name__ == "__main__":

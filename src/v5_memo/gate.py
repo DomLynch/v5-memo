@@ -44,6 +44,8 @@ def no_alpha_failure(
     candidates: Sequence[InsightCandidate],
     min_alpha_tier: str,
     mined_candidates: Sequence[InsightCandidate] = (),
+    seed_queries: Sequence[str] = (),
+    anchor_terms: Sequence[str] = (),
 ) -> SearchFailure:
     best_mined = max(mined_candidates, key=lambda candidate: candidate.score, default=None)
     return SearchFailure(
@@ -57,6 +59,18 @@ def no_alpha_failure(
             "best_mined_score": best_mined.score if best_mined is not None else 0,
             "best_mined_novelty": best_mined.novelty_score if best_mined is not None else 0,
             "min_alpha_tier": min_alpha_tier,
+            "queries_used": tuple(seed_queries),
+            "anchor_terms": tuple(anchor_terms),
+            "top_mined_candidates": tuple(
+                {
+                    "receipt_ids": candidate.receipt_ids,
+                    "score": candidate.score,
+                    "novelty_score": candidate.novelty_score,
+                    "tier": candidate_alpha_tier(candidate),
+                    "reasons": candidate.reasons,
+                }
+                for candidate in mined_candidates[:3]
+            ),
         },
     )
 

@@ -43,7 +43,7 @@ def build_alpha_memo(
             topic=topic,
             required_anchor_terms=anchor_terms,
             include_discovery=min_alpha_tier == "discovery_seed",
-            max_candidates=25 if memo_selector is not None else 8,
+            max_candidates=30 if memo_selector is not None else 12,
         )
         return bool(_publishable_candidates(mined, partial_hits, min_alpha_tier, primary_anchor_terms))
 
@@ -59,7 +59,7 @@ def build_alpha_memo(
         topic=topic,
         required_anchor_terms=anchor_terms,
         include_discovery=min_alpha_tier == "discovery_seed",
-        max_candidates=25 if memo_selector is not None else 8,
+        max_candidates=30 if memo_selector is not None else 12,
     )
     publishable_candidates = _publishable_candidates(
         mined_candidates,
@@ -97,6 +97,8 @@ def build_alpha_memo(
             candidates=candidates,
             min_alpha_tier=min_alpha_tier,
             mined_candidates=mined_candidates,
+            seed_queries=seed_queries,
+            anchor_terms=anchor_terms,
         )
     )
 

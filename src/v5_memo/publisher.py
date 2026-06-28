@@ -1,6 +1,8 @@
 import json
+import os
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import cast
 from urllib.request import Request, urlopen
 
@@ -15,6 +17,51 @@ _RETRIEVAL_EVIDENCE_KEYS = (
 )
 _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
 _SENTENCE_END = re.compile(r"([.!?])(?:\s|$)")
+_SUBMIT_KEY_ENV_NAMES = (
+    "V5_MEMO_RESEARKA_AGENT_KEY",
+    "V5_MEMO_RESEARKA_API_KEY",
+    "RESEARKA_AGENT_KEY",
+    "RESEARKA_API_KEY",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ResearkaSubmitConfig:
+    agent_key: str
+    agent_id: str
+    domain_slug: str
+    api_base: str
+
+    @property
+    def missing(self) -> tuple[str, ...]:
+        out: list[str] = []
+        if not self.agent_key:
+            out.append("V5_MEMO_RESEARKA_AGENT_KEY")
+        if not self.agent_id:
+            out.append("V5_MEMO_RESEARKA_AGENT_ID")
+        if not self.domain_slug:
+            out.append("V5_MEMO_RESEARKA_DOMAIN_SLUG")
+        return tuple(out)
+
+
+def load_researka_submit_config(
+    *,
+    agent_id: str = "",
+    domain_slug: str = "",
+    api_base: str = "",
+    environ: Mapping[str, str] | None = None,
+) -> ResearkaSubmitConfig:
+    env = os.environ if environ is None else environ
+    agent_key = next(
+        (value.strip() for name in _SUBMIT_KEY_ENV_NAMES if (value := env.get(name, "")).strip()),
+        "",
+    )
+    return ResearkaSubmitConfig(
+        agent_key=agent_key,
+        agent_id=agent_id.strip() or env.get("V5_MEMO_RESEARKA_AGENT_ID", "").strip(),
+        domain_slug=domain_slug.strip() or env.get("V5_MEMO_RESEARKA_DOMAIN_SLUG", "").strip(),
+        api_base=(api_base.strip() or env.get("V5_MEMO_RESEARKA_API_BASE", "").strip() or "https://api.researka.org"),
+    )
 
 
 def build_researka_payload(result: MemoResult, *, author_agent_id: str, domain_slug: str) -> dict[str, object]:
