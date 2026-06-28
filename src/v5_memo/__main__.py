@@ -225,8 +225,12 @@ def main() -> None:
     if not explicit_queries and not query_anchor_terms(base_queries):
         anchor_queries = queries
     wider_recall = planner_mode == "minimax" or selector_mode == "minimax"
-    per_query_limit = 10 if fullraw_backed else (50 if wider_recall else 25)
-    max_hits = 20 if fullraw_backed else (500 if wider_recall else 100)
+    if fullraw_backed:
+        per_query_limit = _int_env("V5_MEMO_FULL_RAW_PER_QUERY_LIMIT") or 25
+        max_hits = _int_env("V5_MEMO_FULL_RAW_MAX_HITS") or max(50, per_query_limit * 2)
+    else:
+        per_query_limit = 50 if wider_recall else 25
+        max_hits = 500 if wider_recall else 100
     build_kwargs = {
         "topic": args.topic,
         "seed_queries": queries,
