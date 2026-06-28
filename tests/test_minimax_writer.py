@@ -387,6 +387,9 @@ def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
     assert "Scope every implication to the receipts" in prompt
     assert "State the receipt-owned timing exactly" in prompt
     assert "not a direct contradiction" in prompt
+    assert 'Do not say "opposite directions"' in prompt
+    assert "quantify the protocol/design gap" in prompt
+    assert "label the" in prompt and "mixed/comparator-favored" in prompt
     assert "one concrete next-step uncertainty" in prompt
     assert "Respect receipt roles" in prompt
     assert "observed result or confirmed endpoint" in prompt
