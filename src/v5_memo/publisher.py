@@ -20,6 +20,7 @@ _CODE_DOI_RE = re.compile(r"`(10\.\d{4,9}/[^`\s]+)`", re.IGNORECASE)
 _DOI_LABEL_RE = re.compile(r"\b(10\.\d{4,9}/[^\s\"'\])}>,;:`]+):", re.IGNORECASE)
 _TITLE_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _SENTENCE_END = re.compile(r"([.!?])(?:\s|$)")
+_TITLE_ROLE_TERMS = frozenset({"boundary", "context", "mechanism", "outcome", "promise", "receipt"})
 _SUBMIT_KEY_ENV_NAMES = (
     "V5_MEMO_RESEARKA_AGENT_KEY",
     "V5_MEMO_RESEARKA_API_KEY",
@@ -131,7 +132,7 @@ def _submission_title(result: MemoResult, heading: str) -> str:
 
 def _query_like_title(title: str) -> bool:
     tokens = _TITLE_TOKEN_RE.findall(title.casefold())
-    return len(tokens) < 4 or ("/" in title and len(tokens) <= 5)
+    return len(tokens) < 4 or ("/" in title and len(tokens) <= 5) or len(set(tokens) & _TITLE_ROLE_TERMS) >= 2
 
 
 def _bridge_only_title(title: str, bridge_terms: Sequence[str]) -> bool:

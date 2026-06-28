@@ -1214,6 +1214,36 @@ def test_researka_payload_uses_receipt_title_for_bridge_only_alpha_title() -> No
     )
 
 
+def test_researka_payload_rewrites_internal_role_label_title() -> None:
+    candidate = InsightCandidate(
+        topic="resveratrol exercise training",
+        thesis="Resveratrol exercise evidence splits by model and adaptation endpoint.",
+        bridge_terms=("resveratrol", "exercise", "training"),
+        tension_terms=("null", "positive"),
+        receipt_ids=("human", "animal"),
+        score=100,
+        novelty_score=58,
+        evidence_score=90,
+        reasons=("shape:promise_outcome_reversal", "tier:publishable_alpha"),
+    )
+    receipts = [
+        _hit("human", "Resveratrol supplementation and exercise training in humans", "Human trial reported null adaptation."),
+        _hit("animal", "Resveratrol and exercise adaptation in skeletal muscle", "Animal model reported mixed adaptation."),
+    ]
+    markdown = "# Alpha memo: resveratrol aged skeletal exercise promise outcome\n\n**Alpha hypothesis:** bounded signal."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="longevity",
+    )
+
+    assert payload["title"] == "Resveratrol exercise evidence splits by model and adaptation endpoint."
+    assert cast(str, payload["body_markdown"]).startswith(
+        "# Alpha memo: Resveratrol exercise evidence splits by model and adaptation endpoint."
+    )
+
+
 def test_minimax_memo_rejects_unsupported_ci_numbers() -> None:
     receipts = [
         CorpusHit(
