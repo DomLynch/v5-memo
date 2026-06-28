@@ -408,7 +408,7 @@ def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) ->
     }
 
 
-def test_full_raw_client_reuses_completed_low_limit_exhaustive_cache(monkeypatch: object) -> None:
+def test_full_raw_client_rejects_low_limit_cache_for_publish_sized_recall(monkeypatch: object) -> None:
     payloads: list[dict[str, object]] = []
 
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
@@ -461,13 +461,11 @@ def test_full_raw_client_reuses_completed_low_limit_exhaustive_cache(monkeypatch
         strict=True,
     )
 
-    hits = client.search("metformin resistance training adaptation", limit=25)
+    with pytest.raises(SearchBackendError, match="coverage too narrow"):
+        client.search("metformin resistance training adaptation", limit=25)
 
-    assert [payload["limit"] for payload in payloads] == [25, 10]
-    assert [payload["top_k"] for payload in payloads] == [25, 10]
-    assert hits[0].doi == "10.123/metformin"
-    receipt = cast(dict[str, object], hits[0].metadata["shard_receipt"])
-    assert receipt["shards_searched"] == 1525
+    assert [payload["limit"] for payload in payloads] == [25]
+    assert [payload["top_k"] for payload in payloads] == [25]
 
 
 def test_full_raw_client_skips_cold_variant_for_later_trusted_variant(monkeypatch: object) -> None:
@@ -817,6 +815,64 @@ def test_full_raw_client_tries_next_strict_variant_after_failure(monkeypatch: ob
     client = FullRawCorpusSearchClient(search_url="https://search.example/full-raw", token="t", max_variants=2, strict=True)
     assert client.search("metformin longevity", limit=3)[0].doi == "10.123/fallback"
     assert queries == ["metformin longevity", "metformin"]
+
+
+def test_full_raw_client_does_not_downgrade_requested_recall_to_low_limit_cache(
+    monkeypatch: object,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        payloads.append(payload)
+        if payload.get("limit") == 10:
+            return FakeResponse({
+                "meta": {
+                    "shard_receipt": {
+                        "authenticated": True,
+                        "shards_searched": 1525,
+                        "partial_shard_search": False,
+                        "sweep_failed_shards": 0,
+                        "sources_searched": {
+                            "biorxiv": 1,
+                            "openalex": 1,
+                            "pubmed": 1,
+                            "semantic_scholar": 1,
+                            "semantic_scholar_abstracts": 1,
+                        },
+                    },
+                },
+                "results": [{"doi": "10.123/low", "title": "Low recall hit", "source": "openalex"}],
+            })
+        return FakeResponse({
+            "meta": {
+                "shard_receipt": {
+                    "authenticated": True,
+                    "shards_searched": 128,
+                    "partial_shard_search": True,
+                    "sweep_failed_shards": 0,
+                    "sources_searched": {"openalex": 128},
+                },
+                "async_sweep": {"status": "queued"},
+            },
+            "results": [],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="raw-token",
+        max_variants=1,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        strict=True,
+    )
+
+    with pytest.raises(SearchBackendError, match="coverage too narrow"):
+        client.search("metformin resistance training adaptation", limit=25)
+
+    assert [payload["limit"] for payload in payloads] == [25]
 
 
 def test_full_raw_client_uses_cache_only_after_strict_foreground_timeout(
