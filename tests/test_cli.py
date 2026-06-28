@@ -430,8 +430,6 @@ def test_smart_cli_planner_surfaces_elite_pair_from_broad_seed(
             "deterministic",
             "--topic",
             "longevity exercise adaptation",
-            "--query",
-            "longevity exercise adaptation pharmacology",
         ],
     )
 
@@ -441,6 +439,46 @@ def test_smart_cli_planner_surfaces_elite_pair_from_broad_seed(
     assert "Alpha memo" in captured.out
     assert "resveratrol" in captured.out.casefold()
     assert "different directions" in captured.out
+
+
+def test_explicit_query_skips_minimax_planner(monkeypatch: MonkeyPatch) -> None:
+    seen: dict[str, list[str]] = {}
+
+    class FakePlanner:
+        def plan(self, **_kwargs: object) -> list[str]:
+            raise AssertionError("explicit --query must not be replaced by planner output")
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seed_queries = kwargs["seed_queries"]
+        assert isinstance(seed_queries, list)
+        seen["seed_queries"] = seed_queries
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setattr("v5_memo.__main__.MiniMaxM3SearchPlanner.from_env", lambda: FakePlanner())
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "openalex",
+            "--planner",
+            "minimax",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+            "--topic",
+            "metformin resistance training adaptation",
+            "--query",
+            "metformin resistance training adaptation",
+        ],
+    )
+
+    main()
+
+    assert seen == {"seed_queries": ["metformin resistance training adaptation"]}
 
 
 def test_planned_cli_without_user_query_anchors_to_planned_queries(

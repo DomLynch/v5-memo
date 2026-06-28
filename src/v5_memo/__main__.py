@@ -180,7 +180,7 @@ def main() -> None:
     base_anchor_terms = query_anchor_terms(base_queries)
     shape_queries = _alpha_shape_queries(args.topic)
     strict_fullraw_auto = fullraw_backed and not explicit_queries
-    if planner_mode == "minimax" and not (
+    if planner_mode == "minimax" and not explicit_queries and not (
         strict_fullraw_auto
         and base_anchor_terms
         and (shape_queries or len(base_anchor_terms) == 1)
