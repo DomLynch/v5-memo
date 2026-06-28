@@ -447,6 +447,14 @@ class FullRawCorpusSearchClient:
                     best[scored.source_key] = (score, scored)
             if len(best) >= limit:
                 break
+            if (
+                self._strict
+                and search_pass.name in {"core", "focused"}
+                and all(pass_.name not in {"core", "focused"} for pass_ in search_passes[variant_index:])
+                and len(best) >= min(limit, _FULLRAW_COMPLETED_CACHE_FALLBACK_LIMIT)
+            ):
+                self._log_progress("fullraw trusted focused slate complete; skipping broad fallback")
+                break
         self._log_progress(f"fullraw query done in {time.monotonic() - started:.1f}s; hits={len(best)}")
         duplicate_rate = round(duplicate_seen / total_seen, 4) if total_seen else 0.0
         auth_receipts: list[dict[str, object]] = []
