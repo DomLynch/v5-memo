@@ -3374,6 +3374,15 @@ def run_server() -> None:
             "sweep_require_complete": int(sweep_require_complete),
         }
 
+    def shard_cache_health() -> dict[str, object]:
+        cache_dir = _shard_local_cache_dir()
+        return {
+            "dir": str(cache_dir) if cache_dir is not None else "",
+            "exists": bool(cache_dir and cache_dir.exists()),
+            "is_mount": bool(cache_dir and os.path.ismount(cache_dir)),
+            "max_bytes": _shard_local_cache_max_bytes(cache_dir),
+        }
+
     def receipt_is_sufficient(receipt: dict[str, object]) -> bool:
         if shard_coverage_gate_response(
             receipt,
@@ -3412,6 +3421,7 @@ def run_server() -> None:
                     "fast_health": True,
                     "complete": False,
                     "coverage_requirements": coverage_requirements(),
+                    "shard_cache": shard_cache_health(),
                     "async_sweep": sweep_queue_summary(),
                 })
                 return
@@ -3428,6 +3438,7 @@ def run_server() -> None:
                 "bytes_used": stats.bytes_used,
                 "shard_receipt": current_receipt("") if shard_dir is not None else {},
                 "coverage_requirements": coverage_requirements(),
+                "shard_cache": shard_cache_health(),
                 "async_sweep": sweep_queue_summary(),
             })
 

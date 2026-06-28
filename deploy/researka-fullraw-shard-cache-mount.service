@@ -1,0 +1,15 @@
+[Unit]
+Description=Researka fullraw writable shard-cache Storage Box mount
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/mkdir -p /mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote /var/cache/v5-memo/rclone-vfs-cache-shard-cache
+ExecStart=/usr/bin/rclone mount sb:researka-database/index/v5/fullraw-shard-cache-5tb /mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote --vfs-cache-mode=writes --cache-dir /var/cache/v5-memo/rclone-vfs-cache-shard-cache --vfs-cache-max-size=8G --vfs-cache-max-age=15m --dir-cache-time=30m --poll-interval=0 --umask=022
+ExecStop=/bin/sh -c 'fusermount3 -uz /mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote 2>/dev/null || fusermount -uz /mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote 2>/dev/null || umount -l /mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote 2>/dev/null || true'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -847,6 +847,8 @@ def test_fast_health_reports_async_sweep_queue_config(
     monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT", "2")
     monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_MAX_QUEUE", "16")
     monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", "1")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "64")
     monkeypatch.setattr(fullraw_index, "load_or_build_manifest", lambda *_args, **_kwargs: [])
 
     thread = threading.Thread(target=fullraw_index.run_server, daemon=True)
@@ -865,6 +867,12 @@ def test_fast_health_reports_async_sweep_queue_config(
 
     assert body is not None
     assert body["fast_health"] is True
+    assert body["shard_cache"] == {
+        "dir": str(tmp_path / "cache"),
+        "exists": False,
+        "is_mount": False,
+        "max_bytes": 64,
+    }
     assert body["async_sweep"] == {
         "enabled": True,
         "inflight_count": 0,
