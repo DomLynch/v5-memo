@@ -846,7 +846,6 @@ def test_fast_health_reports_async_sweep_queue_config(
     monkeypatch.setenv("RESEARKA_FULLRAW_ASYNC_SWEEP", "1")
     monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT", "2")
     monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_MAX_QUEUE", "16")
-    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", "1")
     monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "64")
     monkeypatch.setattr(fullraw_index, "load_or_build_manifest", lambda *_args, **_kwargs: [])
@@ -1391,23 +1390,6 @@ def test_shard_search_caps_worker_batch_to_cache_budget(
         timeout_seconds=5,
     )
 
-    assert preserve_sizes == [0, 1, 0, 1]
-    assert completed_paths == remotes
-    assert timed_out is False
-
-    preserve_sizes.clear()
-    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "1")
-    _hits, completed_paths, timed_out, _metrics = fullraw_index._search_shard_paths_with_paths_and_receipt(
-        remotes,
-        "metformin longevity",
-        limit=4,
-        year_min=1900,
-        year_max=2100,
-        rank_mode="relevance",
-        workers=4,
-        timeout_seconds=5,
-    )
-
     assert preserve_sizes == [0, 0, 0, 0]
     assert completed_paths == remotes
     assert timed_out is False
@@ -1415,7 +1397,6 @@ def test_shard_search_caps_worker_batch_to_cache_budget(
     for path, size in zip(remotes, (13, 1, 1, 1), strict=True):
         path.write_bytes(b"x" * size)
     preserve_sizes.clear()
-    monkeypatch.delenv("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", raising=False)
     _hits, completed_paths, timed_out, _metrics = fullraw_index._search_shard_paths_with_paths_and_receipt(
         remotes,
         "metformin longevity",

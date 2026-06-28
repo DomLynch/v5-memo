@@ -1241,8 +1241,7 @@ def _cache_fit_path_batch(paths: list[Path], *, start: int, worker_count: int) -
     if max_cache_bytes is None or max_cache_bytes <= 0:
         return batch
     max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
-    if _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "").casefold() in {"1", "true", "yes"}:
-        max_inflight += 1
+    max_inflight += 1
     budget = max(1, max_cache_bytes // max(1, max_inflight))
     out: list[Path] = []
     total = 0
@@ -2975,7 +2974,7 @@ def run_server() -> None:
     sweep_pass_shard_limit = max(1, min(sweep_pass_shard_limit, sweep_shard_limit))
     sweep_max_passes = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_PASSES") or 1
     sweep_max_passes = max(1, min(sweep_max_passes, sweep_shard_limit))
-    sweep_priority_burst = _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "").casefold() in {"1", "true", "yes"}
+    sweep_priority_burst = True
     sweep_timeout_seconds = _float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_TIMEOUT_SECONDS", "")) or 300.0
     sweep_timeout_seconds = max(1.0, min(sweep_timeout_seconds, 3600.0))
     sweep_shard_timeout_seconds = _float_or_none(
