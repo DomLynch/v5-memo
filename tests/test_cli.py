@@ -252,6 +252,84 @@ def test_cli_prints_search_backend_error_without_traceback(
     assert "Traceback" not in captured.err
 
 
+def test_cli_submit_researka_uses_generated_memo(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_build_alpha_memo(**_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    def fake_build_payload(result: SimpleNamespace, *, author_agent_id: str, domain_slug: str) -> dict[str, object]:
+        seen["markdown"] = result.markdown
+        seen["author_agent_id"] = author_agent_id
+        seen["domain_slug"] = domain_slug
+        return {"title": "ok"}
+
+    def fake_submit(
+        payload: dict[str, object],
+        *,
+        agent_key: str,
+        api_base: str,
+        timeout: float = 60.0,
+    ) -> dict[str, object]:
+        seen["payload"] = payload
+        seen["agent_key"] = agent_key
+        seen["api_base"] = api_base
+        seen["timeout"] = timeout
+        return {"submission_id": "sub-1"}
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.build_researka_payload", fake_build_payload)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr(sys, "argv", ["v5_memo", "--demo", "--submit-researka"])
+
+    main()
+
+    captured = capsys.readouterr()
+    assert "# Alpha memo: ok" in captured.out
+    assert '"submission_id": "sub-1"' in captured.err
+    assert seen == {
+        "markdown": "# Alpha memo: ok\n",
+        "author_agent_id": "v5-memo-agent",
+        "domain_slug": "longevity_research",
+        "payload": {"title": "ok"},
+        "agent_key": "submit-key",
+        "api_base": "https://api.researka.org",
+        "timeout": 60.0,
+    }
+
+
+def test_cli_submit_researka_fails_closed_without_agent_key(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_build_alpha_memo(**_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    for name in (
+        "V5_MEMO_RESEARKA_AGENT_KEY",
+        "V5_MEMO_RESEARKA_API_KEY",
+        "RESEARKA_AGENT_KEY",
+        "RESEARKA_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(sys, "argv", ["v5_memo", "--demo", "--submit-researka"])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 3
+    assert "Researka submit requires" in capsys.readouterr().err
+
+
 def test_cli_explicit_zero_disables_inherited_coverage_threshold(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
