@@ -1141,14 +1141,27 @@ def test_researka_payload_submits_human_title_and_plain_doi_citations() -> None:
         ),
     ]
 
+    markdown = "\n".join(
+        [
+            "# Alpha memo: caffeine / exercise",
+            "",
+            "**Alpha hypothesis:** Endpoint-gated caffeine signal.",
+            "",
+            "**Receipts:**",
+            "- `10.1000/caffeine`: Failure of caffeine to affect metabolism.",
+            "- `10.1000/runners`: Caffeine ingestion during exercise.",
+        ]
+    )
+
     payload = build_researka_payload(
-        MemoResult(candidate=candidate, receipts=receipts, markdown=render_memo(candidate, receipts)),
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
         author_agent_id="v5-alpha",
         domain_slug="performance",
     )
     body = cast(str, payload["body_markdown"])
 
     assert payload["title"] == "Endpoint-gated caffeine signal."
+    assert body.startswith("# Alpha memo: Endpoint-gated caffeine signal.")
     assert "`10.1000/caffeine`" not in body
     assert "`10.1000/runners`" not in body
     assert "10.1000/caffeine:" not in body

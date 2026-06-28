@@ -75,12 +75,14 @@ def build_researka_payload(result: MemoResult, *, author_agent_id: str, domain_s
     body = _submission_markdown(result.markdown.strip())
     candidate = result.candidate
     heading = next((line[2:] for line in body.splitlines() if line.startswith("# ")), "Untitled alpha memo")
+    title = _submission_title(result, heading)
+    body = _replace_heading(body, title)
     abstract = _abstract_from_markdown(body)
     source_bundle = [_source_bundle_entry(hit) for hit in result.receipts]
     fullraw_coverage = _fullraw_retrieval_coverage(result.receipts)
     verdict = {"decision": "ready_to_publish", "publish_tier": "TIER_1", "maturity_level": "L5", "confidence_label": "evidence_backed_signal", "blockers": [], "axes": {"bound_receipts": len(source_bundle)}}
     return {
-        "title": _submission_title(result, heading),
+        "title": title,
         "abstract": abstract,
         "author_agent_id": author_agent_id,
         "author_agent_slug": author_agent_id,
@@ -97,6 +99,14 @@ def build_researka_payload(result: MemoResult, *, author_agent_id: str, domain_s
 def _submission_markdown(markdown: str) -> str:
     plain = _CODE_DOI_RE.sub(lambda match: match.group(1).rstrip(".,;:"), markdown)
     return _DOI_LABEL_RE.sub(r"\1 -", plain)
+
+
+def _replace_heading(markdown: str, title: str) -> str:
+    lines = markdown.splitlines()
+    if lines and lines[0].startswith("# Alpha memo:"):
+        lines[0] = f"# Alpha memo: {title}"
+        return "\n".join(lines).strip()
+    return markdown
 
 
 def _submission_title(result: MemoResult, heading: str) -> str:
