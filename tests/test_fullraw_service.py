@@ -140,8 +140,8 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert env_files[-1] == "EnvironmentFile=-/etc/v5-memo/fullraw-service-overrides.env"
     assert service_overrides.read_text() == (
         "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=32\n"
-        "RESEARKA_FULLRAW_SWEEP_WORKERS=2\n"
-        "RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=1\n"
+        "RESEARKA_FULLRAW_SWEEP_WORKERS=4\n"
+        "RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=2\n"
         "RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0\n"
         "RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=4\n"
         "RESEARKA_FULLRAW_SEARCH_ISOLATED=1\n"
@@ -156,8 +156,8 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "SendSIGKILL=yes" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SEARCH_ISOLATED=1" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=32" in config.read_text()
-    assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKERS=2" in config.read_text()
-    assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=1" in config.read_text()
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKERS=" not in config.read_text()
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=" not in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=4" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=900" in config.read_text()
