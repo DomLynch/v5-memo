@@ -85,6 +85,33 @@ def _fullraw_env(name: str, default: str = "") -> str:
     return default
 
 
+def _shard_local_cache_dir() -> Path | None:
+    cache_dir_config = _fullraw_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", "").strip()
+    return Path(cache_dir_config) if cache_dir_config else None
+
+
+def _shard_local_cache_max_bytes(cache_dir: Path | None = None) -> int | None:
+    raw = _fullraw_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "").strip()
+    if raw.casefold() not in {"auto", "dynamic"}:
+        return _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
+    target_dir = cache_dir or _shard_local_cache_dir()
+    if target_dir is None:
+        return None
+    probe = target_dir
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    usage = shutil.disk_usage(probe)
+    cache_bytes = 0
+    if target_dir.exists():
+        cache_bytes = sum(
+            path.stat().st_size
+            for pattern in ("*.sqlite", "*.sqlite-wal", ".*.sqlite.tmp.*")
+            for path in target_dir.glob(pattern)
+            if path.is_file()
+        )
+    return max(0, cache_bytes + usage.free - (usage.total // 20))
+
+
 _FULL_COVERAGE_PREFIX_SHARDS = max(1, int(_fullraw_env("V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS", "32")))
 _SWEEP_STRATEGY = "profile_relaxed_v9"
 _SWEEP_MIN_RESULT_LIMIT = 10
@@ -1210,7 +1237,7 @@ def _search_shard_paths_with_paths_and_receipt(
 
 def _cache_fit_path_batch(paths: list[Path], *, start: int, worker_count: int) -> list[Path]:
     batch = paths[start:start + worker_count]
-    max_cache_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
+    max_cache_bytes = _shard_local_cache_max_bytes()
     if max_cache_bytes is None or max_cache_bytes <= 0:
         return batch
     max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
@@ -1431,7 +1458,7 @@ def _cache_fit_warm_entries(
     query: str,
     target_ready: int,
 ) -> list[ShardCatalogEntry]:
-    max_cache_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
+    max_cache_bytes = _shard_local_cache_max_bytes()
     if max_cache_bytes is None or max_cache_bytes <= 0 or target_ready <= 0:
         return selected
     target_ready = min(target_ready, len(entries))
@@ -1885,10 +1912,9 @@ def _materialized_shard_path(path: Path, *, preserve: set[Path] | None = None) -
 
 
 def _shard_cache_path(path: Path) -> Path | None:
-    cache_dir_config = _fullraw_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", "").strip()
-    if not cache_dir_config:
+    cache_dir = _shard_local_cache_dir()
+    if cache_dir is None:
         return None
-    cache_dir = Path(cache_dir_config)
     path_abs = path if path.is_absolute() else path.absolute()
     cache_dir_abs = cache_dir if cache_dir.is_absolute() else cache_dir.absolute()
     try:
@@ -1920,7 +1946,7 @@ def _evict_shard_cache(
     keep: Path,
     preserve: set[Path] | None = None,
 ) -> None:
-    max_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
+    max_bytes = _shard_local_cache_max_bytes(cache_dir)
     if max_bytes is None or max_bytes <= 0:
         return
     preserved = {path.resolve() for path in (preserve or set())}
@@ -2018,7 +2044,7 @@ def warm_shard_cache(
             break
         if _cached_materialized_shard_path(entry.path) is not None:
             continue
-        max_cache_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
+        max_cache_bytes = _shard_local_cache_max_bytes()
         if max_cache_bytes is not None and ready_bytes() + entry.bytes_used > max_cache_bytes:
             errors.append(
                 f"{entry.path}: target_ready exceeds cache budget "

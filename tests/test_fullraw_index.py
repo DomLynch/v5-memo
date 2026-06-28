@@ -10,6 +10,7 @@ import urllib.request
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import replace
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -1421,6 +1422,29 @@ def test_shard_search_caps_worker_batch_to_cache_budget(
     assert preserve_sizes == [0, 0, 1, 2]
     assert set(completed_paths) == set(remotes)
     assert timed_out is False
+
+
+class _FakeDiskUsage(NamedTuple):
+    total: int
+    used: int
+    free: int
+
+
+def test_shard_local_cache_auto_budget_uses_free_space(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "ready.sqlite").write_bytes(b"x" * 10)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "auto")
+    monkeypatch.setattr(
+        "v5_memo.fullraw_index.shutil.disk_usage",
+        lambda _path: _FakeDiskUsage(total=1000, used=600, free=400),
+    )
+
+    assert fullraw_index._shard_local_cache_max_bytes() == 360
 
 
 def test_materialized_shard_path_does_not_recache_local_cache_path(
