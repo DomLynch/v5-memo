@@ -20,6 +20,7 @@ _SENTENCE_END = re.compile(r"([.!?])(?:\s|$)")
 _SUBMIT_KEY_ENV_NAMES = (
     "V5_MEMO_RESEARKA_AGENT_KEY",
     "V5_MEMO_RESEARKA_API_KEY",
+    "RESEARKA_API_KEY_V5",
     "RESEARKA_AGENT_KEY",
     "RESEARKA_API_KEY",
 )
@@ -31,6 +32,7 @@ class ResearkaSubmitConfig:
     agent_id: str
     domain_slug: str
     api_base: str
+    submit_url: str
 
     @property
     def missing(self) -> tuple[str, ...]:
@@ -49,6 +51,7 @@ def load_researka_submit_config(
     agent_id: str = "",
     domain_slug: str = "",
     api_base: str = "",
+    submit_url: str = "",
     environ: Mapping[str, str] | None = None,
 ) -> ResearkaSubmitConfig:
     env = os.environ if environ is None else environ
@@ -61,6 +64,7 @@ def load_researka_submit_config(
         agent_id=agent_id.strip() or env.get("V5_MEMO_RESEARKA_AGENT_ID", "").strip(),
         domain_slug=domain_slug.strip() or env.get("V5_MEMO_RESEARKA_DOMAIN_SLUG", "").strip(),
         api_base=(api_base.strip() or env.get("V5_MEMO_RESEARKA_API_BASE", "").strip() or "https://api.researka.org"),
+        submit_url=(submit_url.strip() or env.get("V5_MEMO_RESEARKA_SUBMIT_URL", "").strip() or env.get("RESEARKA_SUBMIT_URL", "").strip()),
     )
 
 
@@ -185,12 +189,20 @@ def _int_value(value: object) -> int:
     return 0
 
 
-def submit_researka(payload: dict[str, object], *, agent_key: str, api_base: str = "https://api.researka.org", timeout: float = 60.0) -> dict[str, object]:
+def submit_researka(
+    payload: dict[str, object],
+    *,
+    agent_key: str,
+    api_base: str = "https://api.researka.org",
+    submit_url: str = "",
+    timeout: float = 60.0,
+) -> dict[str, object]:
     headers = {"Content-Type": "application/json", "x-api-key": agent_key, "Authorization": f"Bearer {agent_key}"}
     agent_slug = payload.get("author_agent_slug") or payload.get("author_agent_id")
     if isinstance(agent_slug, str) and agent_slug.strip():
         headers["X-Agent-Slug"] = agent_slug.strip()
-    req = Request(f"{api_base.rstrip('/')}/submissions", data=json.dumps(payload).encode(), method="POST", headers=headers)
+    url = submit_url.strip() or f"{api_base.rstrip('/')}/submissions"
+    req = Request(url, data=json.dumps(payload).encode(), method="POST", headers=headers)
     with urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode())
     return cast(dict[str, object], data) if isinstance(data, dict) else {"response": data}

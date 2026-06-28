@@ -15,7 +15,7 @@ from v5_memo.__main__ import (
     main,
 )
 from v5_memo.client import ResearkaSearchClient, SearchBackendError
-from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError
+from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, SearchFailure
 
 _COVERAGE_THRESHOLD_ENV = (
     "V5_MEMO_MEMO_MIN_SHARDS_SEARCHED",
@@ -409,6 +409,52 @@ def test_cli_smart_defaults_to_publishable_tier(monkeypatch: MonkeyPatch) -> Non
     main()
 
     assert seen["min_alpha_tier"] == "publishable_alpha"
+
+
+def test_cli_emit_discovery_on_fail_reruns_as_review_seed(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    discovery = InsightCandidate(
+        topic="longevity resilience",
+        thesis="Discovery fallback.",
+        bridge_terms=("nad",),
+        tension_terms=(),
+        receipt_ids=("a", "b"),
+        score=10,
+        novelty_score=10,
+        evidence_score=10,
+        reasons=("tier:discovery_seed",),
+    )
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        calls.append(str(kwargs["min_alpha_tier"]))
+        if len(calls) == 1:
+            raise MemoBuildError(SearchFailure("no_alpha", "no alpha"))
+        return SimpleNamespace(markdown="# Discovery seed: fallback\n", candidate=discovery)
+
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--emit-discovery-on-fail",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    main()
+
+    written = list(tmp_path.glob("*.md"))
+    assert calls == ["publishable_alpha", "discovery_seed"]
+    assert len(written) == 1
+    assert capsys.readouterr().out.strip() == str(written[0])
+    assert written[0].read_text() == "# Discovery seed: fallback\n"
 
 
 def test_cli_publish_does_not_submit_discovery_seed(
