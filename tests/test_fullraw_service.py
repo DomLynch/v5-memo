@@ -127,6 +127,7 @@ def test_iter_raw_file_hits_reads_local_pubmed_xml_fixture(tmp_path: Path) -> No
 def test_strict_5tb_service_keeps_secret_env_file() -> None:
     deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
     config = deploy_dir / "v5-memo-fullraw-index-strict-5tb.conf"
+    service_overrides = deploy_dir / "v5-memo-fullraw-service-overrides.env"
     shard_cache_mount = deploy_dir / "researka-fullraw-shard-cache-mount.service"
     env_example = (deploy_dir / "v5-memo-fullraw-shards.env.example").read_text()
     env_files = [line for line in config.read_text().splitlines() if line.startswith("EnvironmentFile")]
@@ -136,7 +137,13 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
         "EnvironmentFile=/etc/v5-memo/env",
         "EnvironmentFile=/etc/v5-memo/fullraw-effective.env",
     ]
-    assert "fullraw-service-overrides.env" not in config.read_text()
+    assert env_files[-1] == "EnvironmentFile=-/etc/v5-memo/fullraw-service-overrides.env"
+    assert service_overrides.read_text() == (
+        "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=32\n"
+        "RESEARKA_FULLRAW_SWEEP_WORKERS=8\n"
+        "RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=2\n"
+        "RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0\n"
+    )
     assert "TimeoutStopSec=120" in config.read_text()
     assert "TimeoutStopFailureMode=kill" in config.read_text()
     assert "KillMode=control-group" in config.read_text()
