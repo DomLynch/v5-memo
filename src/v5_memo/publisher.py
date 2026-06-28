@@ -132,7 +132,7 @@ def _submission_title(result: MemoResult, heading: str) -> str:
 
 def _query_like_title(title: str) -> bool:
     tokens = _TITLE_TOKEN_RE.findall(title.casefold())
-    return len(tokens) < 4 or ("/" in title and len(tokens) <= 5) or len(set(tokens) & _TITLE_ROLE_TERMS) >= 2
+    return len(tokens) < 4 or title.count("/") >= 2 or len(set(tokens) & _TITLE_ROLE_TERMS) >= 2
 
 
 def _bridge_only_title(title: str, bridge_terms: Sequence[str]) -> bool:
