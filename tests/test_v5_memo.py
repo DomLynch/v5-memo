@@ -1162,12 +1162,55 @@ def test_researka_payload_submits_human_title_and_plain_doi_citations() -> None:
 
     assert payload["title"] == "Endpoint-gated caffeine signal."
     assert body.startswith("# Alpha memo: Endpoint-gated caffeine signal.")
+    assert "Hypothesis-level alpha signal; not clinical advice." in body
     assert "`10.1000/caffeine`" not in body
     assert "`10.1000/runners`" not in body
     assert "10.1000/caffeine:" not in body
     assert "10.1000/runners:" not in body
     assert "10.1000/caffeine" in body
     assert "10.1000/runners" in body
+
+
+def test_researka_payload_uses_receipt_title_for_bridge_only_alpha_title() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Cold immersion strength training may hide a metric-window signal.",
+        bridge_terms=("cold", "immersion", "strength", "training"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("10.1123/ijspp.2019-0965", "10.1519/jsc.0000000000000434"),
+        score=100,
+        novelty_score=58,
+        evidence_score=96,
+        reasons=("shape:directional_reversal",),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="10.1123/ijspp.2019-0965",
+            title="Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?",
+            abstract="Cold-water immersion attenuated adaptation after strength training.",
+            source="fullraw:semantic_scholar",
+            doi="10.1123/ijspp.2019-0965",
+        ),
+        CorpusHit(
+            hit_id="10.1519/jsc.0000000000000434",
+            title="Strength Training Adaptations After Cold-Water Immersion",
+            abstract="Strength training adaptations were measured after cold-water immersion.",
+            source="fullraw:semantic_scholar",
+            doi="10.1519/jsc.0000000000000434",
+        ),
+    ]
+    markdown = "# Alpha memo: cold immersion strength training\n\n**Alpha hypothesis:** bounded signal."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="performance",
+    )
+
+    assert payload["title"] == "Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?"
+    assert cast(str, payload["body_markdown"]).startswith(
+        "# Alpha memo: Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?"
+    )
 
 
 def test_researka_payload_preserves_authenticated_fullraw_coverage() -> None:

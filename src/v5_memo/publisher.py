@@ -77,6 +77,7 @@ def build_researka_payload(result: MemoResult, *, author_agent_id: str, domain_s
     heading = next((line[2:] for line in body.splitlines() if line.startswith("# ")), "Untitled alpha memo")
     title = _submission_title(result, heading)
     body = _replace_heading(body, title)
+    body = _append_alpha_disclaimer(body)
     abstract = _abstract_from_markdown(body)
     source_bundle = [_source_bundle_entry(hit) for hit in result.receipts]
     fullraw_coverage = _fullraw_retrieval_coverage(result.receipts)
@@ -109,10 +110,20 @@ def _replace_heading(markdown: str, title: str) -> str:
     return markdown
 
 
+def _append_alpha_disclaimer(markdown: str) -> str:
+    if not markdown.startswith("# Alpha memo:") or "not clinical advice" in markdown.casefold():
+        return markdown
+    lines = markdown.splitlines()
+    lines.insert(2, "Hypothesis-level alpha signal; not clinical advice.")
+    return "\n".join(lines).strip()
+
+
 def _submission_title(result: MemoResult, heading: str) -> str:
     raw = heading.replace("Alpha memo: ", "", 1).strip()
     if _query_like_title(raw):
         raw = _first_sentence(result.candidate.thesis) or result.candidate.topic
+    if _bridge_only_title(raw, result.candidate.bridge_terms):
+        raw = _receipt_title(result) or raw
     if _query_like_title(raw):
         raw = f"Bounded alpha signal in {result.candidate.topic}"
     return _clip_title(raw)
@@ -121,6 +132,16 @@ def _submission_title(result: MemoResult, heading: str) -> str:
 def _query_like_title(title: str) -> bool:
     tokens = _TITLE_TOKEN_RE.findall(title.casefold())
     return len(tokens) < 4 or ("/" in title and len(tokens) <= 5)
+
+
+def _bridge_only_title(title: str, bridge_terms: Sequence[str]) -> bool:
+    tokens = set(_TITLE_TOKEN_RE.findall(title.casefold()))
+    bridge = {term.casefold() for term in bridge_terms}
+    return 0 < len(tokens) <= 4 and tokens <= bridge
+
+
+def _receipt_title(result: MemoResult) -> str:
+    return next((" ".join(hit.title.split()).strip(" .") for hit in result.receipts if hit.title.strip()), "")
 
 
 def _first_sentence(text: str) -> str:
