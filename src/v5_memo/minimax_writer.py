@@ -559,7 +559,7 @@ def _receipt_block(index: int, hit: CorpusHit) -> str:
     year = str(hit.year) if hit.year is not None else "unknown"
     venue = hit.venue or "unknown venue"
     receipt_id = _receipt_display_id(hit)
-    locator = hit.doi or hit.url or hit.hit_id
+    locator = _receipt_locator(hit)
     abstract = _truncate_receipt_text(hit.abstract, RECEIPT_ABSTRACT_CHAR_LIMIT)
     return (
         f"Receipt {index}\n"
@@ -740,17 +740,23 @@ def _truncate_receipt_text(text: str, limit: int) -> str:
 def _receipt_dois(receipts: Sequence[CorpusHit]) -> set[str]:
     allowed: set[str] = set()
     for hit in receipts:
-        for value in (hit.doi, hit.receipt_id):
+        for value in (hit.receipt_id,):
             if value:
                 allowed.update(_extract_dois(value))
     return allowed
 
 
 def _receipt_display_id(hit: CorpusHit) -> str:
-    if hit.doi:
-        return hit.doi
+    if hit.receipt_id != hit.hit_id:
+        return hit.receipt_id
     match = re.search(r"\bW\d+\b", hit.hit_id, re.IGNORECASE)
     return match.group(0) if match else hit.hit_id
+
+
+def _receipt_locator(hit: CorpusHit) -> str:
+    if hit.receipt_id != hit.hit_id:
+        return hit.receipt_id
+    return hit.url or hit.hit_id
 
 
 def _extract_dois(text: str) -> set[str]:
