@@ -241,6 +241,79 @@ def test_fullraw_cli_inherits_search_service_coverage_thresholds(
     assert (seen["per_query_limit"], seen["max_hits"], seen["min_shards_searched"], seen["min_sources_searched"]) == (10, 20, 50, 2)
 
 
+def test_fullraw_cli_allows_recall_depth_env_override(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_PER_QUERY_LIMIT", "40")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MAX_HITS", "80")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "seed",
+            "--writer",
+            "template",
+            "--topic",
+            "metformin resistance training adaptation",
+        ],
+    )
+
+    main()
+
+    assert "Alpha memo" in capsys.readouterr().out
+    assert (seen["per_query_limit"], seen["max_hits"]) == (40, 80)
+
+
+def test_fullraw_cli_allows_single_recall_limit_env_override(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_RECALL_LIMIT", "30")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "seed",
+            "--writer",
+            "template",
+            "--topic",
+            "metformin resistance training adaptation",
+        ],
+    )
+
+    main()
+
+    assert "Alpha memo" in capsys.readouterr().out
+    assert (seen["per_query_limit"], seen["max_hits"]) == (30, 60)
+
+
 def test_cli_prints_search_backend_error_without_traceback(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

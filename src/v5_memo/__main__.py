@@ -58,6 +58,7 @@ _DIRECT_EVIDENCE_QUERY_TERMS = frozenset({
 })
 _MODEL_ONLY_QUERY_TERMS = frozenset({"germ", "mice", "mouse", "murine"})
 _UNSAFE_DOI_CHARS = frozenset("()")
+_DEFAULT_FULLRAW_RECALL_LIMIT = 10
 
 
 class DemoSearch:
@@ -226,8 +227,12 @@ def main() -> None:
         anchor_queries = queries
     wider_recall = planner_mode == "minimax" or selector_mode == "minimax"
     if fullraw_backed:
-        per_query_limit = _int_env("V5_MEMO_FULL_RAW_PER_QUERY_LIMIT") or 25
-        max_hits = _int_env("V5_MEMO_FULL_RAW_MAX_HITS") or max(50, per_query_limit * 2)
+        per_query_limit = (
+            _int_env("V5_MEMO_FULL_RAW_PER_QUERY_LIMIT")
+            or _int_env("V5_MEMO_FULL_RAW_RECALL_LIMIT")
+            or _DEFAULT_FULLRAW_RECALL_LIMIT
+        )
+        max_hits = _int_env("V5_MEMO_FULL_RAW_MAX_HITS") or per_query_limit * 2
     else:
         per_query_limit = 50 if wider_recall else 25
         max_hits = 500 if wider_recall else 100

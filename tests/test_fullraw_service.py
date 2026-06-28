@@ -146,6 +146,8 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
         "RESEARKA_FULLRAW_SEARCH_ISOLATED=1\n"
         "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote\n"
         "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto\n"
+        "V5_MEMO_FULL_RAW_PER_QUERY_LIMIT=25\n"
+        "V5_MEMO_FULL_RAW_MAX_HITS=50\n"
     )
     assert "TimeoutStopSec=120" in config.read_text()
     assert "TimeoutStopFailureMode=kill" in config.read_text()
