@@ -668,7 +668,7 @@ def test_full_raw_client_does_not_fanout_after_strict_coverage_miss(monkeypatch:
     assert "shards_searched': 32" in message
     assert "sweep_completed_paths" not in message
     assert len(payloads) == 1
-    assert payloads[0]["query"] == "metformin resistance training"
+    assert payloads[0]["query"] == "metformin resistance training adaptation"
 
 
 def test_full_raw_client_tries_next_strict_variant_after_failure(monkeypatch: object) -> None:
