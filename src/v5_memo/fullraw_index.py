@@ -116,6 +116,7 @@ _FULL_COVERAGE_PREFIX_SHARDS = max(1, int(_fullraw_env("V5_MEMO_FULL_RAW_SEARCH_
 _SWEEP_STRATEGY = "profile_relaxed_v9"
 _SWEEP_MIN_RESULT_LIMIT = 10
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
+_SHARD_LOCAL_CACHE_IN_PROGRESS: set[Path] = set()
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
     ("forecast", ("forecast", "forecasts", "forecasting", "guidance", "estimate", "estimates")),
@@ -1883,7 +1884,12 @@ def _search_one_shard_isolated(
     return [hit for hit in payload if isinstance(hit, dict)]
 
 
-def _materialized_shard_path(path: Path, *, preserve: set[Path] | None = None) -> Path:
+def _materialized_shard_path(
+    path: Path,
+    *,
+    preserve: set[Path] | None = None,
+    populate: bool = False,
+) -> Path:
     cache_path = _shard_cache_path(path)
     if cache_path is None:
         return path
@@ -1893,21 +1899,37 @@ def _materialized_shard_path(path: Path, *, preserve: set[Path] | None = None) -
         if cache_path.exists() and cache_path.stat().st_size == source_stat.st_size:
             os.utime(cache_path, None)
             return cache_path
+    if not populate:
+        return path
+    tmp_path = cache_path.with_name(f".{cache_path.name}.tmp.{os.getpid()}.{threading.get_ident()}")
+    base_preserve = preserve or set()
+    with _SHARD_LOCAL_CACHE_LOCK:
+        _SHARD_LOCAL_CACHE_IN_PROGRESS.add(tmp_path)
         _evict_shard_cache(
             cache_path.parent,
             required_bytes=source_stat.st_size,
             keep=cache_path,
-            preserve=preserve or set(),
+            preserve=base_preserve | _SHARD_LOCAL_CACHE_IN_PROGRESS,
         )
-        tmp_path = cache_path.with_name(f".{cache_path.name}.tmp.{os.getpid()}.{threading.get_ident()}")
-        try:
-            shutil.copy2(path, tmp_path)
+    try:
+        shutil.copy2(path, tmp_path)
+        with _SHARD_LOCAL_CACHE_LOCK:
+            if cache_path.exists() and cache_path.stat().st_size == source_stat.st_size:
+                os.utime(cache_path, None)
+                return cache_path
             os.replace(tmp_path, cache_path)
             os.utime(cache_path, None)
-        finally:
-            tmp_path.unlink(missing_ok=True)
-        _evict_shard_cache(cache_path.parent, required_bytes=0, keep=cache_path, preserve=preserve or set())
-        return cache_path
+            _evict_shard_cache(
+                cache_path.parent,
+                required_bytes=0,
+                keep=cache_path,
+                preserve=base_preserve | _SHARD_LOCAL_CACHE_IN_PROGRESS,
+            )
+            return cache_path
+    finally:
+        with _SHARD_LOCAL_CACHE_LOCK:
+            _SHARD_LOCAL_CACHE_IN_PROGRESS.discard(tmp_path)
+        tmp_path.unlink(missing_ok=True)
 
 
 def _shard_cache_path(path: Path) -> Path | None:
@@ -2052,7 +2074,7 @@ def warm_shard_cache(
             break
         attempted += 1
         try:
-            _materialized_shard_path(entry.path, preserve=ready_cache_paths())
+            _materialized_shard_path(entry.path, preserve=ready_cache_paths(), populate=True)
             if _cached_materialized_shard_path(entry.path) is not None:
                 warmed_paths.add(entry.path)
             else:

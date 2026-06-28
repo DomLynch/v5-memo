@@ -1450,6 +1450,25 @@ def test_materialized_shard_path_does_not_recache_local_cache_path(
     assert fullraw_index._materialized_shard_path(cached) == cached
 
 
+def test_materialized_shard_path_does_not_copy_missing_cache_without_populate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    remote = tmp_path / "remote" / "fullraw_shard_0001.sqlite"
+    remote.parent.mkdir()
+    remote.write_text("remote shard", encoding="utf-8")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+
+    def fail_copy(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("search hot path should not copy shard files")
+
+    monkeypatch.setattr("v5_memo.fullraw_index.shutil.copy2", fail_copy)
+
+    assert fullraw_index._materialized_shard_path(remote) == remote
+    assert fullraw_index._cached_materialized_shard_path(remote) is None
+
+
 def test_shard_catalog_cache_round_trips_entries(tmp_path: Path) -> None:
     entry = ShardCatalogEntry(
         path=tmp_path / "batch_00001" / "fullraw_shard_0000.sqlite",
@@ -1505,8 +1524,8 @@ def test_search_shard_selection_prefers_cache_fit_matches(tmp_path: Path, monkey
     cached = ShardCatalogEntry(tmp_path / "cached.sqlite", 3, 0, ("pubmed",), 1, 20, 20, topic_terms=("patients",))
     cached.path.write_bytes(b"x")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(tmp_path / "cache"))
-    fullraw_index._materialized_shard_path(huge.path)
-    fullraw_index._materialized_shard_path(cached.path)
+    fullraw_index._materialized_shard_path(huge.path, populate=True)
+    fullraw_index._materialized_shard_path(cached.path, populate=True)
     assert set(select_search_shard_entries([huge, small, cached], query="patients")[:2]) == {huge, cached}
 
 
