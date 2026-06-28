@@ -441,7 +441,7 @@ class FullRawCorpusSearchClient:
                 current = best.get(scored.source_key)
                 if current is None or score > current[0]:
                     best[scored.source_key] = (score, scored)
-            if len(best) >= limit and not self._uses_cache_sweep_contract():
+            if len(best) >= limit:
                 break
         self._log_progress(f"fullraw query done in {time.monotonic() - started:.1f}s; hits={len(best)}")
         duplicate_rate = round(duplicate_seen / total_seen, 4) if total_seen else 0.0

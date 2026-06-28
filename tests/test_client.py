@@ -854,7 +854,7 @@ def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: objec
     assert receipt["rank_modes"] == ("relevance",)
 
 
-def test_full_raw_client_tries_compact_pass_after_complete_sweep_has_hits(
+def test_full_raw_client_stops_after_complete_sweep_has_enough_hits(
     monkeypatch: object,
 ) -> None:
     requested: list[dict[str, object]] = []
@@ -895,7 +895,7 @@ def test_full_raw_client_tries_compact_pass_after_complete_sweep_has_hits(
     hits = client.search("management forecast disclosure", limit=10)
 
     assert len(hits) == 10
-    assert [payload["search_pass"] for payload in requested] == ["focused", "broad"]
+    assert [payload["search_pass"] for payload in requested] == ["focused"]
     assert requested[0]["priority"] is True
 
 
