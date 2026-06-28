@@ -880,7 +880,7 @@ def test_full_raw_client_tries_compact_pass_after_complete_sweep_has_hits(
                     "year": 2024,
                     "source": "openalex",
                 }
-                for index in range(5)
+                for index in range(10)
             ],
         })
 
@@ -894,7 +894,7 @@ def test_full_raw_client_tries_compact_pass_after_complete_sweep_has_hits(
 
     hits = client.search("management forecast disclosure", limit=10)
 
-    assert len(hits) == 5
+    assert len(hits) == 10
     assert [payload["search_pass"] for payload in requested] == ["focused", "broad"]
     assert requested[0]["priority"] is True
 
