@@ -2974,7 +2974,10 @@ def run_server() -> None:
     sweep_pass_shard_limit = max(1, min(sweep_pass_shard_limit, sweep_shard_limit))
     sweep_max_passes = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_PASSES") or 1
     sweep_max_passes = max(1, min(sweep_max_passes, sweep_shard_limit))
-    sweep_priority_burst = True
+    sweep_priority_burst = _fullraw_env(
+        "V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST",
+        "true",
+    ).casefold() in {"1", "true", "yes"}
     sweep_timeout_seconds = _float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_TIMEOUT_SECONDS", "")) or 300.0
     sweep_timeout_seconds = max(1.0, min(sweep_timeout_seconds, 3600.0))
     sweep_shard_timeout_seconds = _float_or_none(

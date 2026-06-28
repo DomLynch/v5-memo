@@ -141,8 +141,8 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "Environment=RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=32" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKERS=8" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=2" in config.read_text()
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=16" in config.read_text()
-    assert "RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST" not in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=120" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=20" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SEARCH_PREFIX_SHARDS=128" in config.read_text()
@@ -163,4 +163,4 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=120" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=20" in env_example
     assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote" in env_example
-    assert "RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST" not in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in env_example
