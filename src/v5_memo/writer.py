@@ -96,7 +96,7 @@ def render_discovery_seed(candidate: InsightCandidate, receipts: Sequence[Corpus
 def _receipt_line(index: int, hit: CorpusHit) -> str:
     year = f", {hit.year}" if hit.year else ""
     venue = f", {hit.venue}" if hit.venue else ""
-    locator = hit.doi or hit.url or hit.hit_id
+    locator = hit.receipt_id if hit.receipt_id != hit.hit_id else hit.url or hit.hit_id
     return f"{index}. `{hit.hit_id}` {hit.title}{year}{venue}. Source: {hit.source}. ID: {locator}"
 
 

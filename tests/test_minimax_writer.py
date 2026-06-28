@@ -358,6 +358,24 @@ def test_build_minimax_prompt_bounds_long_abstracts() -> None:
     assert len(prompt) < 5000
 
 
+def test_build_minimax_prompt_omits_unsafe_receipt_doi() -> None:
+    unsafe = CorpusHit(
+        hit_id="https://openalex.org/W4693",
+        title="Cold-water immersion protocol review",
+        abstract="Cold-water immersion protocol parameters were reviewed.",
+        source="openalex",
+        doi="10.31435/ijitss.1(49).2026.4693",
+        url="https://openalex.org/W4693",
+    )
+
+    prompt = build_minimax_prompt(_candidate(), [unsafe, _receipts()[1]])
+
+    assert unsafe.receipt_id == "https://openalex.org/W4693"
+    assert "10.31435/ijitss.1(49).2026.4693" not in prompt
+    assert "ID: W4693" in prompt
+    assert "Locator: https://openalex.org/W4693" in prompt
+
+
 def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
     prompt = build_minimax_prompt(_candidate(), _receipts())
 
