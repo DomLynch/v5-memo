@@ -200,6 +200,15 @@ def test_fullraw_search_passes_compact_near_duplicate_queries() -> None:
     assert [item.query for item in with_article] == [item.query for item in plain]
 
 
+def test_fullraw_search_passes_try_concise_exact_query_before_core_variant() -> None:
+    passes = _fullraw_search_passes("metformin resistance training adaptation", limit=4)
+
+    assert [(item.name, item.query) for item in passes[:2]] == [
+        ("focused", "metformin resistance training adaptation"),
+        ("core", "metformin resistance training"),
+    ]
+
+
 def test_fullraw_search_passes_prefer_topic_anchor_pairs() -> None:
     queries = [
         item.query

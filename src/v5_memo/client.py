@@ -1129,6 +1129,15 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
         out.append(FullRawSearchPass(name=name, query=clean, rank_mode=rank_mode))
         return len(out) >= limit
 
+    raw_terms = _query_terms(query)
+    terms = tuple(dict.fromkeys(raw_terms))
+    if (
+        2 <= len(terms) <= 5
+        and len(terms) == len(raw_terms)
+        and not any(term in _FULLRAW_QUERY_FILLER_DROP for term in terms)
+        and add("focused", " ".join(terms))
+    ):
+        return out
     core_variant = _fullraw_core_variant(query)
     if core_variant and add("core", core_variant):
         return out
@@ -1136,7 +1145,6 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
     for index, variant in enumerate(_query_variants(query, limit=window_limit)):
         if add("focused" if index == 0 else "broad", variant):
             return out
-    terms = _query_terms(query)
     first = (terms or ("",))[0]
     anchor = first if (len(first) <= 3 or len(first) >= 6) and first not in _FULLRAW_PAIR_DROP and not first.endswith(("tion", "sion", "ity", "ary", "acy", "ness")) else ""
     if not anchor and len(terms) > 3 and add("broad", " ".join(terms[:3])):
