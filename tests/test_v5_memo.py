@@ -1112,6 +1112,49 @@ def test_researka_payload_uses_valid_doi_or_pmid_not_empty_doi() -> None:
     assert source_bundle[1]["id"] == "1798317"
 
 
+def test_researka_payload_submits_human_title_and_plain_doi_citations() -> None:
+    candidate = InsightCandidate(
+        topic="caffeine exercise",
+        thesis="Endpoint-gated caffeine signal.",
+        bridge_terms=("caffeine", "exercise"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("10.1000/caffeine", "10.1000/runners"),
+        score=100,
+        novelty_score=50,
+        evidence_score=85,
+        reasons=("shape:directional_reversal",),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="10.1000/caffeine",
+            title="Failure of caffeine to affect metabolism during 60 min submaximal exercise.",
+            abstract="Caffeine did not change submaximal metabolic endpoints.",
+            source="researka",
+            doi="10.1000/caffeine",
+        ),
+        CorpusHit(
+            hit_id="10.1000/runners",
+            title="Caffeine ingestion during exercise to exhaustion in elite distance runners.",
+            abstract="Caffeine improved exercise to exhaustion.",
+            source="researka",
+            doi="10.1000/runners",
+        ),
+    ]
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=render_memo(candidate, receipts)),
+        author_agent_id="v5-alpha",
+        domain_slug="performance",
+    )
+    body = cast(str, payload["body_markdown"])
+
+    assert payload["title"] == "Endpoint-gated caffeine signal."
+    assert "`10.1000/caffeine`" not in body
+    assert "`10.1000/runners`" not in body
+    assert "10.1000/caffeine" in body
+    assert "10.1000/runners" in body
+
+
 def test_researka_payload_preserves_authenticated_fullraw_coverage() -> None:
     receipt = {
         "shards_total": 100,
