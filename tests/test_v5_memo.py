@@ -1277,6 +1277,34 @@ def test_researka_payload_rewrites_internal_role_label_title() -> None:
     )
 
 
+def test_researka_payload_rewrites_slash_bridge_title() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Comparator recovery evidence separates cold-water immersion from sports massage.",
+        bridge_terms=("cold", "immersion", "water"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("review", "trial"),
+        score=100,
+        novelty_score=58,
+        evidence_score=90,
+        reasons=("shape:promise_outcome_reversal", "tier:publishable_alpha"),
+    )
+    receipts = [
+        _hit("review", "Cold water immersion recovery review", "Cold water immersion showed mixed recovery evidence."),
+        _hit("trial", "Cold water immersion versus massage", "Comparator trial reported sports massage improved ROM."),
+    ]
+    markdown = "# Alpha memo: cold / immersion / water promise outcome\n\n**Alpha hypothesis:** bounded signal."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="longevity",
+    )
+
+    assert payload["title"] == "Comparator recovery evidence separates cold-water immersion from sports massage."
+    assert " / " not in cast(str, payload["body_markdown"]).splitlines()[0]
+
+
 def test_minimax_memo_rejects_unsupported_ci_numbers() -> None:
     receipts = [
         CorpusHit(

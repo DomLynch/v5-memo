@@ -15,7 +15,14 @@ from v5_memo.__main__ import (
     main,
 )
 from v5_memo.client import ResearkaSearchClient, SearchBackendError
-from v5_memo.schemas import ClaimCard, CorpusHit, InsightCandidate, MemoBuildError, SearchFailure
+from v5_memo.schemas import (
+    ClaimCard,
+    CorpusHit,
+    InsightCandidate,
+    MemoBuildError,
+    MemoResult,
+    SearchFailure,
+)
 
 _COVERAGE_THRESHOLD_ENV = (
     "V5_MEMO_MEMO_MIN_SHARDS_SEARCHED",
@@ -622,6 +629,93 @@ def test_cli_publish_blocks_translational_animal_heavy_memo(
         "direct_human_receipts": 1,
         "error": "translational_evidence_too_indirect",
         "indirect_model_receipts": 1,
+    }
+
+
+def test_cli_publish_blocks_unbundled_invalid_doi_citation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "submit-error.json"
+    bad_doi = "10.31435/ijitss.1(49).2026.4693"
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Comparator evidence must keep source IDs bundle-safe.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=(bad_doi, "10.1136/bjsports-2013-092433"),
+        score=90,
+        novelty_score=50,
+        evidence_score=80,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard(bad_doi, "promise", "cohort", "human", "recovery", "positive", "direct", "high", "human cohort"),
+            ClaimCard(
+                "10.1136/bjsports-2013-092433",
+                "outcome",
+                "randomized_trial",
+                "human",
+                "recovery",
+                "negative",
+                "direct",
+                "high",
+                "human trial",
+            ),
+        ),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id=bad_doi,
+            title="Cold water immersion teaching and performance",
+            abstract="Human cohort context.",
+            source="fullraw:openalex",
+            doi=bad_doi,
+        ),
+        CorpusHit(
+            hit_id="10.1136/bjsports-2013-092433",
+            title="Cold water immersion recovery review",
+            abstract="Human trial context.",
+            source="fullraw:openalex",
+            doi="10.1136/bjsports-2013-092433",
+        ),
+    ]
+
+    def fake_build_alpha_memo(**_kwargs: object) -> MemoResult:
+        return MemoResult(
+            candidate=candidate,
+            receipts=receipts,
+            markdown=f"# Alpha memo: cold water\n\nReceipts: {bad_doi} and 10.1136/bjsports-2013-092433.",
+        )
+
+    def fake_submit(**_kwargs: object) -> dict[str, object]:
+        raise AssertionError("invalid DOI citations must not submit")
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--publish",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 5
+    assert "Publish blocked: unbundled_doi_citation" in capsys.readouterr().err
+    assert json.loads(receipt_path.read_text()) == {
+        "dois": [bad_doi],
+        "error": "unbundled_doi_citation",
     }
 
 

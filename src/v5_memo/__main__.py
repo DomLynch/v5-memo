@@ -57,6 +57,7 @@ _DIRECT_EVIDENCE_QUERY_TERMS = frozenset({
     "patient", "patients", "randomized", "trial",
 })
 _MODEL_ONLY_QUERY_TERMS = frozenset({"germ", "mice", "mouse", "murine"})
+_UNSAFE_DOI_CHARS = frozenset("()")
 
 
 class DemoSearch:
@@ -442,6 +443,17 @@ def _is_discovery_seed(result: object) -> bool:
 
 
 def _publish_blocker(result: object) -> dict[str, object] | None:
+    markdown = getattr(result, "markdown", "")
+    receipts = tuple(getattr(result, "receipts", ()) or ())
+    unsafe_dois = sorted(
+        doi
+        for hit in receipts
+        if (doi := str(getattr(hit, "doi", "") or "").strip())
+        and any(char in doi for char in _UNSAFE_DOI_CHARS)
+        and doi in markdown
+    )
+    if unsafe_dois:
+        return {"error": "unbundled_doi_citation", "dois": unsafe_dois}
     candidate = getattr(result, "candidate", None)
     claim_cards = tuple(getattr(candidate, "claim_cards", ()) or ())
     if not claim_cards:
