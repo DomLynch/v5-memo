@@ -55,6 +55,10 @@ _STOP = frozenset(
     ).split()
 )
 _BACKEND = "researka-fullraw-indexed-fts5"
+_ALPHA_SWEEP_TERMS = frozenset({
+    "attenuate", "attenuated", "attenuates", "blunt", "blunted", "blunts",
+    "failed", "impair", "impaired", "impairs", "null", "reduced", "reduces",
+})
 _FULLRAW_LEGACY_PREFIX = "V5_MEMO_FULL_RAW_"
 _FULLRAW_GENERIC_PREFIX = "RESEARKA_FULLRAW_"
 _FULLRAW_SPECIAL_ALIASES = {
@@ -1549,7 +1553,13 @@ def _profile_relaxed_sweep_query(
         candidate_terms.add(rare_terms[0])
     ordered = [term for term in terms if term in candidate_terms]
     if len(ordered) > max_terms:
-        ordered = _spread_terms(ordered, max_terms)
+        alpha_terms = [term for term in terms if term in _ALPHA_SWEEP_TERMS and term in ordered]
+        if alpha_terms:
+            protected = list(dict.fromkeys((first, alpha_terms[0])))
+            fill = _spread_terms([term for term in ordered if term not in protected], max_terms - len(protected))
+            ordered = [term for term in terms if term in set((*protected, *fill))]
+        else:
+            ordered = _spread_terms(ordered, max_terms)
     return " ".join(ordered) if len(ordered) >= 2 else " ".join(terms)
 
 

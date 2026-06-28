@@ -1515,7 +1515,10 @@ def test_sweep_passes_do_not_invent_side_queries(tmp_path: Path) -> None:
     passes = fullraw_index._sweep_search_passes("resveratrol exercise training adaptation", entries, rank_mode="relevance")
     assert [item.role for item in passes] == ["focused", "citation_heavy", "recency"]
     assert all("risk" not in item.query and "patients" not in item.query for item in passes)
-    assert fullraw_index._sweep_search_passes("metformin blunts muscle hypertrophy progressive resistance training", entries, rank_mode="relevance")[0].query.startswith("metformin ")
+    assert fullraw_index._sweep_search_passes("resveratrol blunts exercise training", entries, rank_mode="relevance")[0].query == "resveratrol blunts training"
+    metformin_query = fullraw_index._sweep_search_passes("metformin blunts muscle hypertrophy progressive resistance training", entries, rank_mode="relevance")[0].query
+    assert metformin_query.startswith("metformin ")
+    assert "blunts" in metformin_query
     cwi_entries = [
         ShardCatalogEntry(
             path=(tmp_path / f"cwi_{idx}.sqlite"),
