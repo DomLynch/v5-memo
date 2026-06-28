@@ -302,6 +302,21 @@ def test_collect_seed_hits_propagates_fullraw_coverage_failure() -> None:
         collect_seed_hits(_FunctionSearch(search), ["metformin", "metformin blunts"])
 
 
+def test_collect_seed_hits_keeps_full_receipt_hits_when_late_shape_is_uncached() -> None:
+    def search(query: str, limit: int) -> Sequence[CorpusHit]:
+        del limit
+        if "augment" in query:
+            raise RuntimeError("Full raw corpus search coverage too narrow: {'shards_searched': None}")
+        return [_hit(query, f"{query} title", "full receipt evidence")]
+
+    hits = collect_seed_hits(
+        _FunctionSearch(search),
+        ["metformin exercise training adaptation", "metformin augment exercise training protocol"],
+    )
+
+    assert [hit.hit_id for hit in hits] == ["metformin exercise training adaptation"]
+
+
 def test_pipeline_builds_best_memo() -> None:
     result = build_alpha_memo(
         topic="longevity resilience",

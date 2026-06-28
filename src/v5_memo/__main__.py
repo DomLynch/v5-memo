@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -22,6 +23,7 @@ from v5_memo.minimax_writer import (
     MiniMaxM3SearchPlanner,
 )
 from v5_memo.pipeline import build_alpha_memo
+from v5_memo.publisher import build_researka_payload, submit_researka
 from v5_memo.retriever import CorpusSearcher, _seed_query_key
 from v5_memo.schemas import CorpusHit
 from v5_memo.writer import render_memo
@@ -107,6 +109,10 @@ def main() -> None:
     parser.add_argument("--min-shards-searched", type=int)
     parser.add_argument("--min-sources-searched", type=int)
     parser.add_argument("--min-search-passes", type=int)
+    parser.add_argument("--submit-researka", action="store_true")
+    parser.add_argument("--researka-agent-id", default=os.environ.get("V5_MEMO_RESEARKA_AGENT_ID", ""))
+    parser.add_argument("--researka-domain-slug", default=os.environ.get("V5_MEMO_RESEARKA_DOMAIN_SLUG", ""))
+    parser.add_argument("--researka-api-base", default=os.environ.get("V5_MEMO_RESEARKA_API_BASE", "https://api.researka.org"))
     args = parser.parse_args()
     fullraw_backed = args.searcher in {"fullraw", "hybrid", "smart"}
     args.min_shards_searched = _coverage_threshold(
@@ -233,6 +239,26 @@ def main() -> None:
     except SearchBackendError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from exc
+    if args.submit_researka:
+        agent_key = _researka_submit_key()
+        if not agent_key or not args.researka_agent_id.strip() or not args.researka_domain_slug.strip():
+            print(
+                "Researka submit requires V5_MEMO_RESEARKA_AGENT_KEY, "
+                "V5_MEMO_RESEARKA_AGENT_ID, and V5_MEMO_RESEARKA_DOMAIN_SLUG",
+                file=sys.stderr,
+            )
+            raise SystemExit(3)
+        payload = build_researka_payload(
+            result,
+            author_agent_id=args.researka_agent_id.strip(),
+            domain_slug=args.researka_domain_slug.strip(),
+        )
+        response = submit_researka(
+            payload,
+            agent_key=agent_key,
+            api_base=args.researka_api_base,
+        )
+        print(json.dumps(response, sort_keys=True), file=sys.stderr)
     print(result.markdown)
 
 
@@ -350,6 +376,18 @@ def _optional_int_env(name: str) -> int | None:
         return max(0, int(raw))
     except ValueError:
         return None
+
+
+def _researka_submit_key() -> str:
+    for name in (
+        "V5_MEMO_RESEARKA_AGENT_KEY",
+        "V5_MEMO_RESEARKA_API_KEY",
+        "RESEARKA_AGENT_KEY",
+        "RESEARKA_API_KEY",
+    ):
+        if value := os.environ.get(name, "").strip():
+            return value
+    return ""
 
 
 if __name__ == "__main__":
