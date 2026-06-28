@@ -136,6 +136,7 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
         "EnvironmentFile=/etc/v5-memo/env",
         "EnvironmentFile=/etc/v5-memo/fullraw-effective.env",
     ]
+    assert "EnvironmentFile=-/etc/v5-memo/fullraw-service-overrides.env" in env_files
     assert "TimeoutStopSec=120" in config.read_text()
     assert "TimeoutStopFailureMode=kill" in config.read_text()
     assert "KillMode=control-group" in config.read_text()
