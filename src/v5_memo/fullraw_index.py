@@ -2508,7 +2508,6 @@ def _resumable_sweep_jobs_from_cache(
     *,
     catalog: list[ShardCatalogEntry],
     sweep_shard_limit: int,
-    sweep_pass_shard_limit: int,
     sweep_strategy: str,
     ttl_seconds: float,
     capacity: int,
@@ -2524,8 +2523,6 @@ def _resumable_sweep_jobs_from_cache(
         if receipt.get("sweep_strategy") != sweep_strategy:
             continue
         if _int_or_none(receipt.get("sweep_shard_limit")) != sweep_shard_limit:
-            continue
-        if _int_or_none(receipt.get("sweep_pass_shard_limit")) != sweep_pass_shard_limit:
             continue
         query = str(receipt.get("sweep_original_query") or receipt.get("sweep_query") or "").strip()
         if not query:
@@ -3388,7 +3385,6 @@ def run_server() -> None:
             sweep_cache_dir,
             catalog=catalog,
             sweep_shard_limit=sweep_shard_limit,
-            sweep_pass_shard_limit=sweep_pass_shard_limit,
             sweep_strategy=_SWEEP_STRATEGY,
             ttl_seconds=sweep_ttl,
             capacity=capacity,

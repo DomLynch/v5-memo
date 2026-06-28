@@ -1021,20 +1021,20 @@ def test_resumable_sweep_jobs_from_cache_prefers_high_progress_partial(tmp_path:
     fullraw_index._write_sweep_cache(cache_dir / "high-alias.json", sweep_entry("high query", 1399, 126))
     fullraw_index._write_sweep_cache(cache_dir / "done.json", sweep_entry("done query", 1525, 0))
     fullraw_index._write_sweep_cache(cache_dir / "old.json", sweep_entry("old query", 1408, 117, strategy="old"))
-    fullraw_index._write_sweep_cache(cache_dir / "wrong-pass.json", sweep_entry("wrong pass", 1409, 116, pass_limit=32))
+    fullraw_index._write_sweep_cache(cache_dir / "new-pass.json", sweep_entry("new pass", 1409, 116, pass_limit=32))
 
     jobs = fullraw_index._resumable_sweep_jobs_from_cache(
         cache_dir,
         catalog=catalog,
         sweep_shard_limit=1525,
-        sweep_pass_shard_limit=8,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
         ttl_seconds=0,
         capacity=3,
     )
 
-    assert [job.key for job in jobs] == ["high", "low"]
-    assert jobs[0].query == "high query"
+    assert [job.key for job in jobs] == ["new-pass", "high", "low"]
+    assert jobs[0].query == "new pass"
+    assert jobs[1].query == "high query"
     assert jobs[0].year_min == 1990
     assert jobs[0].year_max == 2026
     assert jobs[0].rank_mode == "relevance"
