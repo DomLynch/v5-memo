@@ -8,6 +8,7 @@ import pytest
 from v5_memo.binder import bind_receipts
 from v5_memo.gate import candidate_alpha_tier, memo_coverage_failure
 from v5_memo.miner import mine_insights, query_anchor_terms
+from v5_memo.minimax_writer import MemoFormatError, validate_minimax_memo
 from v5_memo.pipeline import _selector_slate, build_alpha_memo
 from v5_memo.publisher import build_researka_payload
 from v5_memo.retriever import collect_seed_hits
@@ -1211,6 +1212,54 @@ def test_researka_payload_uses_receipt_title_for_bridge_only_alpha_title() -> No
     assert cast(str, payload["body_markdown"]).startswith(
         "# Alpha memo: Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?"
     )
+
+
+def test_minimax_memo_rejects_unsupported_ci_numbers() -> None:
+    receipts = [
+        CorpusHit(
+            hit_id="10.1123/ijspp.2019-0965",
+            title="Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?",
+            abstract="Cold-water immersion after strength training reported a control-leg advantage.",
+            source="fullraw:semantic_scholar",
+            doi="10.1123/ijspp.2019-0965",
+        ),
+        CorpusHit(
+            hit_id="10.1519/jsc.0000000000000434",
+            title="Strength Training Adaptations After Cold-Water Immersion",
+            abstract="Cold-water immersion and strength training adaptations were compared.",
+            source="fullraw:semantic_scholar",
+            doi="10.1519/jsc.0000000000000434",
+        ),
+    ]
+    markdown = """
+# Alpha memo: Cold-water immersion after strength training
+
+## Core signal
+The 1RM effect size confidence interval was -0.42 to 1.04.
+
+## The 2+2=5 angle
+The receipts imply a bounded metric-window signal.
+
+## Why this could matter
+It keeps the claim hypothesis-level.
+
+## What would break the idea
+Direct replication would break it.
+
+## Claim ledger
+- 10.1123/ijspp.2019-0965: direct support.
+- 10.1519/jsc.0000000000000434: direct support.
+
+## Receipts
+- 10.1123/ijspp.2019-0965
+- 10.1519/jsc.0000000000000434
+
+## Safety note
+Hypothesis only.
+""".strip()
+
+    with pytest.raises(MemoFormatError, match="unsupported statistical numbers"):
+        validate_minimax_memo(markdown, receipts)
 
 
 def test_researka_payload_preserves_authenticated_fullraw_coverage() -> None:

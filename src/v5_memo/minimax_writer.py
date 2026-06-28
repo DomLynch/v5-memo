@@ -40,6 +40,8 @@ _REQUIRED_MEMO_SECTIONS = (
 )
 _DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s<>()\[\]{}\"']+", re.IGNORECASE)
 _DOI_TRAILING_PUNCTUATION = ".,;:*_`"
+_STAT_CONTEXT_RE = re.compile(r"(?i)(?:confidence interval|\bci\b|effect size|cohen'?s d|hedges'? g|standardized mean difference).{0,120}")
+_STAT_NUMBER_RE = re.compile(r"[-+]?\d+\.\d+%?|[-+]?\d+%")
 _TITLE_WORD_RE = re.compile(r"[a-z][a-z0-9]{2,}")
 _TITLE_STOPWORDS = frozenset({
     "alpha", "memo", "and", "for", "from", "into", "may", "not", "the", "with",
@@ -486,10 +488,39 @@ def validate_minimax_memo(
         raise ValueError(
             f"MiniMax memo included unreceipted DOI-like references: {', '.join(extra_dois)}"
         )
+    _validate_supported_stat_numbers(text, receipts)
     if candidate is not None:
         _validate_receipt_owned_title(text, receipts, candidate)
         _validate_claim_ledger(text, candidate)
     return text + "\n"
+
+
+def _validate_supported_stat_numbers(markdown: str, receipts: Sequence[CorpusHit]) -> None:
+    receipt_numbers = {
+        _normalize_stat_number(match.group(0))
+        for hit in receipts
+        for match in _STAT_NUMBER_RE.finditer(hit.text)
+    }
+    unsupported: list[str] = []
+    for context in _STAT_CONTEXT_RE.finditer(markdown):
+        for number in _STAT_NUMBER_RE.findall(context.group(0)):
+            normalized = _normalize_stat_number(number)
+            if normalized not in receipt_numbers:
+                unsupported.append(number)
+    if unsupported:
+        raise MemoFormatError(
+            "MiniMax memo included unsupported statistical numbers: "
+            + ", ".join(dict.fromkeys(unsupported))
+        )
+
+
+def _normalize_stat_number(value: str) -> str:
+    raw = value.strip().rstrip("%")
+    try:
+        number = float(raw)
+    except ValueError:
+        return value.strip()
+    return f"{number:g}" + ("%" if value.strip().endswith("%") else "")
 
 
 def _validate_claim_ledger(markdown: str, candidate: InsightCandidate) -> None:
