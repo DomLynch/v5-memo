@@ -15,7 +15,7 @@ from v5_memo.__main__ import (
     main,
 )
 from v5_memo.client import ResearkaSearchClient, SearchBackendError
-from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, SearchFailure
+from v5_memo.schemas import ClaimCard, CorpusHit, InsightCandidate, MemoBuildError, SearchFailure
 
 _COVERAGE_THRESHOLD_ENV = (
     "V5_MEMO_MEMO_MIN_SHARDS_SEARCHED",
@@ -565,6 +565,63 @@ def test_cli_publish_does_not_submit_discovery_seed(
     assert json.loads(receipt_path.read_text()) == {
         "error": "discovery_seed_not_submitted",
         "tier": "discovery_seed",
+    }
+
+
+def test_cli_publish_blocks_translational_animal_heavy_memo(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "submit-error.json"
+    candidate = InsightCandidate(
+        topic="resveratrol exercise training",
+        thesis="Animal model signal is not enough for a public human alpha claim.",
+        bridge_terms=("resveratrol", "training"),
+        tension_terms=("null", "positive"),
+        receipt_ids=("human", "rat"),
+        score=90,
+        novelty_score=50,
+        evidence_score=80,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard("human", "promise", "randomized_trial", "human", "stress", "null", "direct", "high", "human trial"),
+            ClaimCard("rat", "outcome", "mechanistic_model", "animal", "strength", "positive", "indirect", "medium", "rat model"),
+        ),
+    )
+
+    def fake_build_alpha_memo(**_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(markdown="# Alpha memo: animal-heavy\n", candidate=candidate)
+
+    def fake_submit(**_kwargs: object) -> dict[str, object]:
+        raise AssertionError("animal-heavy translational memo should not submit")
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--publish",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 5
+    assert "Publish blocked: translational_evidence_too_indirect" in capsys.readouterr().err
+    assert json.loads(receipt_path.read_text()) == {
+        "direct_human_receipts": 1,
+        "error": "translational_evidence_too_indirect",
+        "indirect_model_receipts": 1,
     }
 
 
