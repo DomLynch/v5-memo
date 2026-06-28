@@ -411,6 +411,8 @@ class FullRawCorpusSearchClient:
                 ):
                     if best:
                         break
+                    if search_pass.query != query and variant_index < len(search_passes):
+                        continue
                     raise
                 if best:
                     break

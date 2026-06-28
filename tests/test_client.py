@@ -470,6 +470,74 @@ def test_full_raw_client_reuses_completed_low_limit_exhaustive_cache(monkeypatch
     assert receipt["shards_searched"] == 1525
 
 
+def test_full_raw_client_skips_cold_variant_for_later_trusted_variant(monkeypatch: object) -> None:
+    queries: list[str] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        query = cast(str, payload["query"])
+        queries.append(query)
+        if query == "cold water immersion resistance training":
+            return FakeResponse({
+                "meta": {
+                    "shard_receipt": {
+                        "authenticated": True,
+                        "partial_shard_search": True,
+                        "shards_searched": 63,
+                        "shards_total": 1525,
+                        "sources_searched": {"openalex": 63},
+                        "sweep_failed_shards": 0,
+                    },
+                    "async_sweep": {"status": "running"},
+                },
+                "results": [],
+            })
+        return FakeResponse({
+            "meta": {
+                "count": 10,
+                "shard_receipt": {
+                    "authenticated": True,
+                    "partial_shard_search": False,
+                    "shards_searched": 1525,
+                    "shards_total": 1525,
+                    "sweep_failed_shards": 0,
+                    "sources_searched": {
+                        "biorxiv": 1,
+                        "openalex": 1,
+                        "pubmed": 1,
+                        "semantic_scholar": 1,
+                        "semantic_scholar_abstracts": 1,
+                    },
+                },
+                "async_sweep": {"status": "hit"},
+            },
+            "results": [{
+                "doi": "10.123/cwi",
+                "title": "Cold water immersion training adaptation",
+                "abstract": "Cold water immersion blunted resistance training adaptation.",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="token",
+        max_variants=2,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        strict=True,
+    )
+
+    hits = client.search("cold water immersion resistance training adaptation", limit=25)
+
+    assert "cold water immersion resistance training" in queries
+    assert "cold water immersion resistance training adaptation" in queries
+    assert hits[0].doi == "10.123/cwi"
+
+
 def test_full_raw_client_waits_for_zero_hit_foreground_sweep(monkeypatch: object) -> None:
     payloads: list[dict[str, object]] = []
 
