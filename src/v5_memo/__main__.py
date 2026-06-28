@@ -119,6 +119,7 @@ def main() -> None:
     parser.add_argument("--researka-agent-id", default=os.environ.get("V5_MEMO_RESEARKA_AGENT_ID", ""))
     parser.add_argument("--researka-domain-slug", default=os.environ.get("V5_MEMO_RESEARKA_DOMAIN_SLUG", ""))
     parser.add_argument("--researka-api-base", default=os.environ.get("V5_MEMO_RESEARKA_API_BASE", "https://api.researka.org"))
+    parser.add_argument("--researka-submit-url", default=os.environ.get("V5_MEMO_RESEARKA_SUBMIT_URL", ""))
     args = parser.parse_args()
     fullraw_backed = args.searcher in {"fullraw", "hybrid", "smart"}
     args.min_shards_searched = _coverage_threshold(
@@ -267,6 +268,7 @@ def main() -> None:
             agent_id=args.researka_agent_id,
             domain_slug=args.researka_domain_slug,
             api_base=args.researka_api_base,
+            submit_url=args.researka_submit_url,
         )
         if config.missing:
             error = {"error": "missing_researka_submit_config", "missing": config.missing}
@@ -287,6 +289,7 @@ def main() -> None:
             payload,
             agent_key=config.agent_key,
             api_base=config.api_base,
+            submit_url=config.submit_url,
         )
         _write_json(args.publish_receipt_path, response)
         print(json.dumps(response, sort_keys=True), file=sys.stderr)

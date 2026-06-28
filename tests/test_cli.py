@@ -276,11 +276,13 @@ def test_cli_submit_researka_uses_generated_memo(
         *,
         agent_key: str,
         api_base: str,
+        submit_url: str = "",
         timeout: float = 60.0,
     ) -> dict[str, object]:
         seen["payload"] = payload
         seen["agent_key"] = agent_key
         seen["api_base"] = api_base
+        seen["submit_url"] = submit_url
         seen["timeout"] = timeout
         return {"submission_id": "sub-1"}
 
@@ -314,6 +316,7 @@ def test_cli_submit_researka_uses_generated_memo(
         "payload": {"title": "ok"},
         "agent_key": "submit-key",
         "api_base": "https://api.researka.org",
+        "submit_url": "",
         "timeout": 60.0,
     }
     assert json.loads(receipt_path.read_text()) == {"submission_id": "sub-1"}
@@ -332,6 +335,7 @@ def test_cli_submit_researka_fails_closed_without_agent_key(
     for name in (
         "V5_MEMO_RESEARKA_AGENT_KEY",
         "V5_MEMO_RESEARKA_API_KEY",
+        "RESEARKA_API_KEY_V5",
         "RESEARKA_AGENT_KEY",
         "RESEARKA_API_KEY",
     ):
@@ -379,6 +383,61 @@ def test_cli_output_dir_writes_memo_and_prints_path(
     assert len(written) == 1
     assert capsys.readouterr().out.strip() == str(written[0])
     assert written[0].read_text() == "# Alpha memo: stored\n\nBody.\n"
+
+
+def test_cli_submit_accepts_v5_versioned_key_and_submit_url(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_build_alpha_memo(**_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    def fake_build_payload(
+        _result: SimpleNamespace,
+        *,
+        author_agent_id: str,
+        domain_slug: str,
+    ) -> dict[str, object]:
+        return {"author_agent_id": author_agent_id, "domain_slug": domain_slug}
+
+    def fake_submit(
+        payload: dict[str, object],
+        *,
+        agent_key: str,
+        api_base: str,
+        submit_url: str = "",
+        timeout: float = 60.0,
+    ) -> dict[str, object]:
+        del timeout
+        seen.update({
+            "payload": payload,
+            "agent_key": agent_key,
+            "api_base": api_base,
+            "submit_url": submit_url,
+        })
+        return {"submission_id": "sub-1"}
+
+    monkeypatch.setenv("RESEARKA_API_KEY_V5", "v5-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setenv("RESEARKA_SUBMIT_URL", "https://api.researka.org/custom-submit")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.build_researka_payload", fake_build_payload)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr(sys, "argv", ["v5_memo", "--demo", "--publish"])
+
+    main()
+
+    assert seen == {
+        "payload": {
+            "author_agent_id": "v5-memo-agent",
+            "domain_slug": "longevity_research",
+        },
+        "agent_key": "v5-key",
+        "api_base": "https://api.researka.org",
+        "submit_url": "https://api.researka.org/custom-submit",
+    }
 
 
 def test_cli_smart_defaults_to_publishable_tier(monkeypatch: MonkeyPatch) -> None:
