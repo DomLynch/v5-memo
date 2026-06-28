@@ -117,6 +117,7 @@ _DOI_BACKFILL_PRIORITY_TERMS = {
     "trial",
 }
 _FULLRAW_COMPLETED_CACHE_FALLBACK_LIMIT = 10
+_UNSAFE_DOI_CHARS = frozenset("()[]{}")
 
 
 class OpenAlexFullCorpusSearchClient:
@@ -817,7 +818,8 @@ def _parse_openalex_work(item: Any, *, match_count: int | None) -> CorpusHit | N
     title = _clean(item.get("display_name") or item.get("title"), limit=500)
     if not title:
         return None
-    doi = _normalize_doi(item.get("doi"))
+    raw_doi = _normalize_doi(item.get("doi"))
+    doi = _safe_doi(raw_doi)
     openalex_id = _clean(item.get("id"), limit=256)
     primary_location = item.get("primary_location")
     location = primary_location if isinstance(primary_location, dict) else {}
@@ -835,6 +837,7 @@ def _parse_openalex_work(item: Any, *, match_count: int | None) -> CorpusHit | N
         venue=venue,
         metadata={
             "openalex_id": openalex_id,
+            "raw_doi": raw_doi if raw_doi != doi else "",
             "cited_by_count": _int_or_none(item.get("cited_by_count")),
             "query_match_count": match_count,
         },
@@ -925,7 +928,8 @@ def _parse_paper_hit(item: Any) -> CorpusHit | None:
     title = _clean(item.get("title"), limit=500)
     if not title:
         return None
-    doi = _clean(item.get("doi"), limit=256) or None
+    raw_doi = _normalize_doi(item.get("doi"))
+    doi = _safe_doi(raw_doi)
     pmid = _clean(item.get("pmid"), limit=64)
     pmcid = _clean(item.get("pmcid"), limit=64)
     hit_id = doi or pmid or pmcid or title
@@ -941,6 +945,7 @@ def _parse_paper_hit(item: Any) -> CorpusHit | None:
         metadata={
             "pmid": pmid,
             "pmcid": pmcid,
+            "raw_doi": raw_doi if raw_doi != doi else "",
             "cited_by_count": _int_or_none(item.get("cited_by_count")),
             "similarity_score": _float_or_none(item.get("similarity_score")),
         },
@@ -958,7 +963,8 @@ def _parse_full_raw_paper_hit(
     title = _clean(item.get("title") or item.get("display_name") or item.get("name"), limit=500)
     if not title:
         return None
-    doi = _normalize_doi(item.get("doi"))
+    raw_doi = _normalize_doi(item.get("doi"))
+    doi = _safe_doi(raw_doi)
     year = _int_or_none(item.get("year") or item.get("publication_year"))
     pmid = _clean(item.get("pmid"), limit=64)
     pmcid = _clean(item.get("pmcid"), limit=64)
@@ -995,6 +1001,7 @@ def _parse_full_raw_paper_hit(
         metadata={
             "pmid": pmid,
             "pmcid": pmcid,
+            "raw_doi": raw_doi if raw_doi != doi else "",
             "openalex_id": openalex_id,
             "semantic_scholar_id": s2_id,
             "arxiv_id": arxiv_id,
@@ -1019,6 +1026,12 @@ def _normalize_doi(value: object) -> str | None:
     if not doi:
         return None
     return re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi, flags=re.I) or None
+
+
+def _safe_doi(value: str | None) -> str | None:
+    if not value or any(char in value for char in _UNSAFE_DOI_CHARS):
+        return None
+    return value
 
 
 def _doi_year_conflicts(doi: str | None, year: int | None) -> bool:

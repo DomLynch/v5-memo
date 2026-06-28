@@ -1774,6 +1774,30 @@ def test_parse_full_raw_search_keeps_valid_doi_article_codes_that_look_like_year
     assert [hit.doi for hit in hits] == ["10.1093/GERONI/IGY023.2009"]
     assert hits[0].year == 2018
 
+
+def test_parse_full_raw_search_drops_unsafe_bracketed_doi_identifier() -> None:
+    hits = _parse_full_raw_search_response({
+        "results": [
+            {
+                "doi": "10.31435/ijitss.1(49).2026.4693",
+                "title": "Cold-water immersion protocol review",
+                "abstract": "Cold-water immersion protocol parameters were reviewed.",
+                "year": 2026,
+                "provider": "openalex",
+                "openalex_id": "https://openalex.org/W4693",
+                "url": "https://openalex.org/W4693",
+            },
+        ],
+    })
+
+    hit = hits[0]
+    assert hit.doi is None
+    assert hit.receipt_id == "https://openalex.org/W4693"
+    assert "10.31435/ijitss.1(49).2026.4693" not in hit.source_key
+    assert hit.url == "https://openalex.org/W4693"
+    assert hit.metadata["raw_doi"] == "10.31435/ijitss.1(49).2026.4693"
+
+
 def test_parse_full_corpus_paper_hit() -> None:
     hits = _parse_corpus_search_response([
         {
