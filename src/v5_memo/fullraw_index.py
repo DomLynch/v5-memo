@@ -1204,6 +1204,19 @@ def _search_shard_paths_with_paths_and_receipt(
     return hits, completed_paths, timed_out, metrics
 
 
+def _sweep_checkpoint_entries(
+    entries: list[ShardCatalogEntry],
+    *,
+    sweep_pass_shard_limit: int,
+    workers: int,
+) -> list[ShardCatalogEntry]:
+    pass_limit = max(1, min(sweep_pass_shard_limit, len(entries)))
+    candidates = entries[:pass_limit]
+    worker_count = max(1, min(workers, len(candidates)))
+    batch_paths = set(_cache_fit_path_batch([entry.path for entry in candidates], start=0, worker_count=worker_count))
+    return [entry for entry in candidates if entry.path in batch_paths] or candidates[:1]
+
+
 def _cache_fit_path_batch(paths: list[Path], *, start: int, worker_count: int) -> list[Path]:
     batch = paths[start:start + worker_count]
     max_cache_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
@@ -3218,7 +3231,11 @@ def run_server() -> None:
                         for entry in sweep_entries
                         if str(entry.path) not in completed_path_strings | failed_path_strings
                     ]
-                    pass_entries = remaining_entries[:sweep_pass_shard_limit]
+                    pass_entries = _sweep_checkpoint_entries(
+                        remaining_entries,
+                        sweep_pass_shard_limit=sweep_pass_shard_limit,
+                        workers=sweep_workers,
+                    )
                     if not pass_entries:
                         break
                     hits, completed_paths, timed_out, pass_metrics = _search_shard_paths_with_paths_and_receipt(

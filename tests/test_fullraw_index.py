@@ -1041,6 +1041,29 @@ def test_resumable_sweep_jobs_from_cache_prefers_high_progress_partial(tmp_path:
     assert jobs[0].catalog == catalog
 
 
+def test_sweep_checkpoint_entries_limits_checkpoint_to_worker_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", raising=False)
+    entries = [_entry(tmp_path, index, "openalex") for index in range(12)]
+
+    checkpoint = fullraw_index._sweep_checkpoint_entries(
+        entries,
+        sweep_pass_shard_limit=10,
+        workers=4,
+    )
+    smaller_pass = fullraw_index._sweep_checkpoint_entries(
+        entries,
+        sweep_pass_shard_limit=2,
+        workers=4,
+    )
+
+    assert [entry.path for entry in checkpoint] == [entry.path for entry in entries[:4]]
+    assert [entry.path for entry in smaller_pass] == [entry.path for entry in entries[:2]]
+
+
 def test_sweep_admission_queues_without_exceeding_inflight_limit() -> None:
     inflight = {"active"}
     queued: set[str] = set()
