@@ -102,8 +102,22 @@ class MiniMaxM3MemoWriter:
 
     def render(self, candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> str:
         prompt = build_minimax_prompt(candidate, receipts)
-        markdown = self._write(prompt, temperature=0.35)
-        return validate_minimax_memo(markdown, receipts, candidate=candidate)
+        last_error: ValueError | None = None
+        for attempt in range(2):
+            retry_note = (
+                ""
+                if attempt == 0
+                else "\n\nPrevious draft failed validation: "
+                f"{last_error}. Rewrite from the locked receipts only and remove any unlisted DOI-like references."
+            )
+            markdown = self._write(prompt + retry_note, temperature=0.35 if attempt == 0 else 0.0)
+            try:
+                return validate_minimax_memo(markdown, receipts, candidate=candidate)
+            except ValueError as exc:
+                last_error = exc
+                if attempt == 1:
+                    raise
+        raise AssertionError("unreachable MiniMax writer retry loop")
 
     def _write(self, prompt: str, *, temperature: float) -> str:
         return _strip_markdown_fence(
