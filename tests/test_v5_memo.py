@@ -543,7 +543,7 @@ def test_pipeline_mines_broader_slate_when_selector_is_present(
             memo_selector=lambda candidates, _hits: candidates,
         )
 
-    assert captured["max_candidates"] == 25
+    assert captured["max_candidates"] == 30
 
 
 def test_pipeline_filters_primary_anchor_drift_before_selector(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1222,6 +1222,11 @@ def test_pipeline_filters_publishable_seed_when_elite_required() -> None:
     )
     assert exc.value.failure.details["min_alpha_tier"] == "elite_alpha"
     assert exc.value.failure.details["mined_candidate_count"] == 1
+    assert exc.value.failure.details["queries_used"] == ("sauna hypertension",)
+    assert exc.value.failure.details["anchor_terms"] == ("sauna", "hypertension")
+    top_mined = exc.value.failure.details["top_mined_candidates"]
+    assert isinstance(top_mined, tuple)
+    assert top_mined[0]["tier"] == "publishable_alpha"
     assert "hit_count=2" in str(exc.value)
     assert "candidate_count=0" in str(exc.value)
     assert "mined_candidate_count=1" in str(exc.value)

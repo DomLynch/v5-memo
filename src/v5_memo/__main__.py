@@ -428,8 +428,10 @@ def _write_json(path: str, payload: Mapping[str, object]) -> None:
     target.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
-def _is_discovery_seed(result: MemoResult) -> bool:
-    return any(reason == "tier:discovery_seed" for reason in result.candidate.reasons)
+def _is_discovery_seed(result: object) -> bool:
+    candidate = getattr(result, "candidate", None)
+    reasons = getattr(candidate, "reasons", ())
+    return any(reason == "tier:discovery_seed" for reason in reasons)
 
 
 if __name__ == "__main__":

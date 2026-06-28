@@ -1,5 +1,7 @@
+import json
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +15,7 @@ from v5_memo.__main__ import (
     main,
 )
 from v5_memo.client import ResearkaSearchClient, SearchBackendError
-from v5_memo.schemas import CorpusHit, MemoBuildError
+from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError
 
 _COVERAGE_THRESHOLD_ENV = (
     "V5_MEMO_MEMO_MIN_SHARDS_SEARCHED",
@@ -255,8 +257,10 @@ def test_cli_prints_search_backend_error_without_traceback(
 def test_cli_submit_researka_uses_generated_memo(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     seen: dict[str, object] = {}
+    receipt_path = tmp_path / "submit-receipt.json"
 
     def fake_build_alpha_memo(**_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(markdown="# Alpha memo: ok\n")
@@ -286,7 +290,17 @@ def test_cli_submit_researka_uses_generated_memo(
     monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
     monkeypatch.setattr("v5_memo.__main__.build_researka_payload", fake_build_payload)
     monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
-    monkeypatch.setattr(sys, "argv", ["v5_memo", "--demo", "--submit-researka"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--submit-researka",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
 
     main()
 
@@ -302,12 +316,16 @@ def test_cli_submit_researka_uses_generated_memo(
         "api_base": "https://api.researka.org",
         "timeout": 60.0,
     }
+    assert json.loads(receipt_path.read_text()) == {"submission_id": "sub-1"}
 
 
 def test_cli_submit_researka_fails_closed_without_agent_key(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
+    receipt_path = tmp_path / "submit-error.json"
+
     def fake_build_alpha_memo(**_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(markdown="# Alpha memo: ok\n")
 
@@ -321,13 +339,128 @@ def test_cli_submit_researka_fails_closed_without_agent_key(
     monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
     monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
     monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
-    monkeypatch.setattr(sys, "argv", ["v5_memo", "--demo", "--submit-researka"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--submit-researka",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
 
     with pytest.raises(SystemExit) as exc:
         main()
 
     assert exc.value.code == 3
     assert "Researka submit requires" in capsys.readouterr().err
+    assert json.loads(receipt_path.read_text()) == {
+        "error": "missing_researka_submit_config",
+        "missing": ["V5_MEMO_RESEARKA_AGENT_KEY"],
+    }
+
+
+def test_cli_output_dir_writes_memo_and_prints_path(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    def fake_build_alpha_memo(**_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(markdown="# Alpha memo: stored\n\nBody.\n")
+
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(sys, "argv", ["v5_memo", "--demo", "--output-dir", str(tmp_path)])
+
+    main()
+
+    written = list(tmp_path.glob("*.md"))
+    assert len(written) == 1
+    assert capsys.readouterr().out.strip() == str(written[0])
+    assert written[0].read_text() == "# Alpha memo: stored\n\nBody.\n"
+
+
+def test_cli_smart_defaults_to_publishable_tier(monkeypatch: MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--searcher",
+            "smart",
+            "--planner",
+            "seed",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+        ],
+    )
+
+    main()
+
+    assert seen["min_alpha_tier"] == "publishable_alpha"
+
+
+def test_cli_publish_does_not_submit_discovery_seed(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "submit-error.json"
+    discovery = InsightCandidate(
+        topic="longevity resilience",
+        thesis="Discovery only.",
+        bridge_terms=("nad",),
+        tension_terms=(),
+        receipt_ids=("a", "b"),
+        score=10,
+        novelty_score=10,
+        evidence_score=10,
+        reasons=("tier:discovery_seed",),
+    )
+
+    def fake_build_alpha_memo(**_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(markdown="# Discovery seed: ok\n", candidate=discovery)
+
+    def fake_submit(**_kwargs: object) -> dict[str, object]:
+        raise AssertionError("discovery seeds must not submit")
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--publish",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 4
+    assert "Discovery seed output was not submitted" in capsys.readouterr().err
+    assert json.loads(receipt_path.read_text()) == {
+        "error": "discovery_seed_not_submitted",
+        "tier": "discovery_seed",
+    }
 
 
 def test_cli_explicit_zero_disables_inherited_coverage_threshold(
