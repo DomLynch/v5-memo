@@ -1151,6 +1151,8 @@ def test_researka_payload_submits_human_title_and_plain_doi_citations() -> None:
     assert payload["title"] == "Endpoint-gated caffeine signal."
     assert "`10.1000/caffeine`" not in body
     assert "`10.1000/runners`" not in body
+    assert "10.1000/caffeine:" not in body
+    assert "10.1000/runners:" not in body
     assert "10.1000/caffeine" in body
     assert "10.1000/runners" in body
 
