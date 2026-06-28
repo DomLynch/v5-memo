@@ -164,6 +164,7 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto" in config.read_text()
     assert "sb:researka-database/index/v5/fullraw-shard-cache-5tb" in shard_cache_mount.read_text()
+    assert "rclone-vfs-cache-shard-cache/vfs/sb/researka-database/index/v5/fullraw-shard-cache-5tb" in shard_cache_mount.read_text()
     assert "--vfs-cache-mode=full" in shard_cache_mount.read_text()
     assert "--vfs-cache-max-size=16G" in shard_cache_mount.read_text()
     assert "RESEARKA_FULLRAW_SEARCH_ISOLATED=0" in env_example
