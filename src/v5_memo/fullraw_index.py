@@ -112,6 +112,25 @@ def _shard_local_cache_max_bytes(cache_dir: Path | None = None) -> int | None:
     return max(0, cache_bytes + usage.free - (usage.total // 20))
 
 
+def _shard_local_cache_health(*, include_dynamic_budget: bool = True) -> dict[str, object]:
+    cache_dir = _shard_local_cache_dir()
+    raw_max_bytes = _fullraw_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "")
+    health: dict[str, object] = {
+        "dir": str(cache_dir) if cache_dir is not None else "",
+        "exists": bool(cache_dir and cache_dir.exists()),
+        "is_mount": bool(cache_dir and os.path.ismount(cache_dir)),
+    }
+    if include_dynamic_budget:
+        health["max_bytes"] = _shard_local_cache_max_bytes(cache_dir)
+    elif raw_max_bytes.strip().casefold() in {"auto", "dynamic"}:
+        health["max_bytes_config"] = raw_max_bytes
+    else:
+        max_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
+        if max_bytes is not None:
+            health["max_bytes"] = max_bytes
+    return health
+
+
 _FULL_COVERAGE_PREFIX_SHARDS = max(1, int(_fullraw_env("V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS", "32")))
 _SWEEP_STRATEGY = "profile_relaxed_v9"
 _SWEEP_MIN_RESULT_LIMIT = 10
@@ -3399,13 +3418,7 @@ def run_server() -> None:
         }
 
     def shard_cache_health() -> dict[str, object]:
-        cache_dir = _shard_local_cache_dir()
-        return {
-            "dir": str(cache_dir) if cache_dir is not None else "",
-            "exists": bool(cache_dir and cache_dir.exists()),
-            "is_mount": bool(cache_dir and os.path.ismount(cache_dir)),
-            "max_bytes": _shard_local_cache_max_bytes(cache_dir),
-        }
+        return _shard_local_cache_health()
 
     def receipt_is_sufficient(receipt: dict[str, object]) -> bool:
         if shard_coverage_gate_response(
@@ -3445,7 +3458,7 @@ def run_server() -> None:
                     "fast_health": True,
                     "complete": False,
                     "coverage_requirements": coverage_requirements(),
-                    "shard_cache": shard_cache_health(),
+                    "shard_cache": _shard_local_cache_health(include_dynamic_budget=False),
                     "async_sweep": sweep_queue_summary(),
                 })
                 return

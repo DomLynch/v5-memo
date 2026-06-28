@@ -3,6 +3,9 @@ import json
 import textwrap
 from pathlib import Path
 
+import pytest
+
+from v5_memo import fullraw_index
 from v5_memo.fullraw_service import RawFile, iter_raw_file_hits
 
 
@@ -164,3 +167,24 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=20" in env_example
     assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in env_example
+
+
+def test_fast_shard_cache_health_skips_dynamic_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "auto")
+
+    def fail_dynamic_budget(cache_dir: Path | None = None) -> int | None:
+        del cache_dir
+        raise AssertionError("fast health must not scan cache budget")
+
+    monkeypatch.setattr(fullraw_index, "_shard_local_cache_max_bytes", fail_dynamic_budget)
+
+    health = fullraw_index._shard_local_cache_health(include_dynamic_budget=False)
+
+    assert health["dir"] == str(tmp_path)
+    assert health["exists"] is True
+    assert health["max_bytes_config"] == "auto"
+    assert "max_bytes" not in health
