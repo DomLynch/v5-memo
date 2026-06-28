@@ -17,6 +17,10 @@ _RETRIEVAL_EVIDENCE_KEYS = (
 )
 _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
 _CODE_DOI_RE = re.compile(r"`(10\.\d{4,9}/[^`\s]+)`", re.IGNORECASE)
+_MARKED_DOI_RE = re.compile(
+    r"(?P<wrap>`|\*\*|__)(?P<doi>10\.\d{4,9}/[^\s`<>()\[\]{}\"']+?)(?P=wrap)",
+    re.IGNORECASE,
+)
 _DOI_LABEL_RE = re.compile(r"\b(10\.\d{4,9}/[^\s\"'\])}>,;:`]+):", re.IGNORECASE)
 _TITLE_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _SENTENCE_END = re.compile(r"([.!?])(?:\s|$)")
@@ -99,7 +103,8 @@ def build_researka_payload(result: MemoResult, *, author_agent_id: str, domain_s
 
 
 def _submission_markdown(markdown: str) -> str:
-    plain = _CODE_DOI_RE.sub(lambda match: match.group(1).rstrip(".,;:"), markdown)
+    plain = _MARKED_DOI_RE.sub(lambda match: match.group("doi").rstrip(".,;:*_`"), markdown)
+    plain = _CODE_DOI_RE.sub(lambda match: match.group(1).rstrip(".,;:"), plain)
     return _DOI_LABEL_RE.sub(r"\1 -", plain)
 
 
