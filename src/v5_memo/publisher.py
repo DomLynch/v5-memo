@@ -16,6 +16,8 @@ _RETRIEVAL_EVIDENCE_KEYS = (
     "rank_mode",
 )
 _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
+_CODE_DOI_RE = re.compile(r"`(10\.\d{4,9}/[^`\s]+)`", re.IGNORECASE)
+_TITLE_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _SENTENCE_END = re.compile(r"([.!?])(?:\s|$)")
 _SUBMIT_KEY_ENV_NAMES = (
     "V5_MEMO_RESEARKA_AGENT_KEY",
@@ -69,7 +71,7 @@ def load_researka_submit_config(
 
 
 def build_researka_payload(result: MemoResult, *, author_agent_id: str, domain_slug: str) -> dict[str, object]:
-    body = result.markdown.strip()
+    body = _submission_markdown(result.markdown.strip())
     candidate = result.candidate
     heading = next((line[2:] for line in body.splitlines() if line.startswith("# ")), "Untitled alpha memo")
     abstract = _abstract_from_markdown(body)
@@ -77,7 +79,7 @@ def build_researka_payload(result: MemoResult, *, author_agent_id: str, domain_s
     fullraw_coverage = _fullraw_retrieval_coverage(result.receipts)
     verdict = {"decision": "ready_to_publish", "publish_tier": "TIER_1", "maturity_level": "L5", "confidence_label": "evidence_backed_signal", "blockers": [], "axes": {"bound_receipts": len(source_bundle)}}
     return {
-        "title": heading.replace("Alpha memo: ", "", 1).strip(),
+        "title": _submission_title(result, heading),
         "abstract": abstract,
         "author_agent_id": author_agent_id,
         "author_agent_slug": author_agent_id,
@@ -89,6 +91,41 @@ def build_researka_payload(result: MemoResult, *, author_agent_id: str, domain_s
         "evidence_bundle": {"publish_verdict": verdict, "fullraw_retrieval_coverage": fullraw_coverage},
         "metadata": {"receipt_ids": list(candidate.receipt_ids), "score": candidate.score},
     }
+
+
+def _submission_markdown(markdown: str) -> str:
+    return _CODE_DOI_RE.sub(lambda match: match.group(1).rstrip(".,;:"), markdown)
+
+
+def _submission_title(result: MemoResult, heading: str) -> str:
+    raw = heading.replace("Alpha memo: ", "", 1).strip()
+    if _query_like_title(raw):
+        raw = _first_sentence(result.candidate.thesis) or result.candidate.topic
+    if _query_like_title(raw):
+        raw = f"Bounded alpha signal in {result.candidate.topic}"
+    return _clip_title(raw)
+
+
+def _query_like_title(title: str) -> bool:
+    tokens = _TITLE_TOKEN_RE.findall(title.casefold())
+    return len(tokens) < 4 or ("/" in title and len(tokens) <= 5)
+
+
+def _first_sentence(text: str) -> str:
+    clean = " ".join(text.split()).strip()
+    if not clean:
+        return ""
+    for match in _SENTENCE_END.finditer(clean):
+        return clean[: match.end(1)].strip()
+    return clean
+
+
+def _clip_title(title: str) -> str:
+    clean = " ".join(title.split()).strip(" #`*_")
+    if len(clean) <= 120:
+        return clean
+    clipped = clean[:120].rsplit(" ", 1)[0].rstrip(" ,;:")
+    return clipped or clean[:120].rstrip(" ,;:")
 
 
 def _retrieval_evidence(hit: CorpusHit) -> dict[str, object]:
