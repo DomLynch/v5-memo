@@ -289,6 +289,8 @@ def test_fullraw_cli_allows_single_recall_limit_env_override(
         return SimpleNamespace(markdown="# Alpha memo: ok\n")
 
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_PER_QUERY_LIMIT", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_MAX_HITS", raising=False)
     monkeypatch.setenv("V5_MEMO_FULL_RAW_RECALL_LIMIT", "30")
     monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
     monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
