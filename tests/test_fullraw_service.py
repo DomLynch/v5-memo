@@ -141,10 +141,10 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "KillMode=control-group" in config.read_text()
     assert "SendSIGKILL=yes" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SEARCH_ISOLATED=0" in config.read_text()
-    assert "Environment=RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=64" in config.read_text()
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=16" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKERS=4" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=1" in config.read_text()
-    assert "Environment=RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=1" in config.read_text()
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=16" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=300" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=20" in config.read_text()
@@ -157,7 +157,7 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "--vfs-cache-mode=full" in shard_cache_mount.read_text()
     assert "--vfs-cache-max-size=16G" in shard_cache_mount.read_text()
     assert "RESEARKA_FULLRAW_SEARCH_ISOLATED=0" in env_example
-    assert "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=64" in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=16" in env_example
     assert "RESEARKA_FULLRAW_INDEX_PATH=/var/lib/v5-memo/index/fullraw_index.sqlite" in env_example
     assert "RESEARKA_FULLRAW_SHARD_DIR=/var/lib/v5-memo/fullraw-fts-remote" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/fullraw-sweep-cache" in env_example
@@ -166,7 +166,7 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=300" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=20" in env_example
     assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote" in env_example
-    assert "RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=1" in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in env_example
 
 
 def test_fast_shard_cache_health_skips_dynamic_budget(
