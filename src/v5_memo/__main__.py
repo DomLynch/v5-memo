@@ -280,6 +280,10 @@ def main() -> None:
             _write_json(args.publish_receipt_path, error)
             print("Discovery seed output was not submitted to Researka", file=sys.stderr)
             raise SystemExit(4)
+        if blocker := _publish_blocker(result):
+            _write_json(args.publish_receipt_path, blocker)
+            print(f"Publish blocked: {blocker['error']}", file=sys.stderr)
+            raise SystemExit(5)
         payload = build_researka_payload(
             result,
             author_agent_id=config.agent_id,
@@ -435,6 +439,30 @@ def _is_discovery_seed(result: object) -> bool:
     candidate = getattr(result, "candidate", None)
     reasons = getattr(candidate, "reasons", ())
     return any(reason == "tier:discovery_seed" for reason in reasons)
+
+
+def _publish_blocker(result: object) -> dict[str, object] | None:
+    candidate = getattr(result, "candidate", None)
+    claim_cards = tuple(getattr(candidate, "claim_cards", ()) or ())
+    if not claim_cards:
+        return None
+    direct_human = sum(
+        1
+        for card in claim_cards
+        if getattr(card, "population", "") == "human" and getattr(card, "support_type", "") == "direct"
+    )
+    indirect_model = sum(
+        1
+        for card in claim_cards
+        if getattr(card, "population", "") in {"animal", "cell_model"} or getattr(card, "support_type", "") == "indirect"
+    )
+    if indirect_model and direct_human < 2:
+        return {
+            "error": "translational_evidence_too_indirect",
+            "direct_human_receipts": direct_human,
+            "indirect_model_receipts": indirect_model,
+        }
+    return None
 
 
 if __name__ == "__main__":
