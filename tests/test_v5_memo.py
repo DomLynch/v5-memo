@@ -1258,6 +1258,48 @@ def test_researka_payload_skips_non_article_title_and_types_supporting_receipts(
     assert "excerpt" in source_bundle[2]
 
 
+def test_researka_payload_uses_receipt_title_instead_of_auto_bridge_thesis_title() -> None:
+    candidate = InsightCandidate(
+        topic="urolithin mitochondrial aging",
+        thesis=(
+            "urolithin mitochondrial aging may have a mitochondrial / improve bridge "
+            "between urolithin provide cardioprotection and muscle function."
+        ),
+        bridge_terms=("mitochondrial", "improve"),
+        tension_terms=("positive",),
+        receipt_ids=("primary", "context"),
+        score=84,
+        novelty_score=70,
+        evidence_score=80,
+        reasons=("shape:boundary_condition",),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="primary",
+            title="Urolithin A provides cardioprotection and improves human cardiovascular health biomarkers",
+            abstract="Human supplementation improved a bounded cardiovascular biomarker.",
+            source="fullraw:openalex",
+            doi="10.1016/j.isci.2025.111814",
+        ),
+        CorpusHit(
+            hit_id="context",
+            title="Urolithin A improves mitochondrial health in osteoarthritis models",
+            abstract="Mechanistic context receipt.",
+            source="fullraw:openalex",
+            doi="10.1111/acel.13662",
+        ),
+    ]
+    markdown = "# Alpha memo: mitochondrial improve\n\nBody."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-memo-agent",
+        domain_slug="longevity_research",
+    )
+
+    assert payload["title"] == "Urolithin A provides cardioprotection and improves human cardiovascular health biomarkers"
+
+
 def test_claim_card_downgrades_conference_and_supplemental_receipts() -> None:
     conference_hit = CorpusHit(
         hit_id="faseb",
