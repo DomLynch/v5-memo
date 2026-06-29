@@ -190,7 +190,9 @@ def _append_alpha_disclaimer(markdown: str) -> str:
 
 def _submission_title(result: MemoResult, heading: str) -> str:
     raw = heading.replace("Alpha memo: ", "", 1).strip()
-    if _query_like_title(raw) or _non_article_title(raw) or _incomplete_title(raw):
+    if _incomplete_title(raw):
+        raw = _receipt_title(result) or _first_sentence(result.candidate.thesis) or result.candidate.topic
+    if _query_like_title(raw) or _non_article_title(raw):
         raw = _first_sentence(result.candidate.thesis) or result.candidate.topic
     if _bridge_only_title(raw, result.candidate.bridge_terms):
         raw = _receipt_title(result) or raw

@@ -257,6 +257,9 @@ def test_minimax_prompt_includes_structured_claim_ledger() -> None:
     assert "- novelty_vs_corpus: 67" in prompt
     assert "design=randomized_trial" in prompt
     assert "support=direct/high" in prompt
+    assert "safety_feasibility" in prompt
+    assert "do not call it positive efficacy" in prompt
+    assert "not directly contradictory" in prompt
 
 
 def test_minimax_writer_from_env_uses_v5_overrides(monkeypatch: pytest.MonkeyPatch) -> None:

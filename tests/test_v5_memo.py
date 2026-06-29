@@ -1234,6 +1234,14 @@ def test_researka_payload_skips_non_article_title_and_types_supporting_receipts(
             venue="The FASEB Journal",
         ),
         CorpusHit(
+            hit_id="jissn-supplement",
+            title="Effects of resveratrol supplementation after eccentric exercise",
+            abstract="Abstract supplement reported inflammatory markers in runners.",
+            source="fullraw:openalex",
+            doi="10.1186/1550-2783-8-s1-p15",
+            venue="Journal of the International Society of Sports Nutrition",
+        ),
+        CorpusHit(
             hit_id="primary",
             title="Nicotinamide riboside supplementation and exercise performance in humans",
             abstract="Randomized human trial measured endurance exercise performance after supplementation.",
@@ -1254,8 +1262,9 @@ def test_researka_payload_skips_non_article_title_and_types_supporting_receipts(
     assert source_bundle[0]["evidence_type"] == "supplemental"
     assert source_bundle[0]["source_type"] == "supplemental"
     assert source_bundle[1]["evidence_type"] == "conference_abstract"
-    assert source_bundle[2]["evidence_type"] == "primary"
-    assert "excerpt" in source_bundle[2]
+    assert source_bundle[2]["evidence_type"] == "conference_abstract"
+    assert source_bundle[3]["evidence_type"] == "primary"
+    assert "excerpt" in source_bundle[3]
 
 
 def test_researka_payload_uses_receipt_title_instead_of_auto_bridge_thesis_title() -> None:
@@ -1300,6 +1309,45 @@ def test_researka_payload_uses_receipt_title_instead_of_auto_bridge_thesis_title
     assert payload["title"] == "Urolithin A provides cardioprotection and improves human cardiovascular health biomarkers"
 
 
+def test_researka_payload_skips_incomplete_receipt_title() -> None:
+    candidate = InsightCandidate(
+        topic="resveratrol exercise protocol",
+        thesis="Resveratrol exercise evidence splits by timing and endpoint.",
+        bridge_terms=("resveratrol", "exercise"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("truncated", "complete"),
+        score=90,
+        novelty_score=58,
+        evidence_score=90,
+        reasons=("shape:boundary_condition", "tier:publishable_alpha"),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="truncated",
+            title="Effects of 14 days of prophylactic resveratrol supplementation in trained endurance runners upon the inflammatory",
+            abstract="Human runner intervention measured cytokine response after eccentric exercise.",
+            source="fullraw:openalex",
+            doi="10.1186/1550-2783-8-s1-p15",
+        ),
+        CorpusHit(
+            hit_id="complete",
+            title="Combined exercise training and resveratrol supplementation in older adults with functional limitations",
+            abstract="Pilot randomized study assessed safety and feasibility.",
+            source="fullraw:openalex",
+            doi="10.1016/j.exger.2020.111111",
+        ),
+    ]
+    markdown = "# Alpha memo: Effects of 14 days of prophylactic resveratrol supplementation in trained endurance runners upon the inflammatory\n\nBody."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-memo-agent",
+        domain_slug="longevity_research",
+    )
+
+    assert payload["title"] == "Combined exercise training and resveratrol supplementation in older adults with functional limitations"
+
+
 def test_claim_card_downgrades_conference_and_supplemental_receipts() -> None:
     conference_hit = CorpusHit(
         hit_id="faseb",
@@ -1316,15 +1364,28 @@ def test_claim_card_downgrades_conference_and_supplemental_receipts() -> None:
         source="fullraw:openalex",
         doi="10.6084/m9.figshare.c.3601490_d1",
     )
+    jissn_supplement_hit = CorpusHit(
+        hit_id="jissn-supplement",
+        title="Effects of resveratrol supplementation after eccentric exercise",
+        abstract="Human randomized trial abstract supplement reported inflammatory markers.",
+        source="fullraw:openalex",
+        doi="10.1186/1550-2783-8-s1-p15",
+    )
 
     conference = _claim_card(conference_hit, ReceiptRole("faseb", "boundary", "conference abstract"))
     supplement = _claim_card(supplement_hit, ReceiptRole("supplement", "context", "supporting data"))
+    jissn_supplement = _claim_card(
+        jissn_supplement_hit,
+        ReceiptRole("jissn-supplement", "context", "journal supplement abstract"),
+    )
 
     assert conference.population == "human"
     assert conference.support_type == "indirect"
     assert conference.confidence == "medium"
     assert supplement.support_type == "indirect"
     assert supplement.confidence == "medium"
+    assert jissn_supplement.support_type == "indirect"
+    assert jissn_supplement.confidence == "low"
 
 
 def test_claim_card_treats_human_supplementation_as_direct_intervention() -> None:
@@ -1346,6 +1407,29 @@ def test_claim_card_treats_human_supplementation_as_direct_intervention() -> Non
     assert card.population == "human"
     assert card.support_type == "direct"
     assert card.confidence == "high"
+
+
+def test_claim_card_does_not_treat_safety_feasibility_pilot_as_positive_efficacy() -> None:
+    hit = CorpusHit(
+        hit_id="10.1016/j.exger.2020.111111",
+        title="Combined exercise training and resveratrol supplementation in older adults",
+        abstract=(
+            "This pilot randomized trial evaluated safety and feasibility of combining "
+            "exercise training with resveratrol supplementation in community-dwelling "
+            "older adults with functional limitations."
+        ),
+        source="fullraw:openalex",
+        doi="10.1016/j.exger.2020.111111",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "positive_signal", "candidate evidence stream"))
+
+    assert card.role == "safety_feasibility"
+    assert card.design == "randomized_trial"
+    assert card.population == "human"
+    assert card.direction == "unclear"
+    assert card.support_type == "direct"
+    assert card.confidence == "low"
 
 
 def test_researka_payload_strips_markdown_wrapped_doi_receipt_labels() -> None:
