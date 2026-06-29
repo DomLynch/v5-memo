@@ -27,6 +27,34 @@ _DOI_LABEL_RE = re.compile(r"\b(10\.\d{4,9}/[^\s\"'\])}>,;:`]+):", re.IGNORECASE
 _TITLE_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _SENTENCE_END = re.compile(r"([.!?])(?:\s|$)")
 _TITLE_ROLE_TERMS = frozenset({"boundary", "context", "mechanism", "outcome", "promise", "receipt"})
+_NON_ARTICLE_TITLE_PHRASES = (
+    "additional file",
+    "supplementary file",
+    "supplemental file",
+    "supplementary material",
+    "supplemental material",
+    "supplementary data",
+    "supplemental data",
+    "data sheet",
+    "dataset",
+    "appendix",
+    "corrigendum",
+    "erratum",
+    "comment on",
+    "reply to",
+)
+_SUPPLEMENTAL_RECEIPT_PHRASES = (
+    *_NON_ARTICLE_TITLE_PHRASES,
+    "figshare",
+    "dryad",
+    "zenodo",
+)
+_CONFERENCE_RECEIPT_PHRASES = (
+    "conference abstract",
+    "meeting abstract",
+    "poster abstract",
+    "abstract supplement",
+)
 _SUBMIT_KEY_ENV_NAMES = (
     "V5_MEMO_RESEARKA_AGENT_KEY",
     "V5_MEMO_RESEARKA_API_KEY",
@@ -128,11 +156,11 @@ def _append_alpha_disclaimer(markdown: str) -> str:
 
 def _submission_title(result: MemoResult, heading: str) -> str:
     raw = heading.replace("Alpha memo: ", "", 1).strip()
-    if _query_like_title(raw):
+    if _query_like_title(raw) or _non_article_title(raw):
         raw = _first_sentence(result.candidate.thesis) or result.candidate.topic
     if _bridge_only_title(raw, result.candidate.bridge_terms):
         raw = _receipt_title(result) or raw
-    if _query_like_title(raw):
+    if _query_like_title(raw) or _non_article_title(raw):
         raw = _receipt_title(result) or result.candidate.topic
     return _clip_title(raw)
 
@@ -148,8 +176,17 @@ def _bridge_only_title(title: str, bridge_terms: Sequence[str]) -> bool:
     return 0 < len(tokens) <= 4 and tokens <= bridge
 
 
+def _non_article_title(title: str) -> bool:
+    clean = " ".join(title.casefold().split())
+    return any(phrase in clean for phrase in _NON_ARTICLE_TITLE_PHRASES)
+
+
 def _receipt_title(result: MemoResult) -> str:
-    return next((" ".join(hit.title.split()).strip(" .") for hit in result.receipts if hit.title.strip()), "")
+    for hit in result.receipts:
+        title = " ".join(hit.title.split()).strip(" .")
+        if title and not _non_article_title(title):
+            return title
+    return ""
 
 
 def _first_sentence(text: str) -> str:
@@ -189,12 +226,15 @@ def _abstract_from_markdown(markdown: str) -> str:
 
 
 def _source_bundle_entry(hit: CorpusHit) -> dict[str, object]:
+    evidence_type = _source_evidence_type(hit)
     entry: dict[str, object] = {
         "title": hit.title,
         "url": hit.url,
         "source": hit.source,
+        "source_type": _source_type(hit, evidence_type),
         "year": hit.year,
-        "evidence_type": "primary",
+        "evidence_type": evidence_type,
+        "excerpt": _source_excerpt(hit),
         "retrieval_evidence": _retrieval_evidence(hit),
     }
     doi = _valid_doi(hit.doi)
@@ -204,6 +244,52 @@ def _source_bundle_entry(hit: CorpusHit) -> dict[str, object]:
         entry["pmid"] = pmid
         entry["id"] = pmid
     return entry
+
+
+def _source_evidence_type(hit: CorpusHit) -> str:
+    text = _receipt_descriptor(hit)
+    if any(phrase in text for phrase in _SUPPLEMENTAL_RECEIPT_PHRASES):
+        return "supplemental"
+    if any(phrase in text for phrase in _CONFERENCE_RECEIPT_PHRASES):
+        return "conference_abstract"
+    doi = str(hit.doi or hit.hit_id or "").casefold()
+    if "10.6084/m9.figshare" in doi:
+        return "supplemental"
+    if "10.1096/fasebj" in doi and ".s1." in doi:
+        return "conference_abstract"
+    return "primary"
+
+
+def _source_type(hit: CorpusHit, evidence_type: str) -> str:
+    if evidence_type != "primary":
+        return evidence_type[:40]
+    raw = hit.source.split(":", 1)[-1] or hit.source or "openalex"
+    clean = re.sub(r"[^a-z0-9_-]+", "_", raw.casefold()).strip("_")
+    return (clean or "openalex")[:40]
+
+
+def _source_excerpt(hit: CorpusHit) -> str:
+    text = " ".join((hit.abstract or hit.title).split()).strip()
+    if len(text) >= 20:
+        return text[:5000]
+    fallback = " ".join(part for part in (hit.title, hit.venue or "", hit.source) if part).strip()
+    return (fallback or hit.receipt_id)[:5000]
+
+
+def _receipt_descriptor(hit: CorpusHit) -> str:
+    return " ".join(
+        part.casefold()
+        for part in (
+            hit.title,
+            hit.abstract,
+            hit.venue or "",
+            hit.source,
+            str(hit.doi or ""),
+            str(hit.hit_id or ""),
+            " ".join(str(value) for value in hit.metadata.values()),
+        )
+        if part
+    )
 
 
 def _valid_doi(value: object) -> str:
