@@ -173,6 +173,23 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=4" in env_example
 
 
+def test_v5_isolated_fullraw_service_uses_v5_lane() -> None:
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
+    config = (deploy_dir / "v5-memo-isolated-fullraw-search.service").read_text()
+
+    assert "EnvironmentFile=/etc/v5-memo/env" in config
+    assert "Environment=RESEARKA_FULLRAW_INDEX_PORT=9915" in config
+    assert "Environment=V5_MEMO_FULL_RAW_INDEX_PORT=9915" in config
+    assert "Environment=RESEARKA_FULLRAW_SEARCH_ISOLATED=1" in config
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/v5-fullraw-sweep-cache" in config
+    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/v5-shard-cache-5tb" in config
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=2" in config
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=4" in config
+    assert "Environment=RESEARKA_FULLRAW_MAX_VARIANTS=1" in config
+    assert "/etc/researka-fullraw.env" not in config
+    assert "/etc/researka-fullraw-overrides.env" not in config
+
+
 def test_fast_shard_cache_health_skips_dynamic_budget(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
