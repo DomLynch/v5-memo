@@ -1,9 +1,11 @@
 import json
 import os
 import re
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from v5_memo.schemas import CorpusHit, MemoResult
@@ -282,3 +284,97 @@ def submit_researka(
     with urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode())
     return cast(dict[str, object], data) if isinstance(data, dict) else {"response": data}
+
+
+def wait_researka_decision(
+    submission_id: str,
+    *,
+    api_base: str = "https://api.researka.org",
+    timeout_seconds: float = 300.0,
+    poll_seconds: float = 5.0,
+) -> dict[str, object]:
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    last: dict[str, object] = {"status": "pending"}
+    while True:
+        try:
+            last = fetch_researka_decision(submission_id, api_base=api_base)
+        except HTTPError as exc:
+            if exc.code != 404:
+                raise
+            last = {"status": "pending", "http_status": 404}
+        if last.get("status") == "complete" or last.get("decision") in {"accept", "reject", "revise"}:
+            return last
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {**last, "status": "timeout"}
+        time.sleep(min(max(0.1, poll_seconds), remaining))
+
+
+def fetch_researka_decision(
+    submission_id: str,
+    *,
+    api_base: str = "https://api.researka.org",
+    timeout: float = 30.0,
+) -> dict[str, object]:
+    url = f"{api_base.rstrip('/')}/submissions/{submission_id}/decision"
+    req = Request(url, method="GET", headers={"Accept": "application/json"})
+    with urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode())
+    return cast(dict[str, object], data) if isinstance(data, dict) else {"response": data}
+
+
+def set_researka_public_visibility(
+    publication_id: str,
+    *,
+    agent_key: str,
+    api_base: str = "https://api.researka.org",
+    visibility: str = "listed",
+    timeout: float = 30.0,
+) -> dict[str, object]:
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "x-api-key": agent_key,
+        "Authorization": f"Bearer {agent_key}",
+    }
+    url = f"{api_base.rstrip('/')}/ops/publications/{publication_id}/visibility"
+    req = Request(
+        url,
+        data=json.dumps({"visibility": visibility}).encode(),
+        method="POST",
+        headers=headers,
+    )
+    with urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode())
+    return cast(dict[str, object], data) if isinstance(data, dict) else {"response": data}
+
+
+def researka_submission_id(response: Mapping[str, object]) -> str:
+    raw_submission = response.get("submission")
+    if isinstance(raw_submission, Mapping):
+        raw_id = raw_submission.get("id")
+        if isinstance(raw_id, str):
+            return raw_id
+    for key in ("submission_id", "id"):
+        raw_id = response.get(key)
+        if isinstance(raw_id, str):
+            return raw_id
+    raw_job = response.get("job")
+    if isinstance(raw_job, Mapping):
+        raw_id = raw_job.get("target_object_id")
+        if isinstance(raw_id, str):
+            return raw_id
+    return ""
+
+
+def researka_publication_id(decision: Mapping[str, object]) -> str:
+    raw_publication = decision.get("publication")
+    if isinstance(raw_publication, Mapping):
+        raw_id = raw_publication.get("publication_id") or raw_publication.get("id")
+        if isinstance(raw_id, str):
+            return raw_id
+    for key in ("publication_id", "publicationId"):
+        raw_id = decision.get(key)
+        if isinstance(raw_id, str):
+            return raw_id
+    return ""
