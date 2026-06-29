@@ -895,6 +895,7 @@ def test_fast_health_reports_async_sweep_queue_config(
         "max_inflight": 2,
         "max_queue": 16,
         "priority_burst": True,
+        "workers": fullraw_index._auto_sweep_workers(2),
     }
 
 
@@ -927,6 +928,7 @@ def test_sweep_queue_summary_counts_priority_and_background_jobs() -> None:
         max_inflight=2,
         max_queue=16,
         priority_burst=True,
+        workers=8,
         enabled=True,
     ) == {
         "enabled": True,
@@ -937,6 +939,7 @@ def test_sweep_queue_summary_counts_priority_and_background_jobs() -> None:
         "max_inflight": 2,
         "max_queue": 16,
         "priority_burst": True,
+        "workers": 8,
     }
 
 

@@ -2700,6 +2700,7 @@ def _sweep_queue_summary(
     max_inflight: int,
     max_queue: int,
     priority_burst: bool,
+    workers: int,
     enabled: bool,
 ) -> dict[str, object]:
     queued_count = len(sweep_queued_jobs)
@@ -2713,6 +2714,7 @@ def _sweep_queue_summary(
         "max_inflight": max_inflight,
         "max_queue": max_queue,
         "priority_burst": priority_burst,
+        "workers": workers,
     }
 
 
@@ -3075,6 +3077,7 @@ def run_server() -> None:
                 max_inflight=sweep_max_inflight,
                 max_queue=sweep_max_queue,
                 priority_burst=sweep_priority_burst,
+                workers=sweep_workers,
                 enabled=sweep_enabled and shard_dir is not None,
             )
 
@@ -3087,6 +3090,7 @@ def run_server() -> None:
                     max_inflight=sweep_max_inflight,
                     max_queue=sweep_max_queue,
                     priority_burst=sweep_priority_burst,
+                    workers=sweep_workers,
                     enabled=sweep_enabled and shard_dir is not None,
                 ),
                 "key_running": key in sweep_inflight,
