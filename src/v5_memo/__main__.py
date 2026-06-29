@@ -18,6 +18,7 @@ from v5_memo.client import (
     SearchBackendError,
 )
 from v5_memo.coverage import current_search_coverage, require_full_raw_corpus
+from v5_memo.gate import candidate_publish_blocker
 from v5_memo.miner import query_anchor_terms
 from v5_memo.minimax_writer import (
     MiniMaxM3CandidateSelector,
@@ -268,6 +269,7 @@ def main() -> None:
         "min_shards_searched": args.min_shards_searched,
         "min_sources_searched": args.min_sources_searched,
         "min_search_passes": args.min_search_passes,
+        "require_publish_quality": args.submit_researka or args.publish,
     }
     try:
         result = build_alpha_memo(**build_kwargs)
@@ -502,40 +504,7 @@ def _publish_blocker(result: object) -> dict[str, object] | None:
     if unsafe_dois:
         return {"error": "unbundled_doi_citation", "dois": unsafe_dois}
     candidate = getattr(result, "candidate", None)
-    claim_cards = tuple(getattr(candidate, "claim_cards", ()) or ())
-    if not claim_cards:
-        return None
-    direct_human = sum(
-        1
-        for card in claim_cards
-        if getattr(card, "population", "") == "human" and getattr(card, "support_type", "") == "direct"
-    )
-    strong_direct_human = sum(
-        1
-        for card in claim_cards
-        if getattr(card, "population", "") == "human"
-        and getattr(card, "support_type", "") == "direct"
-        and getattr(card, "confidence", "") == "high"
-        and getattr(card, "role", "") != "safety_feasibility"
-    )
-    indirect_model = sum(
-        1
-        for card in claim_cards
-        if getattr(card, "population", "") in {"animal", "cell_model"} or getattr(card, "support_type", "") == "indirect"
-    )
-    if indirect_model and direct_human == 0:
-        return {
-            "error": "translational_evidence_too_indirect",
-            "direct_human_receipts": direct_human,
-            "indirect_model_receipts": indirect_model,
-        }
-    if direct_human < 2 or strong_direct_human < 2:
-        return {
-            "error": "insufficient_direct_human_receipts",
-            "direct_human_receipts": direct_human,
-            "strong_direct_human_receipts": strong_direct_human,
-        }
-    return None
+    return candidate_publish_blocker(candidate) if candidate is not None else None
 
 
 if __name__ == "__main__":

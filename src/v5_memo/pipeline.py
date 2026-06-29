@@ -4,7 +4,12 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from v5_memo.binder import bind_receipts
-from v5_memo.gate import meets_publish_bar, memo_coverage_failure, no_alpha_failure
+from v5_memo.gate import (
+    candidate_publish_blocker,
+    meets_publish_bar,
+    memo_coverage_failure,
+    no_alpha_failure,
+)
 from v5_memo.miner import _tokens, mine_insights, query_anchor_terms
 from v5_memo.retriever import CorpusSearcher, collect_seed_hits
 from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult
@@ -28,6 +33,7 @@ def build_alpha_memo(
     min_shards_searched: int = 0,
     min_sources_searched: int = 0,
     min_search_passes: int = 0,
+    require_publish_quality: bool = False,
 ) -> MemoResult:
     """Build the best receipt-bound memo from seed queries."""
     if anchor_queries is None:
@@ -45,7 +51,13 @@ def build_alpha_memo(
             include_discovery=min_alpha_tier == "discovery_seed",
             max_candidates=30 if memo_selector is not None else 12,
         )
-        return bool(_publishable_candidates(mined, partial_hits, min_alpha_tier, primary_anchor_terms))
+        return bool(_publishable_candidates(
+            mined,
+            partial_hits,
+            min_alpha_tier,
+            primary_anchor_terms,
+            require_publish_quality=require_publish_quality,
+        ))
 
     hits = collect_seed_hits(
         searcher,
@@ -66,6 +78,7 @@ def build_alpha_memo(
         hits,
         min_alpha_tier,
         primary_anchor_terms,
+        require_publish_quality=require_publish_quality,
     )
     candidates = _apply_selector(publishable_candidates, hits, memo_selector)
     coverage_failures: list[MemoBuildError] = []
@@ -108,6 +121,8 @@ def _publishable_candidates(
     hits: Sequence[CorpusHit],
     min_alpha_tier: str,
     primary_anchor_terms: frozenset[str],
+    *,
+    require_publish_quality: bool = False,
 ) -> list[InsightCandidate]:
     hits_by_id = {hit.hit_id: hit for hit in hits}
     return [
@@ -115,6 +130,7 @@ def _publishable_candidates(
         for candidate in mined_candidates
         if meets_publish_bar(candidate, min_alpha_tier)
         and _candidate_preserves_primary_anchor(candidate, hits_by_id, primary_anchor_terms)
+        and (not require_publish_quality or candidate_publish_blocker(candidate) is None)
     ]
 
 

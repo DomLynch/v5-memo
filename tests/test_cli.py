@@ -345,7 +345,8 @@ def test_cli_submit_researka_uses_generated_memo(
     seen: dict[str, object] = {}
     receipt_path = tmp_path / "submit-receipt.json"
 
-    def fake_build_alpha_memo(**_kwargs: object) -> SimpleNamespace:
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen["require_publish_quality"] = kwargs["require_publish_quality"]
         return SimpleNamespace(markdown="# Alpha memo: ok\n")
 
     def fake_build_payload(result: SimpleNamespace, *, author_agent_id: str, domain_slug: str) -> dict[str, object]:
@@ -401,6 +402,7 @@ def test_cli_submit_researka_uses_generated_memo(
         "api_base": "https://api.researka.org",
         "submit_url": "",
         "timeout": 60.0,
+        "require_publish_quality": True,
     }
     assert json.loads(receipt_path.read_text()) == {"submission_id": "sub-1"}
 
@@ -530,7 +532,8 @@ def test_cli_publish_waits_for_accept_and_lists_publication(
     seen: dict[str, object] = {}
     receipt_path = tmp_path / "publish-receipt.json"
 
-    def fake_build_alpha_memo(**_kwargs: object) -> SimpleNamespace:
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen["require_publish_quality"] = kwargs["require_publish_quality"]
         return SimpleNamespace(markdown="# Alpha memo: ok\n")
 
     def fake_build_payload(
@@ -619,6 +622,7 @@ def test_cli_publish_waits_for_accept_and_lists_publication(
         ),
         "wait": ("sub-1", "https://api.researka.org", 20.0, 2.0),
         "list": ("pub-1", "submit-key", "https://api.researka.org", "listed"),
+        "require_publish_quality": True,
     }
 
 

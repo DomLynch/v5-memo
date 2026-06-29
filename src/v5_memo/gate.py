@@ -37,6 +37,43 @@ def meets_publish_bar(candidate: InsightCandidate, min_alpha_tier: str) -> bool:
     )
 
 
+def candidate_publish_blocker(candidate: InsightCandidate) -> dict[str, object] | None:
+    claim_cards = tuple(candidate.claim_cards or ())
+    if not claim_cards:
+        return None
+    direct_human = sum(
+        1
+        for card in claim_cards
+        if card.population == "human" and card.support_type == "direct"
+    )
+    strong_direct_human = sum(
+        1
+        for card in claim_cards
+        if card.population == "human"
+        and card.support_type == "direct"
+        and card.confidence == "high"
+        and card.role != "safety_feasibility"
+    )
+    indirect_model = sum(
+        1
+        for card in claim_cards
+        if card.population in {"animal", "cell_model"} or card.support_type == "indirect"
+    )
+    if indirect_model and direct_human == 0:
+        return {
+            "error": "translational_evidence_too_indirect",
+            "direct_human_receipts": direct_human,
+            "indirect_model_receipts": indirect_model,
+        }
+    if direct_human < 2 or strong_direct_human < 2:
+        return {
+            "error": "insufficient_direct_human_receipts",
+            "direct_human_receipts": direct_human,
+            "strong_direct_human_receipts": strong_direct_human,
+        }
+    return None
+
+
 def no_alpha_failure(
     *,
     topic: str,

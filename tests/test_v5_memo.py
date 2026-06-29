@@ -9,10 +9,17 @@ from v5_memo.binder import bind_receipts
 from v5_memo.gate import candidate_alpha_tier, memo_coverage_failure
 from v5_memo.miner import _claim_card, mine_insights, query_anchor_terms
 from v5_memo.minimax_writer import MemoFormatError, validate_minimax_memo
-from v5_memo.pipeline import _selector_slate, build_alpha_memo
+from v5_memo.pipeline import _publishable_candidates, _selector_slate, build_alpha_memo
 from v5_memo.publisher import build_researka_payload
 from v5_memo.retriever import collect_seed_hits
-from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult, ReceiptRole
+from v5_memo.schemas import (
+    ClaimCard,
+    CorpusHit,
+    InsightCandidate,
+    MemoBuildError,
+    MemoResult,
+    ReceiptRole,
+)
 from v5_memo.scorer import score_connection
 from v5_memo.writer import render_memo
 
@@ -125,6 +132,93 @@ def test_miner_emits_claim_cards_before_prose() -> None:
     assert by_role["outcome"].population == "human"
     assert by_role["outcome"].support_type == "direct"
     assert "**Claim ledger:**" in memo
+
+
+def test_publish_quality_filter_removes_weak_candidates_before_writing() -> None:
+    weak = InsightCandidate(
+        topic="nicotinamide exercise performance",
+        thesis="Weak translational bridge.",
+        bridge_terms=("nicotinamide", "exercise"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("human", "rat"),
+        score=100,
+        novelty_score=58,
+        evidence_score=90,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard(
+                "human",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "positive",
+                "direct",
+                "high",
+                "human trial",
+            ),
+            ClaimCard(
+                "rat",
+                "boundary",
+                "mechanistic_model",
+                "animal",
+                "performance",
+                "negative",
+                "indirect",
+                "medium",
+                "rat model",
+            ),
+        ),
+    )
+    strong = InsightCandidate(
+        topic="cold immersion training",
+        thesis="Two direct human trials create a bounded contrast.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("human-a", "human-b"),
+        score=100,
+        novelty_score=58,
+        evidence_score=90,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard(
+                "human-a",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "recovery",
+                "negative",
+                "direct",
+                "high",
+                "human trial",
+            ),
+            ClaimCard(
+                "human-b",
+                "positive_signal",
+                "intervention_study",
+                "human",
+                "recovery",
+                "positive",
+                "direct",
+                "high",
+                "human study",
+            ),
+        ),
+    )
+
+    assert _publishable_candidates(
+        [weak, strong],
+        [],
+        "publishable_alpha",
+        frozenset(),
+    ) == [weak, strong]
+    assert _publishable_candidates(
+        [weak, strong],
+        [],
+        "publishable_alpha",
+        frozenset(),
+        require_publish_quality=True,
+    ) == [strong]
 
 
 def test_miner_marks_human_intervention_receipts_direct() -> None:
