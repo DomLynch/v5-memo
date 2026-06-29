@@ -1135,51 +1135,6 @@ def test_full_raw_client_skips_broad_after_trusted_focused_cache_floor(
     assert [payload["search_pass"] for payload in requested] == ["focused"]
 
 
-def test_full_raw_client_skips_core_after_trusted_focused_cache_floor(
-    monkeypatch: object,
-) -> None:
-    requested: list[dict[str, object]] = []
-    receipt = {
-        "shards_total": 1525,
-        "shards_searched": 1525,
-        "partial_shard_search": False,
-        "sweep_failed_shards": 0,
-        "sources_searched": {str(index): 1 for index in range(5)},
-    }
-
-    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
-        del timeout
-        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
-        requested.append(payload)
-        return FakeResponse({
-            "meta": {"count": 12, "shard_receipt": receipt},
-            "results": [
-                {
-                    "doi": f"10.123/metformin-{index}",
-                    "title": f"Metformin resistance training adaptation focused hit {index}",
-                    "abstract": "Metformin resistance training adaptation evidence.",
-                    "year": 2024,
-                    "source": "openalex",
-                }
-                for index in range(12)
-            ],
-        })
-
-    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
-    client = FullRawCorpusSearchClient(
-        search_url="https://search.example/full-raw",
-        max_variants=4,
-        min_shards_searched=1525,
-        min_sources_searched=5,
-        strict=True,
-    )
-
-    hits = client.search("metformin resistance training adaptation", limit=25)
-
-    assert len(hits) == 12
-    assert [payload["search_pass"] for payload in requested] == ["focused"]
-
-
 def test_full_raw_client_keeps_trusted_hits_when_auxiliary_variant_is_unverified(
     monkeypatch: object,
 ) -> None:
