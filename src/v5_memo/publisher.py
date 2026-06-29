@@ -129,9 +129,9 @@ def _submission_title(result: MemoResult, heading: str) -> str:
     if _query_like_title(raw):
         raw = _first_sentence(result.candidate.thesis) or result.candidate.topic
     if _bridge_only_title(raw, result.candidate.bridge_terms):
-        raw = _bounded_alpha_title(result)
+        raw = _topic_title(result)
     if _query_like_title(raw):
-        raw = _bounded_alpha_title(result)
+        raw = _topic_title(result)
     return _clip_title(raw)
 
 
@@ -146,9 +146,9 @@ def _bridge_only_title(title: str, bridge_terms: Sequence[str]) -> bool:
     return 0 < len(tokens) <= 4 and tokens <= bridge
 
 
-def _bounded_alpha_title(result: MemoResult) -> str:
+def _topic_title(result: MemoResult) -> str:
     subject = _title_phrase(result.candidate.topic) or _title_phrase(" ".join(result.candidate.bridge_terms))
-    return f"{subject}: Bounded Alpha Signal" if subject else "Bounded Alpha Signal"
+    return subject or "Alpha Memo"
 
 
 def _title_phrase(text: str) -> str:

@@ -1293,9 +1293,9 @@ def test_researka_payload_uses_bounded_topic_title_for_bridge_only_alpha_title()
 
     title = cast(str, payload["title"])
     assert title != "Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?"
-    assert title == "Cold Water Immersion Resistance Training Adaptation: Bounded Alpha Signal"
+    assert title == "Cold Water Immersion Resistance Training Adaptation"
     assert cast(str, payload["body_markdown"]).startswith(
-        "# Alpha memo: Cold Water Immersion Resistance Training Adaptation: Bounded Alpha Signal"
+        "# Alpha memo: Cold Water Immersion Resistance Training Adaptation"
     )
 
 
