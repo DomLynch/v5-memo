@@ -127,7 +127,6 @@ def test_iter_raw_file_hits_reads_local_pubmed_xml_fixture(tmp_path: Path) -> No
 def test_strict_5tb_service_keeps_secret_env_file() -> None:
     deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
     config = deploy_dir / "v5-memo-fullraw-index-strict-5tb.conf"
-    shard_cache_mount = deploy_dir / "researka-fullraw-shard-cache-mount.service"
     env_example = (deploy_dir / "v5-memo-fullraw-shards.env.example").read_text()
     env_files = [line for line in config.read_text().splitlines() if line.startswith("EnvironmentFile")]
 
@@ -152,28 +151,18 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "Environment=RESEARKA_FULLRAW_SEARCH_PREFIX_SHARDS=128" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/fullraw-sweep-cache" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SHARD_CATALOG_PATH=/var/lib/v5-memo/fullraw-shard-catalog.json" in config.read_text()
-    assert (
-        "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR="
-        "/mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote"
-    ) in config.read_text()
-    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto" in config.read_text()
-    assert "sb:researka-database/index/v5/fullraw-shard-cache-5tb" in shard_cache_mount.read_text()
-    assert "rclone-vfs-cache-shard-cache/vfs/sb/researka-database/index/v5/fullraw-shard-cache-5tb" in shard_cache_mount.read_text()
-    assert "--vfs-cache-mode=full" in shard_cache_mount.read_text()
-    assert "--vfs-cache-max-size=16G" in shard_cache_mount.read_text()
+    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/shard-cache-5tb" in config.read_text()
+    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=17179869184" in config.read_text()
     assert "RESEARKA_FULLRAW_SEARCH_ISOLATED=1" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=32" in env_example
     assert "RESEARKA_FULLRAW_INDEX_PATH=/var/lib/v5-memo/index/fullraw_index.sqlite" in env_example
     assert "RESEARKA_FULLRAW_SHARD_DIR=/var/lib/v5-memo/fullraw-fts-remote" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/fullraw-sweep-cache" in env_example
-    assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto" in env_example
+    assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=17179869184" in env_example
     assert "RESEARKA_FULLRAW_SHARD_CATALOG_PATH=/var/lib/v5-memo/fullraw-shard-catalog.json" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=900" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=20" in env_example
-    assert (
-        "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR="
-        "/mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote"
-    ) in env_example
+    assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/shard-cache-5tb" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_WORKERS=2" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=1" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in env_example
