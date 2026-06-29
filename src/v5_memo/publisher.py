@@ -27,6 +27,12 @@ _DOI_LABEL_RE = re.compile(r"\b(10\.\d{4,9}/[^\s\"'\])}>,;:`]+):", re.IGNORECASE
 _TITLE_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _SENTENCE_END = re.compile(r"([.!?])(?:\s|$)")
 _TITLE_ROLE_TERMS = frozenset({"boundary", "context", "mechanism", "outcome", "promise", "receipt"})
+_AUTO_THESIS_TITLE_PHRASES = (
+    " may have a ",
+    " may be hiding a ",
+    " bridge between ",
+    " boundary condition:",
+)
 _NON_ARTICLE_TITLE_PHRASES = (
     "additional file",
     "supplementary file",
@@ -160,7 +166,7 @@ def _submission_title(result: MemoResult, heading: str) -> str:
         raw = _first_sentence(result.candidate.thesis) or result.candidate.topic
     if _bridge_only_title(raw, result.candidate.bridge_terms):
         raw = _receipt_title(result) or raw
-    if _query_like_title(raw) or _non_article_title(raw):
+    if _query_like_title(raw) or _non_article_title(raw) or _auto_thesis_title(raw):
         raw = _receipt_title(result) or result.candidate.topic
     return _clip_title(raw)
 
@@ -179,6 +185,11 @@ def _bridge_only_title(title: str, bridge_terms: Sequence[str]) -> bool:
 def _non_article_title(title: str) -> bool:
     clean = " ".join(title.casefold().split())
     return any(phrase in clean for phrase in _NON_ARTICLE_TITLE_PHRASES)
+
+
+def _auto_thesis_title(title: str) -> bool:
+    clean = " ".join(title.casefold().split())
+    return any(phrase in clean for phrase in _AUTO_THESIS_TITLE_PHRASES)
 
 
 def _receipt_title(result: MemoResult) -> str:
