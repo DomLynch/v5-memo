@@ -131,7 +131,7 @@ def _submission_title(result: MemoResult, heading: str) -> str:
     if _bridge_only_title(raw, result.candidate.bridge_terms):
         raw = _receipt_title(result) or raw
     if _query_like_title(raw):
-        raw = f"Bounded alpha signal in {result.candidate.topic}"
+        raw = _receipt_title(result) or result.candidate.topic
     return _clip_title(raw)
 
 

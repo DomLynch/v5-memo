@@ -1327,6 +1327,34 @@ def test_researka_payload_rewrites_internal_role_label_title() -> None:
     )
 
 
+def test_researka_payload_uses_receipt_title_when_thesis_title_is_still_query_like() -> None:
+    candidate = InsightCandidate(
+        topic="resveratrol exercise adaptation",
+        thesis="Resveratrol exercise adaptation.",
+        bridge_terms=("resveratrol", "exercise", "adaptation"),
+        tension_terms=("null", "positive"),
+        receipt_ids=("trial", "mechanism"),
+        score=100,
+        novelty_score=58,
+        evidence_score=90,
+        reasons=("shape:promise_outcome_reversal", "tier:publishable_alpha"),
+    )
+    receipts = [
+        _hit("trial", "Resveratrol fails to reduce exercise-training TMAO response", "Human trial reported null TMAO response."),
+        _hit("mechanism", "Resveratrol and exercise adaptation in older adults", "Mechanism receipt reported adaptation endpoints."),
+    ]
+    markdown = "# Alpha memo: resveratrol exercise adaptation promise outcome\n\n**Alpha hypothesis:** bounded signal."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="longevity",
+    )
+
+    assert payload["title"] == "Resveratrol fails to reduce exercise-training TMAO response"
+    assert "Bounded alpha signal" not in cast(str, payload["body_markdown"])
+
+
 def test_researka_payload_rewrites_slash_bridge_title() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion",
