@@ -1242,7 +1242,7 @@ def test_full_sweep_order_reuses_cache_without_query_bias(
     ]
 
 
-def test_complete_sweep_retries_failed_shards() -> None:
+def test_complete_sweep_records_failed_shards_instead_of_retrying_forever() -> None:
     receipt = {
         "sweep_failed_paths": ("shard_a.sqlite", "shard_b.sqlite"),
         "sweep_remaining_shards": 4,
@@ -1251,7 +1251,7 @@ def test_complete_sweep_retries_failed_shards() -> None:
     assert fullraw_index._sweep_failed_path_strings_for_mode(
         receipt,
         require_complete_sweep=True,
-    ) == set()
+    ) == {"shard_a.sqlite", "shard_b.sqlite"}
     assert fullraw_index._sweep_failed_path_strings_for_mode(
         receipt,
         require_complete_sweep=False,
@@ -1261,7 +1261,7 @@ def test_complete_sweep_retries_failed_shards() -> None:
         completed_shards=6,
         failed_shards=2,
         require_complete_sweep=True,
-    ) == 4
+    ) == 2
     assert fullraw_index._sweep_remaining_shard_count(
         selected_shards=10,
         completed_shards=6,
