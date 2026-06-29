@@ -566,6 +566,7 @@ def test_sweep_cache_matcher_accepts_compatible_pass_query() -> None:
         hits=[{"title": "Cold water immersion after training"}],
         receipt={
             "sweep_shard_limit": 1525,
+            "sweep_pass_shard_limit": 32,
             "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
             "sweep_original_query": "cold water immersion training adaptation",
             "sweep_search_passes": (
@@ -579,6 +580,7 @@ def test_sweep_cache_matcher_accepts_compatible_pass_query() -> None:
         query="cold immersion training",
         result_limit=1,
         sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
     )
     assert not fullraw_index._sweep_cache_entry_matches_request(
@@ -586,6 +588,15 @@ def test_sweep_cache_matcher_accepts_compatible_pass_query() -> None:
         query="resveratrol exercise adaptation",
         result_limit=1,
         sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+    assert not fullraw_index._sweep_cache_entry_matches_request(
+        entry,
+        query="cold immersion training",
+        result_limit=1,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=4,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
     )
 
@@ -606,6 +617,7 @@ def test_sweep_cache_matcher_rejects_low_limit_legacy_cache() -> None:
         receipt={
             "sweep_result_limit": 10,
             "sweep_shard_limit": 1525,
+            "sweep_pass_shard_limit": 32,
             "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
             "sweep_query": "cold immersion training",
         },
@@ -616,6 +628,7 @@ def test_sweep_cache_matcher_rejects_low_limit_legacy_cache() -> None:
         query="cold immersion training",
         result_limit=10,
         sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
     )
     assert fullraw_index._sweep_cache_entry_matches_request(
@@ -623,6 +636,7 @@ def test_sweep_cache_matcher_rejects_low_limit_legacy_cache() -> None:
         query="cold immersion training",
         result_limit=10,
         sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
     )
 
