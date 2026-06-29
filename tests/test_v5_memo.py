@@ -1255,7 +1255,7 @@ def test_researka_payload_strips_markdown_wrapped_doi_receipt_labels() -> None:
     assert "10.1519/jsc.0000000000000434 -" in body
 
 
-def test_researka_payload_uses_bounded_topic_title_for_bridge_only_alpha_title() -> None:
+def test_researka_payload_uses_receipt_title_for_bridge_only_alpha_title() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion resistance training adaptation",
         thesis="Cold immersion strength training may hide a metric-window signal.",
@@ -1291,11 +1291,9 @@ def test_researka_payload_uses_bounded_topic_title_for_bridge_only_alpha_title()
         domain_slug="performance",
     )
 
-    title = cast(str, payload["title"])
-    assert title != "Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?"
-    assert title == "Cold Water Immersion Resistance Training Adaptation"
+    assert payload["title"] == "Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?"
     assert cast(str, payload["body_markdown"]).startswith(
-        "# Alpha memo: Cold Water Immersion Resistance Training Adaptation"
+        "# Alpha memo: Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?"
     )
 
 
