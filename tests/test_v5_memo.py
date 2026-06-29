@@ -1198,6 +1198,43 @@ def test_researka_payload_preserves_memo_and_receipts() -> None:
     assert payload["source_bundle"][0]["evidence_type"] == "primary"  # type: ignore[index]
 
 
+def test_researka_payload_drops_dangling_clipped_title_subtitle() -> None:
+    candidate = InsightCandidate(
+        topic="training adaptation",
+        thesis="A strong bounded adaptation signal.",
+        bridge_terms=("training", "adaptation"),
+        tension_terms=("blunted",),
+        receipt_ids=("long", "short"),
+        score=92,
+        novelty_score=90,
+        evidence_score=94,
+        reasons=("shape:directional_reversal",),
+    )
+    receipts = [
+        _hit(
+            "long",
+            "Metformin blunts muscle hypertrophy in response to progressive resistance exercise training in older adults: A randomized trial",
+            "Human trial reported a bounded adaptation signal.",
+        ),
+        _hit("short", "Training adaptation response", "Comparator adaptation receipt."),
+    ]
+    markdown = (
+        "# Alpha memo: Metformin blunts muscle hypertrophy in response to progressive resistance exercise training "
+        "in older adults: A randomized trial\n\n**Alpha hypothesis:** A strong bounded adaptation signal."
+    )
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="longevity",
+    )
+
+    assert payload["title"] == "Metformin blunts muscle hypertrophy in response to progressive resistance exercise training in older adults"
+    assert cast(str, payload["body_markdown"]).startswith(
+        "# Alpha memo: Metformin blunts muscle hypertrophy in response to progressive resistance exercise training in older adults"
+    )
+
+
 def test_researka_payload_uses_valid_doi_or_pmid_not_empty_doi() -> None:
     candidate = InsightCandidate(
         topic="caffeine exercise",
