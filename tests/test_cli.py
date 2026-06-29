@@ -239,7 +239,12 @@ def test_fullraw_cli_inherits_search_service_coverage_thresholds(
         "metformin augment resistance training protocol",
         "metformin blunts resistance training",
     ]
-    assert (seen["per_query_limit"], seen["max_hits"], seen["min_shards_searched"], seen["min_sources_searched"]) == (10, 20, 50, 2)
+    assert (
+        seen["per_query_limit"],
+        seen["max_hits"],
+        seen["min_shards_searched"],
+        seen["min_sources_searched"],
+    ) == (25, 75, 50, 2)
 
 
 def test_fullraw_cli_allows_recall_depth_env_override(
@@ -314,7 +319,7 @@ def test_fullraw_cli_allows_single_recall_limit_env_override(
     main()
 
     assert "Alpha memo" in capsys.readouterr().out
-    assert (seen["per_query_limit"], seen["max_hits"]) == (30, 60)
+    assert (seen["per_query_limit"], seen["max_hits"]) == (30, 90)
 
 
 def test_cli_prints_search_backend_error_without_traceback(
