@@ -142,7 +142,7 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "SendSIGKILL=yes" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SEARCH_ISOLATED=1" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=32" in config.read_text()
-    assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKERS=" not in config.read_text()
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKERS=8" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=" not in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=1" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=4" in config.read_text()
@@ -163,7 +163,7 @@ def test_strict_5tb_service_keeps_secret_env_file() -> None:
     assert "RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=900" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=20" in env_example
     assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/shard-cache-5tb" in env_example
-    assert "RESEARKA_FULLRAW_SWEEP_WORKERS=2" in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_WORKERS=8" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=2" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=1" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=4" in env_example
