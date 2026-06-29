@@ -3257,7 +3257,7 @@ def run_server() -> None:
                     )
                     completed_pass_roles.append(pass_plan.role)
                     completed_path_strings.update(str(path) for path in completed_paths)
-                    if not timed_out and not sweep_require_complete:
+                    if not timed_out:
                         failed_path_strings.update(
                             str(entry.path) for entry in pass_entries if str(entry.path) not in completed_path_strings
                         )
@@ -4190,7 +4190,8 @@ def _sweep_failed_path_strings_for_mode(
     *,
     require_complete_sweep: bool,
 ) -> set[str]:
-    return set() if require_complete_sweep else _sweep_failed_path_strings(receipt)
+    del require_complete_sweep
+    return _sweep_failed_path_strings(receipt)
 
 
 def _sweep_remaining_shard_count(
@@ -4200,9 +4201,9 @@ def _sweep_remaining_shard_count(
     failed_shards: int,
     require_complete_sweep: bool,
 ) -> int:
+    del require_complete_sweep
     outstanding = selected_shards - completed_shards
-    if not require_complete_sweep:
-        outstanding -= failed_shards
+    outstanding -= failed_shards
     return max(0, outstanding)
 
 
