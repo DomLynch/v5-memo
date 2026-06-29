@@ -808,6 +808,7 @@ def test_minimax_selector_picks_existing_alpha_candidate() -> None:
     assert isinstance(request_data, bytes)
     body = json.loads(request_data.decode("utf-8"))
     assert "strict research alpha selector" in body["system"]
+    assert body["temperature"] == 0.0
     assert "Select the strongest alpha memo bridge" in body["messages"][0]["content"][0]["text"]
 
 

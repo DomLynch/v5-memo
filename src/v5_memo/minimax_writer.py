@@ -239,7 +239,7 @@ class MiniMaxM3CandidateSelector:
                 "You are a strict research alpha selector. Pick only tight, receipt-bound "
                 "bridges. Return only valid JSON."
             ),
-            temperature=0.2,
+            temperature=0.0,
             max_tokens=self._max_tokens,
             base_url=self._base_url,
             model=self._model,
