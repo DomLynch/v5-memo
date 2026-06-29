@@ -1260,6 +1260,35 @@ def test_full_raw_client_from_env_uses_index_token_fullraw_defaults(
     assert client._min_sources_searched == 5
     assert client._require_auth is True
 
+
+def test_full_raw_client_strict_full_coverage_defaults_to_one_variant(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_TOKEN", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_MAX_VARIANTS", raising=False)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", "index-secret")
+
+    client = FullRawCorpusSearchClient.from_env(strict=True)
+
+    assert client._min_shards_searched == 1525
+    assert client._min_sources_searched == 5
+    assert client._max_variants == 1
+
+
+def test_full_raw_client_explicit_max_variants_overrides_strict_default(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_TOKEN", raising=False)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", "index-secret")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MAX_VARIANTS", "3")
+
+    client = FullRawCorpusSearchClient.from_env(strict=True)
+
+    assert client._max_variants == 3
+
+
 def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", "999")
