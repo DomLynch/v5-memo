@@ -515,7 +515,7 @@ def _publish_blocker(result: object) -> dict[str, object] | None:
         for card in claim_cards
         if getattr(card, "population", "") in {"animal", "cell_model"} or getattr(card, "support_type", "") == "indirect"
     )
-    if indirect_model and direct_human < 2:
+    if indirect_model and direct_human == 0:
         return {
             "error": "translational_evidence_too_indirect",
             "direct_human_receipts": direct_human,

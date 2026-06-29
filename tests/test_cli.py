@@ -11,6 +11,7 @@ from v5_memo.__main__ import (
     _alpha_shape_queries,
     _alpha_shaped_planned_queries,
     _dedupe_queries,
+    _publish_blocker,
     _topic_anchored_queries,
     main,
 )
@@ -749,7 +750,7 @@ def test_cli_publish_does_not_submit_discovery_seed(
     }
 
 
-def test_cli_publish_blocks_translational_animal_heavy_memo(
+def test_cli_publish_blocks_zero_human_translational_memo(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
@@ -766,7 +767,7 @@ def test_cli_publish_blocks_translational_animal_heavy_memo(
         evidence_score=80,
         reasons=("tier:publishable_alpha",),
         claim_cards=(
-            ClaimCard("human", "promise", "randomized_trial", "human", "stress", "null", "direct", "high", "human trial"),
+            ClaimCard("human", "promise", "mechanistic_model", "animal", "stress", "null", "indirect", "medium", "mouse model"),
             ClaimCard("rat", "outcome", "mechanistic_model", "animal", "strength", "positive", "indirect", "medium", "rat model"),
         ),
     )
@@ -800,10 +801,30 @@ def test_cli_publish_blocks_translational_animal_heavy_memo(
     assert exc.value.code == 5
     assert "Publish blocked: translational_evidence_too_indirect" in capsys.readouterr().err
     assert json.loads(receipt_path.read_text()) == {
-        "direct_human_receipts": 1,
+        "direct_human_receipts": 0,
         "error": "translational_evidence_too_indirect",
-        "indirect_model_receipts": 1,
+        "indirect_model_receipts": 2,
     }
+
+
+def test_publish_blocker_allows_direct_human_plus_context() -> None:
+    candidate = InsightCandidate(
+        topic="nicotinamide riboside exercise performance",
+        thesis="Human signal with mechanistic context should go to Researka review.",
+        bridge_terms=("nicotinamide", "exercise"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("human", "rat"),
+        score=90,
+        novelty_score=50,
+        evidence_score=80,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard("human", "positive_signal", "randomized_trial", "human", "performance", "positive", "direct", "high", "human trial"),
+            ClaimCard("rat", "boundary", "mechanistic_model", "animal", "performance", "negative", "indirect", "medium", "rat model"),
+        ),
+    )
+
+    assert _publish_blocker(SimpleNamespace(markdown="# Alpha memo: ok", candidate=candidate, receipts=())) is None
 
 
 def test_cli_publish_blocks_unbundled_invalid_doi_citation(
