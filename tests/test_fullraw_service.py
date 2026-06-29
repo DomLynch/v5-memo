@@ -178,6 +178,7 @@ def test_v5_isolated_fullraw_service_uses_v5_lane() -> None:
     config = (deploy_dir / "v5-memo-isolated-fullraw-search.service").read_text()
 
     assert "EnvironmentFile=/etc/v5-memo/env" in config
+    assert "EnvironmentFile=/etc/v5-memo/isolated-fullraw.env" in config
     assert "Environment=RESEARKA_FULLRAW_INDEX_PORT=9915" in config
     assert "Environment=V5_MEMO_FULL_RAW_INDEX_PORT=9915" in config
     assert "Environment=RESEARKA_FULLRAW_SEARCH_ISOLATED=1" in config

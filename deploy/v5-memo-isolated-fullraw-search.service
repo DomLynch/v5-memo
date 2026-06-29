@@ -7,6 +7,7 @@ Wants=network-online.target v5-memo-fullraw-fts-root-mount.service
 Type=simple
 WorkingDirectory=/opt/v5-memo
 EnvironmentFile=/etc/v5-memo/env
+EnvironmentFile=/etc/v5-memo/isolated-fullraw.env
 Environment=PYTHONPATH=/opt/v5-memo/src
 Environment=RESEARKA_FULLRAW_INDEX_HOST=127.0.0.1
 Environment=RESEARKA_FULLRAW_INDEX_PORT=9915
