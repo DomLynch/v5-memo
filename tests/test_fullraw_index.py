@@ -591,7 +591,7 @@ def test_sweep_cache_matcher_accepts_compatible_pass_query() -> None:
         sweep_pass_shard_limit=32,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
     )
-    assert not fullraw_index._sweep_cache_entry_matches_request(
+    assert fullraw_index._sweep_cache_entry_matches_request(
         entry,
         query="cold immersion training",
         result_limit=1,

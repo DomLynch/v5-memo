@@ -2596,9 +2596,6 @@ def _sweep_cache_entry_matches_request(
         return False
     if _int_or_none(receipt.get("sweep_shard_limit")) != sweep_shard_limit:
         return False
-    cached_pass_limit = _int_or_none(receipt.get("sweep_pass_shard_limit"))
-    if cached_pass_limit is not None and cached_pass_limit != sweep_pass_shard_limit:
-        return False
     return _normalize_sweep_cache_query(query) in _sweep_cache_entry_queries(entry)
 
 
