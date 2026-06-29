@@ -209,6 +209,15 @@ def test_fullraw_search_passes_try_concise_exact_query_before_core_variant() -> 
     ]
 
 
+def test_fullraw_search_passes_try_six_term_exact_query_before_core_variant() -> None:
+    passes = _fullraw_search_passes("cold water immersion resistance training adaptation", limit=4)
+
+    assert [(item.name, item.query) for item in passes[:2]] == [
+        ("focused", "cold water immersion resistance training adaptation"),
+        ("core", "cold water immersion resistance training"),
+    ]
+
+
 def test_fullraw_search_passes_prefer_topic_anchor_pairs() -> None:
     queries = [
         item.query

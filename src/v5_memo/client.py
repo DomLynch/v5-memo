@@ -1166,7 +1166,7 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
     raw_terms = _query_terms(query)
     terms = tuple(dict.fromkeys(raw_terms))
     if (
-        2 <= len(terms) <= 5
+        2 <= len(terms) <= 6
         and len(terms) == len(raw_terms)
         and not any(term in _FULLRAW_QUERY_FILLER_DROP for term in terms)
         and add("focused", " ".join(terms))
