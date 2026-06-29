@@ -1285,6 +1285,27 @@ def test_claim_card_downgrades_conference_and_supplemental_receipts() -> None:
     assert supplement.confidence == "medium"
 
 
+def test_claim_card_treats_human_supplementation_as_direct_intervention() -> None:
+    hit = CorpusHit(
+        hit_id="10.1016/j.isci.2025.111814",
+        title="Urolithin A improves human cardiovascular health biomarkers",
+        abstract=(
+            "Preclinically, urolithin A improved mitochondrial quality in aging models. "
+            "In humans, UA supplementation for 4 months in healthy older adults significantly "
+            "reduced plasma ceramides clinically validated to predict CVD risks."
+        ),
+        source="fullraw:openalex",
+        doi="10.1016/j.isci.2025.111814",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "tail_risk", "human supplementation biomarker"))
+
+    assert card.design == "intervention_study"
+    assert card.population == "human"
+    assert card.support_type == "direct"
+    assert card.confidence == "high"
+
+
 def test_researka_payload_strips_markdown_wrapped_doi_receipt_labels() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion",

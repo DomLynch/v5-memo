@@ -893,6 +893,10 @@ def _design_type(terms: frozenset[str]) -> str:
         "subject", "subjects", "volunteer", "volunteered", "volunteers",
     }:
         return "intervention_study"
+    if terms & {"administered", "administ", "supplement", "supplemented"} and terms & {
+        "adult", "adults", "human", "humans", "men", "patient", "patients", "women",
+    }:
+        return "intervention_study"
     if terms & {"review", "meta", "systematic"}:
         return "synthesis"
     if terms & {"mouse", "mice", "rat", "rats", "cell", "cells"}:
