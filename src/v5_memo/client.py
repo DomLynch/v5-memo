@@ -342,11 +342,17 @@ class FullRawCorpusSearchClient:
         default_min_shards = 1525 if token else 0
         default_min_sources = 5 if token else 0
         search_budget_seconds = _float_env("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", 180.0)
+        min_shards_searched = _int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", default_min_shards)
+        full_coverage_search = strict and bool(token) and min_shards_searched >= default_min_shards
+        default_max_variants = 1 if full_coverage_search else 16
         return cls(
             search_url=search_url,
             token=token,
             timeout=min(_float_env("V5_MEMO_FULL_RAW_QUERY_TIMEOUT", _float_env("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", 60.0)), 240.0),
-            max_variants=min(_int_env("V5_MEMO_FULL_RAW_MAX_VARIANTS", 16), 4),
+            max_variants=min(
+                _int_env("V5_MEMO_FULL_RAW_MAX_VARIANTS", default_max_variants),
+                4,
+            ),
             search_budget_seconds=search_budget_seconds,
             sweep_wait_seconds=min(_float_env("V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS", 0.0), search_budget_seconds),
             sweep_poll_seconds=_float_env("V5_MEMO_FULL_RAW_SWEEP_POLL_SECONDS", 1.0),
@@ -354,7 +360,7 @@ class FullRawCorpusSearchClient:
                 "V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT",
                 6,
             ),
-            min_shards_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", default_min_shards),
+            min_shards_searched=min_shards_searched,
             min_sources_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", default_min_sources),
             require_auth=_bool_env("V5_MEMO_FULL_RAW_REQUIRE_AUTH", bool(token)),
             progress=_bool_env("V5_MEMO_FULL_RAW_PROGRESS", False),
