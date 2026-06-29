@@ -182,7 +182,7 @@ def test_shard_search_returns_partial_hits_on_timeout(tmp_path: Path, monkeypatc
     assert timeouts == [30] * len(called)
 
 
-def test_shard_search_waits_for_running_pool_after_timeout(
+def test_shard_search_does_not_wait_for_running_pool_after_timeout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -220,7 +220,7 @@ def test_shard_search_waits_for_running_pool_after_timeout(
     )
 
     assert timed_out is True
-    assert shutdown_calls == [(True, True)]
+    assert shutdown_calls == [(False, True)]
 
 
 def test_isolated_shard_search_kills_timed_out_child(

@@ -1217,6 +1217,7 @@ def _search_shard_paths_with_paths_and_receipt(
             if (cache_path := _shard_cache_path(path)) is not None
         }
         pool = ThreadPoolExecutor(max_workers=max(1, min(worker_count, len(batch))))
+        timed_out_batch = False
         try:
             futures = {
                 pool.submit(
@@ -1242,10 +1243,11 @@ def _search_shard_paths_with_paths_and_receipt(
                 completed_paths.append(path)
                 hit_groups.append(hits)
         except FuturesTimeoutError:
+            timed_out_batch = True
             timed_out = True
             break
         finally:
-            pool.shutdown(wait=True, cancel_futures=True)
+            pool.shutdown(wait=not timed_out_batch, cancel_futures=True)
     hits, metrics = _merge_hit_groups_with_receipt(hit_groups, limit=limit)
     return hits, completed_paths, timed_out, metrics
 
