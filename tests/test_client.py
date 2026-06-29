@@ -1278,6 +1278,17 @@ def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> Non
     assert client._sweep_poll_seconds == 2.0
     assert client._progress is True
 
+
+def test_full_raw_client_does_not_cap_operator_search_budget(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", "8640")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS", "8640")
+
+    client = FullRawCorpusSearchClient.from_env()
+
+    assert client._search_budget_seconds == 8640.0
+    assert client._sweep_wait_seconds == 8640.0
+
 def test_full_raw_client_budget_stops_variant_fanout(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
