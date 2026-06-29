@@ -522,6 +522,105 @@ def test_cli_submit_accepts_v5_versioned_key_and_submit_url(
     }
 
 
+def test_cli_publish_waits_for_accept_and_lists_publication(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen: dict[str, object] = {}
+    receipt_path = tmp_path / "publish-receipt.json"
+
+    def fake_build_alpha_memo(**_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    def fake_build_payload(
+        _result: SimpleNamespace,
+        *,
+        author_agent_id: str,
+        domain_slug: str,
+    ) -> dict[str, object]:
+        return {"author_agent_id": author_agent_id, "domain_slug": domain_slug}
+
+    def fake_submit(
+        payload: dict[str, object],
+        *,
+        agent_key: str,
+        api_base: str,
+        submit_url: str = "",
+        timeout: float = 60.0,
+    ) -> dict[str, object]:
+        del submit_url, timeout
+        seen["submit"] = (payload, agent_key, api_base)
+        return {"submission": {"id": "sub-1"}}
+
+    def fake_wait(
+        submission_id: str,
+        *,
+        api_base: str,
+        timeout_seconds: float,
+        poll_seconds: float,
+    ) -> dict[str, object]:
+        seen["wait"] = (submission_id, api_base, timeout_seconds, poll_seconds)
+        return {
+            "status": "complete",
+            "decision": "accept",
+            "publication": {"publication_id": "pub-1"},
+        }
+
+    def fake_list(
+        publication_id: str,
+        *,
+        agent_key: str,
+        api_base: str,
+        visibility: str = "listed",
+    ) -> dict[str, object]:
+        seen["list"] = (publication_id, agent_key, api_base, visibility)
+        return {"id": publication_id, "public_visibility": visibility, "updated": True}
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.build_researka_payload", fake_build_payload)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr("v5_memo.__main__.wait_researka_decision", fake_wait)
+    monkeypatch.setattr("v5_memo.__main__.set_researka_public_visibility", fake_list)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--publish",
+            "--researka-decision-wait-seconds",
+            "20",
+            "--researka-decision-poll-seconds",
+            "2",
+            "--researka-list-if-accepted",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    main()
+
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["decision"]["decision"] == "accept"
+    assert receipt["visibility"] == {
+        "id": "pub-1",
+        "public_visibility": "listed",
+        "updated": True,
+    }
+    assert seen == {
+        "submit": (
+            {"author_agent_id": "v5-memo-agent", "domain_slug": "longevity_research"},
+            "submit-key",
+            "https://api.researka.org",
+        ),
+        "wait": ("sub-1", "https://api.researka.org", 20.0, 2.0),
+        "list": ("pub-1", "submit-key", "https://api.researka.org", "listed"),
+    }
+
+
 def test_cli_smart_defaults_to_publishable_tier(monkeypatch: MonkeyPatch) -> None:
     seen: dict[str, object] = {}
 

@@ -25,7 +25,15 @@ from v5_memo.minimax_writer import (
     MiniMaxM3SearchPlanner,
 )
 from v5_memo.pipeline import build_alpha_memo
-from v5_memo.publisher import build_researka_payload, load_researka_submit_config, submit_researka
+from v5_memo.publisher import (
+    build_researka_payload,
+    load_researka_submit_config,
+    researka_publication_id,
+    researka_submission_id,
+    set_researka_public_visibility,
+    submit_researka,
+    wait_researka_decision,
+)
 from v5_memo.retriever import CorpusSearcher, _seed_query_key
 from v5_memo.schemas import CorpusHit, MemoBuildError, MemoResult
 from v5_memo.writer import render_memo
@@ -118,6 +126,17 @@ def main() -> None:
     parser.add_argument("--publish", action="store_true")
     parser.add_argument("--submit-researka", action="store_true")
     parser.add_argument("--publish-receipt-path", default="")
+    parser.add_argument(
+        "--researka-decision-wait-seconds",
+        type=float,
+        default=float(os.environ.get("V5_MEMO_RESEARKA_DECISION_WAIT_SECONDS", "0") or 0),
+    )
+    parser.add_argument(
+        "--researka-decision-poll-seconds",
+        type=float,
+        default=float(os.environ.get("V5_MEMO_RESEARKA_DECISION_POLL_SECONDS", "5") or 5),
+    )
+    parser.add_argument("--researka-list-if-accepted", action="store_true")
     parser.add_argument("--researka-agent-id", default=os.environ.get("V5_MEMO_RESEARKA_AGENT_ID", ""))
     parser.add_argument("--researka-domain-slug", default=os.environ.get("V5_MEMO_RESEARKA_DOMAIN_SLUG", ""))
     parser.add_argument("--researka-api-base", default=os.environ.get("V5_MEMO_RESEARKA_API_BASE", "https://api.researka.org"))
@@ -305,8 +324,27 @@ def main() -> None:
             api_base=config.api_base,
             submit_url=config.submit_url,
         )
-        _write_json(args.publish_receipt_path, response)
-        print(json.dumps(response, sort_keys=True), file=sys.stderr)
+        receipt: dict[str, object] = dict(response)
+        should_wait = args.researka_decision_wait_seconds > 0 or args.researka_list_if_accepted
+        submission_id = researka_submission_id(response)
+        if should_wait and submission_id:
+            decision = wait_researka_decision(
+                submission_id,
+                api_base=config.api_base,
+                timeout_seconds=max(args.researka_decision_wait_seconds, 1.0),
+                poll_seconds=args.researka_decision_poll_seconds,
+            )
+            receipt["decision"] = decision
+            publication_id = researka_publication_id(decision)
+            if args.researka_list_if_accepted and decision.get("decision") == "accept" and publication_id:
+                receipt["visibility"] = set_researka_public_visibility(
+                    publication_id,
+                    agent_key=config.agent_key,
+                    api_base=config.api_base,
+                    visibility="listed",
+                )
+        _write_json(args.publish_receipt_path, receipt)
+        print(json.dumps(receipt, sort_keys=True), file=sys.stderr)
     print(memo_path if memo_path is not None else result.markdown)
 
 
