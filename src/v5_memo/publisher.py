@@ -25,6 +25,10 @@ _MARKED_DOI_RE = re.compile(
 )
 _DOI_LABEL_RE = re.compile(r"\b(10\.\d{4,9}/[^\s\"'\])}>,;:`]+):", re.IGNORECASE)
 _TITLE_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+_DANGLING_TITLE_TAIL_RE = re.compile(
+    r":\s*(?:a|an|the|and|or|of|in|on|to|for|with|during|after|before|upon)?$",
+    re.IGNORECASE,
+)
 _SENTENCE_END = re.compile(r"([.!?])(?:\s|$)")
 _TITLE_ROLE_TERMS = frozenset({"boundary", "context", "mechanism", "outcome", "promise", "receipt"})
 _AUTO_THESIS_TITLE_PHRASES = (
@@ -253,10 +257,10 @@ def _first_sentence(text: str) -> str:
 
 def _clip_title(title: str) -> str:
     clean = " ".join(title.split()).strip(" #`*_")
-    if len(clean) <= 120:
-        return clean
-    clipped = clean[:120].rsplit(" ", 1)[0].rstrip(" ,;:")
-    return clipped or clean[:120].rstrip(" ,;:")
+    if len(clean) > 120:
+        clean = clean[:120].rsplit(" ", 1)[0].rstrip(" ,;:")
+    trimmed = _DANGLING_TITLE_TAIL_RE.sub("", clean).rstrip(" ,;:")
+    return trimmed or clean
 
 
 def _retrieval_evidence(hit: CorpusHit) -> dict[str, object]:
