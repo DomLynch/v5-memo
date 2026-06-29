@@ -449,6 +449,13 @@ class FullRawCorpusSearchClient:
                 break
             if (
                 self._strict
+                and search_pass.name == "focused"
+                and len(best) >= min(limit, _FULLRAW_COMPLETED_CACHE_FALLBACK_LIMIT)
+            ):
+                self._log_progress("fullraw trusted focused slate complete; skipping auxiliary variants")
+                break
+            if (
+                self._strict
                 and search_pass.name in {"core", "focused"}
                 and all(pass_.name not in {"core", "focused"} for pass_ in search_passes[variant_index:])
                 and len(best) >= min(limit, _FULLRAW_COMPLETED_CACHE_FALLBACK_LIMIT)
