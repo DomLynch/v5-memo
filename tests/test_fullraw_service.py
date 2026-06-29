@@ -177,13 +177,17 @@ def test_v5_isolated_fullraw_service_uses_v5_lane() -> None:
     deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
     config = (deploy_dir / "v5-memo-isolated-fullraw-search.service").read_text()
 
+    assert "v5-memo-fullraw-shard-cache-mount.service" in config
     assert "EnvironmentFile=/etc/v5-memo/env" in config
     assert "EnvironmentFile=/etc/v5-memo/isolated-fullraw.env" in config
     assert "Environment=RESEARKA_FULLRAW_INDEX_PORT=9915" in config
     assert "Environment=V5_MEMO_FULL_RAW_INDEX_PORT=9915" in config
     assert "Environment=RESEARKA_FULLRAW_SEARCH_ISOLATED=1" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/v5-fullraw-sweep-cache" in config
-    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/v5-shard-cache-5tb" in config
+    assert (
+        "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR="
+        "/mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote/v5-isolated"
+    ) in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=2" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=4" in config
     assert "Environment=RESEARKA_FULLRAW_MAX_VARIANTS=1" in config

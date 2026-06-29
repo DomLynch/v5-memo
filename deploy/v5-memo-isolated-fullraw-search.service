@@ -1,7 +1,7 @@
 [Unit]
 Description=V5 Memo isolated 5TB fullraw search service
-After=network-online.target v5-memo-fullraw-fts-root-mount.service
-Wants=network-online.target v5-memo-fullraw-fts-root-mount.service
+After=network-online.target v5-memo-fullraw-fts-root-mount.service v5-memo-fullraw-shard-cache-mount.service
+Wants=network-online.target v5-memo-fullraw-fts-root-mount.service v5-memo-fullraw-shard-cache-mount.service
 
 [Service]
 Type=simple
@@ -29,7 +29,7 @@ Environment=RESEARKA_FULLRAW_SWEEP_TTL_SECONDS=604800
 Environment=RESEARKA_FULLRAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/v5-fullraw-sweep-cache
 Environment=RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=900
 Environment=RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=20
-Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/v5-shard-cache-5tb
+Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote/v5-isolated
 Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto
 Environment=RESEARKA_FULLRAW_MAX_VARIANTS=1
 Environment=V5_MEMO_FULL_RAW_INDEX_HOST=127.0.0.1
