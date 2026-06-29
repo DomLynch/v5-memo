@@ -1287,6 +1287,24 @@ def test_complete_sweep_retries_failed_shards_until_coverage_is_complete() -> No
     ) == 2
 
 
+def test_complete_sweep_does_not_poison_missed_pass_entries(tmp_path: Path) -> None:
+    pass_entries = [_entry(tmp_path, index, "openalex") for index in range(3)]
+    completed = {str(pass_entries[0].path)}
+
+    assert fullraw_index._sweep_pass_failed_path_strings(
+        pass_entries,
+        completed_path_strings=completed,
+        existing_failed_path_strings=set(),
+        require_complete_sweep=True,
+    ) == set()
+    assert fullraw_index._sweep_pass_failed_path_strings(
+        pass_entries,
+        completed_path_strings=completed,
+        existing_failed_path_strings=set(),
+        require_complete_sweep=False,
+    ) == {str(pass_entries[1].path), str(pass_entries[2].path)}
+
+
 def test_shard_search_materializes_before_isolated_worker(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

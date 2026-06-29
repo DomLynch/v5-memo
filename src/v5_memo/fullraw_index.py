@@ -3281,9 +3281,12 @@ def run_server() -> None:
                     completed_pass_roles.append(pass_plan.role)
                     completed_path_strings.update(str(path) for path in completed_paths)
                     if not timed_out:
-                        failed_path_strings.update(
-                            str(entry.path) for entry in pass_entries if str(entry.path) not in completed_path_strings
-                        )
+                        failed_path_strings.update(_sweep_pass_failed_path_strings(
+                            pass_entries,
+                            completed_path_strings=completed_path_strings,
+                            existing_failed_path_strings=failed_path_strings,
+                            require_complete_sweep=sweep_require_complete,
+                        ))
                     searched_entries = [entry for entry in sweep_entries if str(entry.path) in completed_path_strings]
                     receipt = shard_coverage_receipt(job.catalog, searched_entries)
                     _add_planned_sweep_receipt(receipt, planned_receipt)
@@ -4216,6 +4219,22 @@ def _sweep_failed_path_strings_for_mode(
     if require_complete_sweep:
         return set()
     return _sweep_failed_path_strings(receipt)
+
+
+def _sweep_pass_failed_path_strings(
+    pass_entries: Iterable[ShardCatalogEntry],
+    *,
+    completed_path_strings: set[str],
+    existing_failed_path_strings: set[str],
+    require_complete_sweep: bool,
+) -> set[str]:
+    if require_complete_sweep:
+        return set()
+    return {
+        str(entry.path)
+        for entry in pass_entries
+        if str(entry.path) not in completed_path_strings | existing_failed_path_strings
+    }
 
 
 def _sweep_remaining_shard_count(
