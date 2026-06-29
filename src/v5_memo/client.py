@@ -496,13 +496,14 @@ class FullRawCorpusSearchClient:
             "timeout_seconds": self._timeout,
         }
         if self._uses_cache_sweep_contract():
+            coverage_required = bool(self._min_shards_searched or self._min_sources_searched)
             payload.update({
                 "cache_only": True,
                 "queue_if_missing": True,
                 "priority": True,
                 "min_shards_searched": self._min_shards_searched,
                 "min_sources_searched": self._min_sources_searched,
-                "require_complete_search": True,
+                "require_complete_search": coverage_required,
             })
         initial_error: SearchBackendError | None = None
         try:

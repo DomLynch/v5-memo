@@ -599,6 +599,8 @@ def test_full_raw_client_bounds_wait_on_queued_sweep(monkeypatch: MonkeyPatch) -
 
     assert [payload.get("cache_only") for payload in payloads] == [True, True, True, True]
     assert {payload.get("queue_if_missing") for payload in payloads} == {True}
+    assert {payload.get("min_shards_searched") for payload in payloads} == {1}
+    assert {payload.get("require_complete_search") for payload in payloads} == {True}
     assert now == pytest.approx(0.15)
 
 
@@ -608,6 +610,9 @@ def test_full_raw_client_keeps_sufficient_foreground_hit(monkeypatch: object) ->
         payload = json.loads(cast(bytes, request.data).decode("utf-8"))
         assert payload.get("cache_only") is True
         assert payload.get("queue_if_missing") is True
+        assert payload.get("min_shards_searched") == 48
+        assert payload.get("min_sources_searched") == 2
+        assert payload.get("require_complete_search") is True
         return FakeResponse({
             "meta": {
                 "count": 1,
