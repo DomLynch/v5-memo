@@ -202,6 +202,7 @@ def test_v5_writable_shard_cache_mount_caps_root_vfs_cache() -> None:
 
     assert "sb:researka-database/index/v5/fullraw-shard-cache-5tb" in config
     assert "/mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote" in config
+    assert "mountpoint -q /mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote" in config
     assert "--vfs-cache-mode=writes" in config
     assert "--vfs-cache-max-size=8G" in config
     assert "--vfs-cache-max-age=30m" in config
