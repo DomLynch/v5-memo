@@ -57,7 +57,8 @@ _STOP = frozenset(
 _BACKEND = "researka-fullraw-indexed-fts5"
 _ALPHA_SWEEP_TERMS = frozenset({
     "attenuate", "attenuated", "attenuates", "blunt", "blunted", "blunts",
-    "failed", "impair", "impaired", "impairs", "null", "reduced", "reduces",
+    "endpoint", "failed", "impair", "impaired", "impairs", "null", "primary",
+    "protocol", "reduced", "reduces", "replication", "subgroup", "timing",
 })
 _FULLRAW_LEGACY_PREFIX = "V5_MEMO_FULL_RAW_"
 _FULLRAW_GENERIC_PREFIX = "RESEARKA_FULLRAW_"
@@ -132,7 +133,7 @@ def _shard_local_cache_health(*, include_dynamic_budget: bool = True) -> dict[st
 
 
 _FULL_COVERAGE_PREFIX_SHARDS = max(1, int(_fullraw_env("V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS", "32")))
-_SWEEP_STRATEGY = "profile_relaxed_v9"
+_SWEEP_STRATEGY = "profile_relaxed_v10"
 _SWEEP_MIN_RESULT_LIMIT = 10
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _SHARD_LOCAL_CACHE_IN_PROGRESS: set[Path] = set()
