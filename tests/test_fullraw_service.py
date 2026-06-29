@@ -190,9 +190,21 @@ def test_v5_isolated_fullraw_service_uses_v5_lane() -> None:
     ) in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=2" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=4" in config
+    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=8589934592" in config
     assert "Environment=RESEARKA_FULLRAW_MAX_VARIANTS=1" in config
     assert "/etc/researka-fullraw.env" not in config
     assert "/etc/researka-fullraw-overrides.env" not in config
+
+
+def test_v5_writable_shard_cache_mount_caps_root_vfs_cache() -> None:
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
+    config = (deploy_dir / "v5-memo-fullraw-shard-cache-mount.service").read_text()
+
+    assert "sb:researka-database/index/v5/fullraw-shard-cache-5tb" in config
+    assert "/mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote" in config
+    assert "--vfs-cache-mode=writes" in config
+    assert "--vfs-cache-max-size=8G" in config
+    assert "--vfs-cache-max-age=30m" in config
 
 
 def test_fast_shard_cache_health_skips_dynamic_budget(
