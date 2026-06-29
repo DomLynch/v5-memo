@@ -1217,7 +1217,7 @@ def _search_shard_paths_with_paths_and_receipt(
                 break
             try:
                 preserved = {search_path for _original_path, search_path in search_pairs}
-                search_pairs.append((path, _materialized_shard_path(path, preserve=preserved)))
+                search_pairs.append((path, _materialized_shard_path(path, preserve=preserved, populate=True)))
             except OSError:
                 continue
         if timed_out or not search_pairs:

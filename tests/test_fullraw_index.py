@@ -1278,9 +1278,12 @@ def test_shard_search_materializes_before_isolated_worker(
     materialized = tmp_path / "local.sqlite"
     searched: list[Path] = []
 
-    def fake_materialized(path: Path, *, preserve: set[Path] | None = None) -> Path:
+    populate_seen: list[bool] = []
+
+    def fake_materialized(path: Path, *, preserve: set[Path] | None = None, populate: bool = False) -> Path:
         assert path == original
         assert preserve == set()
+        populate_seen.append(populate)
         return materialized
 
     def fake_search(path: Path, *_args: object) -> list[dict[str, object]]:
@@ -1304,6 +1307,7 @@ def test_shard_search_materializes_before_isolated_worker(
     assert searched == [materialized]
     assert completed_paths == [original]
     assert hits[0]["title"] == "Metformin longevity"
+    assert populate_seen == [True]
     assert timed_out is False
 
 
@@ -1318,8 +1322,11 @@ def test_shard_search_preserves_materialized_batch_before_worker_search(
     live_cache_paths: set[Path] = set()
     preserve_seen_for_b: set[Path] | None = None
 
-    def fake_materialized(path: Path, *, preserve: set[Path] | None = None) -> Path:
+    populate_seen: list[bool] = []
+
+    def fake_materialized(path: Path, *, preserve: set[Path] | None = None, populate: bool = False) -> Path:
         nonlocal preserve_seen_for_b
+        populate_seen.append(populate)
         preserve = preserve or set()
         if path == remote_a:
             live_cache_paths.add(local_a)
@@ -1354,6 +1361,7 @@ def test_shard_search_preserves_materialized_batch_before_worker_search(
     assert preserve_seen_for_b == {local_a}
     assert completed_paths == [remote_a, remote_b]
     assert {hit["title"] for hit in hits} == {"local-a", "local-b"}
+    assert populate_seen == [True, True]
     assert timed_out is False
 
 
@@ -1366,8 +1374,11 @@ def test_shard_search_caps_worker_batch_to_cache_budget(
         path.write_bytes(b"x" * 6)
     preserve_sizes: list[int] = []
 
-    def fake_materialized(path: Path, *, preserve: set[Path] | None = None) -> Path:
+    populate_seen: list[bool] = []
+
+    def fake_materialized(path: Path, *, preserve: set[Path] | None = None, populate: bool = False) -> Path:
         preserve_sizes.append(len(preserve or set()))
+        populate_seen.append(populate)
         return tmp_path / f"local-{path.stem}.sqlite"
 
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "24")
@@ -1391,6 +1402,7 @@ def test_shard_search_caps_worker_batch_to_cache_budget(
     )
 
     assert preserve_sizes == [0, 0, 0, 0]
+    assert populate_seen == [True, True, True, True]
     assert completed_paths == remotes
     assert timed_out is False
 
