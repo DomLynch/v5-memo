@@ -61,6 +61,34 @@ _CONFERENCE_RECEIPT_PHRASES = (
     "poster abstract",
     "abstract supplement",
 )
+_SUPPLEMENT_DOI_RE = re.compile(r"(?:^|[-_.])s\d+(?:[-_.])p\d+(?:$|[-_.])")
+_INCOMPLETE_TITLE_ENDINGS = frozenset({
+    "and",
+    "or",
+    "of",
+    "in",
+    "on",
+    "to",
+    "for",
+    "with",
+    "during",
+    "after",
+    "before",
+    "upon",
+    "the",
+    "a",
+    "an",
+    "acute",
+    "adaptive",
+    "cardiovascular",
+    "chronic",
+    "clinical",
+    "inflammatory",
+    "metabolic",
+    "mitochondrial",
+    "oxidative",
+    "skeletal",
+})
 _SUBMIT_KEY_ENV_NAMES = (
     "V5_MEMO_RESEARKA_AGENT_KEY",
     "V5_MEMO_RESEARKA_API_KEY",
@@ -162,11 +190,16 @@ def _append_alpha_disclaimer(markdown: str) -> str:
 
 def _submission_title(result: MemoResult, heading: str) -> str:
     raw = heading.replace("Alpha memo: ", "", 1).strip()
-    if _query_like_title(raw) or _non_article_title(raw):
+    if _query_like_title(raw) or _non_article_title(raw) or _incomplete_title(raw):
         raw = _first_sentence(result.candidate.thesis) or result.candidate.topic
     if _bridge_only_title(raw, result.candidate.bridge_terms):
         raw = _receipt_title(result) or raw
-    if _query_like_title(raw) or _non_article_title(raw) or _auto_thesis_title(raw):
+    if (
+        _query_like_title(raw)
+        or _non_article_title(raw)
+        or _auto_thesis_title(raw)
+        or _incomplete_title(raw)
+    ):
         raw = _receipt_title(result) or result.candidate.topic
     return _clip_title(raw)
 
@@ -192,10 +225,17 @@ def _auto_thesis_title(title: str) -> bool:
     return any(phrase in clean for phrase in _AUTO_THESIS_TITLE_PHRASES)
 
 
+def _incomplete_title(title: str) -> bool:
+    tokens = _TITLE_TOKEN_RE.findall(title.casefold())
+    if not tokens:
+        return True
+    return tokens[-1] in _INCOMPLETE_TITLE_ENDINGS
+
+
 def _receipt_title(result: MemoResult) -> str:
     for hit in result.receipts:
         title = " ".join(hit.title.split()).strip(" .")
-        if title and not _non_article_title(title):
+        if title and not _non_article_title(title) and not _incomplete_title(title):
             return title
     return ""
 
@@ -266,7 +306,7 @@ def _source_evidence_type(hit: CorpusHit) -> str:
     doi = str(hit.doi or hit.hit_id or "").casefold()
     if "10.6084/m9.figshare" in doi:
         return "supplemental"
-    if "10.1096/fasebj" in doi and ".s1." in doi:
+    if ("10.1096/fasebj" in doi and ".s1." in doi) or _SUPPLEMENT_DOI_RE.search(doi):
         return "conference_abstract"
     return "primary"
 

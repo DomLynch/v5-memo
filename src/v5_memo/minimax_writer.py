@@ -281,8 +281,12 @@ Hard rules:
   otherwise quantify the protocol/design gap and frame a bounded contrast.
 - If overall gains coexist with a control/comparator-favored contrast, label the
   claim ledger mixed/comparator-favored, not simply positive.
+- If a claim-card role is safety_feasibility, or a receipt says pilot/safety/feasibility,
+  describe it as feasibility or safety evidence only; do not call it positive efficacy.
 - Respect receipt roles: if a receipt is labeled promise, protocol, intent, or
   mechanism, describe it as expected/designed/hypothesized/framed, not as an observed result or confirmed endpoint.
+- Use the 2+2=5 section to state the bounded contrast; if the receipts are heterogeneous
+  rather than contradictory, explicitly say they are not directly contradictory.
 - Use source-appropriate descriptors from the receipts, not generic prestige labels:
   trial/protocol, filing/report, benchmark, case study, market study, campaign, interview,
   dataset, or model card.

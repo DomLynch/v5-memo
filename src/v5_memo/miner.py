@@ -107,6 +107,7 @@ _NON_PRIMARY_SOURCE_PHRASES = (
     "poster abstract",
     "abstract supplement",
 )
+_SUPPLEMENT_DOI_RE = re.compile(r"(?:^|[-_.])s\d+(?:[-_.])p\d+(?:$|[-_.])")
 _TOPIC_CONTEXT_STOP = frozenset({
     "adapt", "adaptation", "aging", "angle", "condition", "effect", "effects",
     "evidence", "healthspan", "human", "intervention", "longevity", "mechanism",
@@ -509,6 +510,8 @@ def _hit_tension_terms(left: CorpusHit, right: CorpusHit) -> tuple[str, ...]:
 
 
 def _direction_polarity(hit: CorpusHit) -> frozenset[str]:
+    if _is_safety_feasibility_pilot(_raw_terms(hit.text)):
+        return frozenset()
     title_polarity = _polarity(hit.title) - {"mixed"}
     if len(title_polarity) == 1:
         return title_polarity
@@ -694,7 +697,7 @@ def _is_non_primary_receipt(hit: CorpusHit) -> bool:
     if any(phrase in descriptor for phrase in _NON_PRIMARY_SOURCE_PHRASES):
         return True
     doi = str(hit.doi or hit.hit_id or "").casefold()
-    return "10.1096/fasebj" in doi and ".s1." in doi
+    return ("10.1096/fasebj" in doi and ".s1." in doi) or bool(_SUPPLEMENT_DOI_RE.search(doi))
 
 
 def _receipt_roles(
@@ -865,14 +868,18 @@ def _claim_card(hit: CorpusHit, role: ReceiptRole) -> ClaimCard:
     terms = _raw_terms(hit.text)
     design = _design_type(terms)
     population = _population_type(terms)
-    direction = "/".join(sorted(_direction_polarity(hit))) or "unclear"
+    safety_feasibility = _is_safety_feasibility_pilot(terms)
+    direction = "unclear" if safety_feasibility else "/".join(sorted(_direction_polarity(hit))) or "unclear"
     direct_designs = {"randomized_trial", "cohort", "intervention_study"}
     non_primary = _is_non_primary_receipt(hit)
     support_type = "direct" if design in direct_designs and population == "human" and not non_primary else "indirect"
+    if safety_feasibility:
+        support_type = "direct" if population == "human" and not non_primary else "indirect"
     confidence = "high" if support_type == "direct" and direction != "unclear" else "medium" if direction != "unclear" else "low"
+    role_name = "safety_feasibility" if safety_feasibility and role.role.endswith("_signal") else role.role
     return ClaimCard(
         receipt_id=hit.hit_id,
-        role=role.role,
+        role=role_name,
         design=design,
         population=population,
         outcome=_outcome_label(terms),
@@ -902,6 +909,13 @@ def _design_type(terms: frozenset[str]) -> str:
     if terms & {"mouse", "mice", "rat", "rats", "cell", "cells"}:
         return "mechanistic_model"
     return "unspecified"
+
+
+def _is_safety_feasibility_pilot(terms: frozenset[str]) -> bool:
+    return bool(
+        terms & {"pilot", "feasibility", "feasible", "safety"}
+        and terms & {"trial", "randomized", "randomised", "rct", "study"}
+    )
 
 
 def _population_type(terms: frozenset[str]) -> str:
