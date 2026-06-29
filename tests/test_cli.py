@@ -813,6 +813,27 @@ def test_publish_blocker_allows_direct_human_plus_context() -> None:
         thesis="Human signal with mechanistic context should go to Researka review.",
         bridge_terms=("nicotinamide", "exercise"),
         tension_terms=("negative", "positive"),
+        receipt_ids=("human-a", "human-b", "rat"),
+        score=90,
+        novelty_score=50,
+        evidence_score=80,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard("human-a", "positive_signal", "randomized_trial", "human", "performance", "positive", "direct", "high", "human trial"),
+            ClaimCard("human-b", "negative_signal", "intervention_study", "human", "performance", "negative", "direct", "high", "human trial"),
+            ClaimCard("rat", "boundary", "mechanistic_model", "animal", "performance", "negative", "indirect", "medium", "rat model"),
+        ),
+    )
+
+    assert _publish_blocker(SimpleNamespace(markdown="# Alpha memo: ok", candidate=candidate, receipts=())) is None
+
+
+def test_publish_blocker_requires_two_strong_direct_human_receipts() -> None:
+    candidate = InsightCandidate(
+        topic="nicotinamide riboside exercise performance",
+        thesis="One human receipt plus animal context is not enough for publish.",
+        bridge_terms=("nicotinamide", "exercise"),
+        tension_terms=("negative", "positive"),
         receipt_ids=("human", "rat"),
         score=90,
         novelty_score=50,
@@ -824,7 +845,11 @@ def test_publish_blocker_allows_direct_human_plus_context() -> None:
         ),
     )
 
-    assert _publish_blocker(SimpleNamespace(markdown="# Alpha memo: ok", candidate=candidate, receipts=())) is None
+    assert _publish_blocker(SimpleNamespace(markdown="# Alpha memo: ok", candidate=candidate, receipts=())) == {
+        "direct_human_receipts": 1,
+        "error": "insufficient_direct_human_receipts",
+        "strong_direct_human_receipts": 1,
+    }
 
 
 def test_cli_publish_blocks_unbundled_invalid_doi_citation(

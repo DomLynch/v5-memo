@@ -510,6 +510,14 @@ def _publish_blocker(result: object) -> dict[str, object] | None:
         for card in claim_cards
         if getattr(card, "population", "") == "human" and getattr(card, "support_type", "") == "direct"
     )
+    strong_direct_human = sum(
+        1
+        for card in claim_cards
+        if getattr(card, "population", "") == "human"
+        and getattr(card, "support_type", "") == "direct"
+        and getattr(card, "confidence", "") == "high"
+        and getattr(card, "role", "") != "safety_feasibility"
+    )
     indirect_model = sum(
         1
         for card in claim_cards
@@ -520,6 +528,12 @@ def _publish_blocker(result: object) -> dict[str, object] | None:
             "error": "translational_evidence_too_indirect",
             "direct_human_receipts": direct_human,
             "indirect_model_receipts": indirect_model,
+        }
+    if direct_human < 2 or strong_direct_human < 2:
+        return {
+            "error": "insufficient_direct_human_receipts",
+            "direct_human_receipts": direct_human,
+            "strong_direct_human_receipts": strong_direct_human,
         }
     return None
 
