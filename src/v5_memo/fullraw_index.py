@@ -1211,32 +1211,26 @@ def _search_shard_paths_with_paths_and_receipt(
             break
         batch = _cache_fit_path_batch(search_paths, start=start, worker_count=worker_count)
         start += len(batch)
-        search_pairs: list[tuple[Path, Path]] = []
-        for path in batch:
-            if deadline is not None and time.monotonic() >= deadline:
-                timed_out = True
-                break
-            try:
-                preserved = {search_path for _original_path, search_path in search_pairs}
-                search_pairs.append((path, _materialized_shard_path(path, preserve=preserved, populate=True)))
-            except OSError:
-                continue
-        if timed_out or not search_pairs:
-            break
-        pool = ThreadPoolExecutor(max_workers=max(1, min(worker_count, len(search_pairs))))
+        preserve_paths = {
+            cache_path
+            for path in batch
+            if (cache_path := _shard_cache_path(path)) is not None
+        }
+        pool = ThreadPoolExecutor(max_workers=max(1, min(worker_count, len(batch))))
         try:
             futures = {
                 pool.submit(
-                    _search_one_shard_for_pool,
-                    search_path,
+                    _materialize_and_search_one_shard,
+                    path,
                     query,
                     limit,
                     year_min,
                     year_max,
                     rank_mode,
                     per_shard_timeout,
-                ): original_path
-                for original_path, search_path in search_pairs
+                    preserve_paths,
+                ): path
+                for path in batch
             }
             remaining = None if deadline is None else max(0.05, deadline - time.monotonic())
             for future in as_completed(futures, timeout=remaining):
@@ -1254,6 +1248,20 @@ def _search_shard_paths_with_paths_and_receipt(
             pool.shutdown(wait=True, cancel_futures=True)
     hits, metrics = _merge_hit_groups_with_receipt(hit_groups, limit=limit)
     return hits, completed_paths, timed_out, metrics
+
+
+def _materialize_and_search_one_shard(
+    path: Path,
+    query: str,
+    limit: int,
+    year_min: int,
+    year_max: int,
+    rank_mode: str,
+    timeout_seconds: float | None,
+    preserve: set[Path],
+) -> list[dict[str, object]]:
+    search_path = _materialized_shard_path(path, preserve=preserve, populate=True)
+    return _search_one_shard_for_pool(search_path, query, limit, year_min, year_max, rank_mode, timeout_seconds)
 
 
 def _cache_fit_path_batch(paths: list[Path], *, start: int, worker_count: int) -> list[Path]:

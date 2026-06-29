@@ -1355,21 +1355,18 @@ def test_shard_search_preserves_materialized_batch_before_worker_search(
     local_a = tmp_path / "local-a.sqlite"
     local_b = tmp_path / "local-b.sqlite"
     live_cache_paths: set[Path] = set()
-    preserve_seen_for_b: set[Path] | None = None
+    preserve_seen: list[set[Path]] = []
 
     populate_seen: list[bool] = []
 
     def fake_materialized(path: Path, *, preserve: set[Path] | None = None, populate: bool = False) -> Path:
-        nonlocal preserve_seen_for_b
         populate_seen.append(populate)
         preserve = preserve or set()
+        preserve_seen.append(set(preserve))
         if path == remote_a:
             live_cache_paths.add(local_a)
             return local_a
         if path == remote_b:
-            preserve_seen_for_b = set(preserve)
-            if local_a not in preserve:
-                live_cache_paths.discard(local_a)
             live_cache_paths.add(local_b)
             return local_b
         raise AssertionError(path)
@@ -1393,10 +1390,50 @@ def test_shard_search_preserves_materialized_batch_before_worker_search(
         timeout_seconds=5,
     )
 
-    assert preserve_seen_for_b == {local_a}
     assert completed_paths == [remote_a, remote_b]
     assert {hit["title"] for hit in hits} == {"local-a", "local-b"}
     assert populate_seen == [True, True]
+    assert preserve_seen == [set(), set()]
+    assert timed_out is False
+
+
+def test_shard_search_materializes_batch_concurrently(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    remotes = [tmp_path / f"remote-{index}.sqlite" for index in range(3)]
+    locals_by_remote = {path: tmp_path / f"local-{path.stem}.sqlite" for path in remotes}
+    barrier = threading.Barrier(len(remotes))
+    materialized: list[Path] = []
+
+    def fake_materialized(path: Path, *, preserve: set[Path] | None = None, populate: bool = False) -> Path:
+        del preserve
+        assert populate is True
+        materialized.append(path)
+        barrier.wait(timeout=1.0)
+        return locals_by_remote[path]
+
+    monkeypatch.setattr(fullraw_index, "_materialized_shard_path", fake_materialized)
+    monkeypatch.setattr(
+        fullraw_index,
+        "_search_one_shard_for_pool",
+        lambda path, *_args: [{"title": path.stem, "score": 1.0}],
+    )
+
+    hits, completed_paths, timed_out, _metrics = fullraw_index._search_shard_paths_with_paths_and_receipt(
+        remotes,
+        "metformin longevity",
+        limit=3,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        workers=3,
+        timeout_seconds=5,
+    )
+
+    assert set(materialized) == set(remotes)
+    assert set(completed_paths) == set(remotes)
+    assert {hit["title"] for hit in hits} == {path.stem for path in locals_by_remote.values()}
     assert timed_out is False
 
 
@@ -1455,7 +1492,7 @@ def test_shard_search_caps_worker_batch_to_cache_budget(
         timeout_seconds=5,
     )
 
-    assert preserve_sizes == [0, 0, 1, 2]
+    assert preserve_sizes == [0, 0, 0, 0]
     assert set(completed_paths) == set(remotes)
     assert timed_out is False
 
