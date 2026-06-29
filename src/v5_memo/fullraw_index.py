@@ -4207,7 +4207,8 @@ def _sweep_failed_path_strings_for_mode(
     *,
     require_complete_sweep: bool,
 ) -> set[str]:
-    del require_complete_sweep
+    if require_complete_sweep:
+        return set()
     return _sweep_failed_path_strings(receipt)
 
 
@@ -4218,9 +4219,9 @@ def _sweep_remaining_shard_count(
     failed_shards: int,
     require_complete_sweep: bool,
 ) -> int:
-    del require_complete_sweep
     outstanding = selected_shards - completed_shards
-    outstanding -= failed_shards
+    if not require_complete_sweep:
+        outstanding -= failed_shards
     return max(0, outstanding)
 
 
