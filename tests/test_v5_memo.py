@@ -7,12 +7,12 @@ import pytest
 
 from v5_memo.binder import bind_receipts
 from v5_memo.gate import candidate_alpha_tier, memo_coverage_failure
-from v5_memo.miner import mine_insights, query_anchor_terms
+from v5_memo.miner import _claim_card, mine_insights, query_anchor_terms
 from v5_memo.minimax_writer import MemoFormatError, validate_minimax_memo
 from v5_memo.pipeline import _selector_slate, build_alpha_memo
 from v5_memo.publisher import build_researka_payload
 from v5_memo.retriever import collect_seed_hits
-from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult
+from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult, ReceiptRole
 from v5_memo.scorer import score_connection
 from v5_memo.writer import render_memo
 
@@ -1203,6 +1203,86 @@ def test_researka_payload_submits_human_title_and_plain_doi_citations() -> None:
     assert "10.1000/runners:" not in body
     assert "10.1000/caffeine" in body
     assert "10.1000/runners" in body
+
+
+def test_researka_payload_skips_non_article_title_and_types_supporting_receipts() -> None:
+    candidate = InsightCandidate(
+        topic="nicotinamide riboside exercise performance",
+        thesis="Nicotinamide riboside may expose a species and endpoint boundary in exercise performance.",
+        bridge_terms=("nicotinamide", "exercise"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("supplement", "faseb", "primary"),
+        score=90,
+        novelty_score=60,
+        evidence_score=82,
+        reasons=("shape:directional_reversal",),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="supplement",
+            title="Additional file 1: of The NAD+ precursor nicotinamide riboside decreases exercise performance in rats",
+            abstract="Figshare-hosted supporting data for the nicotinamide riboside exercise study.",
+            source="fullraw:openalex",
+            doi="10.6084/m9.figshare.c.3601490_d1",
+        ),
+        CorpusHit(
+            hit_id="faseb",
+            title="Nicotinamide riboside and exercise performance in healthy volunteers",
+            abstract="Conference abstract reported human exercise performance markers.",
+            source="fullraw:openalex",
+            doi="10.1096/fasebj.2021.35.s1.05282",
+            venue="The FASEB Journal",
+        ),
+        CorpusHit(
+            hit_id="primary",
+            title="Nicotinamide riboside supplementation and exercise performance in humans",
+            abstract="Randomized human trial measured endurance exercise performance after supplementation.",
+            source="fullraw:openalex",
+            doi="10.1000/nr-human",
+        ),
+    ]
+    markdown = "# Alpha memo: Additional file 1: of The NAD+ precursor nicotinamide riboside decreases exercise performance in rats\n\nBody."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-memo-agent",
+        domain_slug="longevity_research",
+    )
+
+    source_bundle = cast(list[dict[str, object]], payload["source_bundle"])
+    assert payload["title"] == "Nicotinamide riboside may expose a species and endpoint boundary in exercise performance."
+    assert source_bundle[0]["evidence_type"] == "supplemental"
+    assert source_bundle[0]["source_type"] == "supplemental"
+    assert source_bundle[1]["evidence_type"] == "conference_abstract"
+    assert source_bundle[2]["evidence_type"] == "primary"
+    assert "excerpt" in source_bundle[2]
+
+
+def test_claim_card_downgrades_conference_and_supplemental_receipts() -> None:
+    conference_hit = CorpusHit(
+        hit_id="faseb",
+        title="Nicotinamide riboside and exercise performance in healthy volunteers",
+        abstract="Randomized human participants trial reported improved performance.",
+        source="fullraw:openalex",
+        doi="10.1096/fasebj.2021.35.s1.05282",
+        venue="The FASEB Journal",
+    )
+    supplement_hit = CorpusHit(
+        hit_id="supplement",
+        title="Additional file 1: supporting data for nicotinamide riboside exercise",
+        abstract="Human randomized trial supporting data reported improved performance markers.",
+        source="fullraw:openalex",
+        doi="10.6084/m9.figshare.c.3601490_d1",
+    )
+
+    conference = _claim_card(conference_hit, ReceiptRole("faseb", "boundary", "conference abstract"))
+    supplement = _claim_card(supplement_hit, ReceiptRole("supplement", "context", "supporting data"))
+
+    assert conference.population == "human"
+    assert conference.support_type == "indirect"
+    assert conference.confidence == "medium"
+    assert supplement.support_type == "indirect"
+    assert supplement.confidence == "medium"
 
 
 def test_researka_payload_strips_markdown_wrapped_doi_receipt_labels() -> None:

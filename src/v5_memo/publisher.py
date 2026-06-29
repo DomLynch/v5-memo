@@ -273,7 +273,9 @@ def _source_excerpt(hit: CorpusHit) -> str:
     if len(text) >= 20:
         return text[:5000]
     fallback = " ".join(part for part in (hit.title, hit.venue or "", hit.source) if part).strip()
-    return (fallback or hit.receipt_id)[:5000]
+    if len(fallback) < 20:
+        fallback = f"Source receipt {hit.receipt_id} from {hit.source}."
+    return fallback[:5000]
 
 
 def _receipt_descriptor(hit: CorpusHit) -> str:
