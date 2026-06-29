@@ -133,7 +133,7 @@ def _shard_local_cache_health(*, include_dynamic_budget: bool = True) -> dict[st
 
 
 _FULL_COVERAGE_PREFIX_SHARDS = max(1, int(_fullraw_env("V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS", "32")))
-_SWEEP_STRATEGY = "profile_relaxed_v10"
+_SWEEP_STRATEGY = "profile_relaxed_v11"
 _SWEEP_MIN_RESULT_LIMIT = 10
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _SHARD_LOCAL_CACHE_IN_PROGRESS: set[Path] = set()
@@ -1921,6 +1921,15 @@ def _materialized_shard_path(
             return cache_path
     if not populate:
         return path
+    while True:
+        with _SHARD_LOCAL_CACHE_LOCK:
+            if cache_path.exists() and cache_path.stat().st_size == source_stat.st_size:
+                os.utime(cache_path, None)
+                return cache_path
+            if cache_path not in _SHARD_LOCAL_CACHE_IN_PROGRESS:
+                _SHARD_LOCAL_CACHE_IN_PROGRESS.add(cache_path)
+                break
+        time.sleep(0.05)
     tmp_path = cache_path.with_name(f".{cache_path.name}.tmp.{os.getpid()}.{threading.get_ident()}")
     base_preserve = preserve or set()
     with _SHARD_LOCAL_CACHE_LOCK:
@@ -1948,6 +1957,7 @@ def _materialized_shard_path(
             return cache_path
     finally:
         with _SHARD_LOCAL_CACHE_LOCK:
+            _SHARD_LOCAL_CACHE_IN_PROGRESS.discard(cache_path)
             _SHARD_LOCAL_CACHE_IN_PROGRESS.discard(tmp_path)
         tmp_path.unlink(missing_ok=True)
 

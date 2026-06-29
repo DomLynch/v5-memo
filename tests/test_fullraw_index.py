@@ -1495,6 +1495,58 @@ def test_materialized_shard_path_does_not_copy_missing_cache_without_populate(
     assert fullraw_index._cached_materialized_shard_path(remote) is None
 
 
+def test_materialized_shard_path_serializes_same_target_copy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    remote = tmp_path / "remote" / "fullraw_shard_0001.sqlite"
+    remote.parent.mkdir()
+    remote.write_bytes(b"remote shard")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    with fullraw_index._SHARD_LOCAL_CACHE_LOCK:
+        fullraw_index._SHARD_LOCAL_CACHE_IN_PROGRESS.clear()
+
+    copy_entered = threading.Event()
+    release_copy = threading.Event()
+    copied: list[Path] = []
+    errors: list[BaseException] = []
+    results: list[Path] = []
+
+    def slow_copy(source: Path, target: Path) -> None:
+        copied.append(target)
+        copy_entered.set()
+        assert release_copy.wait(timeout=2), "copy was not released"
+        target.write_bytes(source.read_bytes())
+
+    def materialize() -> None:
+        try:
+            results.append(fullraw_index._materialized_shard_path(remote, populate=True))
+        except BaseException as exc:  # pragma: no cover - reported below
+            errors.append(exc)
+
+    monkeypatch.setattr("v5_memo.fullraw_index.shutil.copy2", slow_copy)
+
+    first = threading.Thread(target=materialize)
+    second = threading.Thread(target=materialize)
+    first.start()
+    assert copy_entered.wait(timeout=2)
+    second.start()
+    time.sleep(0.05)
+    assert len(copied) == 1
+    release_copy.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert len(copied) == 1
+    assert len(results) == 2
+    assert results[0] == results[1]
+    assert results[0].read_bytes() == b"remote shard"
+
+
 def test_shard_catalog_cache_round_trips_entries(tmp_path: Path) -> None:
     entry = ShardCatalogEntry(
         path=tmp_path / "batch_00001" / "fullraw_shard_0000.sqlite",
