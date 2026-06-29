@@ -122,6 +122,14 @@ class MemoBuildError(ValueError):
         detail = ", ".join(
             f"{key}={value}"
             for key, value in failure.details.items()
-            if key in {"hit_count", "candidate_count", "mined_candidate_count", "best_mined_score", "best_mined_novelty", "min_alpha_tier"}
+            if key in {
+                "hit_count",
+                "candidate_count",
+                "mined_candidate_count",
+                "best_mined_score",
+                "best_mined_novelty",
+                "publish_quality_blocked_count",
+                "min_alpha_tier",
+            }
         )
         super().__init__(f"{failure.message} ({detail})" if detail else failure.message)

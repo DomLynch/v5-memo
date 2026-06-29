@@ -6,7 +6,7 @@ from typing import Any, cast
 import pytest
 
 from v5_memo.binder import bind_receipts
-from v5_memo.gate import candidate_alpha_tier, memo_coverage_failure
+from v5_memo.gate import candidate_alpha_tier, memo_coverage_failure, no_alpha_failure
 from v5_memo.miner import _claim_card, mine_insights, query_anchor_terms
 from v5_memo.minimax_writer import MemoFormatError, validate_minimax_memo
 from v5_memo.pipeline import _publishable_candidates, _selector_slate, build_alpha_memo
@@ -219,6 +219,63 @@ def test_publish_quality_filter_removes_weak_candidates_before_writing() -> None
         frozenset(),
         require_publish_quality=True,
     ) == [strong]
+
+
+def test_no_alpha_failure_reports_publish_quality_blockers() -> None:
+    weak = InsightCandidate(
+        topic="nicotinamide exercise performance",
+        thesis="Weak translational bridge.",
+        bridge_terms=("nicotinamide", "exercise"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("human", "rat"),
+        score=100,
+        novelty_score=58,
+        evidence_score=90,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard(
+                "human",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "positive",
+                "direct",
+                "high",
+                "human trial",
+            ),
+            ClaimCard(
+                "rat",
+                "boundary",
+                "mechanistic_model",
+                "animal",
+                "performance",
+                "negative",
+                "indirect",
+                "medium",
+                "rat model",
+            ),
+        ),
+    )
+
+    failure = no_alpha_failure(
+        topic="nicotinamide exercise performance",
+        hits=[],
+        candidates=[],
+        min_alpha_tier="publishable_alpha",
+        mined_candidates=[weak],
+    )
+
+    assert failure.details["publish_quality_blocked_count"] == 1
+    blockers = failure.details["top_publish_quality_blockers"]
+    assert isinstance(blockers, tuple)
+    assert blockers[0]["receipt_ids"] == ("human", "rat")
+    assert blockers[0]["blocker"] == {
+        "error": "insufficient_direct_human_receipts",
+        "direct_human_receipts": 1,
+        "strong_direct_human_receipts": 1,
+    }
+    assert "publish_quality_blocked_count=1" in str(MemoBuildError(failure))
 
 
 def test_miner_marks_human_intervention_receipts_direct() -> None:
