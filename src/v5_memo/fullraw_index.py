@@ -3024,8 +3024,8 @@ def run_server() -> None:
     ).casefold() in {"1", "true", "yes"}
     sweep_enabled = _fullraw_env("V5_MEMO_FULL_RAW_ASYNC_SWEEP", "").casefold() in {"1", "true", "yes"}
     sweep_ttl = _float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS", "")) or 86400.0
-    sweep_workers = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKERS") or 1
     sweep_max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
+    sweep_workers = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKERS") or _auto_sweep_workers(sweep_max_inflight)
     sweep_max_queue = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_QUEUE") or 0
     sweep_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT") or 128
     sweep_pass_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT") or sweep_shard_limit
@@ -4403,6 +4403,10 @@ def _positive_int_env(name: str) -> int | None:
     except ValueError:
         return None
     return value if value > 0 else None
+
+
+def _auto_sweep_workers(max_inflight: int) -> int:
+    return max(1, (os.cpu_count() or 1) // max(1, max_inflight))
 
 
 def _float_or_none(value: object) -> float | None:

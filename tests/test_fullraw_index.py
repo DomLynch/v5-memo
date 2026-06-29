@@ -1698,6 +1698,14 @@ def test_materialized_shard_cache_evicts_old_entries(tmp_path: Path, monkeypatch
     assert keep.exists()
 
 
+def test_auto_sweep_workers_scales_by_inflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(os, "cpu_count", lambda: 16)
+
+    assert fullraw_index._auto_sweep_workers(1) == 16
+    assert fullraw_index._auto_sweep_workers(2) == 8
+    assert fullraw_index._auto_sweep_workers(0) == 16
+
+
 def test_build_upload_shard_batches_keeps_all_failed_batch_fatal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
