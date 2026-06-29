@@ -1439,6 +1439,25 @@ def test_shard_search_caps_worker_batch_to_cache_budget(
     assert timed_out is False
 
 
+def test_cache_fit_batch_only_reserves_burst_lane_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    remotes = [tmp_path / f"remote-{idx}.sqlite" for idx in range(3)]
+    for path in remotes:
+        path.write_bytes(b"x" * 5)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "20")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT", "2")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "0")
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", raising=False)
+
+    assert fullraw_index._cache_fit_path_batch(remotes, start=0, worker_count=3) == remotes[:2]
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "1")
+
+    assert fullraw_index._cache_fit_path_batch(remotes, start=0, worker_count=3) == remotes[:1]
+
+
 class _FakeDiskUsage(NamedTuple):
     total: int
     used: int
