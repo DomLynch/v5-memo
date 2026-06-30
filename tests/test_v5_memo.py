@@ -348,6 +348,41 @@ def test_miner_adds_receipt_backed_evidence_graph_context() -> None:
     assert "Evidence graph" in memo
 
 
+def test_evidence_graph_rejects_off_modality_context_receipts() -> None:
+    topic = "cold water immersion resistance training adaptation"
+    hits = [
+        _hit(
+            "null",
+            "Cold Water Immersion and Contrast Water Therapy Do Not Improve Short-Term Recovery Following Resistance Training",
+            "Participants performed resistance training. Cold water immersion did not improve short-term recovery after resistance training.",
+        ),
+        _hit(
+            "attenuate",
+            "Post-exercise cold water immersion attenuates acute anabolic signalling and long-term adaptations in muscle to strength training",
+            "Cold water immersion attenuated long-term adaptations to strength training.",
+        ),
+        _hit(
+            "cycling",
+            "Post-exercise Warm or Cold Water Immersion to Augment the Cardiometabolic Benefits of Exercise Training",
+            (
+                "Warm or cold water immersion would provide similar or greater benefits. "
+                "Long-term exercise training work trial distance increased without differences. "
+                "Substituting with cold water immersion does not."
+            ),
+        ),
+        _hit(
+            "meta",
+            "Effects of post-exercise cold-water immersion on resistance training-induced gains in muscular strength: a meta-analysis",
+            "Systematic review of cold water immersion after resistance training adaptation outcomes.",
+        ),
+    ]
+
+    candidate = mine_insights(hits, topic=topic, required_anchor_terms=query_anchor_terms([topic]))[0]
+
+    assert "cycling" not in candidate.receipt_ids
+    assert [node.receipt_id for node in candidate.evidence_graph] == ["null", "attenuate"]
+
+
 def test_two_receipts_do_not_inflate_evidence_without_support_quality() -> None:
     score = score_connection(
         bridge_terms=("foo", "bar"),

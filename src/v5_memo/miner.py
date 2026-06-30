@@ -115,7 +115,7 @@ _TOPIC_CONTEXT_STOP = frozenset({
     "adapt", "adaptation", "aging", "angle", "condition", "effect", "effects",
     "evidence", "healthspan", "human", "intervention", "longevity", "mechanism",
     "mechanisms", "outcome", "outcomes", "pharmacology", "response", "responses",
-    "reversal", "study", "trial",
+    "reversal", "study", "trial", "water",
 })
 
 
@@ -221,6 +221,7 @@ def mine_insights(
             right,
             bridge,
             pair_anchor_terms,
+            _graph_context_terms(topic, pair_anchor_terms),
             shape_reasons,
             receipt_roles,
         )
@@ -289,9 +290,25 @@ def _topic_context_terms(topic: str, anchor_terms: frozenset[str]) -> frozenset[
         ) not in _STOP
         and token not in _TOPIC_CONTEXT_STOP
     ]
-    if len(ordered) < 2:
+    context = [token for token in ordered if token not in anchor_terms]
+    if not context:
         return frozenset()
-    return frozenset(token for token in ordered if token not in anchor_terms)
+    return frozenset(context)
+
+
+def _graph_context_terms(topic: str, anchor_terms: frozenset[str]) -> frozenset[str]:
+    if not anchor_terms:
+        return frozenset()
+    ordered = [
+        token
+        for raw in _WORD.findall(topic.casefold())
+        if (
+            token := _norm_token(raw)
+        ) not in _STOP
+        and token not in _TOPIC_CONTEXT_STOP
+    ]
+    context = [token for token in ordered if token not in anchor_terms]
+    return frozenset(context) if context else _topic_context_terms(topic, anchor_terms)
 
 
 def _pair_has_topic_context(
@@ -795,6 +812,7 @@ def _evidence_graph(
     right: CorpusHit,
     bridge_terms: tuple[str, ...],
     pair_anchor_terms: frozenset[str],
+    topic_context_terms: frozenset[str],
     shape_reasons: tuple[str, ...],
     receipt_roles: tuple[ReceiptRole, ...],
 ) -> tuple[EvidenceNode, ...]:
@@ -811,6 +829,7 @@ def _evidence_graph(
             hits,
             seen=seen,
             bridge_terms=bridge_set,
+            topic_context_terms=topic_context_terms,
             shape_reasons=shape_reasons,
             role=role,
         )
@@ -834,6 +853,7 @@ def _context_hit(
     *,
     seen: set[str],
     bridge_terms: set[str],
+    topic_context_terms: frozenset[str],
     shape_reasons: tuple[str, ...],
     role: str,
 ) -> CorpusHit | None:
@@ -844,6 +864,8 @@ def _context_hit(
         terms = _raw_terms(hit.text)
         overlap = bridge_terms & terms
         if len(overlap) < min(2, len(bridge_terms)):
+            continue
+        if topic_context_terms and not _has_topic_context(hit, topic_context_terms):
             continue
         if not _hit_matches_graph_role(hit, terms, role, shape_reasons):
             continue
