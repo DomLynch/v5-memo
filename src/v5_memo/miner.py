@@ -45,6 +45,9 @@ _ADVERSE_ENDPOINT = frozenset({
     "fatal", "fatality", "inflammation", "mortality", "pain", "risk", "stress",
 })
 _NULL = frozenset({"null", "neutral", "unchanged", "failed", "nonsignificant"})
+_NULL_PHRASE_RE = re.compile(
+    r"\b(?:does|do|did|is|are|was|were)\s+not\b|\bno\s+difference(?:s)?\b|\bwithout\s+difference(?:s)?\b"
+)
 _NEGATED = frozenset({
     "fail", "failed", "fails", "lack", "lacked", "lacks", "no", "not", "without",
 })
@@ -469,7 +472,7 @@ def _polarity(text: str) -> frozenset[str]:
             out.add("positive")
         else:
             out.add("negative")
-    if tokens & _NULL:
+    if tokens & _NULL or _NULL_PHRASE_RE.search(text.casefold()):
         out.add("null")
     if len(out) > 1:
         out.add("mixed")
@@ -513,9 +516,10 @@ def _direction_polarity(hit: CorpusHit) -> frozenset[str]:
     if _is_safety_feasibility_pilot(_raw_terms(hit.text)):
         return frozenset()
     title_polarity = _polarity(hit.title) - {"mixed"}
-    if len(title_polarity) == 1:
+    full_polarity = _polarity(hit.text) - {"mixed"}
+    if len(title_polarity) == 1 and (not full_polarity or full_polarity <= title_polarity):
         return title_polarity
-    return _polarity(hit.text) - {"mixed"}
+    return full_polarity
 
 
 def _direction_cautions(left: str, right: str) -> tuple[str, ...]:

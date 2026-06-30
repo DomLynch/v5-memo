@@ -41,6 +41,17 @@ def candidate_publish_blocker(candidate: InsightCandidate) -> dict[str, object] 
     claim_cards = tuple(candidate.claim_cards or ())
     if not claim_cards:
         return None
+    direction_mismatch = tuple(
+        card.receipt_id
+        for card in claim_cards
+        if card.role in {"promise", "positive_signal"}
+        and set(card.direction.split("/")) & {"negative", "null"}
+    )
+    if direction_mismatch:
+        return {
+            "error": "positive_role_direction_mismatch",
+            "receipt_ids": direction_mismatch,
+        }
     direct_human = sum(
         1
         for card in claim_cards
