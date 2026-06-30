@@ -2551,6 +2551,10 @@ def sweep_cache_entry_is_terminal(entry: SweepCacheEntry) -> bool:
     return _int_or_none(entry.receipt.get("sweep_remaining_shards")) == 0
 
 
+def sweep_cache_entry_stopped_no_hits(entry: SweepCacheEntry) -> bool:
+    return entry.receipt.get("sweep_stopped_no_hits") is True
+
+
 def _sweep_cache_entry_progress(entry: SweepCacheEntry) -> int:
     return _int_or_none(entry.receipt.get("shards_searched")) or 0
 
@@ -3120,6 +3124,7 @@ def run_server() -> None:
     sweep_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT") or 128
     sweep_pass_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT") or sweep_shard_limit
     sweep_pass_shard_limit = max(1, min(sweep_pass_shard_limit, sweep_shard_limit))
+    sweep_no_hit_stop_shards = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_NO_HIT_STOP_SHARDS") or 0
     sweep_max_passes = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_PASSES") or 1
     sweep_max_passes = max(1, min(sweep_max_passes, sweep_shard_limit))
     sweep_priority_burst = _fullraw_env(
@@ -3435,9 +3440,18 @@ def run_server() -> None:
                     receipt.update(result_metrics)
                     required_pass_roles = min(len(sweep_passes), sweep_max_passes)
                     pass_roles_sufficient = len(set(completed_pass_roles)) >= required_pass_roles
+                    no_hit_stop = (
+                        sweep_no_hit_stop_shards > 0
+                        and not merged_hits
+                        and len(completed_path_strings) >= sweep_no_hit_stop_shards
+                    )
+                    if no_hit_stop:
+                        receipt["sweep_stopped_no_hits"] = True
+                        receipt["sweep_no_hit_stop_shards"] = sweep_no_hit_stop_shards
                     final = (
                         (bool(merged_hits) and receipt_is_sufficient(receipt) and pass_roles_sufficient)
                         or receipt["sweep_remaining_shards"] == 0
+                        or no_hit_stop
                         or pass_index + 1 >= sweep_max_passes
                     )
                     sweep_cache_put(job.key, SweepCacheEntry(time.time(), merged_hits, receipt), final=final)
@@ -3478,6 +3492,12 @@ def run_server() -> None:
             return "disabled"
         result_limit = max(limit, _SWEEP_MIN_RESULT_LIMIT)
         existing = sweep_cache_get(key)
+        if (
+            existing is not None
+            and sweep_cache_entry_stopped_no_hits(existing)
+            and _sweep_cache_entry_has_result_limit(existing, result_limit)
+        ):
+            return "stopped_no_hits"
         if existing is not None and (
             _sweep_cache_entry_has_result_limit(existing, result_limit)
             and (
