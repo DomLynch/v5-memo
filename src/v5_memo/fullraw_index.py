@@ -1282,10 +1282,7 @@ def _cache_fit_path_batch(paths: list[Path], *, start: int, worker_count: int) -
     if max_cache_bytes <= 0:
         return batch
     max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
-    priority_burst = _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "true").casefold()
-    if priority_burst in {"1", "true", "yes"}:
-        max_inflight += 1
-    budget = max(1, max_cache_bytes // max(1, max_inflight))
+    budget = max(1, max_cache_bytes // _sweep_cache_inflight_lanes(max_inflight))
     out: list[Path] = []
     total = 0
     for path in batch:
@@ -4617,8 +4614,22 @@ def _positive_int_env(name: str) -> int | None:
     return value if value > 0 else None
 
 
+def _sweep_cache_inflight_lanes(max_inflight: int) -> int:
+    lanes = max(1, max_inflight)
+    priority_burst = _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "true").casefold()
+    if priority_burst in {"1", "true", "yes"}:
+        lanes += 1
+    return lanes
+
+
 def _auto_sweep_workers(max_inflight: int) -> int:
-    return max(1, (os.cpu_count() or 1) // max(1, max_inflight))
+    cpu_workers = max(1, (os.cpu_count() or 1) // max(1, max_inflight))
+    max_cache_bytes = _shard_local_cache_max_bytes()
+    worker_cache_bytes = _sweep_worker_cache_bytes()
+    if max_cache_bytes is None or worker_cache_bytes is None or worker_cache_bytes <= 0:
+        return cpu_workers
+    cache_workers = max(1, max_cache_bytes // (worker_cache_bytes * _sweep_cache_inflight_lanes(max_inflight)))
+    return max(1, min(cpu_workers, cache_workers))
 
 
 def _sweep_worker_cache_bytes(*, default_gb: float | None = None) -> int | None:

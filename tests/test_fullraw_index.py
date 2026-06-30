@@ -2220,6 +2220,10 @@ def test_auto_sweep_workers_scales_by_inflight(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(os, "cpu_count", lambda: 16)
     monkeypatch.delenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", raising=False)
     monkeypatch.delenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_SWEEP_WORKER_CACHE_BYTES", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_SWEEP_WORKER_CACHE_GB", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB", raising=False)
 
     assert fullraw_index._auto_sweep_workers(1) == 16
     assert fullraw_index._auto_sweep_workers(2) == 8
@@ -2237,6 +2241,19 @@ def test_auto_sweep_workers_ignores_cache_budget(
     monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB", raising=False)
 
     assert fullraw_index._auto_sweep_workers(2) == 8
+
+
+def test_auto_sweep_workers_respects_cache_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(os, "cpu_count", lambda: 16)
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", str(8 * 1024 * 1024 * 1024))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB", "1")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", "1")
+
+    assert fullraw_index._auto_sweep_workers(2) == 2
+
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", "0")
+
+    assert fullraw_index._auto_sweep_workers(2) == 4
 
 
 def test_auto_sweep_workers_uses_cpu_workers_when_cache_budget_exhausted(
