@@ -1717,6 +1717,26 @@ def test_claim_card_treats_human_supplementation_as_direct_intervention() -> Non
     assert card.confidence == "high"
 
 
+def test_claim_card_treats_players_training_as_direct_human_intervention() -> None:
+    hit = CorpusHit(
+        hit_id="10.players",
+        title="Cold- and hot-water immersion are not more effective than placebo",
+        abstract=(
+            "Compared to a placebo, cold-water immersion did not improve post-match "
+            "recovery or long-term training adaptations in national level soccer players."
+        ),
+        source="fullraw:openalex",
+        doi="10.players",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "null_signal", "player training contrast"))
+
+    assert card.design == "intervention_study"
+    assert card.population == "human"
+    assert card.support_type == "direct"
+    assert card.confidence == "high"
+
+
 def test_claim_card_does_not_treat_safety_feasibility_pilot_as_positive_efficacy() -> None:
     hit = CorpusHit(
         hit_id="10.1016/j.exger.2020.111111",

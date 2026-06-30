@@ -957,7 +957,7 @@ def _design_type(terms: frozenset[str]) -> str:
     if terms & {"cohort", "prospective", "longitudinal"}:
         return "cohort"
     if terms & {"intervention", "protocol", "session", "sessions", "training"} and terms & {
-        "athlete", "athletes", "participant", "participants", "student", "students",
+        "athlete", "athletes", "participant", "participants", "player", "players", "student", "students",
         "subject", "subjects", "volunteer", "volunteered", "volunteers",
     }:
         return "intervention_study"
@@ -980,7 +980,7 @@ def _is_safety_feasibility_pilot(terms: frozenset[str]) -> bool:
 def _population_type(terms: frozenset[str]) -> str:
     if terms & {
         "athlete", "athletes", "human", "humans", "participant", "participants",
-        "patient", "patients", "adult", "adults", "men", "women", "student",
+        "patient", "patients", "adult", "adults", "men", "women", "player", "players", "student",
         "students", "subject", "subjects", "volunteer", "volunteered", "volunteers",
     }:
         return "human"
