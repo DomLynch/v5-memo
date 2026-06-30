@@ -149,6 +149,7 @@ _DEFAULT_TERM_MAP = (
     ("disclosure", ("disclosure", "disclosures", "disclose", "discloses", "disclosed")),
     ("earnings", ("earnings", "income", "profit", "profits")),
     ("analyst", ("analyst", "analysts", "analysis")),
+    ("exercise", ("exercise", "exercises", "training", "trained")),
 )
 
 
@@ -2659,7 +2660,24 @@ def _sweep_cache_entry_matches_request(
         return False
     if _int_or_none(receipt.get("sweep_shard_limit")) != sweep_shard_limit:
         return False
-    return _normalize_sweep_cache_query(query) in _sweep_cache_entry_queries(entry)
+    request_query = _normalize_sweep_cache_query(query)
+    cached_queries = _sweep_cache_entry_queries(entry)
+    if request_query in cached_queries:
+        return True
+    if not sweep_cache_entry_is_terminal(entry) or receipt.get("partial_shard_search") is True:
+        return False
+    return any(_sweep_queries_alias_equivalent(request_query, cached_query) for cached_query in cached_queries)
+
+
+def _sweep_queries_alias_equivalent(request_query: str, cached_query: str) -> bool:
+    request_terms = _fts_terms(request_query)
+    cached_terms = _fts_terms(cached_query)
+    if not request_terms or not cached_terms or len(request_terms) != len(cached_terms):
+        return False
+    return all(
+        _term_aliases(request_term) & {cached_term}
+        for request_term, cached_term in zip(request_terms, cached_terms, strict=True)
+    )
 
 
 def _sweep_cache_entry_has_result_limit(entry: SweepCacheEntry, result_limit: int) -> bool:
