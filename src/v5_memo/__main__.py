@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -346,6 +347,18 @@ def main() -> None:
             author_agent_id=config.agent_id,
             domain_slug=config.domain_slug,
         )
+        if cooldown := _researka_submit_cooldown():
+            remaining, state = cooldown
+            defer_receipt: dict[str, object] = {
+                "error": "researka_submit_deferred",
+                "retry_after": int(remaining + 0.999),
+                "cooldown_until": state.get("until_iso", ""),
+                "previous_status": state.get("status", ""),
+                "previous_reason": state.get("reason", ""),
+            }
+            _write_json(args.publish_receipt_path, defer_receipt)
+            print(f"Researka submit deferred for {defer_receipt['retry_after']}s", file=sys.stderr)
+            raise SystemExit(6)
         try:
             response = submit_researka(
                 payload,
@@ -360,6 +373,7 @@ def main() -> None:
                 "reason": exc.reason,
                 "retry_after": exc.headers.get("Retry-After", "") if exc.headers is not None else "",
             }
+            _record_researka_submit_cooldown(exc)
             _write_json(args.publish_receipt_path, error)
             print(f"Researka submit failed: HTTP {exc.code} {exc.reason}", file=sys.stderr)
             raise SystemExit(6) from exc
@@ -401,6 +415,52 @@ def _require_full_raw_or_exit() -> None:
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(2) from exc
+
+
+def _researka_submit_cooldown() -> tuple[float, Mapping[str, object]] | None:
+    path = _researka_submit_cooldown_path()
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, Mapping):
+        return None
+    until = _float_value(raw.get("until"))
+    remaining = until - time.time()
+    return (remaining, raw) if remaining > 0 else None
+
+
+def _record_researka_submit_cooldown(exc: HTTPError) -> None:
+    if exc.code != 429:
+        return
+    retry_after = _float_value(exc.headers.get("Retry-After", "") if exc.headers is not None else "")
+    if retry_after <= 0:
+        retry_after = float(os.environ.get("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_SECONDS", "300") or 300)
+    until = time.time() + max(1.0, min(retry_after, 3600.0))
+    payload: dict[str, object] = {
+        "until": until,
+        "until_iso": datetime.fromtimestamp(until, UTC).isoformat(),
+        "status": exc.code,
+        "reason": exc.reason,
+    }
+    path = _researka_submit_cooldown_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, sort_keys=True))
+
+
+def _researka_submit_cooldown_path() -> Path:
+    return Path(os.environ.get("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_PATH", "/tmp/v5-memo-researka-submit-cooldown.json"))
+
+
+def _float_value(value: object) -> float:
+    if not isinstance(value, (int, float, str)):
+        return 0.0
+    try:
+        return float(value) if value not in (None, "") else 0.0
+    except ValueError:
+        return 0.0
 
 
 def _topic_anchored_queries(queries: Sequence[str], topic: str) -> list[str]:
