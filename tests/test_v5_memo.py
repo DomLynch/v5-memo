@@ -2622,10 +2622,10 @@ def test_researka_payload_narrows_adaptation_title_and_leads_abstract_with_alpha
         domain_slug="performance",
     )
 
-    assert payload["title"] == "Cold Water Immersion and Strength Training Adaptation"
+    assert payload["title"] == "Cold Water Immersion: Recovery and Strength Training Adaptation"
     assert cast(str, payload["abstract"]).startswith("Hypothesis-level alpha signal; not clinical advice.")
     assert cast(str, payload["body_markdown"]).startswith(
-        "# Alpha memo: Cold Water Immersion and Strength Training Adaptation"
+        "# Alpha memo: Cold Water Immersion: Recovery and Strength Training Adaptation"
     )
 
 

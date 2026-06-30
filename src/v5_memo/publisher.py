@@ -277,11 +277,19 @@ def _bundle_title(result: MemoResult) -> str:
     topic_tokens = set(_TITLE_TOKEN_RE.findall(result.candidate.topic.casefold()))
     training_terms = {"exercise", "training", "resistance", "strength"}
     if "adaptation" in topic_tokens or "adaptations" in topic_tokens:
+        outcome_tokens = {
+            token
+            for outcome in outcomes
+            for token in _TITLE_TOKEN_RE.findall(outcome)
+        }
         outcome_label = (
             "Strength Training Adaptation"
             if topic_tokens & {"resistance", "strength"}
             else "Training Adaptation"
         )
+        if outcome_tokens & {"performance", "recovery"}:
+            contrast_label = "Recovery" if "recovery" in outcome_tokens else "Performance"
+            return f"{intervention}: {contrast_label} and {outcome_label}"
         return f"{intervention} and {outcome_label}"
     outcome_label = "Training Outcomes" if topic_tokens & training_terms else "Outcomes"
     return f"{intervention} and {outcome_label} in Human Studies"

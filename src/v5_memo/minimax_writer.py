@@ -49,6 +49,7 @@ _ADVICE_RE = re.compile(
     r"[^.\n]{0,120}\bshould\b|\bshould\s+(?:avoid|buy|invest|prescribe|prioriti[sz]e|sell|take|treat|use)\b"
 )
 _MARKET_FRAMING_RE = re.compile(r"(?i)\b(?:market\s+for|reframe\s+the\s+market|commercial\s+market|investment)\b")
+_CONVERSION_OVERCLAIM_RE = re.compile(r"(?is)\bconverts?\b.{0,160}\binto\b")
 _TITLE_WORD_RE = re.compile(r"[a-z][a-z0-9]{2,}")
 _TITLE_STOPWORDS = frozenset({
     "alpha", "memo", "and", "for", "from", "into", "may", "not", "the", "with",
@@ -299,14 +300,15 @@ Hard rules:
 - Proxy/boundary receipts are secondary; do not make them co-equal anchors for chronic-adaptation claims.
 - If a proxy/boundary receipt sits beside chronic or long-term adaptation receipts, frame the core signal as endpoint heterogeneity.
 - If a systematic review or synthesis receipt has its own negative/null/positive direction,
-  state whether it converges with the direct evidence or is only context.
-- If receipts use different modalities/populations, name that split before claiming convergence.
+  state convergence or context only.
+- If receipts use different modalities/populations/endpoints, name the split, frame as unresolved endpoint heterogeneity,
+  and do not claim one protocol condition converts one result into another.
 - Use the 2+2=5 section to state the bounded contrast; if the receipts are heterogeneous
   rather than contradictory, explicitly say they are not directly contradictory.
-- Use source-appropriate descriptors from the receipts: trial/protocol, filing/report, benchmark, case study, market study, campaign, interview, dataset, model card.
-- Make the memo read like an insight: surface contradiction, boundary condition, inversion, neglected proxy, metric mismatch, or cross-domain transfer.
+- Use source-appropriate descriptors from the receipts.
+- Make the memo read like an insight: contradiction, boundary, inversion, proxy, metric mismatch, or transfer.
 - In "Why this could matter", give one falsifiable hypothesis, not a list.
-- In "What would break the idea", name one concrete next-step uncertainty or study design that would resolve the boundary.
+- In "What would break the idea", name one concrete next-step uncertainty or study design.
 - Include a concise Claim ledger section before Receipts. Each claim must use the
   supplied claim-card receipt ID and support type; do not invent unsupported claims.
 - Use this exact receipt-owned title first line: # Alpha memo: {title}
@@ -525,6 +527,7 @@ def validate_minimax_memo(
         )
     _validate_supported_stat_numbers(text, receipts)
     _validate_receipt_owned_body_terms(text, receipts)
+    _validate_no_conversion_overclaim(text)
     _validate_public_alpha_framing(text, receipts)
     if candidate is not None:
         _validate_receipt_owned_title(text, receipts, candidate)
@@ -575,6 +578,11 @@ def _validate_public_alpha_framing(markdown: str, receipts: Sequence[CorpusHit])
     receipt_text = " ".join(hit.text for hit in receipts).casefold()
     if "market" not in receipt_text and _MARKET_FRAMING_RE.search(markdown):
         raise MemoScopeError("MiniMax memo included unreceipted market framing")
+
+
+def _validate_no_conversion_overclaim(markdown: str) -> None:
+    if _CONVERSION_OVERCLAIM_RE.search(markdown):
+        raise MemoScopeError("MiniMax memo claimed one receipt condition converts another result")
 
 
 def _validate_receipt_owned_body_terms(markdown: str, receipts: Sequence[CorpusHit]) -> None:

@@ -6,6 +6,7 @@ from urllib.request import Request
 import pytest
 
 from v5_memo.minimax_writer import (
+    MemoScopeError,
     MiniMaxM3CandidateSelector,
     MiniMaxM3MemoWriter,
     MiniMaxM3SearchPlanner,
@@ -269,6 +270,8 @@ def test_minimax_prompt_includes_structured_claim_ledger() -> None:
     assert "do not make them co-equal anchors" in prompt
     assert "systematic review or synthesis receipt has its own negative/null/positive direction" in prompt
     assert "different modalities/populations" in prompt
+    assert "unresolved endpoint heterogeneity" in prompt
+    assert "do not claim one protocol condition converts one result into another" in prompt
     assert "one falsifiable hypothesis" in prompt
     assert "sample size, sex" in prompt
     assert 'sex if stated or "sex not stated"' in prompt
@@ -873,6 +876,31 @@ Hypothesis only.""",
     )
 
     assert memo.startswith("# Alpha memo: resveratrol blunting")
+
+
+def test_minimax_memo_validation_rejects_conversion_overclaim() -> None:
+    with pytest.raises(MemoScopeError, match="converts"):
+        validate_minimax_memo(
+            """# Alpha memo: NAD mitochondrial
+## Core signal
+NAD and mitochondrial repair may connect the receipts.
+## The 2+2=5 angle
+The receipts are heterogeneous.
+## Why this could matter
+The protocol condition converts the first result into the second endpoint.
+## What would break the idea
+A same-protocol receipt would break it.
+## Claim ledger
+- receipt-bound claim: 10.1/sleep-nad support=direct
+- receipt-bound claim: 10.2/exercise-nad support=direct
+## Receipts
+- 10.1/sleep-nad
+- 10.2/exercise-nad
+## Safety note
+Hypothesis only.""",
+            _receipts(),
+            candidate=_candidate(),
+        )
 
 
 def test_minimax_memo_validation_accepts_displayed_openalex_work_id() -> None:
