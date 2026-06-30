@@ -303,7 +303,7 @@ def main() -> None:
         elif not (args.publish_receipt_path or args.submit_researka or args.publish):
             raise
         else:
-            error = {
+            error: dict[str, object] = {
                 "error": exc.failure.code,
                 "message": exc.failure.message,
                 "details": exc.failure.details,
@@ -346,12 +346,23 @@ def main() -> None:
             author_agent_id=config.agent_id,
             domain_slug=config.domain_slug,
         )
-        response = submit_researka(
-            payload,
-            agent_key=config.agent_key,
-            api_base=config.api_base,
-            submit_url=config.submit_url,
-        )
+        try:
+            response = submit_researka(
+                payload,
+                agent_key=config.agent_key,
+                api_base=config.api_base,
+                submit_url=config.submit_url,
+            )
+        except HTTPError as exc:
+            error = {
+                "error": "researka_submit_failed",
+                "status": exc.code,
+                "reason": exc.reason,
+                "retry_after": exc.headers.get("Retry-After", "") if exc.headers is not None else "",
+            }
+            _write_json(args.publish_receipt_path, error)
+            print(f"Researka submit failed: HTTP {exc.code} {exc.reason}", file=sys.stderr)
+            raise SystemExit(6) from exc
         receipt: dict[str, object] = dict(response)
         should_wait = args.researka_decision_wait_seconds > 0 or args.researka_list_if_accepted
         submission_id = researka_submission_id(response)
