@@ -178,11 +178,14 @@ def test_v5_isolated_fullraw_service_uses_v5_lane() -> None:
     config = (deploy_dir / "v5-memo-isolated-fullraw-search.service").read_text()
 
     assert "v5-memo-fullraw-shard-cache-mount.service" not in config
+    assert "v5-memo-fullraw-fts-root-mount.service" not in config
+    assert "v5-memo-isolated-fullraw-fts-mount.service" in config
     assert "EnvironmentFile=/etc/v5-memo/env" in config
     assert "EnvironmentFile=/etc/v5-memo/isolated-fullraw.env" in config
     assert "Environment=RESEARKA_FULLRAW_INDEX_PORT=9915" in config
     assert "Environment=V5_MEMO_FULL_RAW_INDEX_PORT=9915" in config
     assert "Environment=RESEARKA_FULLRAW_SEARCH_ISOLATED=1" in config
+    assert "Environment=RESEARKA_FULLRAW_SHARD_DIR=/var/lib/v5-memo/v5-isolated-fullraw-fts-remote" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/v5-fullraw-sweep-cache" in config
     assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/v5-shard-cache-5tb" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=32" in config
@@ -195,6 +198,18 @@ def test_v5_isolated_fullraw_service_uses_v5_lane() -> None:
     assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKERS=" not in config
     assert "/etc/researka-fullraw.env" not in config
     assert "/etc/researka-fullraw-overrides.env" not in config
+
+
+def test_v5_isolated_fullraw_mount_uses_separate_vfs_cache() -> None:
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
+    config = (deploy_dir / "v5-memo-isolated-fullraw-fts-mount.service").read_text()
+
+    assert "sb:researka-database/index/v5/fullraw-fts" in config
+    assert "/var/lib/v5-memo/v5-isolated-fullraw-fts-remote" in config
+    assert "/var/cache/v5-memo/v5-isolated-rclone-vfs-cache" in config
+    assert "--vfs-cache-mode=full" in config
+    assert "--vfs-cache-max-size=6G" in config
+    assert "/var/lib/v5-memo/fullraw-fts-remote" not in config
 
 
 def test_v5_writable_shard_cache_mount_caps_root_vfs_cache() -> None:

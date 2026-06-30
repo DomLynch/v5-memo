@@ -1,7 +1,7 @@
 [Unit]
 Description=V5 Memo isolated 5TB fullraw search service
-After=network-online.target v5-memo-fullraw-fts-root-mount.service
-Wants=network-online.target v5-memo-fullraw-fts-root-mount.service
+After=network-online.target v5-memo-isolated-fullraw-fts-mount.service
+Wants=network-online.target v5-memo-isolated-fullraw-fts-mount.service
 
 [Service]
 Type=simple
@@ -13,6 +13,7 @@ Environment=RESEARKA_FULLRAW_INDEX_HOST=127.0.0.1
 Environment=RESEARKA_FULLRAW_INDEX_PORT=9915
 Environment=RESEARKA_FULLRAW_FAST_HEALTH=1
 Environment=RESEARKA_FULLRAW_SEARCH_ISOLATED=1
+Environment=RESEARKA_FULLRAW_SHARD_DIR=/var/lib/v5-memo/v5-isolated-fullraw-fts-remote
 Environment=RESEARKA_FULLRAW_MIN_SHARDS_SEARCHED=1525
 Environment=RESEARKA_FULLRAW_MIN_SOURCES_SEARCHED=5
 Environment=RESEARKA_FULLRAW_REQUIRE_COMPLETE_SEARCH=1
