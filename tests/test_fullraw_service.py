@@ -185,6 +185,7 @@ def test_v5_isolated_fullraw_service_uses_v5_lane() -> None:
     assert "Environment=RESEARKA_FULLRAW_SEARCH_ISOLATED=1" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/v5-fullraw-sweep-cache" in config
     assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/v5-shard-cache-5tb" in config
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=16" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=2" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=4" in config
     assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=8589934592" in config
