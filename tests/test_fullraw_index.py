@@ -611,6 +611,51 @@ def test_sweep_cache_matcher_accepts_compatible_pass_query() -> None:
     )
 
 
+def test_sweep_cache_matcher_accepts_only_completed_alias_equivalent_query() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Resveratrol and training adaptation"}],
+        receipt={
+            "sweep_result_limit": 10,
+            "sweep_shard_limit": 1525,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_query": "resveratrol training adaptation",
+            "partial_shard_search": False,
+            "sweep_remaining_shards": 0,
+        },
+    )
+    partial_entry = fullraw_index.SweepCacheEntry(
+        created_at=entry.created_at,
+        hits=entry.hits,
+        receipt={**entry.receipt, "partial_shard_search": True, "sweep_remaining_shards": 12},
+    )
+
+    assert fullraw_index._sweep_cache_entry_matches_request(
+        entry,
+        query="resveratrol exercise adaptation",
+        result_limit=10,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+    assert not fullraw_index._sweep_cache_entry_matches_request(
+        entry,
+        query="resveratrol cancer adaptation",
+        result_limit=10,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+    assert not fullraw_index._sweep_cache_entry_matches_request(
+        partial_entry,
+        query="resveratrol exercise adaptation",
+        result_limit=10,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
 def test_sweep_cache_matcher_rejects_stale_catalog_scope() -> None:
     entry = fullraw_index.SweepCacheEntry(
         created_at=time.time(),
@@ -707,7 +752,7 @@ def test_completed_disk_sweep_cache_beats_stale_memory_partial() -> None:
     assert selected.receipt["shards_searched"] == 1525
 
 
-def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
+def test_cache_only_completed_alias_sweep_hit_does_not_aggregate_remote_stats(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -719,8 +764,9 @@ def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
     entries = [_entry(shard_dir, idx, "openalex" if idx else "pubmed") for idx in range(2)]
     fullraw_index.write_shard_catalog_cache(catalog_path, entries)
     sweep_catalog_scope = str(shard_dir.absolute())
+    cached_query = "metformin training longevity"
     key = fullraw_index._sweep_cache_key(
-        "metformin longevity",
+        cached_query,
         limit=10,
         year_min=1900,
         year_max=2100,
@@ -747,6 +793,8 @@ def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
                 "sweep_remaining_shards": 0,
                 "sweep_failed_shards": 0,
                 "sweep_result_limit": 10,
+                "sweep_shard_limit": 2,
+                "sweep_query": cached_query,
                 "sources_searched": {"openalex": 1, "pubmed": 1},
                 "sweep_search_passes": (
                     {"role": "focused"},
@@ -786,7 +834,7 @@ def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
 
     payload = json.dumps(
         {
-            "query": "metformin longevity",
+            "query": "metformin exercise longevity",
             "limit": 10,
             "rank_mode": "relevance",
             "cache_only": True,
