@@ -1670,6 +1670,51 @@ def test_cache_fit_batch_keeps_parallel_batch_when_cache_budget_exhausted(
     assert fullraw_index._cache_fit_path_batch(remotes, start=0, worker_count=3) == remotes
 
 
+def test_cache_fit_warm_entries_defers_oversized_remote_shards(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    entries = [
+        ShardCatalogEntry(
+            tmp_path / "huge.sqlite",
+            0,
+            0,
+            ("openalex",),
+            1,
+            10,
+            20,
+            topic_terms=("platform",),
+        ),
+        *[
+            ShardCatalogEntry(
+                tmp_path / f"small-{idx}.sqlite",
+                idx + 1,
+                0,
+                ("openalex",),
+                1,
+                10,
+                6,
+                topic_terms=("platform",),
+            )
+            for idx in range(4)
+        ],
+    ]
+    for entry in entries:
+        entry.path.write_bytes(b"x" * entry.bytes_used)
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "10")
+
+    ordered = fullraw_index._cache_fit_warm_entries(
+        entries,
+        entries,
+        query="platform strategy",
+        target_ready=len(entries),
+    )
+
+    assert ordered[-1] == entries[0]
+    assert {entry.path for entry in ordered} == {entry.path for entry in entries}
+
+
 class _FakeDiskUsage(NamedTuple):
     total: int
     used: int

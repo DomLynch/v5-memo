@@ -1570,7 +1570,12 @@ def _cache_fit_warm_entries(
     if not fit_prefix:
         return selected
     ordered = list(fit_prefix)
-    _extend_unique_entries(ordered, selected, max(len(selected), len(ordered)))
+    selected_paths = {entry.path for entry in ordered}
+    remaining_selected = sorted(
+        (entry for entry in selected if entry.path not in selected_paths),
+        key=candidate_key,
+    )
+    _extend_unique_entries(ordered, remaining_selected, max(len(selected), len(ordered)))
     _extend_unique_entries(ordered, entries, max(len(selected), len(ordered)))
     return ordered
 
