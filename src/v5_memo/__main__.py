@@ -252,7 +252,7 @@ def main() -> None:
             or _int_env("V5_MEMO_FULL_RAW_RECALL_LIMIT")
             or _DEFAULT_FULLRAW_RECALL_LIMIT
         )
-        max_hits = _int_env("V5_MEMO_FULL_RAW_MAX_HITS") or per_query_limit * max(2, len(queries))
+        max_hits = _int_env("V5_MEMO_FULL_RAW_MAX_HITS") or per_query_limit * max(2, min(3, len(queries)))
     else:
         per_query_limit = 50 if wider_recall else 25
         max_hits = 500 if wider_recall else 100
@@ -403,7 +403,9 @@ def _alpha_shape_queries(topic: str) -> list[str]:
     )
     anchor = " ".join(terms[:split_at])
     rest = " ".join(terms[split_at:])
+    direct_rest = " ".join(terms[split_at:split_at + 2])
     queries = [
+        f"{anchor} human trial {direct_rest}".strip(),
         f"{anchor} augment {rest} protocol",
         f"{anchor} blunts {rest}",
     ]

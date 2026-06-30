@@ -527,6 +527,19 @@ def test_collect_seed_hits_propagates_fullraw_coverage_failure() -> None:
         collect_seed_hits(_FunctionSearch(search), ["metformin", "metformin blunts"])
 
 
+def test_collect_seed_hits_skips_stopped_no_hit_fullraw_shape() -> None:
+    def search(query: str, limit: int) -> Sequence[CorpusHit]:
+        del limit
+        if query == "dead":
+            raise RuntimeError(
+                "Full raw corpus search coverage too narrow: "
+                "{'shards_searched': 128, 'sweep_stopped_no_hits': True}"
+            )
+        return [_hit(query, f"{query} title", "full receipt evidence")]
+
+    assert [hit.hit_id for hit in collect_seed_hits(_FunctionSearch(search), ["dead", "good"])] == ["good"]
+
+
 def test_collect_seed_hits_propagates_late_fullraw_coverage_failure() -> None:
     def search(query: str, limit: int) -> Sequence[CorpusHit]:
         del limit

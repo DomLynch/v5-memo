@@ -140,14 +140,19 @@ def test_topic_anchored_queries_reject_planner_drift_for_specific_topics() -> No
 
 def test_alpha_shape_queries_add_universal_promise_and_outcome_probes() -> None:
     assert _alpha_shape_queries("metformin resistance training adaptation") == [
+        "metformin human trial resistance training",
         "metformin augment resistance training protocol",
         "metformin blunts resistance training",
     ]
     assert _alpha_shape_queries("resveratrol blunts exercise training") == [
         "resveratrol mimics exercise training",
+        "resveratrol human trial exercise training",
         "resveratrol augment exercise training protocol",
         "resveratrol blunts exercise training",
     ]
+    assert _alpha_shape_queries("protein timing distribution muscle synthesis")[0] == (
+        "protein human trial timing distribution"
+    )
 
 
 def test_alpha_shaped_planner_queries_prefer_direct_evidence_language() -> None:
@@ -236,6 +241,7 @@ def test_fullraw_cli_inherits_search_service_coverage_thresholds(
     assert "Alpha memo" in capsys.readouterr().out
     assert seen["seed_queries"] == [
         "metformin resistance training adaptation",
+        "metformin human trial resistance training",
         "metformin augment resistance training protocol",
         "metformin blunts resistance training",
     ]
@@ -1406,6 +1412,7 @@ def test_planned_cli_drops_queries_that_lose_specific_topic_anchor(
     assert seen == {
         "seed_queries": [
             "cold water immersion resistance training adaptation",
+            "cold water immersion human trial resistance training",
             "cold water immersion augment resistance training protocol",
             "cold water immersion blunts resistance training",
         ],
@@ -1657,6 +1664,7 @@ def test_strict_fullraw_uses_specific_seed_before_planner_sweeps(
     assert "Alpha memo" in capsys.readouterr().out
     assert seen == {"seed_queries": [
         "metformin resistance training adaptation",
+        "metformin human trial resistance training",
         "metformin augment resistance training protocol",
         "metformin blunts resistance training",
     ]}
