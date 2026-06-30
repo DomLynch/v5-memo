@@ -230,7 +230,10 @@ def test_isolated_shard_search_kills_timed_out_child(
     class FakeProcess:
         returncode = None
         killed = False
-        waited = False
+        waits: list[float | None]
+
+        def __init__(self) -> None:
+            self.waits = []
 
         def communicate(self, *, timeout: float) -> tuple[str, str]:
             raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
@@ -238,10 +241,10 @@ def test_isolated_shard_search_kills_timed_out_child(
         def kill(self) -> None:
             self.killed = True
 
-        def wait(self, *, timeout: float) -> None:
-            del timeout
-            self.waited = True
-            raise subprocess.TimeoutExpired(cmd="fake", timeout=1)
+        def wait(self, timeout: float | None = None) -> None:
+            self.waits.append(timeout)
+            if timeout is not None:
+                raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
 
     fake = FakeProcess()
     monkeypatch.setattr("v5_memo.fullraw_index.subprocess.Popen", lambda *args, **kwargs: fake)
@@ -258,7 +261,7 @@ def test_isolated_shard_search_kills_timed_out_child(
         )
 
     assert fake.killed is True
-    assert fake.waited is True
+    assert fake.waits == [1.0, None]
 
 
 def test_write_json_ignores_disconnected_client() -> None:
