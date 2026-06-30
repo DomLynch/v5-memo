@@ -601,15 +601,18 @@ def test_cli_submit_researka_writes_receipt_on_submit_rate_limit(
         main()
 
     assert exc.value.code == 6
-    assert json.loads(receipt_path.read_text()) == {
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt == {
         "error": "researka_submit_failed",
         "status": 429,
         "reason": "Too Many Requests",
         "retry_after": "60",
+        "cooldown_until": receipt["cooldown_until"],
     }
     cooldown = json.loads(cooldown_path.read_text())
     assert cooldown["status"] == 429
     assert cooldown["reason"] == "Too Many Requests"
+    assert receipt["cooldown_until"] == cooldown["until_iso"]
     assert 0 < cooldown["until"] - time.time() <= 60
 
 

@@ -367,14 +367,15 @@ def main() -> None:
                 submit_url=config.submit_url,
             )
         except HTTPError as exc:
-            error = {
+            cooldown_state = _record_researka_submit_cooldown(exc)
+            fail_receipt: dict[str, object] = {
                 "error": "researka_submit_failed",
                 "status": exc.code,
                 "reason": exc.reason,
                 "retry_after": exc.headers.get("Retry-After", "") if exc.headers is not None else "",
+                "cooldown_until": cooldown_state.get("until_iso", "") if cooldown_state else "",
             }
-            _record_researka_submit_cooldown(exc)
-            _write_json(args.publish_receipt_path, error)
+            _write_json(args.publish_receipt_path, fail_receipt)
             print(f"Researka submit failed: HTTP {exc.code} {exc.reason}", file=sys.stderr)
             raise SystemExit(6) from exc
         receipt: dict[str, object] = dict(response)
@@ -432,9 +433,9 @@ def _researka_submit_cooldown() -> tuple[float, Mapping[str, object]] | None:
     return (remaining, raw) if remaining > 0 else None
 
 
-def _record_researka_submit_cooldown(exc: HTTPError) -> None:
+def _record_researka_submit_cooldown(exc: HTTPError) -> Mapping[str, object]:
     if exc.code != 429:
-        return
+        return {}
     retry_after = _float_value(exc.headers.get("Retry-After", "") if exc.headers is not None else "")
     if retry_after <= 0:
         retry_after = float(os.environ.get("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_SECONDS", "300") or 300)
@@ -448,6 +449,7 @@ def _record_researka_submit_cooldown(exc: HTTPError) -> None:
     path = _researka_submit_cooldown_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, sort_keys=True))
+    return payload
 
 
 def _researka_submit_cooldown_path() -> Path:
