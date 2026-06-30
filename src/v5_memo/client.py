@@ -521,7 +521,11 @@ class FullRawCorpusSearchClient:
             data = {}
         receipt = _full_raw_shard_receipt(data)
         sweep_status = _full_raw_async_sweep_status(data)
-        can_wait_for_sweep = initial_error is not None or sweep_status in {"miss", "queued", "running"}
+        stopped_no_hits = receipt.get("sweep_stopped_no_hits") is True
+        can_wait_for_sweep = (
+            not stopped_no_hits
+            and (initial_error is not None or sweep_status in {"miss", "queued", "running"})
+        )
         coverage_error = isinstance(data, dict) and data.get("error") == "coverage_too_narrow"
         if (
             self._sweep_wait_seconds
@@ -557,10 +561,11 @@ class FullRawCorpusSearchClient:
             except SearchBackendError:
                 data = {}
                 status = "error"
+            receipt = _full_raw_shard_receipt(data)
             if status == "hit":
                 self._log_progress("fullraw async sweep cache hit")
                 return data
-            if status == "stopped_no_hits":
+            if status == "stopped_no_hits" or receipt.get("sweep_stopped_no_hits") is True:
                 self._log_progress("fullraw async sweep stopped with no hits")
                 return data
             if status == "disabled":
