@@ -23,6 +23,7 @@ _PRIMARY_SIGNAL_ROLES = frozenset({
     "positive_signal",
     "tail_risk",
 })
+_CONTEXT_ROLES = frozenset({"boundary", "consensus", "mechanism", "replication"})
 
 
 def candidate_alpha_tier(candidate: InsightCandidate) -> str:
@@ -92,6 +93,20 @@ def candidate_publish_blocker(candidate: InsightCandidate) -> dict[str, object] 
             "error": "insufficient_direct_human_receipts",
             "direct_human_receipts": direct_human,
             "strong_direct_human_receipts": strong_direct_human,
+        }
+    weak_context = tuple(
+        card.receipt_id
+        for card in claim_cards
+        if card.role in _CONTEXT_ROLES
+        and (
+            card.confidence == "low"
+            or (card.population == "unspecified" and card.support_type == "indirect")
+        )
+    )
+    if weak_context:
+        return {
+            "error": "weak_context_receipts",
+            "receipt_ids": weak_context,
         }
     direction_mismatch = tuple(
         card.receipt_id

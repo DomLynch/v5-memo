@@ -1877,6 +1877,60 @@ def test_publish_blocker_rejects_weak_primary_signal_receipts() -> None:
     }
 
 
+def test_publish_blocker_rejects_weak_context_receipts() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Weak context rows should not pad a public alpha bundle.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("direct-a", "direct-b", "weak-context"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "direct-a",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "strength",
+                "negative",
+                "direct",
+                "high",
+                "Direct human signal.",
+            ),
+            ClaimCard(
+                "direct-b",
+                "null_signal",
+                "intervention_study",
+                "human",
+                "strength",
+                "null",
+                "direct",
+                "high",
+                "Direct human signal.",
+            ),
+            ClaimCard(
+                "weak-context",
+                "consensus",
+                "unspecified",
+                "unspecified",
+                "strength",
+                "unclear",
+                "indirect",
+                "low",
+                "Weak context row.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "weak_context_receipts",
+        "receipt_ids": ("weak-context",),
+    }
+
+
 def test_researka_payload_strips_markdown_wrapped_doi_receipt_labels() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion",
