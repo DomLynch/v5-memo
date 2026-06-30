@@ -27,7 +27,7 @@ from v5_memo.llm.minimax_client import (
 )
 from v5_memo.schemas import CorpusHit, InsightCandidate
 
-RECEIPT_ABSTRACT_CHAR_LIMIT = 120
+RECEIPT_ABSTRACT_CHAR_LIMIT = 60
 _REQUIRED_MEMO_SECTIONS = (
     "# Alpha memo:",
     "## Core signal",
@@ -117,12 +117,7 @@ class MiniMaxM3MemoWriter:
         prompt = build_minimax_prompt(candidate, receipts)
         last_error: ValueError | None = None
         for attempt in range(2):
-            retry_note = (
-                ""
-                if attempt == 0
-                else "\n\nPrevious draft failed validation: "
-                f"{last_error}. Rewrite from the locked receipts only and remove any unlisted DOI-like references."
-            )
+            retry_note = "" if attempt == 0 else _minimax_retry_note(last_error)
             markdown = self._write(prompt + retry_note, temperature=0.35 if attempt == 0 else 0.0)
             try:
                 return validate_minimax_memo(markdown, receipts, candidate=candidate)
@@ -139,7 +134,8 @@ class MiniMaxM3MemoWriter:
                 prompt=prompt,
                 system=(
                     "You write concise research alpha memos. Use only the supplied receipts. "
-                    "Do not add uncited mechanisms, claims, facts, statistics, or references."
+                    "Do not add uncited mechanisms, claims, facts, statistics, references, "
+                    "or advice/action recommendations."
                 ),
                 temperature=temperature,
                 max_tokens=self._max_tokens,
@@ -149,6 +145,17 @@ class MiniMaxM3MemoWriter:
                 opener=self._opener,
             )
         )
+
+
+def _minimax_retry_note(error: ValueError | None) -> str:
+    return (
+        "\n\nPrevious draft failed validation: "
+        f"{error}. Rewrite from the locked receipts only. "
+        "Remove any advice/action framing: do not tell athletes, clinicians, companies, "
+        "investors, managers, patients, or practitioners what they should do, use, avoid, "
+        "buy, sell, take, prescribe, or prioritize. Keep implications as an alpha signal "
+        "and one falsifiable hypothesis. Remove any unlisted DOI-like references."
+    )
 
 
 class MiniMaxM3SearchPlanner:
@@ -274,14 +281,15 @@ def build_minimax_prompt(candidate: InsightCandidate, receipts: Sequence[CorpusH
 Hard rules:
 - Use only the supplied receipts.
 - Keep every receipt ID exactly as written.
-- Do not invent mechanisms, clinical advice, causal certainty, new papers, or new numbers.
-- Do not make market, product, investment, practitioner, patient, or action claims unless receipts say those concepts.
+- Do not invent mechanisms, causal certainty, new papers, or new numbers.
+- Do not make market, product, or investment claims unless receipts say those concepts.
+- Never recommend actions; no should-use/avoid, prescribe, take, buy, sell, or prioritize language.
 - If a connection is uncertain, say it is a hypothesis.
 - Treat the seed topic as search context only; use broad seed words in the title only if receipts contain them.
 - Title the memo around receipt-owned concepts, not around the user's seed query.
 - In the title, copy receipt/bridge terms verbatim; do not use synonyms or paraphrases.
 - The title must be made only from locked receipt title/abstract words or listed bridge terms.
-- Scope every implication to the receipts: population, market, company, channel, model, benchmark, timeframe, geography, source type.
+- Scope every implication to the receipts: population, market/company/channel/model/benchmark, endpoint, timeframe, geography, source type.
 - State the receipt-owned timing exactly; do not turn pre-exercise, prior-to-use,
   or post-intervention exposure into "during" unless a receipt says during.
 - If receipts split by endpoint or metric, say it is not a direct contradiction

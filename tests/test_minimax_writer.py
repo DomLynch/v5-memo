@@ -217,6 +217,42 @@ Hypothesis only."""
     assert "10.9999/bad" in retry_prompt
 
 
+def test_minimax_writer_retries_once_after_advice_action_framing() -> None:
+    bad_text = """# Alpha memo: NAD mitochondrial sleep exercise bridge
+## Core signal
+NAD and mitochondrial repair may connect the receipts.
+## The 2+2=5 angle
+Sleep fragmentation and exercise response share the same receipt-bound bridge.
+## Why this could matter
+Athletes should use this exposure to prioritize recovery.
+## What would break the idea
+The idea breaks if follow-up receipts do not connect the bridge terms.
+## Claim ledger
+- receipt-bound claim: 10.1/sleep-nad support=direct
+## Receipts
+- 10.1/sleep-nad
+- 10.2/exercise-nad
+## Safety note
+Hypothesis only."""
+    good_text = bad_text.replace(
+        "Athletes should use this exposure to prioritize recovery.",
+        "The receipt-bound bridge gives one hypothesis about recovery context.",
+    )
+    opener = FakeOpener([bad_text, good_text])
+    writer = MiniMaxM3MemoWriter(api_key="test-key", opener=opener)
+
+    memo = writer.render(_candidate(), _receipts())
+
+    assert "should use" not in memo
+    assert len(opener.requests) == 2
+    request_data = opener.requests[1].data
+    assert isinstance(request_data, bytes)
+    body = json.loads(request_data.decode("utf-8"))
+    retry_prompt = body["messages"][0]["content"][0]["text"]
+    assert "advice/action framing" in retry_prompt
+    assert "do not tell athletes" in retry_prompt
+
+
 def test_minimax_prompt_includes_structured_claim_ledger() -> None:
     candidate = InsightCandidate(
         topic="longevity resilience",
@@ -505,8 +541,7 @@ def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
     assert "one concrete next-step uncertainty" in prompt
     assert "Respect receipt roles" in prompt
     assert "observed result or confirmed endpoint" in prompt
-    assert "population, market" in prompt
-    assert "company, channel, model, benchmark" in prompt
+    assert "population, market/company/channel/model/benchmark" in prompt
     assert "Use source-appropriate descriptors from the receipts" in prompt
     assert "filing/report" in prompt
     assert "case study, market study, campaign" in prompt
@@ -516,7 +551,8 @@ def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
     assert "Evidence graph:" in prompt
     assert "metric mismatch" in prompt
     assert "cross-domain transfer" in prompt
-    assert "practitioner, patient, or action claims" in prompt
+    assert "Never recommend actions" in prompt
+    assert "should-use/avoid" in prompt
 
 
 def test_minimax_memo_validation_rejects_unreceipted_action_or_market_framing() -> None:
