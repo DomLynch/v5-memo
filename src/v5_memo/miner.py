@@ -917,6 +917,8 @@ def _claim_card(hit: CorpusHit, role: ReceiptRole) -> ClaimCard:
 
 
 def _design_type(terms: frozenset[str]) -> str:
+    if terms & {"review", "meta", "systematic"}:
+        return "synthesis"
     if terms & {"randomized", "randomised", "rct", "trial"}:
         return "randomized_trial"
     if terms & {"cohort", "prospective", "longitudinal"}:
@@ -930,8 +932,6 @@ def _design_type(terms: frozenset[str]) -> str:
         "adult", "adults", "human", "humans", "men", "patient", "patients", "women",
     }:
         return "intervention_study"
-    if terms & {"review", "meta", "systematic"}:
-        return "synthesis"
     if terms & {"mouse", "mice", "rat", "rats", "cell", "cells"}:
         return "mechanistic_model"
     return "unspecified"
