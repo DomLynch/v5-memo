@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStartPre=/usr/bin/mkdir -p /var/lib/v5-memo/v5-isolated-fullraw-fts-remote /var/cache/v5-memo/v5-isolated-rclone-vfs-cache
-ExecStart=/usr/bin/rclone mount sb:researka-database/index/v5/fullraw-fts /var/lib/v5-memo/v5-isolated-fullraw-fts-remote --read-only --vfs-cache-mode=full --cache-dir /var/cache/v5-memo/v5-isolated-rclone-vfs-cache --vfs-cache-max-size=6G --vfs-cache-max-age=1h --dir-cache-time=30m --poll-interval=0 --umask=022
+ExecStart=/usr/bin/rclone mount sb:researka-database/index/v5/fullraw-fts /var/lib/v5-memo/v5-isolated-fullraw-fts-remote --read-only --vfs-cache-mode=minimal --cache-dir /var/cache/v5-memo/v5-isolated-rclone-vfs-cache --vfs-cache-max-size=2G --vfs-cache-max-age=30m --dir-cache-time=30m --poll-interval=0 --umask=022
 ExecStop=/bin/sh -c 'fusermount3 -uz /var/lib/v5-memo/v5-isolated-fullraw-fts-remote 2>/dev/null || fusermount -uz /var/lib/v5-memo/v5-isolated-fullraw-fts-remote 2>/dev/null || umount -l /var/lib/v5-memo/v5-isolated-fullraw-fts-remote 2>/dev/null || true'
 Restart=always
 RestartSec=5

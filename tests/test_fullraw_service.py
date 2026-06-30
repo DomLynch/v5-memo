@@ -218,8 +218,9 @@ def test_v5_isolated_fullraw_mount_uses_separate_vfs_cache() -> None:
     assert "sb:researka-database/index/v5/fullraw-fts" in config
     assert "/var/lib/v5-memo/v5-isolated-fullraw-fts-remote" in config
     assert "/var/cache/v5-memo/v5-isolated-rclone-vfs-cache" in config
-    assert "--vfs-cache-mode=full" in config
-    assert "--vfs-cache-max-size=6G" in config
+    assert "--vfs-cache-mode=minimal" in config
+    assert "--vfs-cache-max-size=2G" in config
+    assert "--vfs-cache-max-age=30m" in config
     assert "/var/lib/v5-memo/fullraw-fts-remote" not in config
 
 
