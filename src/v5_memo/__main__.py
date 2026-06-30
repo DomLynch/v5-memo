@@ -240,7 +240,7 @@ def main() -> None:
                 queries = _dedupe_queries([*base_queries, *(planned[:2] or shape_queries if fullraw_backed else [*shape_queries, *planned])])
             else:
                 queries = planned_queries or ([] if fullraw_backed else base_queries)
-    if fullraw_backed and not explicit_queries:
+    if fullraw_backed and (not explicit_queries or args.publish or args.submit_researka):
         queries = _dedupe_queries([*queries, *shape_queries])
     anchor_queries = base_queries
     if not explicit_queries and not query_anchor_terms(base_queries):
