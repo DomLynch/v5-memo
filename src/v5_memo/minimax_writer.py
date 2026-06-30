@@ -64,6 +64,11 @@ _TITLE_STOPWORDS = frozenset({
     "elevate", "elevates", "elevated", "elevating",
     "status", "statuses", "suppress", "suppresses", "suppressed", "suppressing",
 })
+_BODY_SITE_TERMS = frozenset({
+    "ankle", "arm", "calf", "elbow", "flexor", "glute", "hamstring", "hip",
+    "knee", "leg", "limb", "quadricep", "soleus", "tendon", "thigh",
+    "vastus", "medialis",
+})
 
 
 class MemoScopeError(ValueError):
@@ -519,6 +524,7 @@ def validate_minimax_memo(
             f"MiniMax memo included unreceipted DOI-like references: {', '.join(extra_dois)}"
         )
     _validate_supported_stat_numbers(text, receipts)
+    _validate_receipt_owned_body_terms(text, receipts)
     _validate_public_alpha_framing(text, receipts)
     if candidate is not None:
         _validate_receipt_owned_title(text, receipts, candidate)
@@ -569,6 +575,15 @@ def _validate_public_alpha_framing(markdown: str, receipts: Sequence[CorpusHit])
     receipt_text = " ".join(hit.text for hit in receipts).casefold()
     if "market" not in receipt_text and _MARKET_FRAMING_RE.search(markdown):
         raise MemoScopeError("MiniMax memo included unreceipted market framing")
+
+
+def _validate_receipt_owned_body_terms(markdown: str, receipts: Sequence[CorpusHit]) -> None:
+    unsupported = sorted((_title_terms(markdown) & _BODY_SITE_TERMS) - _receipt_terms(receipts))
+    if unsupported:
+        raise MemoScopeError(
+            "MiniMax memo used body-site terms not supported by receipts: "
+            + ", ".join(unsupported)
+        )
 
 
 def _validate_claim_ledger(markdown: str, candidate: InsightCandidate) -> None:
