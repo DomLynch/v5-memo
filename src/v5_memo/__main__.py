@@ -9,6 +9,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.error import HTTPError
 
 from v5_memo.client import (
     FullRawCorpusSearchClient,
@@ -364,12 +365,20 @@ def main() -> None:
             receipt["decision"] = decision
             publication_id = researka_publication_id(decision)
             if args.researka_list_if_accepted and decision.get("decision") == "accept" and publication_id:
-                receipt["visibility"] = set_researka_public_visibility(
-                    publication_id,
-                    agent_key=config.agent_key,
-                    api_base=config.api_base,
-                    visibility="listed",
-                )
+                try:
+                    receipt["visibility"] = set_researka_public_visibility(
+                        publication_id,
+                        agent_key=config.agent_key,
+                        api_base=config.api_base,
+                        visibility="listed",
+                    )
+                except HTTPError as exc:
+                    receipt["visibility_error"] = {
+                        "error": "researka_visibility_update_failed",
+                        "status": exc.code,
+                        "reason": exc.reason,
+                        "publication_id": publication_id,
+                    }
         _write_json(args.publish_receipt_path, receipt)
         print(json.dumps(receipt, sort_keys=True), file=sys.stderr)
     print(memo_path if memo_path is not None else result.markdown)
