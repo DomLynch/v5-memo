@@ -27,7 +27,7 @@ from v5_memo.llm.minimax_client import (
 )
 from v5_memo.schemas import CorpusHit, InsightCandidate
 
-RECEIPT_ABSTRACT_CHAR_LIMIT = 900
+RECEIPT_ABSTRACT_CHAR_LIMIT = 820
 _REQUIRED_MEMO_SECTIONS = (
     "# Alpha memo:",
     "## Core signal",
@@ -42,6 +42,11 @@ _DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s<>()\[\]{}\"']+", re.IGNORECASE)
 _DOI_TRAILING_PUNCTUATION = ".,;:*_`"
 _STAT_CONTEXT_RE = re.compile(r"(?i)(?:confidence interval|\bci\b|effect size|cohen'?s d|hedges'? g|standardized mean difference).{0,120}")
 _STAT_NUMBER_RE = re.compile(r"[-+]?\d+\.\d+%?|[-+]?\d+%")
+_ADVICE_RE = re.compile(
+    r"(?i)\b(?:athletes?|clinicians?|companies?|investors?|managers?|patients?|practitioners?)\b"
+    r"[^.\n]{0,120}\bshould\b|\bshould\s+(?:avoid|buy|invest|prescribe|prioriti[sz]e|sell|take|treat|use)\b"
+)
+_MARKET_FRAMING_RE = re.compile(r"(?i)\b(?:market\s+for|reframe\s+the\s+market|commercial\s+market|investment)\b")
 _TITLE_WORD_RE = re.compile(r"[a-z][a-z0-9]{2,}")
 _TITLE_STOPWORDS = frozenset({
     "alpha", "memo", "and", "for", "from", "into", "may", "not", "the", "with",
@@ -262,6 +267,8 @@ Hard rules:
 - Use only the supplied receipts.
 - Keep every receipt ID exactly as written.
 - Do not invent mechanisms, clinical advice, causal certainty, new papers, or new numbers.
+- Do not make market, product, investment, practitioner, patient, or action claims
+  unless receipts say those exact concepts.
 - If a connection is uncertain, say it is a hypothesis.
 - Treat the seed topic as search context only; do not use broad seed-topic words in
   the title unless those words appear in the locked receipt titles/abstracts.
@@ -511,6 +518,7 @@ def validate_minimax_memo(
             f"MiniMax memo included unreceipted DOI-like references: {', '.join(extra_dois)}"
         )
     _validate_supported_stat_numbers(text, receipts)
+    _validate_public_alpha_framing(text, receipts)
     if candidate is not None:
         _validate_receipt_owned_title(text, receipts, candidate)
         _validate_claim_ledger(text, candidate)
@@ -543,6 +551,14 @@ def _normalize_stat_number(value: str) -> str:
     except ValueError:
         return value.strip()
     return f"{number:g}" + ("%" if value.strip().endswith("%") else "")
+
+
+def _validate_public_alpha_framing(markdown: str, receipts: Sequence[CorpusHit]) -> None:
+    if _ADVICE_RE.search(markdown):
+        raise MemoScopeError("MiniMax memo included advice/action framing")
+    receipt_text = " ".join(hit.text for hit in receipts).casefold()
+    if "market" not in receipt_text and _MARKET_FRAMING_RE.search(markdown):
+        raise MemoScopeError("MiniMax memo included unreceipted market framing")
 
 
 def _validate_claim_ledger(markdown: str, candidate: InsightCandidate) -> None:

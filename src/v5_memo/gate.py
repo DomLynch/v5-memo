@@ -16,6 +16,13 @@ _MIN_NOVELTY_BY_TIER = {
     "publishable_alpha": 0,
     "elite_alpha": 35,
 }
+_PRIMARY_SIGNAL_ROLES = frozenset({
+    "aggregate_signal",
+    "negative_signal",
+    "null_signal",
+    "positive_signal",
+    "tail_risk",
+})
 
 
 def candidate_alpha_tier(candidate: InsightCandidate) -> str:
@@ -64,6 +71,21 @@ def candidate_publish_blocker(candidate: InsightCandidate) -> dict[str, object] 
             "error": "translational_evidence_too_indirect",
             "direct_human_receipts": direct_human,
             "indirect_model_receipts": indirect_model,
+        }
+    weak_primary_signals = tuple(
+        card.receipt_id
+        for card in claim_cards
+        if card.role in _PRIMARY_SIGNAL_ROLES
+        and not (
+            card.population == "human"
+            and card.support_type == "direct"
+            and card.confidence == "high"
+        )
+    )
+    if weak_primary_signals:
+        return {
+            "error": "primary_signal_not_strong_direct_human",
+            "receipt_ids": weak_primary_signals,
         }
     if direct_human < 2 or strong_direct_human < 2:
         return {

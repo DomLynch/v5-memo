@@ -158,6 +158,14 @@ def mine_insights(
         )
         title_bridge = _title_bridge_terms(title_shared, doc_counts)
         bridge = (*anchor_bridge, *(term for term in title_bridge if term not in set(anchor_bridge)))[:4]
+        direct_human_pair = _direct_human_receipt(left) and _direct_human_receipt(right)
+        if not bridge and direct_human_pair:
+            bridge = _full_text_bridge_terms(
+                full_token_sets[left.hit_id],
+                full_token_sets[right.hit_id],
+                doc_counts,
+                pair_anchor_terms,
+            )
         if not bridge:
             continue
         source_keys = {left.source_key, right.source_key}
@@ -193,13 +201,14 @@ def mine_insights(
             tension_terms,
         )
         strong_anchor_bridge = bool(tension_terms and len(anchor_bridge) >= 2)
+        direct_human_reversal = direct_human_pair and bool(tension_terms) and len(bridge) >= 2
         if not (strong_anchor_bridge or elite_anchor_bridge) and not _has_title_owned_bridge(
             left,
             right,
             bridge,
             doc_counts=doc_counts,
             total_docs=len(clean_hits),
-        ):
+        ) and not direct_human_reversal:
             continue
         if set(shape_reasons) == {"shape:directional_reversal"} and len(bridge) < 2:
             continue
@@ -466,6 +475,17 @@ def _title_bridge_terms(
     return tuple(ranked[:4])
 
 
+def _full_text_bridge_terms(
+    left: frozenset[str],
+    right: frozenset[str],
+    doc_counts: Counter[str],
+    anchor_terms: frozenset[str],
+) -> tuple[str, ...]:
+    shared = (left & right) - _BRIDGE_STOP - anchor_terms
+    ranked = sorted(shared, key=lambda term: (doc_counts[term], term))
+    return tuple(ranked[:4])
+
+
 def _anchor_bridge_terms(
     left: frozenset[str],
     right: frozenset[str],
@@ -534,9 +554,16 @@ def _direction_polarity(hit: CorpusHit) -> frozenset[str]:
         return frozenset()
     title_polarity = _polarity(hit.title) - {"mixed"}
     full_polarity = _polarity(hit.text) - {"mixed"}
+    if len(title_polarity) == 1 and len(full_polarity) > 1 and title_polarity & (_NEGATIVE | _NULL):
+        return title_polarity
     if len(title_polarity) == 1 and (not full_polarity or full_polarity <= title_polarity):
         return title_polarity
     return full_polarity
+
+
+def _direct_human_receipt(hit: CorpusHit) -> bool:
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "evidence", "direct-human precheck"))
+    return card.population == "human" and card.support_type == "direct" and card.confidence == "high"
 
 
 def _direction_cautions(left: str, right: str) -> tuple[str, ...]:

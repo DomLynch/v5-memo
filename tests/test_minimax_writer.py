@@ -407,6 +407,79 @@ def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
     assert "Evidence graph:" in prompt
     assert "metric mismatch" in prompt
     assert "cross-domain transfer" in prompt
+    assert "practitioner, patient, or action claims" in prompt
+
+
+def test_minimax_memo_validation_rejects_unreceipted_action_or_market_framing() -> None:
+    memo = """# Alpha memo: NAD mitochondrial
+## Core signal
+NAD and mitochondrial repair may connect the receipts.
+## The 2+2=5 angle
+The receipt-bound bridge is hypothesis-level.
+## Why this could matter
+Practitioners prioritizing resilience should use this exposure, which could reframe the market for recovery products.
+## What would break the idea
+A direct receipt could resolve the split.
+## Claim ledger
+- receipt-bound claim: 10.1/sleep-nad support=direct
+## Receipts
+- 10.1/sleep-nad
+- 10.2/exercise-nad
+## Safety note
+Research only."""
+
+    with pytest.raises(ValueError, match="advice/action framing"):
+        validate_minimax_memo(memo, _receipts(), candidate=_candidate())
+
+
+def test_minimax_memo_validation_allows_receipted_market_terms() -> None:
+    receipts = [
+        CorpusHit(
+            hit_id="h1",
+            title="Market study of AI pricing",
+            abstract="The market for AI tools changed after pricing experiments.",
+            source="fullraw",
+            doi="10.1/market-ai",
+        ),
+        CorpusHit(
+            hit_id="h2",
+            title="AI pricing adoption benchmark",
+            abstract="Pricing adoption moved with benchmark quality.",
+            source="fullraw",
+            doi="10.2/pricing-ai",
+        ),
+    ]
+    candidate = InsightCandidate(
+        topic="AI pricing",
+        thesis="Market receipt signal.",
+        bridge_terms=("market", "pricing"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("h1", "h2"),
+        score=80,
+        novelty_score=50,
+        evidence_score=80,
+        reasons=("tier:publishable_alpha",),
+    )
+    memo = """# Alpha memo: market pricing
+## Core signal
+Market and pricing receipts point to a bounded signal.
+## The 2+2=5 angle
+The bridge is receipt-bound.
+## Why this could matter
+The market for AI tools is the measured context in the receipts.
+## What would break the idea
+A direct receipt could resolve the split.
+## Claim ledger
+- receipt-bound claim: 10.1/market-ai support=direct
+## Receipts
+- 10.1/market-ai
+- 10.2/pricing-ai
+## Safety note
+Research only."""
+
+    assert validate_minimax_memo(memo, receipts, candidate=candidate).startswith(
+        "# Alpha memo: market pricing"
+    )
 
 
 def test_build_minimax_prompt_uses_role_verbs_in_safe_title() -> None:

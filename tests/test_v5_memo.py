@@ -1766,6 +1766,60 @@ def test_publish_blocker_rejects_positive_role_with_null_direction() -> None:
     }
 
 
+def test_publish_blocker_rejects_weak_primary_signal_receipts() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Indirect primary signal should not leave V5 for public review.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("indirect", "direct-a", "direct-b"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "indirect",
+                "negative_signal",
+                "synthesis",
+                "human",
+                "strength",
+                "negative",
+                "indirect",
+                "medium",
+                "Review-level signal.",
+            ),
+            ClaimCard(
+                "direct-a",
+                "boundary",
+                "randomized_trial",
+                "human",
+                "strength",
+                "negative",
+                "direct",
+                "high",
+                "Direct human signal.",
+            ),
+            ClaimCard(
+                "direct-b",
+                "replication",
+                "randomized_trial",
+                "human",
+                "strength",
+                "null",
+                "direct",
+                "high",
+                "Direct human signal.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "primary_signal_not_strong_direct_human",
+        "receipt_ids": ("indirect",),
+    }
+
+
 def test_researka_payload_strips_markdown_wrapped_doi_receipt_labels() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion",
