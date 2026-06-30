@@ -394,6 +394,37 @@ def test_build_minimax_prompt_surfaces_late_receipt_statistics() -> None:
     assert "muscle thickness" in prompt
 
 
+def test_minimax_stat_validator_ignores_doi_decimal_prefixes() -> None:
+    receipts = [
+        CorpusHit(
+            hit_id="doi",
+            title="Cold-water immersion confidence interval study",
+            abstract="The receipt reports a 95% confidence interval and no unsupported effect size.",
+            source="fullraw:openalex",
+            doi="10.1007/s00421-025-05835-w",
+        ),
+        _receipts()[1],
+    ]
+    memo = """# Alpha memo: confidence interval cold water
+## Core signal
+The confidence interval framing is receipt-bound.
+## The 2+2=5 angle
+The DOI 10.1007/s00421-025-05835-w is a receipt locator, not a statistic.
+## Why this could matter
+It keeps DOI references separate from numeric effect claims.
+## What would break the idea
+A direct unsupported effect size would break it.
+## Claim ledger
+- receipt-bound claim: 10.1007/s00421-025-05835-w support=direct
+## Receipts
+- 10.1007/s00421-025-05835-w
+- 10.2/exercise-nad
+## Safety note
+Hypothesis only."""
+
+    assert validate_minimax_memo(memo, receipts).startswith("# Alpha memo:")
+
+
 def test_build_minimax_prompt_omits_unsafe_receipt_doi() -> None:
     unsafe = CorpusHit(
         hit_id="https://openalex.org/W4693",

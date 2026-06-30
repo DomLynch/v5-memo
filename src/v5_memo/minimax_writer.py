@@ -532,6 +532,8 @@ def _validate_supported_stat_numbers(markdown: str, receipts: Sequence[CorpusHit
     unsupported: list[str] = []
     for context in _STAT_CONTEXT_RE.finditer(markdown):
         for number in _STAT_NUMBER_RE.findall(context.group(0)):
+            if _looks_like_doi_prefix(number, context.group(0)):
+                continue
             normalized = _normalize_stat_number(number)
             if normalized not in receipt_numbers:
                 unsupported.append(number)
@@ -549,6 +551,13 @@ def _normalize_stat_number(value: str) -> str:
     except ValueError:
         return value.strip()
     return f"{number:g}" + ("%" if value.strip().endswith("%") else "")
+
+
+def _looks_like_doi_prefix(number: str, context: str) -> bool:
+    raw = number.strip().rstrip("%")
+    if not raw.startswith("10."):
+        return False
+    return re.search(rf"(?<![\d.]){re.escape(raw)}(?:/|[A-Za-z])", context) is not None
 
 
 def _validate_public_alpha_framing(markdown: str, receipts: Sequence[CorpusHit]) -> None:
