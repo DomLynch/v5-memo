@@ -207,6 +207,7 @@ def test_v5_isolated_fullraw_env_overrides_shared_shard_dir() -> None:
     assert "RESEARKA_FULLRAW_SHARD_DIR=/var/lib/v5-memo/v5-isolated-fullraw-fts-remote" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/v5-fullraw-sweep-cache" in env_example
     assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/v5-shard-cache-5tb" in env_example
+    assert "RESEARKA_FULLRAW_FOREGROUND_SWEEP_WAIT_SECONDS=0" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_NO_HIT_STOP_SHARDS=128" in env_example
     assert "RESEARKA_FULLRAW_INDEX_PORT=9915" in env_example
 
