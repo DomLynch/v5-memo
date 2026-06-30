@@ -27,7 +27,7 @@ from v5_memo.llm.minimax_client import (
 )
 from v5_memo.schemas import CorpusHit, InsightCandidate
 
-RECEIPT_ABSTRACT_CHAR_LIMIT = 300
+RECEIPT_ABSTRACT_CHAR_LIMIT = 120
 _REQUIRED_MEMO_SECTIONS = (
     "# Alpha memo:",
     "## Core signal",
@@ -42,6 +42,7 @@ _DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s<>()\[\]{}\"']+", re.IGNORECASE)
 _DOI_TRAILING_PUNCTUATION = ".,;:*_`"
 _STAT_CONTEXT_RE = re.compile(r"(?i)(?:confidence interval|\bci\b|effect size|cohen'?s d|hedges'? g|standardized mean difference).{0,120}")
 _STAT_ANCHOR_RE = re.compile(r"(?i)\b(?:p\s*=\s*\.?\d+|g\s*=\s*[-+]?\d+(?:\.\d+)?|95%\s*(?:confidence interval|\bci\b)|confidence interval)")
+_LIMIT_ANCHOR_RE = re.compile(r"(?i)\b\d+\s+(?:adults|athletes|men|participants|patients|players|subjects|volunteers|women)\b")
 _STAT_NUMBER_RE = re.compile(r"[-+]?\d+\.\d+%?|[-+]?\d+%")
 _ADVICE_RE = re.compile(
     r"(?i)\b(?:athletes?|clinicians?|companies?|investors?|managers?|patients?|practitioners?)\b"
@@ -287,8 +288,10 @@ Hard rules:
 - Never call a receipt "feasibility/safety-adjacent" unless its claim-card role is safety_feasibility.
 - Respect receipt roles: promise/protocol/intent/mechanism means expected/designed/hypothesized/framed, not observed result or confirmed endpoint.
 - Anchor on the strongest direct human evidence; put weaker context/proxy receipts after it.
+- In Core signal, name sample size/statistical context for the strongest receipt; frame one small RCT/cohort as one receipt, not settled consensus.
 - Do not equate acute swelling, soreness, thickness, or damage proxies with chronic adaptation
   unless the receipt says adaptation, hypertrophy, or strength changed.
+- Proxy/boundary receipts are secondary; do not make them co-equal anchors for chronic-adaptation claims.
 - If a proxy/boundary receipt sits beside chronic or long-term adaptation receipts, frame the core signal as endpoint heterogeneity.
 - If a systematic review or synthesis receipt has its own negative/null/positive direction,
   state whether it converges with the direct evidence or is only context.
@@ -297,8 +300,8 @@ Hard rules:
   rather than contradictory, explicitly say they are not directly contradictory.
 - Use source-appropriate descriptors from the receipts: trial/protocol, filing/report, benchmark, case study, market study, campaign, interview, dataset, model card.
 - Make the memo read like an insight: surface contradiction, boundary condition, inversion, neglected proxy, metric mismatch, or cross-domain transfer.
-- In "What would break the idea", name one concrete next-step uncertainty or
-  study design that would resolve the boundary.
+- In "Why this could matter", give one falsifiable hypothesis, not a list.
+- In "What would break the idea", name one concrete next-step uncertainty or study design that would resolve the boundary.
 - Include a concise Claim ledger section before Receipts. Each claim must use the
   supplied claim-card receipt ID and support type; do not invent unsupported claims.
 - Use this exact receipt-owned title first line: # Alpha memo: {title}
@@ -783,6 +786,16 @@ def _receipt_stat_context(text: str) -> str:
             continue
         seen.add(key)
         snippets.append(snippet)
+        if len(snippets) >= 8:
+            break
+    for match in _LIMIT_ANCHOR_RE.finditer(normalized):
+        start = max(0, match.start() - 100)
+        end = min(len(normalized), match.end() + 160)
+        snippet = normalized[start:end].strip(" ,.;")
+        key = snippet.casefold()
+        if key not in seen:
+            seen.add(key)
+            snippets.append(snippet)
         if len(snippets) >= 8:
             break
     if not snippets:

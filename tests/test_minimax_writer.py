@@ -263,9 +263,13 @@ def test_minimax_prompt_includes_structured_claim_ledger() -> None:
     assert "not directly contradictory" in prompt
     assert "strongest direct human evidence" in prompt
     assert "Do not equate acute swelling, soreness, thickness, or damage proxies" in prompt
+    assert "sample size/statistical context for the strongest receipt" in prompt
+    assert "not settled consensus" in prompt
     assert "frame the core signal as endpoint heterogeneity" in prompt
+    assert "do not make them co-equal anchors" in prompt
     assert "systematic review or synthesis receipt has its own negative/null/positive direction" in prompt
     assert "different modalities/populations" in prompt
+    assert "one falsifiable hypothesis" in prompt
     assert "sample size, sex" in prompt
     assert 'sex if stated or "sex not stated"' in prompt
 
