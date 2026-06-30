@@ -265,7 +265,9 @@ def test_minimax_prompt_includes_structured_claim_ledger() -> None:
     assert "Do not equate acute swelling, soreness, thickness, or damage proxies" in prompt
     assert "frame the core signal as endpoint heterogeneity" in prompt
     assert "systematic review or synthesis receipt has its own negative/null/positive direction" in prompt
+    assert "different modalities/populations" in prompt
     assert "sample size, sex" in prompt
+    assert 'sex if stated or "sex not stated"' in prompt
 
 
 def test_minimax_writer_from_env_uses_v5_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -365,6 +367,31 @@ def test_build_minimax_prompt_bounds_long_abstracts() -> None:
     assert "... [truncated]" in prompt
     assert "Make the memo read like an insight" in prompt
     assert len(prompt) < 5000
+
+
+def test_build_minimax_prompt_surfaces_late_receipt_statistics() -> None:
+    abstract = (
+        "Participants completed a randomized crossover training protocol. "
+        + "Background sentence. " * 30
+        + "A significant condition x time effect (P = .01, F = 10.00) and a large "
+        "negative effect of cooling (g = 1.20; 95% CI, -0.65 to 1.20) were observed "
+        "for muscle thickness."
+    )
+    receipt = CorpusHit(
+        hit_id="10.1123/ijspp.2019-0965",
+        title="Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?",
+        abstract=abstract,
+        source="fullraw:openalex",
+        doi="10.1123/ijspp.2019-0965",
+    )
+
+    prompt = build_minimax_prompt(_candidate(), [receipt, _receipts()[1]])
+
+    assert "... [truncated]" in prompt
+    assert "Statistics/context:" in prompt
+    assert "P = .01" in prompt
+    assert "g = 1.20" in prompt
+    assert "muscle thickness" in prompt
 
 
 def test_build_minimax_prompt_omits_unsafe_receipt_doi() -> None:

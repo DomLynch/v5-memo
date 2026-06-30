@@ -41,6 +41,7 @@ _REQUIRED_MEMO_SECTIONS = (
 _DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s<>()\[\]{}\"']+", re.IGNORECASE)
 _DOI_TRAILING_PUNCTUATION = ".,;:*_`"
 _STAT_CONTEXT_RE = re.compile(r"(?i)(?:confidence interval|\bci\b|effect size|cohen'?s d|hedges'? g|standardized mean difference).{0,120}")
+_STAT_ANCHOR_RE = re.compile(r"(?i)\b(?:p\s*=\s*\.?\d+|g\s*=\s*[-+]?\d+(?:\.\d+)?|95%\s*(?:confidence interval|\bci\b)|confidence interval)")
 _STAT_NUMBER_RE = re.compile(r"[-+]?\d+\.\d+%?|[-+]?\d+%")
 _ADVICE_RE = re.compile(
     r"(?i)\b(?:athletes?|clinicians?|companies?|investors?|managers?|patients?|practitioners?)\b"
@@ -291,6 +292,7 @@ Hard rules:
 - If a proxy/boundary receipt sits beside chronic or long-term adaptation receipts, frame the core signal as endpoint heterogeneity.
 - If a systematic review or synthesis receipt has its own negative/null/positive direction,
   state whether it converges with the direct evidence or is only context.
+- If receipts use different modalities/populations, name that split before claiming convergence.
 - Use the 2+2=5 section to state the bounded contrast; if the receipts are heterogeneous
   rather than contradictory, explicitly say they are not directly contradictory.
 - Use source-appropriate descriptors from the receipts: trial/protocol, filing/report, benchmark, case study, market study, campaign, interview, dataset, model card.
@@ -313,7 +315,7 @@ Required structure:
 ## Receipts
 ## Safety note
 
-Safety note: scope/limits only; include sample size, sex, training status, population, protocol.
+Safety note: concrete limitations only; include sample size, sex if stated or "sex not stated", training status, population, protocol.
 
 Candidate thesis:
 {candidate.thesis}
@@ -581,6 +583,8 @@ def _receipt_block(index: int, hit: CorpusHit) -> str:
     receipt_id = _receipt_display_id(hit)
     locator = _receipt_locator(hit)
     abstract = _truncate_receipt_text(hit.abstract, RECEIPT_ABSTRACT_CHAR_LIMIT)
+    stat_context = _receipt_stat_context(hit.abstract)
+    stat_line = f"\nStatistics/context: {stat_context}" if stat_context else ""
     return (
         f"Receipt {index}\n"
         f"ID: {receipt_id}\n"
@@ -589,7 +593,7 @@ def _receipt_block(index: int, hit: CorpusHit) -> str:
         f"Venue: {venue}\n"
         f"Source: {hit.source}\n"
         f"Locator: {locator}\n"
-        f"Abstract: {abstract}"
+        f"Abstract: {abstract}{stat_line}"
     )
 
 
@@ -755,6 +759,34 @@ def _truncate_receipt_text(text: str, limit: int) -> str:
     if len(normalized) <= limit:
         return normalized
     return normalized[: max(0, limit - 16)].rstrip() + " ... [truncated]"
+
+
+def _receipt_stat_context(text: str) -> str:
+    normalized = " ".join(text.split())
+    snippets: list[str] = []
+    seen: set[str] = set()
+    for match in _STAT_ANCHOR_RE.finditer(normalized):
+        start = max(0, match.start() - 120)
+        end = min(len(normalized), match.end() + 180)
+        snippet = normalized[start:end].strip(" ,.;")
+        key = snippet.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        snippets.append(snippet)
+        if len(snippets) >= 8:
+            break
+    if not snippets:
+        return ""
+    outcome_terms = {"adaptation", "adaptations", "jump", "muscle", "performance", "strength", "thickness"}
+    snippets.sort(
+        key=lambda value: (
+            bool(set(_TITLE_WORD_RE.findall(value.casefold())) & outcome_terms),
+            len(_STAT_NUMBER_RE.findall(value)),
+        ),
+        reverse=True,
+    )
+    return _truncate_receipt_text(" | ".join(snippets[:2]), 360)
 
 
 def _receipt_dois(receipts: Sequence[CorpusHit]) -> set[str]:
