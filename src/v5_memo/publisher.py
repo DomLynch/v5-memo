@@ -8,7 +8,7 @@ from typing import cast
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from v5_memo.schemas import CorpusHit, MemoResult
+from v5_memo.schemas import ClaimCard, CorpusHit, MemoResult
 
 _RETRIEVAL_EVIDENCE_KEYS = (
     "shard_receipt",
@@ -251,6 +251,9 @@ def _bundle_title(result: MemoResult) -> str:
         for card in result.candidate.claim_cards
         if card.population.casefold() == "human" and card.support_type.casefold() == "direct"
     ]
+    endpoint_title = _endpoint_heterogeneity_title(result, direct_human)
+    if endpoint_title:
+        return endpoint_title
     outcomes: set[str] = set()
     for card in direct_human:
         outcome = " ".join(_TITLE_TOKEN_RE.findall(card.outcome.casefold()))
@@ -265,6 +268,33 @@ def _bundle_title(result: MemoResult) -> str:
     training_terms = {"exercise", "training", "resistance", "strength"}
     outcome_label = "Training Outcomes" if topic_tokens & training_terms else "Outcomes"
     return f"{intervention} and {outcome_label} in Human Studies"
+
+
+def _endpoint_heterogeneity_title(result: MemoResult, direct_human: Sequence[ClaimCard]) -> str:
+    proxy_terms = {"acute", "damage", "delayed", "early", "immediate", "inflammation", "pain", "short", "stress"}
+    has_proxy = False
+    has_directional_endpoint = False
+    for card in result.candidate.claim_cards:
+        if card not in direct_human:
+            continue
+        outcome_terms = set(_TITLE_TOKEN_RE.findall(card.outcome.casefold()))
+        direction = card.direction.casefold()
+        if direction == "proxy" or (card.role == "boundary" and outcome_terms & proxy_terms):
+            has_proxy = True
+        elif direction not in {"proxy", "unclear"}:
+            has_directional_endpoint = True
+    if not has_proxy or not has_directional_endpoint:
+        return ""
+    intervention = _topic_intervention_title(result.candidate.topic)
+    if not intervention:
+        return ""
+    topic_tokens = set(_TITLE_TOKEN_RE.findall(result.candidate.topic.casefold()))
+    adaptation_label = (
+        "Chronic Training Adaptation"
+        if topic_tokens & {"adaptation", "adaptations", "exercise", "resistance", "strength", "training"}
+        else "Primary Outcome"
+    )
+    return f"{intervention}: Endpoint Heterogeneity in Acute Proxy vs {adaptation_label}"
 
 
 def _topic_intervention_title(topic: str) -> str:

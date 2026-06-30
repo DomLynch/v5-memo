@@ -2259,11 +2259,11 @@ def test_researka_payload_uses_bundle_title_for_heterogeneous_bridge_title() -> 
         claim_cards=(
             ClaimCard(
                 "elbow",
-                "negative_signal",
+                "boundary",
                 "randomized_trial",
                 "human",
-                "elbow flexor muscle thickness",
-                "negative",
+                "acute/damage/performance",
+                "proxy",
                 "direct",
                 "high",
                 "CWI attenuated elbow flexor muscle thickness.",
@@ -2323,10 +2323,10 @@ def test_researka_payload_uses_bundle_title_for_heterogeneous_bridge_title() -> 
         domain_slug="performance",
     )
 
-    assert payload["title"] == "Cold Water Immersion and Training Outcomes in Human Studies"
+    assert payload["title"] == "Cold Water Immersion: Endpoint Heterogeneity in Acute Proxy vs Chronic Training Adaptation"
     assert payload["title"] != receipts[0].title
     assert cast(str, payload["body_markdown"]).startswith(
-        "# Alpha memo: Cold Water Immersion and Training Outcomes in Human Studies"
+        "# Alpha memo: Cold Water Immersion: Endpoint Heterogeneity in Acute Proxy vs Chronic Training Adaptation"
     )
 
 

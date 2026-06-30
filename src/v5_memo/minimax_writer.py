@@ -27,7 +27,7 @@ from v5_memo.llm.minimax_client import (
 )
 from v5_memo.schemas import CorpusHit, InsightCandidate
 
-RECEIPT_ABSTRACT_CHAR_LIMIT = 350
+RECEIPT_ABSTRACT_CHAR_LIMIT = 300
 _REQUIRED_MEMO_SECTIONS = (
     "# Alpha memo:",
     "## Core signal",
@@ -267,19 +267,13 @@ Hard rules:
 - Use only the supplied receipts.
 - Keep every receipt ID exactly as written.
 - Do not invent mechanisms, clinical advice, causal certainty, new papers, or new numbers.
-- Do not make market, product, investment, practitioner, patient, or action claims
-  unless receipts say those exact concepts.
+- Do not make market, product, investment, practitioner, patient, or action claims unless receipts say those concepts.
 - If a connection is uncertain, say it is a hypothesis.
-- Treat the seed topic as search context only; do not use broad seed-topic words in
-  the title unless those words appear in the locked receipt titles/abstracts.
+- Treat the seed topic as search context only; use broad seed words in the title only if receipts contain them.
 - Title the memo around receipt-owned concepts, not around the user's seed query.
 - In the title, copy receipt/bridge terms verbatim; do not use synonyms or paraphrases.
-- The title must be made only from locked receipt title/abstract words or listed
-  bridge terms. Put framing words such as opposite, direction, trend, divergent,
-  and framing in the body, not the title.
-- Scope every implication to the receipts: state the specific population, market,
-  company, channel, model, benchmark, timeframe, geography, or source type only when
-  the receipts provide it.
+- The title must be made only from locked receipt title/abstract words or listed bridge terms.
+- Scope every implication to the receipts: population, market, company, channel, model, benchmark, timeframe, geography, source type.
 - State the receipt-owned timing exactly; do not turn pre-exercise, prior-to-use,
   or post-intervention exposure into "during" unless a receipt says during.
 - If receipts split by endpoint or metric, say it is not a direct contradiction
@@ -288,23 +282,19 @@ Hard rules:
   otherwise quantify the protocol/design gap and frame a bounded contrast.
 - If overall gains coexist with a control/comparator-favored contrast, label the
   claim ledger mixed/comparator-favored, not simply positive.
-- If a claim-card role is safety_feasibility, or a receipt says pilot/safety/feasibility,
-  describe it as feasibility or safety evidence only; do not call it positive efficacy.
+- If claim-card role is safety_feasibility or receipt says pilot/safety/feasibility, do not call it positive efficacy.
 - Never call a receipt "feasibility/safety-adjacent" unless its claim-card role is safety_feasibility.
-- Respect receipt roles: if a receipt is labeled promise, protocol, intent, or
-  mechanism, describe it as expected/designed/hypothesized/framed, not as an observed result or confirmed endpoint.
+- Respect receipt roles: promise/protocol/intent/mechanism means expected/designed/hypothesized/framed, not observed result or confirmed endpoint.
 - Anchor on the strongest direct human evidence; put weaker context/proxy receipts after it.
 - Do not equate acute swelling, soreness, thickness, or damage proxies with chronic adaptation
   unless the receipt says adaptation, hypertrophy, or strength changed.
+- If a proxy/boundary receipt sits beside chronic or long-term adaptation receipts, frame the core signal as endpoint heterogeneity.
+- If a systematic review or synthesis receipt has its own negative/null/positive direction,
+  state whether it converges with the direct evidence or is only context.
 - Use the 2+2=5 section to state the bounded contrast; if the receipts are heterogeneous
   rather than contradictory, explicitly say they are not directly contradictory.
-- Use source-appropriate descriptors from the receipts, not generic prestige labels:
-  trial/protocol, filing/report, benchmark, case study, market study, campaign, interview,
-  dataset, or model card.
-- Make the memo read like an insight, not a literature summary: surface the non-obvious bridge,
-  contradiction, boundary condition, inversion, neglected proxy, metric mismatch, or
-  cross-domain transfer.
-- Avoid generic phrases such as "more research is needed" unless tied to a receipt-specific test.
+- Use source-appropriate descriptors from the receipts: trial/protocol, filing/report, benchmark, case study, market study, campaign, interview, dataset, model card.
+- Make the memo read like an insight: surface contradiction, boundary condition, inversion, neglected proxy, metric mismatch, or cross-domain transfer.
 - In "What would break the idea", name one concrete next-step uncertainty or
   study design that would resolve the boundary.
 - Include a concise Claim ledger section before Receipts. Each claim must use the
