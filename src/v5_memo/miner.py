@@ -1114,6 +1114,10 @@ def _population_type(terms: frozenset[str]) -> str:
 
 
 def _outcome_label(terms: frozenset[str]) -> str:
+    if "hypertrophy" in terms:
+        return "hypertrophy"
+    if {"muscle", "thickness"} <= terms:
+        return "muscle thickness"
     candidates = sorted(terms & (_OUTCOME | _METRIC | _ADVERSE_ENDPOINT | _BOUNDARY | _TIMING))
     return "/".join(candidates[:3]) if candidates else "unspecified"
 

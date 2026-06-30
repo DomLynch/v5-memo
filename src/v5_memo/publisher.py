@@ -287,6 +287,9 @@ def _bundle_title(result: MemoResult) -> str:
             if topic_tokens & {"resistance", "strength"}
             else "Training Adaptation"
         )
+        if outcome_tokens & {"hypertrophy", "thickness"}:
+            contrast_label = "Muscle Thickness" if "thickness" in outcome_tokens else "Hypertrophy"
+            return f"{intervention}: {contrast_label} vs {outcome_label}"
         if outcome_tokens & {"performance", "recovery"}:
             contrast_label = "Recovery" if "recovery" in outcome_tokens else "Performance"
             return f"{intervention}: {contrast_label} and {outcome_label}"
@@ -404,7 +407,7 @@ def _retrieval_evidence(hit: CorpusHit) -> dict[str, object]:
 
 
 def _abstract_from_markdown(markdown: str) -> str:
-    plain = " ".join(markdown.translate(str.maketrans("#*_`>-", "      ")).split())
+    plain = " ".join(markdown.translate(str.maketrans("#*_`>", "     ")).split())
     plain = _alpha_disclaimer_first(plain)
     if len(plain) <= 900:
         return plain
