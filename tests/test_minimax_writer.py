@@ -429,6 +429,44 @@ Hypothesis only."""
     assert validate_minimax_memo(memo, receipts).startswith("# Alpha memo:")
 
 
+def test_minimax_memo_rejects_unreceipted_body_site_terms() -> None:
+    receipts = [
+        CorpusHit(
+            hit_id="10.1123/ijspp.2019-0965",
+            title="Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?",
+            abstract="Leg circumference and muscle thickness of the vastus medialis were measured.",
+            source="fullraw:openalex",
+            doi="10.1123/ijspp.2019-0965",
+        ),
+        CorpusHit(
+            hit_id="10.1007/s00421-025-05835-w",
+            title="Cold- and hot-water immersion are not more effective than placebo",
+            abstract="Physical performance and long-term training adaptations were measured.",
+            source="fullraw:openalex",
+            doi="10.1007/s00421-025-05835-w",
+        ),
+    ]
+    memo = """# Alpha memo: cold water immersion training
+## Core signal
+The receipt shows elbow flexor muscle thickness changed after training.
+## The 2+2=5 angle
+The receipts are heterogeneous.
+## Why this could matter
+It is a bounded hypothesis.
+## What would break the idea
+A matched trial would test it.
+## Claim ledger
+- receipt-bound claim: 10.1123/ijspp.2019-0965 support=direct
+## Receipts
+- 10.1123/ijspp.2019-0965
+- 10.1007/s00421-025-05835-w
+## Safety note
+Hypothesis only."""
+
+    with pytest.raises(ValueError, match="body-site terms"):
+        validate_minimax_memo(memo, receipts)
+
+
 def test_build_minimax_prompt_omits_unsafe_receipt_doi() -> None:
     unsafe = CorpusHit(
         hit_id="https://openalex.org/W4693",
