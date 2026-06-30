@@ -1045,16 +1045,29 @@ def _claim_card(hit: CorpusHit, role: ReceiptRole) -> ClaimCard:
         support_type = "direct" if population == "human" and not non_primary else "indirect"
     confidence = "high" if support_type == "direct" and direction != "unclear" else "medium" if direction != "unclear" else "low"
     role_name = "safety_feasibility" if safety_feasibility and role.role.endswith("_signal") else role.role
+    outcome = _outcome_label(terms)
+    if _is_proxy_signal(outcome, role_name):
+        role_name = "boundary"
+        direction = "proxy"
     return ClaimCard(
         receipt_id=hit.hit_id,
         role=role_name,
         design=design,
         population=population,
-        outcome=_outcome_label(terms),
+        outcome=outcome,
         direction=direction,
         support_type=support_type,
         confidence=confidence,
         quote=_claim_quote(hit),
+    )
+
+
+def _is_proxy_signal(outcome: str, role_name: str) -> bool:
+    outcome_terms = frozenset(outcome.split("/"))
+    return (
+        role_name in {"negative_signal", "null_signal", "positive_signal"}
+        and bool(outcome_terms & (_ADVERSE_ENDPOINT | _TIMING))
+        and not bool(outcome_terms & {"chronic", "long"})
     )
 
 

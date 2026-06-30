@@ -1855,6 +1855,40 @@ def test_claim_card_treats_players_training_as_direct_human_intervention() -> No
     assert card.confidence == "high"
 
 
+def test_claim_card_demotes_acute_proxy_endpoint_signals() -> None:
+    proxy_hit = CorpusHit(
+        hit_id="10.proxy",
+        title="Cold-water immersion changes acute damage and performance markers after resistance training",
+        abstract=(
+            "Human participants completed resistance training. Cold-water immersion attenuated "
+            "acute muscle damage and performance markers after the exercise session."
+        ),
+        source="fullraw:openalex",
+        doi="10.proxy",
+    )
+    chronic_hit = CorpusHit(
+        hit_id="10.chronic",
+        title="Cold-water immersion attenuates long-term performance adaptations after resistance training",
+        abstract=(
+            "Human participants completed resistance training. Cold-water immersion attenuated "
+            "long-term performance adaptations after repeated training sessions."
+        ),
+        source="fullraw:openalex",
+        doi="10.chronic",
+    )
+
+    proxy_card = _claim_card(proxy_hit, ReceiptRole(proxy_hit.hit_id, "negative_signal", "candidate evidence stream"))
+    chronic_card = _claim_card(chronic_hit, ReceiptRole(chronic_hit.hit_id, "negative_signal", "candidate evidence stream"))
+
+    assert proxy_card.role == "boundary"
+    assert proxy_card.direction == "proxy"
+    assert proxy_card.outcome == "acute/damage/performance"
+    assert proxy_card.support_type == "direct"
+    assert chronic_card.role == "negative_signal"
+    assert chronic_card.direction == "negative"
+    assert chronic_card.outcome == "long/performance"
+
+
 def test_claim_card_does_not_treat_safety_feasibility_pilot_as_positive_efficacy() -> None:
     hit = CorpusHit(
         hit_id="10.1016/j.exger.2020.111111",
