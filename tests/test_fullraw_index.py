@@ -1325,6 +1325,29 @@ def test_complete_sweep_retries_failed_shards_until_coverage_is_complete() -> No
     ) == 2
 
 
+def test_complete_sweep_defers_timed_out_front_shards(tmp_path: Path) -> None:
+    entries = [_entry(tmp_path, idx, "openalex") for idx in range(4)]
+
+    first, deferred = fullraw_index._next_sweep_pass_entries(
+        entries,
+        completed_path_strings=set(),
+        failed_path_strings=set(),
+        deferred_path_strings={str(entries[0].path), str(entries[1].path)},
+        limit=2,
+    )
+    second, reset_deferred = fullraw_index._next_sweep_pass_entries(
+        entries,
+        completed_path_strings={str(entries[2].path), str(entries[3].path)},
+        failed_path_strings=set(),
+        deferred_path_strings=deferred,
+        limit=2,
+    )
+
+    assert [entry.path for entry in first] == [entries[2].path, entries[3].path]
+    assert second == entries[:2]
+    assert reset_deferred == set()
+
+
 def test_complete_sweep_does_not_poison_missed_pass_entries(tmp_path: Path) -> None:
     pass_entries = [_entry(tmp_path, index, "openalex") for index in range(3)]
     completed = {str(pass_entries[0].path)}

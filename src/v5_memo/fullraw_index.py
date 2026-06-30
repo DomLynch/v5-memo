@@ -3330,6 +3330,9 @@ def run_server() -> None:
                     existing.receipt if existing else {},
                     require_complete_sweep=sweep_require_complete,
                 )
+                deferred_path_strings = set(_string_tuple(
+                    (existing.receipt if existing else {}).get("sweep_deferred_paths")
+                ))
                 merged_hits = list(existing.hits if existing else [])
                 previous_passes = _int_or_none((existing.receipt if existing else {}).get("sweep_passes")) or 0
                 completed_pass_roles = list(
@@ -3338,12 +3341,13 @@ def run_server() -> None:
                 receipt: dict[str, object] = existing.receipt if existing else {}
                 for pass_index in range(sweep_max_passes):
                     pass_plan = sweep_passes[(previous_passes + pass_index) % len(sweep_passes)]
-                    remaining_entries = [
-                        entry
-                        for entry in sweep_entries
-                        if str(entry.path) not in completed_path_strings | failed_path_strings
-                    ]
-                    pass_entries = remaining_entries[:sweep_pass_shard_limit]
+                    pass_entries, deferred_path_strings = _next_sweep_pass_entries(
+                        sweep_entries,
+                        completed_path_strings=completed_path_strings,
+                        failed_path_strings=failed_path_strings,
+                        deferred_path_strings=deferred_path_strings,
+                        limit=sweep_pass_shard_limit,
+                    )
                     if not pass_entries:
                         break
                     hits, completed_paths, timed_out, pass_metrics = _search_shard_paths_with_paths_and_receipt(
@@ -3359,6 +3363,13 @@ def run_server() -> None:
                     )
                     completed_pass_roles.append(pass_plan.role)
                     completed_path_strings.update(str(path) for path in completed_paths)
+                    missed_path_strings = {
+                        str(entry.path)
+                        for entry in pass_entries
+                        if str(entry.path) not in completed_path_strings
+                    }
+                    if sweep_require_complete:
+                        deferred_path_strings.update(missed_path_strings)
                     if not timed_out:
                         failed_path_strings.update(_sweep_pass_failed_path_strings(
                             pass_entries,
@@ -3378,6 +3389,7 @@ def run_server() -> None:
                     receipt["sweep_max_passes"] = sweep_max_passes
                     receipt["sweep_failed_shards"] = len(failed_path_strings)
                     receipt["sweep_failed_paths"] = sorted(failed_path_strings)
+                    receipt["sweep_deferred_paths"] = sorted(deferred_path_strings)
                     receipt["sweep_remaining_shards"] = _sweep_remaining_shard_count(
                         selected_shards=len(sweep_entries),
                         completed_shards=len(completed_path_strings),
@@ -3411,7 +3423,7 @@ def run_server() -> None:
                         or pass_index + 1 >= sweep_max_passes
                     )
                     sweep_cache_put(job.key, SweepCacheEntry(time.time(), merged_hits, receipt), final=final)
-                    if final or (timed_out and not completed_paths):
+                    if final or (timed_out and not completed_paths and not sweep_require_complete):
                         break
             except Exception as exc:
                 print(f"fullraw sweep worker failed key={job.key}: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
