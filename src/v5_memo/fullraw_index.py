@@ -2033,12 +2033,18 @@ def _evict_shard_cache(
     if max_bytes is None or max_bytes <= 0:
         return
     preserved = {path.resolve() for path in (preserve or set())}
-    entries = [
-        path
-        for pattern in ("*.sqlite", "*.sqlite-wal", ".*.sqlite.tmp.*")
-        for path in cache_dir.glob(pattern)
-        if path.is_file() and path != keep and path.resolve() not in preserved
-    ]
+    tmp_ttl_seconds = _float_or_none(
+        _fullraw_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_TMP_TTL_SECONDS", "3600")
+    ) or 3600.0
+    now = time.time()
+    entries = []
+    for pattern in ("*.sqlite", "*.sqlite-wal", ".*.sqlite.tmp.*"):
+        for path in cache_dir.glob(pattern):
+            if not path.is_file() or path == keep or path.resolve() in preserved:
+                continue
+            if ".sqlite.tmp." in path.name and now - path.stat().st_mtime < tmp_ttl_seconds:
+                continue
+            entries.append(path)
     total = sum(path.stat().st_size for path in entries)
     if keep.exists():
         total += keep.stat().st_size

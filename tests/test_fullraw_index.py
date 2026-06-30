@@ -2087,6 +2087,30 @@ def test_materialized_shard_cache_evicts_old_entries(tmp_path: Path, monkeypatch
     assert keep.exists()
 
 
+def test_materialized_shard_cache_preserves_fresh_temp_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    fresh_tmp = cache_dir / ".fresh.sqlite.tmp.1.1"
+    stale_tmp = cache_dir / ".stale.sqlite.tmp.1.1"
+    keep = cache_dir / "keep.sqlite"
+    for path in (fresh_tmp, stale_tmp, keep):
+        path.write_bytes(b"x" * 6)
+    now = time.time()
+    os.utime(fresh_tmp, (now, now))
+    os.utime(stale_tmp, (1, 1))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "6")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_TMP_TTL_SECONDS", "3600")
+
+    fullraw_index._evict_shard_cache(cache_dir, required_bytes=0, keep=keep)
+
+    assert fresh_tmp.exists()
+    assert not stale_tmp.exists()
+    assert keep.exists()
+
+
 def test_auto_sweep_workers_scales_by_inflight(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "cpu_count", lambda: 16)
     monkeypatch.delenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", raising=False)
