@@ -143,6 +143,7 @@ _SWEEP_STRATEGY = "profile_relaxed_v11"
 _SWEEP_MIN_RESULT_LIMIT = 10
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _SHARD_LOCAL_CACHE_IN_PROGRESS: set[Path] = set()
+_SHARD_LOCAL_CACHE_RESERVED_BYTES: dict[Path, int] = {}
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
     ("forecast", ("forecast", "forecasts", "forecasting", "guidance", "estimate", "estimates")),
@@ -1970,6 +1971,19 @@ def _materialized_shard_path(
     tmp_path = cache_path.with_name(f".{cache_path.name}.tmp.{os.getpid()}.{threading.get_ident()}")
     base_preserve = preserve or set()
     with _SHARD_LOCAL_CACHE_LOCK:
+        _evict_shard_cache(
+            cache_path.parent,
+            required_bytes=source_stat.st_size,
+            keep=cache_path,
+            preserve=base_preserve | _SHARD_LOCAL_CACHE_IN_PROGRESS,
+        )
+        if max_cache_bytes is not None:
+            cache_bytes = _shard_cache_used_bytes(cache_path.parent)
+            reserved_bytes = sum(_SHARD_LOCAL_CACHE_RESERVED_BYTES.values())
+            if cache_bytes + reserved_bytes + source_stat.st_size > max_cache_bytes:
+                _SHARD_LOCAL_CACHE_IN_PROGRESS.discard(cache_path)
+                return path
+        _SHARD_LOCAL_CACHE_RESERVED_BYTES[tmp_path] = source_stat.st_size
         _SHARD_LOCAL_CACHE_IN_PROGRESS.add(tmp_path)
         _evict_shard_cache(
             cache_path.parent,
@@ -1996,6 +2010,7 @@ def _materialized_shard_path(
         with _SHARD_LOCAL_CACHE_LOCK:
             _SHARD_LOCAL_CACHE_IN_PROGRESS.discard(cache_path)
             _SHARD_LOCAL_CACHE_IN_PROGRESS.discard(tmp_path)
+            _SHARD_LOCAL_CACHE_RESERVED_BYTES.pop(tmp_path, None)
         tmp_path.unlink(missing_ok=True)
 
 
@@ -2066,6 +2081,19 @@ def _evict_shard_cache(
             total -= size
         except OSError:
             continue
+
+
+def _shard_cache_used_bytes(cache_dir: Path) -> int:
+    total = 0
+    for pattern in ("*.sqlite", "*.sqlite-wal", ".*.sqlite.tmp.*"):
+        for path in cache_dir.glob(pattern):
+            if not path.is_file():
+                continue
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+    return total
 
 
 def warm_shard_cache(
