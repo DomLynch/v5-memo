@@ -1933,16 +1933,19 @@ def _materialized_shard_path(
     cache_path = _shard_cache_path(path)
     if cache_path is None:
         return path
-    source_stat = path.stat()
     cache_path.parent.mkdir(parents=True, exist_ok=True)
+    if populate:
+        max_cache_bytes = _shard_local_cache_max_bytes(cache_path.parent)
+        if max_cache_bytes is not None and max_cache_bytes <= 0:
+            return path
+    else:
+        max_cache_bytes = None
+    source_stat = path.stat()
     with _SHARD_LOCAL_CACHE_LOCK:
         if cache_path.exists() and cache_path.stat().st_size == source_stat.st_size:
             os.utime(cache_path, None)
             return cache_path
     if not populate:
-        return path
-    max_cache_bytes = _shard_local_cache_max_bytes(cache_path.parent)
-    if max_cache_bytes is not None and max_cache_bytes <= 0:
         return path
     populate_limit = max_cache_bytes
     if per_worker_bytes := _sweep_worker_cache_bytes():
