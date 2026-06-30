@@ -1275,8 +1275,10 @@ def _materialize_and_search_one_shard(
 def _cache_fit_path_batch(paths: list[Path], *, start: int, worker_count: int) -> list[Path]:
     batch = paths[start:start + worker_count]
     max_cache_bytes = _shard_local_cache_max_bytes()
-    if max_cache_bytes is None or max_cache_bytes <= 0:
+    if max_cache_bytes is None:
         return batch
+    if max_cache_bytes <= 0:
+        return batch[:1]
     max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
     priority_burst = _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "true").casefold()
     if priority_burst in {"1", "true", "yes"}:
@@ -1938,6 +1940,9 @@ def _materialized_shard_path(
             os.utime(cache_path, None)
             return cache_path
     if not populate:
+        return path
+    max_cache_bytes = _shard_local_cache_max_bytes(cache_path.parent)
+    if max_cache_bytes is not None and max_cache_bytes <= 0:
         return path
     while True:
         with _SHARD_LOCAL_CACHE_LOCK:
