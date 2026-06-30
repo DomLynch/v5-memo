@@ -1182,7 +1182,7 @@ def test_explicit_query_skips_minimax_planner(monkeypatch: MonkeyPatch) -> None:
     assert seen == {"seed_queries": ["metformin resistance training adaptation"]}
 
 
-def test_explicit_fullraw_publish_keeps_alpha_shape_probes(
+def test_explicit_fullraw_publish_preserves_query_slate(
     monkeypatch: MonkeyPatch,
 ) -> None:
     seen: dict[str, list[str]] = {}
@@ -1229,11 +1229,7 @@ def test_explicit_fullraw_publish_keeps_alpha_shape_probes(
         main()
 
     assert exc.value.code == 3
-    assert seen == {"seed_queries": [
-        "resveratrol exercise training adaptation",
-        "resveratrol augment exercise training protocol",
-        "resveratrol blunts exercise training",
-    ]}
+    assert seen == {"seed_queries": ["resveratrol exercise training adaptation"]}
 
 
 def test_planned_cli_without_user_query_anchors_to_planned_queries(
