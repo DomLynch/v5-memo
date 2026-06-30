@@ -676,6 +676,81 @@ def test_cli_submit_researka_defers_during_submit_cooldown(
     assert 0 < receipt["retry_after"] <= 120
 
 
+def test_cli_submit_researka_waits_through_submit_cooldown(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "submit-receipt.json"
+    cooldown_path = tmp_path / "submit-cooldown.json"
+    now = 1000.0
+    sleeps: list[float] = []
+    cooldown_path.write_text(json.dumps({
+        "until": now + 5,
+        "until_iso": "1970-01-01T00:16:45+00:00",
+        "status": 429,
+        "reason": "Too Many Requests",
+        "attempts": 1,
+    }))
+
+    def fake_time() -> float:
+        return now
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        sleeps.append(seconds)
+        now += seconds
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        del kwargs
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    def fake_build_payload(
+        _result: SimpleNamespace,
+        *,
+        author_agent_id: str,
+        domain_slug: str,
+    ) -> dict[str, object]:
+        return {"author_agent_id": author_agent_id, "domain_slug": domain_slug}
+
+    def fake_submit(
+        payload: dict[str, object],
+        *,
+        agent_key: str,
+        api_base: str,
+        submit_url: str = "",
+        timeout: float = 60.0,
+    ) -> dict[str, object]:
+        del payload, agent_key, api_base, submit_url, timeout
+        return {"submission_id": "sub-after-cooldown"}
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_PATH", str(cooldown_path))
+    monkeypatch.setenv("V5_MEMO_RESEARKA_SUBMIT_WAIT_SECONDS", "10")
+    monkeypatch.setattr("v5_memo.__main__.time.time", fake_time)
+    monkeypatch.setattr("v5_memo.__main__.time.sleep", fake_sleep)
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.build_researka_payload", fake_build_payload)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--submit-researka",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    main()
+
+    assert sleeps == [5.0]
+    assert json.loads(receipt_path.read_text()) == {"submission_id": "sub-after-cooldown"}
+
+
 def test_cli_submit_researka_extends_cooldown_after_repeated_rate_limit(
     monkeypatch: MonkeyPatch,
     tmp_path: Path,
@@ -743,6 +818,81 @@ def test_cli_submit_researka_extends_cooldown_after_repeated_rate_limit(
     assert receipt["attempts"] == 2
     assert cooldown["attempts"] == 2
     assert 10 < cooldown["until"] - time.time() <= 20
+
+
+def test_cli_submit_researka_retries_429_within_wait_budget(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "submit-receipt.json"
+    cooldown_path = tmp_path / "submit-cooldown.json"
+    now = 1000.0
+    sleeps: list[float] = []
+    calls = 0
+
+    def fake_time() -> float:
+        return now
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        sleeps.append(seconds)
+        now += seconds
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        del kwargs
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    def fake_build_payload(
+        _result: SimpleNamespace,
+        *,
+        author_agent_id: str,
+        domain_slug: str,
+    ) -> dict[str, object]:
+        return {"author_agent_id": author_agent_id, "domain_slug": domain_slug}
+
+    def fake_submit(
+        payload: dict[str, object],
+        *,
+        agent_key: str,
+        api_base: str,
+        submit_url: str = "",
+        timeout: float = 60.0,
+    ) -> dict[str, object]:
+        nonlocal calls
+        del payload, agent_key, api_base, submit_url, timeout
+        calls += 1
+        if calls == 1:
+            raise HTTPError("https://api.researka.org/submissions", 429, "Too Many Requests", Message(), None)
+        return {"submission_id": "sub-after-rate-limit"}
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_PATH", str(cooldown_path))
+    monkeypatch.setenv("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_SECONDS", "5")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_SUBMIT_WAIT_SECONDS", "10")
+    monkeypatch.setattr("v5_memo.__main__.time.time", fake_time)
+    monkeypatch.setattr("v5_memo.__main__.time.sleep", fake_sleep)
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.build_researka_payload", fake_build_payload)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--submit-researka",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    main()
+
+    assert calls == 2
+    assert sleeps == [5.0]
+    assert json.loads(receipt_path.read_text()) == {"submission_id": "sub-after-rate-limit"}
 
 
 def test_cli_submit_researka_fails_closed_without_agent_key(

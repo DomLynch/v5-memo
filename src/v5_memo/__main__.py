@@ -144,6 +144,11 @@ def main() -> None:
     parser.add_argument("--researka-domain-slug", default=os.environ.get("V5_MEMO_RESEARKA_DOMAIN_SLUG", ""))
     parser.add_argument("--researka-api-base", default=os.environ.get("V5_MEMO_RESEARKA_API_BASE", "https://api.researka.org"))
     parser.add_argument("--researka-submit-url", default=os.environ.get("V5_MEMO_RESEARKA_SUBMIT_URL", ""))
+    parser.add_argument(
+        "--researka-submit-wait-seconds",
+        type=float,
+        default=float(os.environ.get("V5_MEMO_RESEARKA_SUBMIT_WAIT_SECONDS", "0") or 0),
+    )
     args = parser.parse_args()
     fullraw_backed = args.searcher in {"fullraw", "hybrid", "smart"}
     args.min_shards_searched = _coverage_threshold(
@@ -347,39 +352,20 @@ def main() -> None:
             author_agent_id=config.agent_id,
             domain_slug=config.domain_slug,
         )
-        if cooldown := _researka_submit_cooldown():
-            remaining, state = cooldown
-            defer_receipt: dict[str, object] = {
-                "error": "researka_submit_deferred",
-                "retry_after": int(remaining + 0.999),
-                "cooldown_until": state.get("until_iso", ""),
-                "previous_status": state.get("status", ""),
-                "previous_reason": state.get("reason", ""),
-                "attempts": state.get("attempts", ""),
-            }
-            _write_json(args.publish_receipt_path, defer_receipt)
-            print(f"Researka submit deferred for {defer_receipt['retry_after']}s", file=sys.stderr)
-            raise SystemExit(6)
-        try:
-            response = submit_researka(
-                payload,
-                agent_key=config.agent_key,
-                api_base=config.api_base,
-                submit_url=config.submit_url,
-            )
-        except HTTPError as exc:
-            cooldown_state = _record_researka_submit_cooldown(exc)
-            fail_receipt: dict[str, object] = {
-                "error": "researka_submit_failed",
-                "status": exc.code,
-                "reason": exc.reason,
-                "retry_after": exc.headers.get("Retry-After", "") if exc.headers is not None else "",
-                "cooldown_until": cooldown_state.get("until_iso", "") if cooldown_state else "",
-                "attempts": cooldown_state.get("attempts", "") if cooldown_state else "",
-            }
+        response, fail_receipt = _submit_researka_with_cooldown(
+            payload,
+            agent_key=config.agent_key,
+            api_base=config.api_base,
+            submit_url=config.submit_url,
+            wait_seconds=args.researka_submit_wait_seconds,
+        )
+        if fail_receipt:
             _write_json(args.publish_receipt_path, fail_receipt)
-            print(f"Researka submit failed: HTTP {exc.code} {exc.reason}", file=sys.stderr)
-            raise SystemExit(6) from exc
+            if fail_receipt.get("error") == "researka_submit_deferred":
+                print(f"Researka submit deferred for {fail_receipt['retry_after']}s", file=sys.stderr)
+            else:
+                print(f"Researka submit failed: HTTP {fail_receipt['status']} {fail_receipt['reason']}", file=sys.stderr)
+            raise SystemExit(6)
         receipt: dict[str, object] = dict(response)
         should_wait = args.researka_decision_wait_seconds > 0 or args.researka_list_if_accepted
         submission_id = researka_submission_id(response)
@@ -433,6 +419,66 @@ def _researka_submit_cooldown() -> tuple[float, Mapping[str, object]] | None:
     until = _float_value(raw.get("until"))
     remaining = until - time.time()
     return (remaining, raw) if remaining > 0 else None
+
+
+def _submit_researka_with_cooldown(
+    payload: dict[str, object],
+    *,
+    agent_key: str,
+    api_base: str,
+    submit_url: str,
+    wait_seconds: float,
+) -> tuple[dict[str, object], dict[str, object]]:
+    deadline = time.time() + max(0.0, wait_seconds)
+    while True:
+        if cooldown := _researka_submit_cooldown():
+            remaining, state = cooldown
+            if time.time() + remaining > deadline:
+                return {}, _submit_defer_receipt(remaining, state)
+            print(f"Researka submit waiting for cooldown: {int(remaining + 0.999)}s", file=sys.stderr)
+            time.sleep(max(0.0, remaining))
+        try:
+            return submit_researka(
+                payload,
+                agent_key=agent_key,
+                api_base=api_base,
+                submit_url=submit_url,
+            ), {}
+        except HTTPError as exc:
+            cooldown_state = _record_researka_submit_cooldown(exc)
+            fail_receipt = _submit_failed_receipt(exc, cooldown_state)
+            if exc.code != 429:
+                return {}, fail_receipt
+            cooldown = _researka_submit_cooldown()
+            if not cooldown:
+                return {}, fail_receipt
+            remaining, state = cooldown
+            if time.time() + remaining > deadline:
+                return {}, fail_receipt
+            print(f"Researka submit retrying after cooldown: {int(remaining + 0.999)}s", file=sys.stderr)
+            time.sleep(max(0.0, remaining))
+
+
+def _submit_defer_receipt(remaining: float, state: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "error": "researka_submit_deferred",
+        "retry_after": int(remaining + 0.999),
+        "cooldown_until": state.get("until_iso", ""),
+        "previous_status": state.get("status", ""),
+        "previous_reason": state.get("reason", ""),
+        "attempts": state.get("attempts", ""),
+    }
+
+
+def _submit_failed_receipt(exc: HTTPError, cooldown_state: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "error": "researka_submit_failed",
+        "status": exc.code,
+        "reason": exc.reason,
+        "retry_after": exc.headers.get("Retry-After", "") if exc.headers is not None else "",
+        "cooldown_until": cooldown_state.get("until_iso", "") if cooldown_state else "",
+        "attempts": cooldown_state.get("attempts", "") if cooldown_state else "",
+    }
 
 
 def _record_researka_submit_cooldown(exc: HTTPError) -> Mapping[str, object]:
