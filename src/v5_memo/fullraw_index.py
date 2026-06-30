@@ -4452,15 +4452,7 @@ def _positive_int_env(name: str) -> int | None:
 
 
 def _auto_sweep_workers(max_inflight: int) -> int:
-    workers = max(1, (os.cpu_count() or 1) // max(1, max_inflight))
-    max_cache_bytes = _shard_local_cache_max_bytes()
-    if max_cache_bytes is None:
-        return workers
-    if max_cache_bytes <= 0:
-        return workers
-    per_worker_bytes = _sweep_worker_cache_bytes(default_gb=2.0) or (2 * 1024 * 1024 * 1024)
-    cache_workers = max(1, max_cache_bytes // max(1, per_worker_bytes * max(1, max_inflight)))
-    return max(1, min(workers, cache_workers))
+    return max(1, (os.cpu_count() or 1) // max(1, max_inflight))
 
 
 def _sweep_worker_cache_bytes(*, default_gb: float | None = None) -> int | None:

@@ -1890,7 +1890,7 @@ def test_auto_sweep_workers_scales_by_inflight(monkeypatch: pytest.MonkeyPatch) 
     assert fullraw_index._auto_sweep_workers(0) == 16
 
 
-def test_auto_sweep_workers_caps_by_cache_budget(
+def test_auto_sweep_workers_ignores_cache_budget(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1900,7 +1900,7 @@ def test_auto_sweep_workers_caps_by_cache_budget(
     monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", raising=False)
     monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB", raising=False)
 
-    assert fullraw_index._auto_sweep_workers(2) == 2
+    assert fullraw_index._auto_sweep_workers(2) == 8
 
 
 def test_auto_sweep_workers_uses_cpu_workers_when_cache_budget_exhausted(
