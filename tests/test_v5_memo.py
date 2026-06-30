@@ -6,7 +6,12 @@ from typing import Any, cast
 import pytest
 
 from v5_memo.binder import bind_receipts
-from v5_memo.gate import candidate_alpha_tier, memo_coverage_failure, no_alpha_failure
+from v5_memo.gate import (
+    candidate_alpha_tier,
+    candidate_publish_blocker,
+    memo_coverage_failure,
+    no_alpha_failure,
+)
 from v5_memo.miner import _claim_card, mine_insights, query_anchor_terms
 from v5_memo.minimax_writer import MemoFormatError, validate_minimax_memo
 from v5_memo.pipeline import _publishable_candidates, _selector_slate, build_alpha_memo
@@ -1645,6 +1650,69 @@ def test_claim_card_does_not_treat_safety_feasibility_pilot_as_positive_efficacy
     assert card.direction == "unclear"
     assert card.support_type == "direct"
     assert card.confidence == "low"
+
+
+def test_claim_card_marks_comparator_only_benefit_as_null_mixed_direction() -> None:
+    hit = CorpusHit(
+        hit_id="10.3389/fphys.2021.759240",
+        title="Post-exercise Warm or Cold Water Immersion to Augment the Cardiometabolic Benefits of Exercise Training",
+        abstract=(
+            "Warm or cold water immersion would provide similar or greater benefits. "
+            "Work trial distance increased without differences between interventions. "
+            "Substituting the second half of exercise with warm water immersion provides "
+            "similar cardiometabolic health benefits; however, substituting with cold "
+            "water immersion does not."
+        ),
+        source="fullraw:openalex",
+        doi="10.3389/fphys.2021.759240",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "promise", "promise/outcome split"))
+
+    assert set(card.direction.split("/")) >= {"null", "positive"}
+
+
+def test_publish_blocker_rejects_positive_role_with_null_direction() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Comparator-only benefit should not publish as a positive CWI signal.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("receipt-a", "receipt-b"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:promise_outcome_reversal", "tier:elite_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "receipt-a",
+                "promise",
+                "randomized_trial",
+                "human",
+                "outcome",
+                "null/positive",
+                "direct",
+                "high",
+                "Substituting with cold water immersion does not.",
+            ),
+            ClaimCard(
+                "receipt-b",
+                "outcome",
+                "randomized_trial",
+                "human",
+                "outcome",
+                "negative",
+                "direct",
+                "high",
+                "Cold water immersion attenuated adaptation.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "positive_role_direction_mismatch",
+        "receipt_ids": ("receipt-a",),
+    }
 
 
 def test_researka_payload_strips_markdown_wrapped_doi_receipt_labels() -> None:
