@@ -533,9 +533,19 @@ def test_sweep_cache_key_changes_when_research_contract_changes() -> None:
         rank_mode="relevance",
         sweep_shard_limit=512,
     )
+    different_catalog = fullraw_index._sweep_cache_key(
+        "metformin resistance training",
+        limit=10,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        sweep_shard_limit=1525,
+        sweep_catalog_scope="/var/lib/v5-memo/v5-isolated-fullraw-fts-remote",
+    )
 
     assert current != different_rank
     assert current != different_coverage
+    assert current != different_catalog
 
 
 def test_full_sweep_cache_query_uses_canonical_pass(tmp_path: Path) -> None:
@@ -598,6 +608,31 @@ def test_sweep_cache_matcher_accepts_compatible_pass_query() -> None:
         sweep_shard_limit=1525,
         sweep_pass_shard_limit=4,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
+def test_sweep_cache_matcher_rejects_stale_catalog_scope() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Resveratrol exercise training"}],
+        receipt={
+            "sweep_result_limit": 10,
+            "sweep_shard_limit": 1525,
+            "sweep_pass_shard_limit": 32,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_catalog_scope": "/var/lib/v5-memo/fullraw-fts-remote",
+            "sweep_query": "resveratrol exercise training",
+        },
+    )
+
+    assert not fullraw_index._sweep_cache_entry_matches_request(
+        entry,
+        query="resveratrol exercise training",
+        result_limit=10,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+        sweep_catalog_scope="/var/lib/v5-memo/v5-isolated-fullraw-fts-remote",
     )
 
 
@@ -683,6 +718,7 @@ def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
     shard_dir.mkdir()
     entries = [_entry(shard_dir, idx, "openalex" if idx else "pubmed") for idx in range(2)]
     fullraw_index.write_shard_catalog_cache(catalog_path, entries)
+    sweep_catalog_scope = str(shard_dir.absolute())
     key = fullraw_index._sweep_cache_key(
         "metformin longevity",
         limit=10,
@@ -695,6 +731,7 @@ def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
         sweep_timeout_seconds=300.0,
         sweep_shard_timeout_seconds=10.0,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+        sweep_catalog_scope=sweep_catalog_scope,
     )
     cache_path = fullraw_index._sweep_cache_path(cache_dir, key)
     assert cache_path is not None
@@ -718,6 +755,7 @@ def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
                 ),
                 "sweep_completed_pass_roles": ("focused", "citation_heavy", "recency"),
                 "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+                "sweep_catalog_scope": sweep_catalog_scope,
             },
         ),
     )
@@ -1770,6 +1808,24 @@ def test_shard_catalog_cache_round_trips_entries(tmp_path: Path) -> None:
     loaded = fullraw_index.load_shard_catalog_cache(cache_path)
 
     assert loaded == [entry]
+
+
+def test_shard_catalog_cache_rejects_entries_outside_current_root(tmp_path: Path) -> None:
+    shared_root = tmp_path / "shared"
+    isolated_root = tmp_path / "isolated"
+    shared_entry = ShardCatalogEntry(
+        path=shared_root / "batch_00001" / "fullraw_shard_0000.sqlite",
+        batch_id=1,
+        shard_id=0,
+        sources=("openalex",),
+        files_completed=1,
+        papers_inserted=10,
+        bytes_used=1024,
+    )
+    isolated_entry = replace(shared_entry, path=isolated_root / "batch_00001" / "fullraw_shard_0000.sqlite")
+
+    assert fullraw_index._catalog_entries_match_shard_dir([isolated_entry], isolated_root)
+    assert not fullraw_index._catalog_entries_match_shard_dir([shared_entry], isolated_root)
 
 
 def test_select_search_shard_entries_balances_sources_and_rotates_by_query(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
