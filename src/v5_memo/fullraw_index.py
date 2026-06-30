@@ -4320,6 +4320,23 @@ def _sweep_pass_failed_path_strings(
     }
 
 
+def _next_sweep_pass_entries(
+    sweep_entries: list[ShardCatalogEntry],
+    *,
+    completed_path_strings: set[str],
+    failed_path_strings: set[str],
+    deferred_path_strings: set[str],
+    limit: int,
+) -> tuple[list[ShardCatalogEntry], set[str]]:
+    blocked = completed_path_strings | failed_path_strings | deferred_path_strings
+    remaining_entries = [entry for entry in sweep_entries if str(entry.path) not in blocked]
+    if not remaining_entries and deferred_path_strings:
+        deferred_path_strings = set()
+        blocked = completed_path_strings | failed_path_strings
+        remaining_entries = [entry for entry in sweep_entries if str(entry.path) not in blocked]
+    return remaining_entries[:limit], deferred_path_strings
+
+
 def _sweep_remaining_shard_count(
     *,
     selected_shards: int,
