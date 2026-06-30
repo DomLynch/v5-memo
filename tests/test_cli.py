@@ -328,6 +328,50 @@ def test_fullraw_cli_allows_single_recall_limit_env_override(
     assert (seen["per_query_limit"], seen["max_hits"]) == (30, 90)
 
 
+def test_fullraw_cli_uses_wider_recall_for_minimax_planner(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: dict[str, object] = {}
+
+    class FakeFullRaw:
+        configured = True
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9915/search")
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_PER_QUERY_LIMIT", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_RECALL_LIMIT", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_MAX_HITS", raising=False)
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr("v5_memo.__main__.FullRawCorpusSearchClient.from_env", lambda strict=False: FakeFullRaw())
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "minimax",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+            "--topic",
+            "metformin resistance training adaptation",
+        ],
+    )
+
+    main()
+
+    assert "Alpha memo" in capsys.readouterr().out
+    assert (seen["per_query_limit"], seen["max_hits"]) == (50, 200)
+
+
 def test_cli_prints_search_backend_error_without_traceback(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

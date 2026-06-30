@@ -247,12 +247,18 @@ def main() -> None:
         anchor_queries = queries
     wider_recall = planner_mode == "minimax" or selector_mode == "minimax"
     if fullraw_backed:
+        wider_fullraw_recall = wider_recall or args.submit_researka or args.publish
+        default_recall_limit = 50 if wider_fullraw_recall else _DEFAULT_FULLRAW_RECALL_LIMIT
         per_query_limit = (
             _int_env("V5_MEMO_FULL_RAW_PER_QUERY_LIMIT")
             or _int_env("V5_MEMO_FULL_RAW_RECALL_LIMIT")
-            or _DEFAULT_FULLRAW_RECALL_LIMIT
+            or default_recall_limit
         )
-        max_hits = _int_env("V5_MEMO_FULL_RAW_MAX_HITS") or per_query_limit * max(2, min(3, len(queries)))
+        max_query_multiplier = 4 if wider_fullraw_recall else 3
+        max_hits = _int_env("V5_MEMO_FULL_RAW_MAX_HITS") or per_query_limit * max(
+            2,
+            min(max_query_multiplier, len(queries)),
+        )
     else:
         per_query_limit = 50 if wider_recall else 25
         max_hits = 500 if wider_recall else 100
