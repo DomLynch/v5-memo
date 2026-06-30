@@ -416,7 +416,9 @@ def test_evidence_bundle_promotes_late_direct_rct_before_writer() -> None:
     sorted_graph, sorted_cards = _prioritize_evidence_bundle(topic, graph, cards)
 
     assert [node.receipt_id for node in sorted_graph] == ["rct", "proxy", "soccer", "review"]
+    assert sorted_graph[0].role == "primary"
     assert [card.receipt_id for card in sorted_cards] == ["rct", "proxy", "soccer", "review"]
+    assert sorted_cards[0].role == "negative_signal"
 
     receipts = [
         _hit("proxy", "Cold-water immersion muscle swelling proxy", cards[0].quote),
@@ -443,6 +445,7 @@ def test_evidence_bundle_promotes_late_direct_rct_before_writer() -> None:
 
     assert bound[0].hit_id == "rct"
     assert "Receipt 1\nID: 10.rct\nTitle: Does Cold-Water Immersion" in prompt
+    assert "rct: primary (strongest direct human evidence)" in prompt
 
 
 def test_evidence_bundle_does_not_promote_weak_late_context() -> None:

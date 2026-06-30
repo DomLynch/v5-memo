@@ -306,13 +306,46 @@ def _prioritize_evidence_bundle(
             order[receipt_id],
         ),
     )
-    sorted_graph = tuple(node_by_id[receipt_id] for receipt_id in sorted_ids)
-    sorted_cards = tuple(
-        card_by_id[receipt_id]
-        for receipt_id in sorted_ids
-        if receipt_id in card_by_id
+    sorted_graph: list[EvidenceNode] = []
+    sorted_cards: list[ClaimCard] = []
+    for index, receipt_id in enumerate(sorted_ids):
+        card = card_by_id.get(receipt_id)
+        sorted_graph.append(_promoted_evidence_node(node_by_id[receipt_id], card, index))
+        if card is not None:
+            sorted_cards.append(_promoted_claim_card(card, index))
+    return tuple(sorted_graph), tuple(sorted_cards)
+
+
+def _promoted_evidence_node(node: EvidenceNode, card: ClaimCard | None, index: int) -> EvidenceNode:
+    if index == 0 and card is not None and _strong_direct_human_rct(card):
+        return EvidenceNode(node.receipt_id, "primary", "strongest direct human evidence")
+    return node
+
+
+def _promoted_claim_card(card: ClaimCard, index: int) -> ClaimCard:
+    if index != 0 or not _strong_direct_human_rct(card):
+        return card
+    return ClaimCard(
+        receipt_id=card.receipt_id,
+        role=_primary_signal_role(card.direction),
+        design=card.design,
+        population=card.population,
+        outcome=card.outcome,
+        direction=card.direction,
+        support_type=card.support_type,
+        confidence=card.confidence,
+        quote=card.quote,
     )
-    return sorted_graph, sorted_cards
+
+
+def _primary_signal_role(direction: str) -> str:
+    if "negative" in direction:
+        return "negative_signal"
+    if "null" in direction:
+        return "null_signal"
+    if "positive" in direction:
+        return "positive_signal"
+    return "evidence"
 
 
 def _strong_direct_human_rct(card: ClaimCard) -> bool:
