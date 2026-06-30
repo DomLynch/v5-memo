@@ -2093,6 +2093,91 @@ def test_researka_payload_uses_receipt_title_for_bridge_only_alpha_title() -> No
     )
 
 
+def test_researka_payload_uses_bundle_title_for_heterogeneous_bridge_title() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Cold immersion training evidence separates structural and performance outcomes.",
+        bridge_terms=("cold", "immersion", "training", "water"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("elbow", "soccer", "strength"),
+        score=100,
+        novelty_score=58,
+        evidence_score=96,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "elbow",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "elbow flexor muscle thickness",
+                "negative",
+                "direct",
+                "high",
+                "CWI attenuated elbow flexor muscle thickness.",
+            ),
+            ClaimCard(
+                "soccer",
+                "replication",
+                "intervention_study",
+                "human",
+                "repeated sprint performance",
+                "null",
+                "direct",
+                "high",
+                "CWI did not improve repeated sprint performance.",
+            ),
+            ClaimCard(
+                "strength",
+                "boundary",
+                "randomized_trial",
+                "human",
+                "strength adaptation",
+                "negative",
+                "direct",
+                "high",
+                "CWI altered strength-training adaptation.",
+            ),
+        ),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="elbow",
+            title="Effect of Cold-Water Immersion on Elbow Flexors Muscle Thickness After Resistance Training",
+            abstract="Cold-water immersion affected elbow flexor muscle thickness after training.",
+            source="fullraw:openalex",
+            doi="10.1000/elbow",
+        ),
+        CorpusHit(
+            hit_id="soccer",
+            title="Post-training cold-water immersion in soccer players",
+            abstract="Soccer players completed a performance recovery protocol.",
+            source="fullraw:openalex",
+            doi="10.1000/soccer",
+        ),
+        CorpusHit(
+            hit_id="strength",
+            title="Strength training adaptations after cold-water immersion",
+            abstract="Strength-training adaptation endpoints were measured.",
+            source="fullraw:openalex",
+            doi="10.1000/strength",
+        ),
+    ]
+    markdown = "# Alpha memo: cold immersion training water\n\n**Alpha hypothesis:** bounded signal."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="performance",
+    )
+
+    assert payload["title"] == "Cold Water Immersion and Training Outcomes in Human Studies"
+    assert payload["title"] != receipts[0].title
+    assert cast(str, payload["body_markdown"]).startswith(
+        "# Alpha memo: Cold Water Immersion and Training Outcomes in Human Studies"
+    )
+
+
 def test_researka_payload_rewrites_internal_role_label_title() -> None:
     candidate = InsightCandidate(
         topic="resveratrol exercise training",

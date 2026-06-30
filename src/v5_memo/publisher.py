@@ -31,6 +31,30 @@ _DANGLING_TITLE_TAIL_RE = re.compile(
 )
 _SENTENCE_END = re.compile(r"([.!?])(?:\s|$)")
 _TITLE_ROLE_TERMS = frozenset({"boundary", "context", "mechanism", "outcome", "promise", "receipt"})
+_TOPIC_CONTEXT_TERMS = frozenset({
+    "adaptation",
+    "adaptations",
+    "adult",
+    "adults",
+    "aging",
+    "exercise",
+    "human",
+    "humans",
+    "older",
+    "outcome",
+    "outcomes",
+    "performance",
+    "resistance",
+    "response",
+    "responses",
+    "strength",
+    "studies",
+    "study",
+    "training",
+    "trial",
+    "trials",
+})
+_GENERIC_OUTCOME_TERMS = frozenset({"", "outcome", "outcomes", "unspecified"})
 _AUTO_THESIS_TITLE_PHRASES = (
     " may have a ",
     " may be hiding a ",
@@ -199,7 +223,7 @@ def _submission_title(result: MemoResult, heading: str) -> str:
     if _query_like_title(raw) or _non_article_title(raw):
         raw = _first_sentence(result.candidate.thesis) or result.candidate.topic
     if _bridge_only_title(raw, result.candidate.bridge_terms):
-        raw = _receipt_title(result) or raw
+        raw = _bundle_title(result) or _receipt_title(result) or raw
     if (
         _query_like_title(raw)
         or _non_article_title(raw)
@@ -219,6 +243,51 @@ def _bridge_only_title(title: str, bridge_terms: Sequence[str]) -> bool:
     tokens = set(_TITLE_TOKEN_RE.findall(title.casefold()))
     bridge = {term.casefold() for term in bridge_terms}
     return 0 < len(tokens) <= 4 and tokens <= bridge
+
+
+def _bundle_title(result: MemoResult) -> str:
+    direct_human = [
+        card
+        for card in result.candidate.claim_cards
+        if card.population.casefold() == "human" and card.support_type.casefold() == "direct"
+    ]
+    outcomes: set[str] = set()
+    for card in direct_human:
+        outcome = " ".join(_TITLE_TOKEN_RE.findall(card.outcome.casefold()))
+        if outcome not in _GENERIC_OUTCOME_TERMS:
+            outcomes.add(outcome)
+    if len(direct_human) < 2 or len(outcomes) < 2:
+        return ""
+    intervention = _topic_intervention_title(result.candidate.topic)
+    if not intervention:
+        return ""
+    topic_tokens = set(_TITLE_TOKEN_RE.findall(result.candidate.topic.casefold()))
+    training_terms = {"exercise", "training", "resistance", "strength"}
+    outcome_label = "Training Outcomes" if topic_tokens & training_terms else "Outcomes"
+    return f"{intervention} and {outcome_label} in Human Studies"
+
+
+def _topic_intervention_title(topic: str) -> str:
+    tokens = _TITLE_TOKEN_RE.findall(topic)
+    kept: list[str] = []
+    for token in tokens:
+        if token.casefold() in _TOPIC_CONTEXT_TERMS and kept:
+            break
+        kept.append(token)
+        if len(kept) >= 5:
+            break
+    return _title_case_tokens(kept)
+
+
+def _title_case_tokens(tokens: Sequence[str]) -> str:
+    small = {"and", "for", "in", "of", "on", "the", "to", "with"}
+    words: list[str] = []
+    for index, token in enumerate(tokens):
+        word = token.upper() if token.isupper() and len(token) <= 5 else token.capitalize()
+        if index > 0 and token.casefold() in small:
+            word = token.casefold()
+        words.append(word)
+    return " ".join(words).strip()
 
 
 def _non_article_title(title: str) -> bool:
