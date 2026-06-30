@@ -1778,10 +1778,25 @@ def test_materialized_shard_cache_evicts_old_entries(tmp_path: Path, monkeypatch
 
 def test_auto_sweep_workers_scales_by_inflight(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "cpu_count", lambda: 16)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", raising=False)
 
     assert fullraw_index._auto_sweep_workers(1) == 16
     assert fullraw_index._auto_sweep_workers(2) == 8
     assert fullraw_index._auto_sweep_workers(0) == 16
+
+
+def test_auto_sweep_workers_caps_by_cache_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(os, "cpu_count", lambda: 16)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", str(8 * 1024 * 1024 * 1024))
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB", raising=False)
+
+    assert fullraw_index._auto_sweep_workers(2) == 2
 
 
 def test_build_upload_shard_batches_keeps_all_failed_batch_fatal(
