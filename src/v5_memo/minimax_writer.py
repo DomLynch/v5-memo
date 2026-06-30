@@ -27,7 +27,7 @@ from v5_memo.llm.minimax_client import (
 )
 from v5_memo.schemas import CorpusHit, InsightCandidate
 
-RECEIPT_ABSTRACT_CHAR_LIMIT = 820
+RECEIPT_ABSTRACT_CHAR_LIMIT = 450
 _REQUIRED_MEMO_SECTIONS = (
     "# Alpha memo:",
     "## Core signal",
@@ -292,6 +292,9 @@ Hard rules:
   describe it as feasibility or safety evidence only; do not call it positive efficacy.
 - Respect receipt roles: if a receipt is labeled promise, protocol, intent, or
   mechanism, describe it as expected/designed/hypothesized/framed, not as an observed result or confirmed endpoint.
+- Anchor on the strongest direct human evidence; put weaker context/proxy receipts after it.
+- Do not equate acute swelling, soreness, thickness, or damage proxies with chronic adaptation
+  unless the receipt says adaptation, hypertrophy, or strength changed.
 - Use the 2+2=5 section to state the bounded contrast; if the receipts are heterogeneous
   rather than contradictory, explicitly say they are not directly contradictory.
 - Use source-appropriate descriptors from the receipts, not generic prestige labels:
@@ -318,6 +321,8 @@ Required structure:
 ## Claim ledger
 ## Receipts
 ## Safety note
+
+Safety note: scope/limits only; include sample size, sex, training status, population, protocol.
 
 Candidate thesis:
 {candidate.thesis}

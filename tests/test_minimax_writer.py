@@ -260,6 +260,9 @@ def test_minimax_prompt_includes_structured_claim_ledger() -> None:
     assert "safety_feasibility" in prompt
     assert "do not call it positive efficacy" in prompt
     assert "not directly contradictory" in prompt
+    assert "strongest direct human evidence" in prompt
+    assert "Do not equate acute swelling, soreness, thickness, or damage proxies" in prompt
+    assert "sample size, sex" in prompt
 
 
 def test_minimax_writer_from_env_uses_v5_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
