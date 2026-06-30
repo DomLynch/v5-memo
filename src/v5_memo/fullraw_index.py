@@ -2430,6 +2430,19 @@ def load_shard_catalog_cache(path: Path) -> list[ShardCatalogEntry] | None:
     return entries or None
 
 
+def _catalog_entries_match_shard_dir(entries: list[ShardCatalogEntry], shard_dir: Path) -> bool:
+    if not entries:
+        return False
+    shard_root = str(shard_dir.absolute())
+    for entry in entries:
+        try:
+            if os.path.commonpath((str(entry.path.absolute()), shard_root)) != shard_root:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
 def write_shard_catalog_cache(path: Path, entries: list[ShardCatalogEntry]) -> None:
     _write_json_file(path, {
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -2604,9 +2617,12 @@ def _sweep_cache_entry_matches_request(
     sweep_shard_limit: int,
     sweep_pass_shard_limit: int,
     sweep_strategy: str,
+    sweep_catalog_scope: str = "",
 ) -> bool:
     receipt = entry.receipt
     if sweep_strategy and receipt.get("sweep_strategy") != sweep_strategy:
+        return False
+    if sweep_catalog_scope and receipt.get("sweep_catalog_scope") != sweep_catalog_scope:
         return False
     if not _sweep_cache_entry_has_result_limit(entry, result_limit):
         return False
@@ -3072,6 +3088,7 @@ def run_server() -> None:
     shard_catalog_path = Path(shard_catalog_path_config) if shard_catalog_path_config else None
     sweep_cache_dir_config = _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR", "").strip()
     sweep_cache_dir = Path(sweep_cache_dir_config) if sweep_cache_dir_config else None
+    sweep_catalog_scope = str(shard_dir.absolute()) if shard_dir is not None else ""
     manifest_path = Path(
         _fullraw_env("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json")
     )
@@ -3129,7 +3146,7 @@ def run_server() -> None:
             return catalog_cache[1]
         if shard_catalog_path is not None and shard_catalog_path.exists():
             cached_catalog = load_shard_catalog_cache(shard_catalog_path)
-            if cached_catalog is not None:
+            if cached_catalog is not None and _catalog_entries_match_shard_dir(cached_catalog, shard_dir):
                 catalog_cache = (now, cached_catalog)
                 return cached_catalog
         catalog = build_shard_catalog(shard_dir, trust_filenames=trust_shard_filenames)
@@ -3214,6 +3231,7 @@ def run_server() -> None:
             sweep_shard_limit=sweep_shard_limit,
             sweep_pass_shard_limit=sweep_pass_shard_limit,
             sweep_strategy=_SWEEP_STRATEGY,
+            sweep_catalog_scope=sweep_catalog_scope,
         ):
             return entry
         if sweep_cache_dir is None:
@@ -3230,6 +3248,7 @@ def run_server() -> None:
                 sweep_shard_limit=sweep_shard_limit,
                 sweep_pass_shard_limit=sweep_pass_shard_limit,
                 sweep_strategy=_SWEEP_STRATEGY,
+                sweep_catalog_scope=sweep_catalog_scope,
             ):
                 continue
             best = _prefer_sweep_cache_entry(best, candidate)
@@ -3332,6 +3351,7 @@ def run_server() -> None:
                     receipt["sweep_timeout_seconds"] = sweep_timeout_seconds
                     receipt["sweep_shard_timeout_seconds"] = sweep_shard_timeout_seconds
                     receipt["sweep_strategy"] = _SWEEP_STRATEGY
+                    receipt["sweep_catalog_scope"] = sweep_catalog_scope
                     receipt["sweep_search_passes"] = tuple(asdict(pass_item) for pass_item in sweep_passes)
                     receipt["sweep_completed_pass_roles"] = tuple(completed_pass_roles)
                     receipt["sweep_completed_pass_role_counts"] = dict(sorted(Counter(completed_pass_roles).items()))
@@ -3597,6 +3617,7 @@ def run_server() -> None:
                 sweep_timeout_seconds=sweep_timeout_seconds,
                 sweep_shard_timeout_seconds=sweep_shard_timeout_seconds,
                 sweep_strategy=_SWEEP_STRATEGY,
+                sweep_catalog_scope=sweep_catalog_scope,
             )
             cached = (
                 compatible_sweep_cache_get(cache_key, cache_query, result_limit=result_limit)
@@ -4196,6 +4217,7 @@ def _sweep_cache_key(
     sweep_timeout_seconds: float = 0.0,
     sweep_shard_timeout_seconds: float = 0.0,
     sweep_strategy: str = _SWEEP_STRATEGY,
+    sweep_catalog_scope: str = "",
 ) -> str:
     payload = json.dumps(
         {
@@ -4206,6 +4228,7 @@ def _sweep_cache_key(
             "rank_mode": _rank_mode(rank_mode),
             "sweep_shard_limit": sweep_shard_limit,
             "sweep_strategy": sweep_strategy,
+            "sweep_catalog_scope": sweep_catalog_scope,
         },
         sort_keys=True,
     )
