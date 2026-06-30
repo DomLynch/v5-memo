@@ -762,6 +762,73 @@ def test_cli_publish_waits_for_accept_and_lists_publication(
     }
 
 
+def test_cli_publish_defaults_to_deterministic_selector_with_minimax_writer(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(
+            markdown="# Alpha memo: ok\n",
+            candidate=InsightCandidate(
+                topic="longevity resilience",
+                thesis="ok",
+                bridge_terms=("nad",),
+                tension_terms=("negative", "null"),
+                receipt_ids=("a", "b"),
+                score=90,
+                novelty_score=60,
+                evidence_score=90,
+                reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+            ),
+            receipts=[],
+        )
+
+    def fail_selector_from_env(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("publish default should not instantiate MiniMax selector")
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(
+        "v5_memo.__main__.MiniMaxM3MemoWriter.from_env",
+        lambda: SimpleNamespace(render=lambda *_args: "# Alpha memo: ok\n"),
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.MiniMaxM3CandidateSelector.from_env",
+        fail_selector_from_env,
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.build_researka_payload",
+        lambda *_args, **_kwargs: {"author_agent_id": "v5-memo-agent"},
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.submit_researka",
+        lambda *_args, **_kwargs: {"submission": {"id": "sub-1"}},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--writer",
+            "minimax",
+            "--publish",
+            "--publish-receipt-path",
+            str(tmp_path / "receipt.json"),
+        ],
+    )
+
+    main()
+
+    assert seen["memo_selector"] is None
+    assert seen["require_publish_quality"] is True
+
+
 def test_cli_smart_defaults_to_publishable_tier(monkeypatch: MonkeyPatch) -> None:
     seen: dict[str, object] = {}
 

@@ -170,7 +170,11 @@ def main() -> None:
     searcher_mode = "hybrid" if args.searcher == "smart" else args.searcher
     planner_mode = args.planner or ("minimax" if args.searcher == "smart" else "seed")
     writer_mode = args.writer or ("minimax" if args.searcher == "smart" else "template")
-    selector_mode = args.selector or ("minimax" if writer_mode == "minimax" else "deterministic")
+    selector_mode = args.selector or (
+        "deterministic" if args.submit_researka or args.publish
+        else "minimax" if writer_mode == "minimax"
+        else "deterministic"
+    )
     alpha_tier = args.min_alpha_tier or "publishable"
     min_alpha_tier = "discovery_seed" if alpha_tier == "discovery" else f"{alpha_tier}_alpha"
 
