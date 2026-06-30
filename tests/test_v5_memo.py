@@ -2328,6 +2328,12 @@ def test_researka_payload_uses_bundle_title_for_heterogeneous_bridge_title() -> 
     assert cast(str, payload["body_markdown"]).startswith(
         "# Alpha memo: Cold Water Immersion: Endpoint Heterogeneity in Acute Proxy vs Chronic Training Adaptation"
     )
+    narrow_payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=f"# Alpha memo: {receipts[0].title}\n\nBody."),
+        author_agent_id="v5-alpha",
+        domain_slug="performance",
+    )
+    assert narrow_payload["title"] == payload["title"]
 
 
 def test_researka_payload_rewrites_internal_role_label_title() -> None:

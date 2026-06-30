@@ -218,6 +218,9 @@ def _append_alpha_disclaimer(markdown: str) -> str:
 
 def _submission_title(result: MemoResult, heading: str) -> str:
     raw = heading.replace("Alpha memo: ", "", 1).strip()
+    endpoint_title = _endpoint_heterogeneity_title(result, _direct_human_claim_cards(result))
+    if endpoint_title:
+        raw = endpoint_title
     if _incomplete_title(raw):
         raw = _receipt_title(result) or _first_sentence(result.candidate.thesis) or result.candidate.topic
     if _query_like_title(raw) or _non_article_title(raw):
@@ -246,11 +249,7 @@ def _bridge_only_title(title: str, bridge_terms: Sequence[str]) -> bool:
 
 
 def _bundle_title(result: MemoResult) -> str:
-    direct_human = [
-        card
-        for card in result.candidate.claim_cards
-        if card.population.casefold() == "human" and card.support_type.casefold() == "direct"
-    ]
+    direct_human = _direct_human_claim_cards(result)
     endpoint_title = _endpoint_heterogeneity_title(result, direct_human)
     if endpoint_title:
         return endpoint_title
@@ -268,6 +267,14 @@ def _bundle_title(result: MemoResult) -> str:
     training_terms = {"exercise", "training", "resistance", "strength"}
     outcome_label = "Training Outcomes" if topic_tokens & training_terms else "Outcomes"
     return f"{intervention} and {outcome_label} in Human Studies"
+
+
+def _direct_human_claim_cards(result: MemoResult) -> list[ClaimCard]:
+    return [
+        card
+        for card in result.candidate.claim_cards
+        if card.population.casefold() == "human" and card.support_type.casefold() == "direct"
+    ]
 
 
 def _endpoint_heterogeneity_title(result: MemoResult, direct_human: Sequence[ClaimCard]) -> str:
