@@ -567,16 +567,35 @@ def submit_researka(
     api_base: str = "https://api.researka.org",
     submit_url: str = "",
     timeout: float = 60.0,
+    max_retries: int = 2,
 ) -> dict[str, object]:
     headers = {"Content-Type": "application/json", "x-api-key": agent_key, "Authorization": f"Bearer {agent_key}"}
     agent_slug = payload.get("author_agent_slug") or payload.get("author_agent_id")
     if isinstance(agent_slug, str) and agent_slug.strip():
         headers["X-Agent-Slug"] = agent_slug.strip()
     url = submit_url.strip() or f"{api_base.rstrip('/')}/submissions"
-    req = Request(url, data=json.dumps(payload).encode(), method="POST", headers=headers)
-    with urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode())
+    body = json.dumps(payload).encode()
+    attempts = max(0, max_retries) + 1
+    for attempt in range(attempts):
+        req = Request(url, data=body, method="POST", headers=headers)
+        try:
+            with urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+            break
+        except HTTPError as exc:
+            if exc.code != 429 or attempt >= attempts - 1:
+                raise
+            time.sleep(_retry_after_seconds(exc))
     return cast(dict[str, object], data) if isinstance(data, dict) else {"response": data}
+
+
+def _retry_after_seconds(exc: HTTPError) -> float:
+    header = exc.headers.get("Retry-After", "") if exc.headers is not None else ""
+    try:
+        parsed = float(header)
+    except ValueError:
+        parsed = 1.0
+    return max(0.0, min(parsed, 10.0))
 
 
 def wait_researka_decision(

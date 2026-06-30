@@ -1,7 +1,9 @@
 import json
 from collections.abc import Callable, Sequence
+from email.message import Message
 from pathlib import Path
 from typing import Any, cast
+from urllib.error import HTTPError
 
 import pytest
 
@@ -24,7 +26,7 @@ from v5_memo.minimax_writer import (
     validate_minimax_memo,
 )
 from v5_memo.pipeline import _publishable_candidates, _selector_slate, build_alpha_memo
-from v5_memo.publisher import build_researka_payload
+from v5_memo.publisher import build_researka_payload, submit_researka
 from v5_memo.retriever import collect_seed_hits
 from v5_memo.schemas import (
     ClaimCard,
@@ -82,6 +84,47 @@ def _hits() -> list[CorpusHit]:
 
 def _hit(hit_id: str, title: str, abstract: str) -> CorpusHit:
     return CorpusHit(hit_id=hit_id, title=title, abstract=abstract, source="openalex", doi=f"10.{hit_id}")
+
+
+class _JsonResponse:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+
+    def __enter__(self) -> "_JsonResponse":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode()
+
+
+def test_submit_researka_retries_429_with_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[object] = []
+    sleeps: list[float] = []
+
+    def fake_urlopen(request: object, timeout: float) -> _JsonResponse:
+        del timeout
+        calls.append(request)
+        if len(calls) == 1:
+            headers = Message()
+            headers["Retry-After"] = "0.25"
+            raise HTTPError("https://api.researka.org/submissions", 429, "Too Many Requests", headers, None)
+        return _JsonResponse({"submission_id": "sub-retry"})
+
+    monkeypatch.setattr("v5_memo.publisher.urlopen", fake_urlopen)
+    monkeypatch.setattr("v5_memo.publisher.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    response = submit_researka(
+        {"title": "ok", "author_agent_id": "v5-memo-agent"},
+        agent_key="submit-key",
+        max_retries=1,
+    )
+
+    assert response == {"submission_id": "sub-retry"}
+    assert len(calls) == 2
+    assert sleeps == [0.25]
 
 
 class _StaticSearch:
