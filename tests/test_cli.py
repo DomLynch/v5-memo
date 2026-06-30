@@ -1182,6 +1182,60 @@ def test_explicit_query_skips_minimax_planner(monkeypatch: MonkeyPatch) -> None:
     assert seen == {"seed_queries": ["metformin resistance training adaptation"]}
 
 
+def test_explicit_fullraw_publish_keeps_alpha_shape_probes(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    seen: dict[str, list[str]] = {}
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seed_queries = kwargs["seed_queries"]
+        assert isinstance(seed_queries, list)
+        seen["seed_queries"] = seed_queries
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9915/search")
+    for name in (
+        "V5_MEMO_RESEARKA_AGENT_KEY",
+        "V5_MEMO_RESEARKA_AGENT_ID",
+        "V5_MEMO_RESEARKA_DOMAIN_SLUG",
+        "RESEARKA_AGENT_KEY",
+        "RESEARKA_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "seed",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+            "--topic",
+            "resveratrol exercise training adaptation",
+            "--query",
+            "resveratrol exercise training adaptation",
+            "--publish",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 3
+    assert seen == {"seed_queries": [
+        "resveratrol exercise training adaptation",
+        "resveratrol augment exercise training protocol",
+        "resveratrol blunts exercise training",
+    ]}
+
+
 def test_planned_cli_without_user_query_anchors_to_planned_queries(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

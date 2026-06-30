@@ -502,6 +502,21 @@ def test_collect_seed_hits_keeps_full_receipt_hits_when_late_shape_is_uncached()
     assert [hit.hit_id for hit in hits] == ["metformin exercise training adaptation"]
 
 
+def test_collect_seed_hits_can_fail_late_coverage_before_publishing() -> None:
+    def search(query: str, limit: int) -> Sequence[CorpusHit]:
+        del limit
+        if "augment" in query:
+            raise RuntimeError("Full raw corpus search coverage too narrow: {'shards_searched': None}")
+        return [_hit(query, f"{query} title", "full receipt evidence")]
+
+    with pytest.raises(RuntimeError, match="coverage too narrow"):
+        collect_seed_hits(
+            _FunctionSearch(search),
+            ["metformin exercise training adaptation", "metformin augment exercise training protocol"],
+            fail_on_late_coverage_error=True,
+        )
+
+
 def test_pipeline_builds_best_memo() -> None:
     result = build_alpha_memo(
         topic="longevity resilience",
@@ -560,6 +575,34 @@ def test_pipeline_stops_retrieval_once_publishable_candidate_exists() -> None:
 
     assert calls == ["metformin training"]
     assert result.candidate.receipt_ids == ("promise", "outcome")
+
+
+def test_publish_quality_pipeline_waits_for_late_shape_coverage() -> None:
+    calls: list[str] = []
+
+    def search(query: str, limit: int) -> Sequence[CorpusHit]:
+        del limit
+        calls.append(query)
+        if "augment" in query:
+            raise RuntimeError("Full raw corpus search coverage too narrow: {'shards_searched': None}")
+        return [_hit("weak", "Metformin resistance training review", "Review evidence.")]
+
+    with pytest.raises(RuntimeError, match="coverage too narrow"):
+        build_alpha_memo(
+            topic="metformin resistance training adaptation",
+            seed_queries=[
+                "metformin resistance training adaptation",
+                "metformin augment resistance training protocol",
+            ],
+            searcher=_FunctionSearch(search),
+            min_alpha_tier="publishable_alpha",
+            require_publish_quality=True,
+        )
+
+    assert calls == [
+        "metformin resistance training adaptation",
+        "metformin augment resistance training protocol",
+    ]
 
 
 def test_pipeline_anchors_to_original_seed_before_planner_drift() -> None:

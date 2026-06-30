@@ -65,6 +65,7 @@ def build_alpha_memo(
         per_query_limit=per_query_limit,
         max_hits=max_hits,
         stop_when=has_publishable_candidate if len(seed_queries) > 1 else None,
+        fail_on_late_coverage_error=require_publish_quality and len(seed_queries) > 1,
     )
     mined_candidates: list[InsightCandidate] = mine_insights(
         hits,
