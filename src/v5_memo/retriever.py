@@ -36,7 +36,6 @@ def collect_seed_hits(
     per_query_limit: int = 25,
     max_hits: int = 100,
     stop_when: Callable[[Sequence[CorpusHit]], bool] | None = None,
-    fail_on_late_coverage_error: bool = False,
 ) -> list[CorpusHit]:
     """Search multiple seeds and dedupe before mining insights."""
     seed_queries = _dedupe_seed_queries(seed_queries)
@@ -48,8 +47,6 @@ def collect_seed_hits(
             hits = searcher.search(query, limit=query_limit)
         except RuntimeError as exc:
             if str(exc).startswith("Full raw corpus search coverage too narrow"):
-                if out and not fail_on_late_coverage_error:
-                    break
                 raise
             continue
         for hit in hits:
