@@ -560,6 +560,9 @@ class FullRawCorpusSearchClient:
             if status == "hit":
                 self._log_progress("fullraw async sweep cache hit")
                 return data
+            if status == "stopped_no_hits":
+                self._log_progress("fullraw async sweep stopped with no hits")
+                return data
             if status == "disabled":
                 return None
             remaining = deadline - time.monotonic()
@@ -776,6 +779,7 @@ def _full_raw_receipt_summary(receipt: dict[str, object]) -> dict[str, object]:
         "sweep_failed_shards": receipt.get("sweep_failed_shards"),
         "source_count_searched": receipt.get("source_count_searched"),
         "sweep_remaining_shards": receipt.get("sweep_remaining_shards"),
+        "sweep_stopped_no_hits": receipt.get("sweep_stopped_no_hits"),
         "sweep_strategy": receipt.get("sweep_strategy"),
         "authenticated": receipt.get("authenticated"),
     }
