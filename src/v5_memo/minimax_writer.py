@@ -27,7 +27,7 @@ from v5_memo.llm.minimax_client import (
 )
 from v5_memo.schemas import CorpusHit, InsightCandidate
 
-RECEIPT_ABSTRACT_CHAR_LIMIT = 450
+RECEIPT_ABSTRACT_CHAR_LIMIT = 350
 _REQUIRED_MEMO_SECTIONS = (
     "# Alpha memo:",
     "## Core signal",
@@ -290,6 +290,7 @@ Hard rules:
   claim ledger mixed/comparator-favored, not simply positive.
 - If a claim-card role is safety_feasibility, or a receipt says pilot/safety/feasibility,
   describe it as feasibility or safety evidence only; do not call it positive efficacy.
+- Never call a receipt "feasibility/safety-adjacent" unless its claim-card role is safety_feasibility.
 - Respect receipt roles: if a receipt is labeled promise, protocol, intent, or
   mechanism, describe it as expected/designed/hypothesized/framed, not as an observed result or confirmed endpoint.
 - Anchor on the strongest direct human evidence; put weaker context/proxy receipts after it.

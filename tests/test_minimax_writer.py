@@ -259,6 +259,7 @@ def test_minimax_prompt_includes_structured_claim_ledger() -> None:
     assert "support=direct/high" in prompt
     assert "safety_feasibility" in prompt
     assert "do not call it positive efficacy" in prompt
+    assert 'Never call a receipt "feasibility/safety-adjacent"' in prompt
     assert "not directly contradictory" in prompt
     assert "strongest direct human evidence" in prompt
     assert "Do not equate acute swelling, soreness, thickness, or damage proxies" in prompt
