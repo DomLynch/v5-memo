@@ -282,7 +282,7 @@ def _bundle_title(result: MemoResult) -> str:
             if topic_tokens & {"resistance", "strength"}
             else "Training Adaptation"
         )
-        return f"{intervention} and {outcome_label}: Evidence Map of Human Trials"
+        return f"{intervention} and {outcome_label}"
     outcome_label = "Training Outcomes" if topic_tokens & training_terms else "Outcomes"
     return f"{intervention} and {outcome_label} in Human Studies"
 
