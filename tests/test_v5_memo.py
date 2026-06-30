@@ -2084,10 +2084,10 @@ def test_publish_blocker_rejects_weak_context_receipts() -> None:
     }
 
 
-def test_publish_blocker_rejects_proxy_without_independent_directional_contrast() -> None:
+def test_publish_blocker_allows_proxy_with_negative_null_directional_contrast() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion resistance training adaptation",
-        thesis="Proxy endpoint should not create the alpha contrast by itself.",
+        thesis="A proxy endpoint can be context when direct human receipts already differ.",
         bridge_terms=("cold", "immersion", "training"),
         tension_terms=("negative", "null"),
         receipt_ids=("rct", "proxy", "soccer"),
@@ -2132,10 +2132,7 @@ def test_publish_blocker_rejects_proxy_without_independent_directional_contrast(
         ),
     )
 
-    assert candidate_publish_blocker(candidate) == {
-        "error": "proxy_without_independent_directional_contrast",
-        "receipt_ids": ("proxy",),
-    }
+    assert candidate_publish_blocker(candidate) is None
 
 
 def test_publish_blocker_rejects_directional_acute_proxy_without_independent_contrast() -> None:
@@ -2310,6 +2307,83 @@ def test_publish_quality_candidates_drop_weak_context_receipts() -> None:
 
     assert len(selected) == 1
     assert selected[0].receipt_ids == ("direct-a", "direct-b")
+    assert candidate_publish_blocker(selected[0]) is None
+
+
+def test_publish_quality_keeps_negative_null_contrast_after_dropping_weak_context() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Strong negative/null direct signals can carry proxy context.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("negative", "null", "proxy", "weak-context"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "negative",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "negative",
+                "direct",
+                "high",
+                "Direct negative human signal.",
+            ),
+            ClaimCard(
+                "null",
+                "null_signal",
+                "intervention_study",
+                "human",
+                "long/performance",
+                "null",
+                "direct",
+                "high",
+                "Direct null human signal.",
+            ),
+            ClaimCard(
+                "proxy",
+                "boundary",
+                "intervention_study",
+                "human",
+                "acute/damage/performance",
+                "negative",
+                "direct",
+                "high",
+                "Proxy context.",
+            ),
+            ClaimCard(
+                "weak-context",
+                "consensus",
+                "unspecified",
+                "unspecified",
+                "performance",
+                "unclear",
+                "indirect",
+                "low",
+                "Weak context row.",
+            ),
+        ),
+    )
+
+    selected = _publishable_candidates(
+        [candidate],
+        [
+            _hit("negative", "Negative", "Randomized human trial negative signal."),
+            _hit("null", "Null", "Human intervention study null signal."),
+            _hit("proxy", "Proxy", "Human intervention study acute damage signal."),
+            _hit("weak-context", "Weak context", "Weak context row."),
+        ],
+        "publishable_alpha",
+        frozenset(),
+        require_publish_quality=True,
+    )
+
+    assert len(selected) == 1
+    assert selected[0].receipt_ids == ("negative", "null", "proxy")
     assert candidate_publish_blocker(selected[0]) is None
 
 

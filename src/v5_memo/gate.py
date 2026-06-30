@@ -160,8 +160,8 @@ def _has_independent_directional_contrast(claim_cards: Sequence[ClaimCard]) -> b
             continue
         if card.role in _CONTEXT_ROLES or card.direction == "proxy":
             continue
-        directions.update(set(card.direction.split("/")) & {"negative", "positive"})
-    return {"negative", "positive"} <= directions
+        directions.update(set(card.direction.split("/")) & {"negative", "null", "positive"})
+    return len(directions) >= 2
 
 
 def no_alpha_failure(
