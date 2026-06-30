@@ -660,6 +660,56 @@ def test_full_raw_client_stops_waiting_on_no_hit_sweep_stop(monkeypatch: MonkeyP
     assert sleeps == []
 
 
+def test_full_raw_client_does_not_wait_on_no_hit_coverage_error(monkeypatch: MonkeyPatch) -> None:
+    payloads: list[dict[str, object]] = []
+    sleeps: list[float] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payloads.append(json.loads(cast(bytes, request.data).decode("utf-8")))
+        body = json.dumps({
+            "error": "coverage_too_narrow",
+            "shard_receipt": {
+                "authenticated": True,
+                "partial_shard_search": True,
+                "shards_searched": 137,
+                "shards_total": 1525,
+                "sweep_failed_shards": 0,
+                "sweep_remaining_shards": 1388,
+                "sweep_stopped_no_hits": True,
+            },
+        }).encode("utf-8")
+        raise HTTPError(
+            url="https://search.example/full-raw",
+            code=422,
+            msg="coverage_too_narrow",
+            hdrs=Message(),
+            fp=BytesIO(body),
+        )
+
+    def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    monkeypatch.setattr("v5_memo.client.time.sleep", fake_sleep)
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="raw-token",
+        max_variants=1,
+        sweep_wait_seconds=60.0,
+        sweep_poll_seconds=0.05,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        strict=True,
+    )
+
+    with pytest.raises(SearchBackendError, match="coverage too narrow"):
+        client.search("glyNAC older adults trial", limit=25)
+
+    assert [payload.get("cache_only") for payload in payloads] == [True]
+    assert sleeps == []
+
+
 def test_full_raw_client_keeps_sufficient_foreground_hit(monkeypatch: object) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del timeout
