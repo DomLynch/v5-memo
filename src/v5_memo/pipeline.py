@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 
 from v5_memo.binder import bind_receipts
 from v5_memo.gate import (
@@ -125,13 +126,37 @@ def _publishable_candidates(
     require_publish_quality: bool = False,
 ) -> list[InsightCandidate]:
     hits_by_id = {hit.hit_id: hit for hit in hits}
-    return [
-        candidate
-        for candidate in mined_candidates
-        if meets_publish_bar(candidate, min_alpha_tier)
-        and _candidate_preserves_primary_anchor(candidate, hits_by_id, primary_anchor_terms)
-        and (not require_publish_quality or candidate_publish_blocker(candidate) is None)
-    ]
+    out: list[InsightCandidate] = []
+    for candidate in mined_candidates:
+        if not meets_publish_bar(candidate, min_alpha_tier):
+            continue
+        if not _candidate_preserves_primary_anchor(candidate, hits_by_id, primary_anchor_terms):
+            continue
+        if require_publish_quality:
+            candidate = _drop_weak_context_receipts(candidate)
+            if candidate_publish_blocker(candidate) is not None:
+                continue
+        out.append(candidate)
+    return out
+
+
+def _drop_weak_context_receipts(candidate: InsightCandidate) -> InsightCandidate:
+    blocker = candidate_publish_blocker(candidate)
+    if not blocker or blocker.get("error") != "weak_context_receipts":
+        return candidate
+    raw_receipt_ids = blocker.get("receipt_ids", ())
+    if not isinstance(raw_receipt_ids, Sequence) or isinstance(raw_receipt_ids, str):
+        return candidate
+    drop_ids = {receipt_id for receipt_id in raw_receipt_ids if isinstance(receipt_id, str)}
+    if not drop_ids:
+        return candidate
+    return replace(
+        candidate,
+        receipt_ids=tuple(receipt_id for receipt_id in candidate.receipt_ids if receipt_id not in drop_ids),
+        receipt_roles=tuple(role for role in candidate.receipt_roles if role.receipt_id not in drop_ids),
+        claim_cards=tuple(card for card in candidate.claim_cards if card.receipt_id not in drop_ids),
+        evidence_graph=tuple(node for node in candidate.evidence_graph if node.receipt_id not in drop_ids),
+    )
 
 
 def _apply_selector(

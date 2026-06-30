@@ -1931,6 +1931,76 @@ def test_publish_blocker_rejects_weak_context_receipts() -> None:
     }
 
 
+def test_publish_quality_candidates_drop_weak_context_receipts() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Strong direct human signals should not be blocked by weak context padding.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("direct-a", "direct-b", "weak-context"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "direct-a",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "strength",
+                "negative",
+                "direct",
+                "high",
+                "Direct human signal.",
+            ),
+            ClaimCard(
+                "direct-b",
+                "null_signal",
+                "intervention_study",
+                "human",
+                "strength",
+                "null",
+                "direct",
+                "high",
+                "Direct human signal.",
+            ),
+            ClaimCard(
+                "weak-context",
+                "consensus",
+                "unspecified",
+                "unspecified",
+                "strength",
+                "unclear",
+                "indirect",
+                "low",
+                "Weak context row.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "weak_context_receipts",
+        "receipt_ids": ("weak-context",),
+    }
+
+    selected = _publishable_candidates(
+        [candidate],
+        [
+            _hit("direct-a", "Direct A", "Randomized human trial negative signal."),
+            _hit("direct-b", "Direct B", "Human intervention study null signal."),
+            _hit("weak-context", "Weak context", "Weak context row."),
+        ],
+        "publishable_alpha",
+        frozenset(),
+        require_publish_quality=True,
+    )
+
+    assert len(selected) == 1
+    assert selected[0].receipt_ids == ("direct-a", "direct-b")
+    assert candidate_publish_blocker(selected[0]) is None
+
+
 def test_researka_payload_strips_markdown_wrapped_doi_receipt_labels() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion",
