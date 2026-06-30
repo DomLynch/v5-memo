@@ -471,7 +471,7 @@ def _submit_defer_receipt(remaining: float, state: Mapping[str, object]) -> dict
 
 
 def _submit_failed_receipt(exc: HTTPError, cooldown_state: Mapping[str, object]) -> dict[str, object]:
-    return {
+    receipt: dict[str, object] = {
         "error": "researka_submit_failed",
         "status": exc.code,
         "reason": exc.reason,
@@ -479,6 +479,32 @@ def _submit_failed_receipt(exc: HTTPError, cooldown_state: Mapping[str, object])
         "cooldown_until": cooldown_state.get("until_iso", "") if cooldown_state else "",
         "attempts": cooldown_state.get("attempts", "") if cooldown_state else "",
     }
+    if body := _http_error_body(exc):
+        receipt["response_body"] = body
+    if headers := _rate_limit_headers(exc):
+        receipt["response_headers"] = headers
+    return receipt
+
+
+def _http_error_body(exc: HTTPError, *, limit: int = 1000) -> str:
+    try:
+        raw = exc.read(limit + 1)
+    except (OSError, ValueError):
+        return ""
+    if not raw:
+        return ""
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+    return text[:limit]
+
+
+def _rate_limit_headers(exc: HTTPError) -> dict[str, str]:
+    if exc.headers is None:
+        return {}
+    out: dict[str, str] = {}
+    for key in ("Retry-After", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"):
+        if value := exc.headers.get(key):
+            out[key] = value
+    return out
 
 
 def _record_researka_submit_cooldown(exc: HTTPError) -> Mapping[str, object]:

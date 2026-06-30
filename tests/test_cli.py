@@ -3,6 +3,7 @@ import sys
 import time
 from collections.abc import Sequence
 from email.message import Message
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
@@ -15,6 +16,7 @@ from v5_memo.__main__ import (
     _alpha_shaped_planned_queries,
     _dedupe_queries,
     _publish_blocker,
+    _submit_failed_receipt,
     _topic_anchored_queries,
     main,
 )
@@ -609,6 +611,7 @@ def test_cli_submit_researka_writes_receipt_on_submit_rate_limit(
         "retry_after": "60",
         "cooldown_until": receipt["cooldown_until"],
         "attempts": 1,
+        "response_headers": {"Retry-After": "60"},
     }
     cooldown = json.loads(cooldown_path.read_text())
     assert cooldown["status"] == 429
@@ -674,6 +677,24 @@ def test_cli_submit_researka_defers_during_submit_cooldown(
     assert receipt["previous_status"] == 429
     assert receipt["previous_reason"] == "Too Many Requests"
     assert 0 < receipt["retry_after"] <= 120
+
+
+def test_submit_failed_receipt_preserves_rate_limit_details() -> None:
+    headers = Message()
+    headers["Retry-After"] = "30"
+    headers["X-RateLimit-Remaining"] = "0"
+    exc = HTTPError(
+        "https://api.researka.org/submissions",
+        429,
+        "Too Many Requests",
+        headers,
+        BytesIO(b'{"error":"rate_limit","detail":"slow down"}'),
+    )
+
+    receipt = _submit_failed_receipt(exc, {"until_iso": "2026-06-30T22:36:41+00:00", "attempts": 7})
+
+    assert receipt["response_body"] == '{"error":"rate_limit","detail":"slow down"}'
+    assert receipt["response_headers"] == {"Retry-After": "30", "X-RateLimit-Remaining": "0"}
 
 
 def test_cli_submit_researka_waits_through_submit_cooldown(
