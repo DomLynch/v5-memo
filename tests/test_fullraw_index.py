@@ -1956,6 +1956,66 @@ def test_materialized_shard_path_serializes_same_target_copy(
     assert results[0].read_bytes() == b"remote shard"
 
 
+def test_materialized_shard_path_respects_active_copy_reservations(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    remote_dir = tmp_path / "remote"
+    remote_dir.mkdir()
+    first_remote = remote_dir / "fullraw_shard_0001.sqlite"
+    second_remote = remote_dir / "fullraw_shard_0002.sqlite"
+    first_remote.write_bytes(b"a" * 8)
+    second_remote.write_bytes(b"b" * 8)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "10")
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_SWEEP_WORKER_CACHE_BYTES", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", raising=False)
+    with fullraw_index._SHARD_LOCAL_CACHE_LOCK:
+        fullraw_index._SHARD_LOCAL_CACHE_IN_PROGRESS.clear()
+        fullraw_index._SHARD_LOCAL_CACHE_RESERVED_BYTES.clear()
+
+    copy_entered = threading.Event()
+    release_copy = threading.Event()
+    copied: list[Path] = []
+    errors: list[BaseException] = []
+    results: list[Path] = []
+
+    def slow_copy(source: Path, target: Path) -> None:
+        copied.append(source)
+        if source == second_remote:
+            raise AssertionError("second shard should not be copied past the cache cap")
+        copy_entered.set()
+        assert release_copy.wait(timeout=2), "copy was not released"
+        target.write_bytes(source.read_bytes())
+
+    def materialize_first() -> None:
+        try:
+            results.append(fullraw_index._materialized_shard_path(first_remote, populate=True))
+        except BaseException as exc:  # pragma: no cover - reported below
+            errors.append(exc)
+
+    monkeypatch.setattr("v5_memo.fullraw_index.shutil.copy2", slow_copy)
+
+    first = threading.Thread(target=materialize_first)
+    first.start()
+    assert copy_entered.wait(timeout=2)
+
+    assert fullraw_index._materialized_shard_path(second_remote, populate=True) == second_remote
+
+    release_copy.set()
+    first.join(timeout=2)
+
+    assert not first.is_alive()
+    assert errors == []
+    assert copied == [first_remote]
+    assert len(results) == 1
+    assert results[0] != first_remote
+    assert results[0].read_bytes() == b"a" * 8
+    with fullraw_index._SHARD_LOCAL_CACHE_LOCK:
+        assert fullraw_index._SHARD_LOCAL_CACHE_RESERVED_BYTES == {}
+
+
 def test_shard_catalog_cache_round_trips_entries(tmp_path: Path) -> None:
     entry = ShardCatalogEntry(
         path=tmp_path / "batch_00001" / "fullraw_shard_0000.sqlite",
