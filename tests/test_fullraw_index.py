@@ -1539,6 +1539,24 @@ def test_shard_local_cache_auto_budget_uses_free_space(
     assert fullraw_index._shard_local_cache_max_bytes() == 360
 
 
+def test_shard_local_cache_auto_budget_honors_min_free_gb(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "ready.sqlite").write_bytes(b"x" * 10)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "auto")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MIN_FREE_GB", "0.0000002")
+    monkeypatch.setattr(
+        "v5_memo.fullraw_index.shutil.disk_usage",
+        lambda _path: _FakeDiskUsage(total=1000, used=600, free=400),
+    )
+
+    assert fullraw_index._shard_local_cache_max_bytes() == 196
+
+
 def test_materialized_shard_path_does_not_recache_local_cache_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

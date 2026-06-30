@@ -110,7 +110,13 @@ def _shard_local_cache_max_bytes(cache_dir: Path | None = None) -> int | None:
             for path in target_dir.glob(pattern)
             if path.is_file()
         )
-    return max(0, cache_bytes + usage.free - (usage.total // 20))
+    min_free_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MIN_FREE_BYTES")
+    if min_free_bytes is None:
+        min_free_gb = _float_or_none(
+            _fullraw_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MIN_FREE_GB", "")
+        )
+        min_free_bytes = int(min_free_gb * 1024 * 1024 * 1024) if min_free_gb else usage.total // 20
+    return max(0, cache_bytes + usage.free - min_free_bytes)
 
 
 def _shard_local_cache_health(*, include_dynamic_budget: bool = True) -> dict[str, object]:
