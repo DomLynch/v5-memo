@@ -1546,11 +1546,10 @@ def test_shard_local_cache_auto_budget_honors_min_free_gb(
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
     (cache_dir / "ready.sqlite").write_bytes(b"x" * 10)
-    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
-    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "auto")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "auto")
     monkeypatch.delenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_BYTES", raising=False)
-    monkeypatch.delenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_GB", raising=False)
-    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MIN_FREE_GB", "0.0000002")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_GB", "0.0000002")
     monkeypatch.setattr(
         "v5_memo.fullraw_index.shutil.disk_usage",
         lambda _path: _FakeDiskUsage(total=1000, used=600, free=400),
@@ -1791,12 +1790,28 @@ def test_auto_sweep_workers_caps_by_cache_budget(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(os, "cpu_count", lambda: 16)
-    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(tmp_path))
-    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", str(8 * 1024 * 1024 * 1024))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", str(8 * 1024 * 1024 * 1024))
     monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", raising=False)
     monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB", raising=False)
 
     assert fullraw_index._auto_sweep_workers(2) == 2
+
+
+def test_auto_sweep_workers_floor_when_cache_budget_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(os, "cpu_count", lambda: 16)
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "auto")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_BYTES", "500")
+    monkeypatch.setattr(
+        "v5_memo.fullraw_index.shutil.disk_usage",
+        lambda _path: _FakeDiskUsage(total=1000, used=800, free=200),
+    )
+
+    assert fullraw_index._auto_sweep_workers(2) == 1
 
 
 def test_build_upload_shard_batches_keeps_all_failed_batch_fatal(

@@ -4444,8 +4444,10 @@ def _positive_int_env(name: str) -> int | None:
 def _auto_sweep_workers(max_inflight: int) -> int:
     workers = max(1, (os.cpu_count() or 1) // max(1, max_inflight))
     max_cache_bytes = _shard_local_cache_max_bytes()
-    if max_cache_bytes is None or max_cache_bytes <= 0:
+    if max_cache_bytes is None:
         return workers
+    if max_cache_bytes <= 0:
+        return 1
     per_worker_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKER_CACHE_BYTES")
     if per_worker_bytes is None:
         per_worker_gb = _float_or_none(
