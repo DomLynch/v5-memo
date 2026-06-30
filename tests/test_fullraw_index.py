@@ -1672,6 +1672,33 @@ def test_materialized_shard_path_skips_populate_when_cache_budget_exhausted(
     assert fullraw_index._cached_materialized_shard_path(remote) is None
 
 
+def test_materialized_shard_path_avoids_remote_stat_when_cache_budget_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    remote = tmp_path / "remote" / "fullraw_shard_0001.sqlite"
+    remote.parent.mkdir()
+    remote.write_text("remote shard", encoding="utf-8")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "auto")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_BYTES", "500")
+    monkeypatch.setattr(
+        "v5_memo.fullraw_index.shutil.disk_usage",
+        lambda _path: _FakeDiskUsage(total=1000, used=800, free=200),
+    )
+    original_stat = Path.stat
+
+    def guarded_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if path == remote:
+            raise AssertionError("remote stat should be skipped when cache budget is exhausted")
+        return original_stat(path, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", guarded_stat)
+
+    assert fullraw_index._materialized_shard_path(remote, populate=True) == remote
+
+
 def test_materialized_shard_path_skips_populate_when_worker_cache_cap_exceeded(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
