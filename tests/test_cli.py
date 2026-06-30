@@ -392,6 +392,87 @@ def test_cli_prints_search_backend_error_without_traceback(
     assert "Traceback" not in captured.err
 
 
+def test_cli_writes_build_failure_receipt_without_traceback(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "build-error.json"
+
+    def fail_build_alpha_memo(**_kwargs: object) -> object:
+        raise MemoBuildError(
+            SearchFailure(
+                code="no_receipt_bound_alpha_candidate",
+                message="no receipt-bound alpha memo candidate found",
+                details={"hit_count": 14, "candidate_count": 0},
+            )
+        )
+
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fail_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--topic",
+            "metformin",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    captured = capsys.readouterr()
+    receipt = json.loads(receipt_path.read_text())
+    assert exc.value.code == 1
+    assert receipt == {
+        "details": {"candidate_count": 0, "hit_count": 14},
+        "error": "no_receipt_bound_alpha_candidate",
+        "message": "no receipt-bound alpha memo candidate found",
+    }
+    assert "no receipt-bound alpha memo candidate found" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_writes_search_backend_error_receipt(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "search-error.json"
+
+    def fail_build_alpha_memo(**_kwargs: object) -> object:
+        raise SearchBackendError("Full raw corpus search coverage too narrow: {'shards_searched': 32}")
+
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fail_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--topic",
+            "metformin",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    receipt = json.loads(receipt_path.read_text())
+    assert exc.value.code == 1
+    assert receipt["error"] == "search_backend_error"
+    assert "coverage too narrow" in receipt["message"]
+
+
 def test_cli_submit_researka_uses_generated_memo(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

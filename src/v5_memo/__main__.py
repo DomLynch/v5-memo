@@ -279,24 +279,39 @@ def main() -> None:
     }
     try:
         result = build_alpha_memo(**build_kwargs)
-    except MemoBuildError:
-        if not args.emit_discovery_on_fail:
+    except MemoBuildError as exc:
+        if args.emit_discovery_on_fail:
+            result = build_alpha_memo(
+                topic=args.topic,
+                seed_queries=queries,
+                searcher=searcher,
+                memo_writer=render_memo,
+                memo_selector=None,
+                anchor_queries=anchor_queries,
+                min_alpha_tier="discovery_seed",
+                per_query_limit=per_query_limit,
+                max_hits=max_hits,
+                min_shards_searched=args.min_shards_searched,
+                min_sources_searched=args.min_sources_searched,
+                min_search_passes=args.min_search_passes,
+            )
+        elif not (args.publish_receipt_path or args.submit_researka or args.publish):
             raise
-        result = build_alpha_memo(
-            topic=args.topic,
-            seed_queries=queries,
-            searcher=searcher,
-            memo_writer=render_memo,
-            memo_selector=None,
-            anchor_queries=anchor_queries,
-            min_alpha_tier="discovery_seed",
-            per_query_limit=per_query_limit,
-            max_hits=max_hits,
-            min_shards_searched=args.min_shards_searched,
-            min_sources_searched=args.min_sources_searched,
-            min_search_passes=args.min_search_passes,
-        )
+        else:
+            error = {
+                "error": exc.failure.code,
+                "message": exc.failure.message,
+                "details": exc.failure.details,
+            }
+            _write_json(args.publish_receipt_path, error)
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(1) from exc
     except SearchBackendError as exc:
+        error = {
+            "error": "search_backend_error",
+            "message": str(exc),
+        }
+        _write_json(args.publish_receipt_path, error)
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from exc
     memo_path = _write_memo(args.output_dir, result) if args.output_dir else None
