@@ -227,6 +227,8 @@ def _submission_title(result: MemoResult, heading: str) -> str:
         raw = _first_sentence(result.candidate.thesis) or result.candidate.topic
     if _bridge_only_title(raw, result.candidate.bridge_terms):
         raw = _bundle_title(result) or _receipt_title(result) or raw
+    if _generic_scope_title(raw, result.candidate.topic):
+        raw = _bundle_title(result) or raw
     if (
         _query_like_title(raw)
         or _non_article_title(raw)
@@ -248,6 +250,15 @@ def _bridge_only_title(title: str, bridge_terms: Sequence[str]) -> bool:
     return 0 < len(tokens) <= 4 and tokens <= bridge
 
 
+def _generic_scope_title(title: str, topic: str) -> bool:
+    clean = " ".join(title.casefold().split())
+    topic_tokens = set(_TITLE_TOKEN_RE.findall(topic.casefold()))
+    return (
+        "training outcomes in human studies" in clean
+        and ("adaptation" in topic_tokens or "adaptations" in topic_tokens)
+    )
+
+
 def _bundle_title(result: MemoResult) -> str:
     direct_human = _direct_human_claim_cards(result)
     endpoint_title = _endpoint_heterogeneity_title(result, direct_human)
@@ -265,6 +276,13 @@ def _bundle_title(result: MemoResult) -> str:
         return ""
     topic_tokens = set(_TITLE_TOKEN_RE.findall(result.candidate.topic.casefold()))
     training_terms = {"exercise", "training", "resistance", "strength"}
+    if "adaptation" in topic_tokens or "adaptations" in topic_tokens:
+        outcome_label = (
+            "Strength Training Adaptation"
+            if topic_tokens & {"resistance", "strength"}
+            else "Training Adaptation"
+        )
+        return f"{intervention} and {outcome_label}: Evidence Map of Human Trials"
     outcome_label = "Training Outcomes" if topic_tokens & training_terms else "Outcomes"
     return f"{intervention} and {outcome_label} in Human Studies"
 
@@ -379,6 +397,7 @@ def _retrieval_evidence(hit: CorpusHit) -> dict[str, object]:
 
 def _abstract_from_markdown(markdown: str) -> str:
     plain = " ".join(markdown.translate(str.maketrans("#*_`>-", "      ")).split())
+    plain = _alpha_disclaimer_first(plain)
     if len(plain) <= 900:
         return plain
     clipped = plain[:900].rstrip()
@@ -386,6 +405,18 @@ def _abstract_from_markdown(markdown: str) -> str:
     for match in _SENTENCE_END.finditer(clipped):
         last_end = match.end(1)
     return clipped[:last_end].strip() if last_end >= 80 else clipped.rstrip(" ,;:") + "."
+
+
+def _alpha_disclaimer_first(text: str) -> str:
+    disclaimer = "Hypothesis-level alpha signal; not clinical advice."
+    normalized = "Hypothesis level alpha signal; not clinical advice."
+    if disclaimer not in text and normalized not in text:
+        return text
+    clean = " ".join(text.split()).strip()
+    if clean.startswith(disclaimer):
+        return clean
+    without_disclaimer = clean.replace(disclaimer, "", 1).replace(normalized, "", 1).strip()
+    return f"{disclaimer} {without_disclaimer}"
 
 
 def _source_bundle_entry(hit: CorpusHit) -> dict[str, object]:

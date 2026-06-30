@@ -2570,6 +2570,65 @@ def test_researka_payload_uses_bundle_title_for_heterogeneous_bridge_title() -> 
     assert narrow_payload["title"] == payload["title"]
 
 
+def test_researka_payload_narrows_adaptation_title_and_leads_abstract_with_alpha_scope() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Cold immersion training evidence separates adaptation and recovery endpoints.",
+        bridge_terms=("cold", "immersion", "training", "water"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("recovery", "strength"),
+        score=100,
+        novelty_score=58,
+        evidence_score=96,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "recovery",
+                "replication",
+                "intervention_study",
+                "human",
+                "recovery benefit",
+                "null",
+                "direct",
+                "high",
+                "Cold-water immersion did not improve recovery benefit.",
+            ),
+            ClaimCard(
+                "strength",
+                "boundary",
+                "randomized_trial",
+                "human",
+                "strength training adaptation",
+                "negative",
+                "direct",
+                "high",
+                "Cold-water immersion attenuated strength-training adaptation.",
+            ),
+        ),
+    )
+    receipts = [
+        _hit("recovery", "Cold-water immersion and recovery benefit", "Human trial reported no recovery benefit."),
+        _hit(
+            "strength",
+            "Strength training adaptations after cold-water immersion",
+            "Human trial measured strength-training adaptation.",
+        ),
+    ]
+    markdown = "# Alpha memo: Cold Water Immersion and Training Outcomes in Human Studies\n\nBody."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="performance",
+    )
+
+    assert payload["title"] == "Cold Water Immersion and Strength Training Adaptation: Evidence Map of Human Trials"
+    assert cast(str, payload["abstract"]).startswith("Hypothesis-level alpha signal; not clinical advice.")
+    assert cast(str, payload["body_markdown"]).startswith(
+        "# Alpha memo: Cold Water Immersion and Strength Training Adaptation: Evidence Map of Human Trials"
+    )
+
+
 def test_researka_payload_rewrites_internal_role_label_title() -> None:
     candidate = InsightCandidate(
         topic="resveratrol exercise training",
