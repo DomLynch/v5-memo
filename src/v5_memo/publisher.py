@@ -567,7 +567,7 @@ def submit_researka(
     api_base: str = "https://api.researka.org",
     submit_url: str = "",
     timeout: float = 60.0,
-    max_retries: int = 2,
+    max_retries: int = 0,
 ) -> dict[str, object]:
     headers = {"Content-Type": "application/json", "x-api-key": agent_key, "Authorization": f"Bearer {agent_key}"}
     agent_slug = payload.get("author_agent_slug") or payload.get("author_agent_id")
