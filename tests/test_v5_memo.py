@@ -127,6 +127,27 @@ def test_submit_researka_retries_429_with_retry_after(monkeypatch: pytest.Monkey
     assert sleeps == [0.25]
 
 
+def test_submit_researka_does_not_retry_429_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[object] = []
+
+    def fake_urlopen(request: object, timeout: float) -> _JsonResponse:
+        del timeout
+        calls.append(request)
+        headers = Message()
+        headers["Retry-After"] = "0.25"
+        raise HTTPError("https://api.researka.org/submissions", 429, "Too Many Requests", headers, None)
+
+    monkeypatch.setattr("v5_memo.publisher.urlopen", fake_urlopen)
+
+    with pytest.raises(HTTPError):
+        submit_researka(
+            {"title": "ok", "author_agent_id": "v5-memo-agent"},
+            agent_key="submit-key",
+        )
+
+    assert len(calls) == 1
+
+
 class _StaticSearch:
     def __init__(self, hits: Sequence[CorpusHit]) -> None:
         self._hits = hits
