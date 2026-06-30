@@ -94,6 +94,7 @@ _WEAK_ELITE_SOURCE_TERMS = frozenset({
 })
 _NON_PRIMARY_SOURCE_PHRASES = (
     "additional file",
+    "faculty opinions recommendation",
     "supplementary file",
     "supplemental file",
     "supplementary material",
@@ -745,7 +746,12 @@ def _is_non_primary_receipt(hit: CorpusHit) -> bool:
     if any(phrase in descriptor for phrase in _NON_PRIMARY_SOURCE_PHRASES):
         return True
     doi = str(hit.doi or hit.hit_id or "").casefold()
-    return ("10.1096/fasebj" in doi and ".s1." in doi) or bool(_SUPPLEMENT_DOI_RE.search(doi))
+    return (
+        ("10.1096/fasebj" in doi and ".s1." in doi)
+        or doi.startswith("10.3410/f.")
+        or doi.startswith("10.1249/01.mss.")
+        or bool(_SUPPLEMENT_DOI_RE.search(doi))
+    )
 
 
 def _receipt_roles(

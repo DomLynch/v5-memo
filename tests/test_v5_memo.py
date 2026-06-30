@@ -1626,12 +1626,34 @@ def test_claim_card_downgrades_conference_and_supplemental_receipts() -> None:
         source="fullraw:openalex",
         doi="10.1186/1550-2783-8-s1-p15",
     )
+    faculty_opinions_hit = CorpusHit(
+        hit_id="faculty-opinions",
+        title="Faculty Opinions recommendation of metformin resistance training trial",
+        abstract="Randomized human trial was recommended by Faculty Opinions.",
+        source="fullraw:openalex",
+        doi="10.3410/f.736671936.793569870",
+    )
+    acsm_abstract_hit = CorpusHit(
+        hit_id="acsm-abstract",
+        title="One Bout Of Resistance Exercise Does Not Interfere With Metformin",
+        abstract="Randomized human trial abstract reported metabolic syndrome outcomes.",
+        source="fullraw:openalex",
+        doi="10.1249/01.mss.0000764428.80520.ab",
+    )
 
     conference = _claim_card(conference_hit, ReceiptRole("faseb", "boundary", "conference abstract"))
     supplement = _claim_card(supplement_hit, ReceiptRole("supplement", "context", "supporting data"))
     jissn_supplement = _claim_card(
         jissn_supplement_hit,
         ReceiptRole("jissn-supplement", "context", "journal supplement abstract"),
+    )
+    faculty_opinions = _claim_card(
+        faculty_opinions_hit,
+        ReceiptRole("faculty-opinions", "negative_signal", "recommendation context"),
+    )
+    acsm_abstract = _claim_card(
+        acsm_abstract_hit,
+        ReceiptRole("acsm-abstract", "null_signal", "abstract context"),
     )
 
     assert conference.population == "human"
@@ -1641,6 +1663,8 @@ def test_claim_card_downgrades_conference_and_supplemental_receipts() -> None:
     assert supplement.confidence == "medium"
     assert jissn_supplement.support_type == "indirect"
     assert jissn_supplement.confidence == "low"
+    assert faculty_opinions.support_type == "indirect"
+    assert acsm_abstract.support_type == "indirect"
 
 
 def test_claim_card_treats_systematic_review_as_indirect_synthesis() -> None:
