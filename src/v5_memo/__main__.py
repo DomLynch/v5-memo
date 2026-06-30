@@ -355,6 +355,7 @@ def main() -> None:
                 "cooldown_until": state.get("until_iso", ""),
                 "previous_status": state.get("status", ""),
                 "previous_reason": state.get("reason", ""),
+                "attempts": state.get("attempts", ""),
             }
             _write_json(args.publish_receipt_path, defer_receipt)
             print(f"Researka submit deferred for {defer_receipt['retry_after']}s", file=sys.stderr)
@@ -374,6 +375,7 @@ def main() -> None:
                 "reason": exc.reason,
                 "retry_after": exc.headers.get("Retry-After", "") if exc.headers is not None else "",
                 "cooldown_until": cooldown_state.get("until_iso", "") if cooldown_state else "",
+                "attempts": cooldown_state.get("attempts", "") if cooldown_state else "",
             }
             _write_json(args.publish_receipt_path, fail_receipt)
             print(f"Researka submit failed: HTTP {exc.code} {exc.reason}", file=sys.stderr)
@@ -437,16 +439,20 @@ def _record_researka_submit_cooldown(exc: HTTPError) -> Mapping[str, object]:
     if exc.code != 429:
         return {}
     retry_after = _float_value(exc.headers.get("Retry-After", "") if exc.headers is not None else "")
+    path = _researka_submit_cooldown_path()
+    previous = _read_json_mapping(path)
+    attempts = int(_float_value(previous.get("attempts"))) + 1 if previous else 1
     if retry_after <= 0:
-        retry_after = float(os.environ.get("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_SECONDS", "300") or 300)
+        base = _float_value(os.environ.get("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_SECONDS", "300")) or 300.0
+        retry_after = base * (2 ** min(attempts - 1, 4))
     until = time.time() + max(1.0, min(retry_after, 3600.0))
     payload: dict[str, object] = {
+        "attempts": attempts,
         "until": until,
         "until_iso": datetime.fromtimestamp(until, UTC).isoformat(),
         "status": exc.code,
         "reason": exc.reason,
     }
-    path = _researka_submit_cooldown_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, sort_keys=True))
     return payload
@@ -454,6 +460,14 @@ def _record_researka_submit_cooldown(exc: HTTPError) -> Mapping[str, object]:
 
 def _researka_submit_cooldown_path() -> Path:
     return Path(os.environ.get("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_PATH", "/tmp/v5-memo-researka-submit-cooldown.json"))
+
+
+def _read_json_mapping(path: Path) -> Mapping[str, object]:
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return raw if isinstance(raw, Mapping) else {}
 
 
 def _float_value(value: object) -> float:
