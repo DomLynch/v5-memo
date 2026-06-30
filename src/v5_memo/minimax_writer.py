@@ -300,13 +300,13 @@ Hard rules:
 - Proxy/boundary receipts are secondary; do not make them co-equal anchors for chronic-adaptation claims.
 - If a proxy/boundary receipt sits beside chronic or long-term adaptation receipts, frame the core signal as endpoint heterogeneity.
 - If a systematic review or synthesis receipt has its own negative/null/positive direction,
-  state convergence or context only.
-- If receipts use different modalities/populations/endpoints, name the split, frame as unresolved endpoint heterogeneity,
-  and do not claim one protocol condition converts one result into another.
+  convergence or context only
+- If receipts use different modalities/populations/endpoints, frame as unresolved endpoint heterogeneity;
+  do not claim one protocol condition converts one result into another.
 - Use the 2+2=5 section to state the bounded contrast; if the receipts are heterogeneous
   rather than contradictory, explicitly say they are not directly contradictory.
-- Use source-appropriate descriptors from the receipts.
-- Make the memo read like an insight: contradiction, boundary, inversion, proxy, metric mismatch, or transfer.
+- Use source-appropriate descriptors from the receipts: trial/protocol, filing/report, benchmark, case study, market study, campaign, interview, dataset, model card.
+- Make the memo read like an insight: surface contradiction, boundary condition, inversion, neglected proxy, metric mismatch, or cross-domain transfer.
 - In "Why this could matter", give one falsifiable hypothesis, not a list.
 - In "What would break the idea", name one concrete next-step uncertainty or study design.
 - Include a concise Claim ledger section before Receipts. Each claim must use the
