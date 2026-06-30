@@ -1516,6 +1516,24 @@ def test_cache_fit_batch_only_reserves_burst_lane_when_enabled(
     assert fullraw_index._cache_fit_path_batch(remotes, start=0, worker_count=3) == remotes[:1]
 
 
+def test_cache_fit_batch_keeps_parallel_batch_when_cache_budget_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    remotes = [tmp_path / f"remote-{idx}.sqlite" for idx in range(3)]
+    for path in remotes:
+        path.write_bytes(b"x" * 5)
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "auto")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_BYTES", "500")
+    monkeypatch.setattr(
+        "v5_memo.fullraw_index.shutil.disk_usage",
+        lambda _path: _FakeDiskUsage(total=1000, used=800, free=200),
+    )
+
+    assert fullraw_index._cache_fit_path_batch(remotes, start=0, worker_count=3) == remotes
+
+
 class _FakeDiskUsage(NamedTuple):
     total: int
     used: int
@@ -1885,7 +1903,7 @@ def test_auto_sweep_workers_caps_by_cache_budget(
     assert fullraw_index._auto_sweep_workers(2) == 2
 
 
-def test_auto_sweep_workers_floor_when_cache_budget_exhausted(
+def test_auto_sweep_workers_uses_cpu_workers_when_cache_budget_exhausted(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1898,7 +1916,7 @@ def test_auto_sweep_workers_floor_when_cache_budget_exhausted(
         lambda _path: _FakeDiskUsage(total=1000, used=800, free=200),
     )
 
-    assert fullraw_index._auto_sweep_workers(2) == 1
+    assert fullraw_index._auto_sweep_workers(2) == 8
 
 
 def test_build_upload_shard_batches_keeps_all_failed_batch_fatal(

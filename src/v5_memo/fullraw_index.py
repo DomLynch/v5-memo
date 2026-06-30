@@ -1278,7 +1278,7 @@ def _cache_fit_path_batch(paths: list[Path], *, start: int, worker_count: int) -
     if max_cache_bytes is None:
         return batch
     if max_cache_bytes <= 0:
-        return batch[:1]
+        return batch
     max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
     priority_burst = _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "true").casefold()
     if priority_burst in {"1", "true", "yes"}:
@@ -4457,7 +4457,7 @@ def _auto_sweep_workers(max_inflight: int) -> int:
     if max_cache_bytes is None:
         return workers
     if max_cache_bytes <= 0:
-        return 1
+        return workers
     per_worker_bytes = _sweep_worker_cache_bytes(default_gb=2.0) or (2 * 1024 * 1024 * 1024)
     cache_workers = max(1, max_cache_bytes // max(1, per_worker_bytes * max(1, max_inflight)))
     return max(1, min(workers, cache_workers))
