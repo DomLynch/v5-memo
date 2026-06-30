@@ -2083,6 +2083,111 @@ def test_publish_blocker_rejects_weak_context_receipts() -> None:
     }
 
 
+def test_publish_blocker_rejects_proxy_without_independent_directional_contrast() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Proxy endpoint should not create the alpha contrast by itself.",
+        bridge_terms=("cold", "immersion", "training"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("rct", "proxy", "soccer"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "rct",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "negative",
+                "direct",
+                "high",
+                "Single RCT negative chronic signal.",
+            ),
+            ClaimCard(
+                "proxy",
+                "boundary",
+                "intervention_study",
+                "human",
+                "acute/damage/performance",
+                "proxy",
+                "direct",
+                "high",
+                "Acute thickness proxy.",
+            ),
+            ClaimCard(
+                "soccer",
+                "null_signal",
+                "intervention_study",
+                "human",
+                "long/performance",
+                "null",
+                "direct",
+                "high",
+                "Long-term soccer adaptation null signal.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "proxy_without_independent_directional_contrast",
+        "receipt_ids": ("proxy",),
+    }
+
+
+def test_publish_blocker_allows_proxy_with_independent_directional_contrast() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="A proxy receipt can be context when direct human receipts already contrast.",
+        bridge_terms=("cold", "immersion", "training"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("negative", "positive", "proxy"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "negative",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "negative",
+                "direct",
+                "high",
+                "Direct negative signal.",
+            ),
+            ClaimCard(
+                "positive",
+                "positive_signal",
+                "intervention_study",
+                "human",
+                "performance",
+                "positive",
+                "direct",
+                "high",
+                "Direct positive signal.",
+            ),
+            ClaimCard(
+                "proxy",
+                "boundary",
+                "intervention_study",
+                "human",
+                "acute/damage/performance",
+                "proxy",
+                "direct",
+                "high",
+                "Proxy context.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) is None
+
+
 def test_publish_quality_candidates_drop_weak_context_receipts() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion",

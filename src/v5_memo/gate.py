@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from v5_memo.schemas import CorpusHit, InsightCandidate, SearchFailure
+from v5_memo.schemas import ClaimCard, CorpusHit, InsightCandidate, SearchFailure
 
 _TIER_RANK = {"discovery_seed": 0, "publishable_alpha": 1, "elite_alpha": 2}
 _MIN_SCORE_BY_TIER = {
@@ -24,6 +24,7 @@ _PRIMARY_SIGNAL_ROLES = frozenset({
     "tail_risk",
 })
 _CONTEXT_ROLES = frozenset({"boundary", "consensus", "mechanism", "replication"})
+_PROXY_ROLES = frozenset({"boundary"})
 
 
 def candidate_alpha_tier(candidate: InsightCandidate) -> str:
@@ -119,7 +120,37 @@ def candidate_publish_blocker(candidate: InsightCandidate) -> dict[str, object] 
             "error": "positive_role_direction_mismatch",
             "receipt_ids": direction_mismatch,
         }
+    proxy_receipts = _proxy_boundary_receipts(claim_cards)
+    if proxy_receipts and not _has_independent_directional_contrast(claim_cards):
+        return {
+            "error": "proxy_without_independent_directional_contrast",
+            "receipt_ids": proxy_receipts,
+        }
     return None
+
+
+def _proxy_boundary_receipts(claim_cards: Sequence[ClaimCard]) -> tuple[str, ...]:
+    return tuple(
+        card.receipt_id
+        for card in claim_cards
+        if card.role in _PROXY_ROLES
+        and card.direction == "proxy"
+        and card.population == "human"
+        and card.support_type == "direct"
+    )
+
+
+def _has_independent_directional_contrast(claim_cards: Sequence[ClaimCard]) -> bool:
+    directions: set[str] = set()
+    for card in claim_cards:
+        if card.population != "human":
+            continue
+        if card.support_type != "direct" or card.confidence != "high":
+            continue
+        if card.role in _CONTEXT_ROLES or card.direction == "proxy":
+            continue
+        directions.update(set(card.direction.split("/")) & {"negative", "positive"})
+    return {"negative", "positive"} <= directions
 
 
 def no_alpha_failure(
