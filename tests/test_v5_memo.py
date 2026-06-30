@@ -2383,7 +2383,7 @@ def test_publish_quality_keeps_negative_null_contrast_after_dropping_weak_contex
     )
 
     assert len(selected) == 1
-    assert selected[0].receipt_ids == ("negative", "null", "proxy")
+    assert selected[0].receipt_ids == ("negative", "null")
     assert candidate_publish_blocker(selected[0]) is None
 
 

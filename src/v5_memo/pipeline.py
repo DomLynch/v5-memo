@@ -20,6 +20,17 @@ MemoWriter = Callable[[InsightCandidate, Sequence[CorpusHit]], str]
 MemoSelector = Callable[
     [Sequence[InsightCandidate], Sequence[CorpusHit]], Sequence[InsightCandidate]
 ]
+_PROXY_CONTEXT_OUTCOME_TERMS = frozenset({
+    "acute",
+    "damage",
+    "delayed",
+    "early",
+    "immediate",
+    "inflammation",
+    "pain",
+    "short",
+    "stress",
+})
 def build_alpha_memo(
     *,
     topic: str,
@@ -133,11 +144,16 @@ def _publishable_candidates(
         if not _candidate_preserves_primary_anchor(candidate, hits_by_id, primary_anchor_terms):
             continue
         if require_publish_quality:
-            candidate = _drop_weak_context_receipts(candidate)
+            candidate = _drop_publish_context_receipts(candidate)
             if candidate_publish_blocker(candidate) is not None:
                 continue
         out.append(candidate)
     return out
+
+
+def _drop_publish_context_receipts(candidate: InsightCandidate) -> InsightCandidate:
+    candidate = _drop_weak_context_receipts(candidate)
+    return _drop_optional_proxy_context_receipts(candidate)
 
 
 def _drop_weak_context_receipts(candidate: InsightCandidate) -> InsightCandidate:
@@ -150,12 +166,32 @@ def _drop_weak_context_receipts(candidate: InsightCandidate) -> InsightCandidate
     drop_ids = {receipt_id for receipt_id in raw_receipt_ids if isinstance(receipt_id, str)}
     if not drop_ids:
         return candidate
+    return _drop_receipts(candidate, drop_ids)
+
+
+def _drop_optional_proxy_context_receipts(candidate: InsightCandidate) -> InsightCandidate:
+    drop_ids = {
+        card.receipt_id
+        for card in candidate.claim_cards
+        if card.role == "boundary"
+        and (
+            card.direction == "proxy"
+            or bool(set(card.outcome.split("/")) & _PROXY_CONTEXT_OUTCOME_TERMS)
+        )
+    }
+    if not drop_ids:
+        return candidate
+    trimmed = _drop_receipts(candidate, drop_ids)
+    return trimmed if candidate_publish_blocker(trimmed) is None else candidate
+
+
+def _drop_receipts(candidate: InsightCandidate, receipt_ids: set[str]) -> InsightCandidate:
     return replace(
         candidate,
-        receipt_ids=tuple(receipt_id for receipt_id in candidate.receipt_ids if receipt_id not in drop_ids),
-        receipt_roles=tuple(role for role in candidate.receipt_roles if role.receipt_id not in drop_ids),
-        claim_cards=tuple(card for card in candidate.claim_cards if card.receipt_id not in drop_ids),
-        evidence_graph=tuple(node for node in candidate.evidence_graph if node.receipt_id not in drop_ids),
+        receipt_ids=tuple(receipt_id for receipt_id in candidate.receipt_ids if receipt_id not in receipt_ids),
+        receipt_roles=tuple(role for role in candidate.receipt_roles if role.receipt_id not in receipt_ids),
+        claim_cards=tuple(card for card in candidate.claim_cards if card.receipt_id not in receipt_ids),
+        evidence_graph=tuple(node for node in candidate.evidence_graph if node.receipt_id not in receipt_ids),
     )
 
 
