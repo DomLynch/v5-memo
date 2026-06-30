@@ -235,7 +235,6 @@ def mine_insights(
             shape_reasons,
             receipt_roles,
         )
-        graph_receipt_ids = tuple(node.receipt_id for node in evidence_graph)
         hits_by_id = {hit.hit_id: hit for hit in clean_hits}
         claim_cards = _claim_cards_for_roles(hits_by_id, receipt_roles)
         context_claim_cards = _claim_cards_for_graph(
@@ -244,6 +243,12 @@ def mine_insights(
         )
         if context_claim_cards:
             claim_cards = (*claim_cards, *context_claim_cards)
+        evidence_graph, claim_cards = _prioritize_evidence_bundle(
+            topic,
+            evidence_graph,
+            claim_cards,
+        )
+        graph_receipt_ids = tuple(node.receipt_id for node in evidence_graph)
         score = score_connection(
             bridge_terms=bridge,
             bridge_doc_counts=doc_counts,
@@ -277,6 +282,77 @@ def mine_insights(
     return sorted(candidates, key=_candidate_rank, reverse=True)[
         :max(0, max_candidates)
     ]
+
+
+def _prioritize_evidence_bundle(
+    topic: str,
+    evidence_graph: tuple[EvidenceNode, ...],
+    claim_cards: tuple[ClaimCard, ...],
+) -> tuple[tuple[EvidenceNode, ...], tuple[ClaimCard, ...]]:
+    card_by_id = {card.receipt_id: card for card in claim_cards}
+    node_by_id = {node.receipt_id: node for node in evidence_graph}
+    order = {node.receipt_id: index for index, node in enumerate(evidence_graph)}
+    if not any(
+        order.get(card.receipt_id, 0) >= 2 and _strong_direct_human_rct(card)
+        for card in claim_cards
+    ):
+        return evidence_graph, claim_cards
+    sorted_ids = sorted(
+        order,
+        key=lambda receipt_id: _evidence_order_key(
+            topic,
+            node_by_id[receipt_id],
+            card_by_id.get(receipt_id),
+            order[receipt_id],
+        ),
+    )
+    sorted_graph = tuple(node_by_id[receipt_id] for receipt_id in sorted_ids)
+    sorted_cards = tuple(
+        card_by_id[receipt_id]
+        for receipt_id in sorted_ids
+        if receipt_id in card_by_id
+    )
+    return sorted_graph, sorted_cards
+
+
+def _strong_direct_human_rct(card: ClaimCard) -> bool:
+    return (
+        card.design == "randomized_trial"
+        and card.population == "human"
+        and card.support_type == "direct"
+        and card.confidence == "high"
+    )
+
+
+def _evidence_order_key(
+    topic: str,
+    node: EvidenceNode,
+    card: ClaimCard | None,
+    original_index: int,
+) -> tuple[int, int]:
+    score = 0
+    if card is not None:
+        score += 30 if card.support_type == "direct" else 0
+        score += 20 if card.population == "human" else 0
+        score += 10 if card.confidence == "high" else 0
+        score += {
+            "randomized_trial": 20,
+            "intervention_study": 14,
+            "cohort": 10,
+            "synthesis": 5,
+            "mechanistic_model": 3,
+        }.get(card.design, 0)
+        score += min(10, 2 * len(_topic_overlap_terms(topic, card)))
+    score += {"primary": 4, "counter": 4, "replication": 3, "boundary": 2}.get(node.role, 0)
+    return (-score, original_index)
+
+
+def _topic_overlap_terms(topic: str, card: ClaimCard) -> frozenset[str]:
+    topic_terms = _expanded_context_terms(_tokens(topic))
+    card_terms = _expanded_context_terms(
+        _tokens(" ".join((card.outcome, card.quote, card.role)))
+    )
+    return topic_terms & card_terms
 
 
 def _candidate_rank(candidate: InsightCandidate) -> tuple[bool, int, int, int, int]:

@@ -12,14 +12,24 @@ from v5_memo.gate import (
     memo_coverage_failure,
     no_alpha_failure,
 )
-from v5_memo.miner import _claim_card, mine_insights, query_anchor_terms
-from v5_memo.minimax_writer import MemoFormatError, validate_minimax_memo
+from v5_memo.miner import (
+    _claim_card,
+    _prioritize_evidence_bundle,
+    mine_insights,
+    query_anchor_terms,
+)
+from v5_memo.minimax_writer import (
+    MemoFormatError,
+    build_minimax_prompt,
+    validate_minimax_memo,
+)
 from v5_memo.pipeline import _publishable_candidates, _selector_slate, build_alpha_memo
 from v5_memo.publisher import build_researka_payload
 from v5_memo.retriever import collect_seed_hits
 from v5_memo.schemas import (
     ClaimCard,
     CorpusHit,
+    EvidenceNode,
     InsightCandidate,
     MemoBuildError,
     MemoResult,
@@ -346,6 +356,111 @@ def test_miner_adds_receipt_backed_evidence_graph_context() -> None:
     assert [node.role for node in candidate.evidence_graph] == ["primary", "counter", "consensus"]
     assert "`consensus`: consensus" in memo
     assert "Evidence graph" in memo
+
+
+def test_evidence_bundle_promotes_late_direct_rct_before_writer() -> None:
+    topic = "cold water immersion resistance training adaptation"
+    graph = (
+        EvidenceNode("proxy", "primary", "candidate evidence stream"),
+        EvidenceNode("soccer", "counter", "candidate evidence stream"),
+        EvidenceNode("review", "consensus", "consensus context"),
+        EvidenceNode("rct", "replication", "replication context"),
+    )
+    cards = (
+        ClaimCard(
+            "proxy",
+            "negative_signal",
+            "intervention_study",
+            "human",
+            "muscle swelling",
+            "negative",
+            "direct",
+            "high",
+            "Cold-water immersion attenuated muscle swelling after resistance training.",
+        ),
+        ClaimCard(
+            "soccer",
+            "null_signal",
+            "intervention_study",
+            "human",
+            "soccer performance",
+            "null",
+            "direct",
+            "high",
+            "Soccer players did not improve long-term performance adaptation.",
+        ),
+        ClaimCard(
+            "review",
+            "consensus",
+            "synthesis",
+            "human",
+            "adaptation",
+            "negative",
+            "indirect",
+            "medium",
+            "Review context only.",
+        ),
+        ClaimCard(
+            "rct",
+            "replication",
+            "randomized_trial",
+            "human",
+            "resistance training adaptation",
+            "negative",
+            "direct",
+            "high",
+            "Randomized human trial tested cold-water immersion after strength training.",
+        ),
+    )
+
+    sorted_graph, sorted_cards = _prioritize_evidence_bundle(topic, graph, cards)
+
+    assert [node.receipt_id for node in sorted_graph] == ["rct", "proxy", "soccer", "review"]
+    assert [card.receipt_id for card in sorted_cards] == ["rct", "proxy", "soccer", "review"]
+
+    receipts = [
+        _hit("proxy", "Cold-water immersion muscle swelling proxy", cards[0].quote),
+        _hit("soccer", "Cold-water immersion soccer performance", cards[1].quote),
+        _hit("review", "Cold-water immersion adaptation review", cards[2].quote),
+        _hit("rct", "Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?", cards[3].quote),
+    ]
+    candidate = InsightCandidate(
+        topic=topic,
+        thesis="Cold-water immersion evidence is strongest for resistance-training adaptation.",
+        bridge_terms=("cold", "immersion", "training"),
+        tension_terms=("negative", "null"),
+        receipt_ids=tuple(node.receipt_id for node in sorted_graph),
+        score=100,
+        novelty_score=80,
+        evidence_score=96,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=sorted_cards,
+        evidence_graph=sorted_graph,
+    )
+
+    bound = bind_receipts(candidate, receipts)
+    prompt = build_minimax_prompt(candidate, bound)
+
+    assert bound[0].hit_id == "rct"
+    assert "Receipt 1\nID: 10.rct\nTitle: Does Cold-Water Immersion" in prompt
+
+
+def test_evidence_bundle_does_not_promote_weak_late_context() -> None:
+    graph = (
+        EvidenceNode("primary", "primary", "candidate evidence stream"),
+        EvidenceNode("counter", "counter", "candidate evidence stream"),
+        EvidenceNode("review", "consensus", "consensus context"),
+    )
+    cards = (
+        ClaimCard("primary", "positive_signal", "intervention_study", "human", "performance", "positive", "direct", "high", "Direct trial."),
+        ClaimCard("counter", "negative_signal", "intervention_study", "human", "performance", "negative", "direct", "high", "Direct trial."),
+        ClaimCard("review", "consensus", "synthesis", "human", "performance", "negative", "indirect", "medium", "Review only."),
+    )
+
+    sorted_graph, sorted_cards = _prioritize_evidence_bundle("training adaptation", graph, cards)
+
+    assert sorted_graph == graph
+    assert sorted_cards == cards
 
 
 def test_evidence_graph_rejects_off_modality_context_receipts() -> None:
