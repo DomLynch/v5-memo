@@ -1616,6 +1616,68 @@ def test_materialized_shard_path_skips_populate_when_cache_budget_exhausted(
     assert fullraw_index._cached_materialized_shard_path(remote) is None
 
 
+def test_materialized_shard_path_skips_populate_when_worker_cache_cap_exceeded(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    remote = tmp_path / "remote" / "fullraw_shard_0001.sqlite"
+    remote.parent.mkdir()
+    remote.write_bytes(b"large")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", str(1024))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", "2")
+
+    def fail_copy(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("oversized shard should be searched remotely")
+
+    monkeypatch.setattr("v5_memo.fullraw_index.shutil.copy2", fail_copy)
+
+    assert fullraw_index._materialized_shard_path(remote, populate=True) == remote
+    assert fullraw_index._cached_materialized_shard_path(remote) is None
+
+
+def test_materialized_shard_path_skips_populate_when_available_cache_too_small(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    remote = tmp_path / "remote" / "fullraw_shard_0001.sqlite"
+    remote.parent.mkdir()
+    remote.write_bytes(b"large")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "2")
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB", raising=False)
+
+    def fail_copy(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("shard larger than cache budget should be searched remotely")
+
+    monkeypatch.setattr("v5_memo.fullraw_index.shutil.copy2", fail_copy)
+
+    assert fullraw_index._materialized_shard_path(remote, populate=True) == remote
+
+
+def test_materialized_shard_path_populates_without_worker_cache_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    remote = tmp_path / "remote" / "fullraw_shard_0001.sqlite"
+    remote.parent.mkdir()
+    remote.write_bytes(b"remote shard")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.delenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB", raising=False)
+
+    materialized = fullraw_index._materialized_shard_path(remote, populate=True)
+
+    assert materialized != remote
+    assert materialized.exists()
+    assert materialized.read_bytes() == b"remote shard"
+
+
 def test_materialized_shard_path_serializes_same_target_copy(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
