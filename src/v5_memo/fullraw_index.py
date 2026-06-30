@@ -1944,6 +1944,11 @@ def _materialized_shard_path(
     max_cache_bytes = _shard_local_cache_max_bytes(cache_path.parent)
     if max_cache_bytes is not None and max_cache_bytes <= 0:
         return path
+    populate_limit = max_cache_bytes
+    if per_worker_bytes := _sweep_worker_cache_bytes():
+        populate_limit = per_worker_bytes if populate_limit is None else min(populate_limit, per_worker_bytes)
+    if populate_limit is not None and source_stat.st_size > populate_limit:
+        return path
     while True:
         with _SHARD_LOCAL_CACHE_LOCK:
             if cache_path.exists() and cache_path.stat().st_size == source_stat.st_size:
@@ -4453,14 +4458,20 @@ def _auto_sweep_workers(max_inflight: int) -> int:
         return workers
     if max_cache_bytes <= 0:
         return 1
-    per_worker_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKER_CACHE_BYTES")
-    if per_worker_bytes is None:
-        per_worker_gb = _float_or_none(
-            _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_WORKER_CACHE_GB", "2")
-        )
-        per_worker_bytes = int((per_worker_gb or 2.0) * 1024 * 1024 * 1024)
+    per_worker_bytes = _sweep_worker_cache_bytes(default_gb=2.0) or (2 * 1024 * 1024 * 1024)
     cache_workers = max(1, max_cache_bytes // max(1, per_worker_bytes * max(1, max_inflight)))
     return max(1, min(workers, cache_workers))
+
+
+def _sweep_worker_cache_bytes(*, default_gb: float | None = None) -> int | None:
+    value = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKER_CACHE_BYTES")
+    if value is not None:
+        return value
+    raw_gb = _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_WORKER_CACHE_GB", "")
+    per_worker_gb = _float_or_none(raw_gb)
+    if per_worker_gb is None:
+        per_worker_gb = default_gb
+    return int(per_worker_gb * 1024 * 1024 * 1024) if per_worker_gb else None
 
 
 def _float_or_none(value: object) -> float | None:
