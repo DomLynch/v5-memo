@@ -1933,6 +1933,23 @@ def test_claim_card_marks_comparator_only_benefit_as_null_mixed_direction() -> N
     assert set(card.direction.split("/")) >= {"null", "positive"}
 
 
+def test_claim_card_preserves_muscle_thickness_outcome() -> None:
+    hit = CorpusHit(
+        hit_id="10.1123/ijspp.2019-0965",
+        title="Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?",
+        abstract=(
+            "Cold-water immersion attenuated elbow flexor muscle thickness after strength training, "
+            "while 1RM and countermovement jump confidence intervals crossed zero."
+        ),
+        source="fullraw:semantic_scholar",
+        doi="10.1123/ijspp.2019-0965",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "negative_signal", "candidate evidence stream"))
+
+    assert card.outcome == "muscle thickness"
+
+
 def test_publish_blocker_rejects_positive_role_with_null_direction() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion",
@@ -2568,6 +2585,90 @@ def test_researka_payload_uses_bundle_title_for_heterogeneous_bridge_title() -> 
         domain_slug="performance",
     )
     assert narrow_payload["title"] == payload["title"]
+
+
+def test_researka_payload_preserves_negative_ci_signs_in_abstract() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Cold immersion training evidence separates structural and performance outcomes.",
+        bridge_terms=("cold", "immersion", "training", "water"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("elbow", "soccer"),
+        score=100,
+        novelty_score=58,
+        evidence_score=96,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+    )
+    receipts = [
+        _hit("elbow", "Cold-water immersion muscle thickness", "Muscle thickness CI crossed zero."),
+        _hit("soccer", "Cold-water immersion soccer performance", "Performance CI crossed zero."),
+    ]
+    markdown = (
+        "# Alpha memo: Cold Water Immersion: Muscle Thickness vs Strength Training Adaptation\n\n"
+        "Hypothesis-level alpha signal; not clinical advice.\n"
+        "## Core signal\n"
+        "Muscle thickness was g = 1.20; 95% CI, -0.65 to 1.20, while 1RM was "
+        "g = 0.71; 95% CI, -0.30 to 1.72.\n"
+    )
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="performance",
+    )
+
+    assert "-0.65 to 1.20" in cast(str, payload["abstract"])
+    assert "-0.30 to 1.72" in cast(str, payload["abstract"])
+
+
+def test_researka_payload_prefers_structural_endpoint_title_over_performance() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Cold immersion training evidence separates muscle thickness and performance outcomes.",
+        bridge_terms=("cold", "immersion", "training", "water"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("thickness", "performance"),
+        score=100,
+        novelty_score=58,
+        evidence_score=96,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "thickness",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "muscle thickness",
+                "negative",
+                "direct",
+                "high",
+                "CWI attenuated muscle thickness.",
+            ),
+            ClaimCard(
+                "performance",
+                "null_signal",
+                "intervention_study",
+                "human",
+                "long/performance",
+                "null",
+                "direct",
+                "high",
+                "CWI did not improve long-term performance.",
+            ),
+        ),
+    )
+    receipts = [
+        _hit("thickness", "Cold-water immersion muscle thickness", "CWI attenuated muscle thickness."),
+        _hit("performance", "Cold-water immersion soccer performance", "CWI did not improve performance."),
+    ]
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown="# Alpha memo: cold immersion training water\n\nBody."),
+        author_agent_id="v5-alpha",
+        domain_slug="performance",
+    )
+
+    assert payload["title"] == "Cold Water Immersion: Muscle Thickness vs Strength Training Adaptation"
 
 
 def test_researka_payload_narrows_adaptation_title_and_leads_abstract_with_alpha_scope() -> None:
