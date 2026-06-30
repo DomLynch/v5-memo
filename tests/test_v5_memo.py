@@ -658,18 +658,19 @@ def test_collect_seed_hits_skips_stopped_no_hit_fullraw_shape() -> None:
     assert [hit.hit_id for hit in collect_seed_hits(_FunctionSearch(search), ["dead", "good"])] == ["good"]
 
 
-def test_collect_seed_hits_propagates_late_fullraw_coverage_failure() -> None:
+def test_collect_seed_hits_skips_late_fullraw_coverage_failure_after_hits() -> None:
     def search(query: str, limit: int) -> Sequence[CorpusHit]:
         del limit
         if "augment" in query:
             raise RuntimeError("Full raw corpus search coverage too narrow: {'shards_searched': None}")
         return [_hit(query, f"{query} title", "full receipt evidence")]
 
-    with pytest.raises(RuntimeError, match="coverage too narrow"):
-        collect_seed_hits(
-            _FunctionSearch(search),
-            ["metformin exercise training adaptation", "metformin augment exercise training protocol"],
-        )
+    hits = collect_seed_hits(
+        _FunctionSearch(search),
+        ["metformin exercise training adaptation", "metformin augment exercise training protocol"],
+    )
+
+    assert [hit.hit_id for hit in hits] == ["metformin exercise training adaptation"]
 
 
 def test_pipeline_builds_best_memo() -> None:
@@ -732,7 +733,7 @@ def test_pipeline_stops_retrieval_once_publishable_candidate_exists() -> None:
     assert result.candidate.receipt_ids == ("promise", "outcome")
 
 
-def test_publish_quality_pipeline_waits_for_late_shape_coverage() -> None:
+def test_publish_quality_pipeline_skips_incomplete_late_shape_coverage() -> None:
     calls: list[str] = []
 
     def search(query: str, limit: int) -> Sequence[CorpusHit]:
@@ -742,7 +743,7 @@ def test_publish_quality_pipeline_waits_for_late_shape_coverage() -> None:
             raise RuntimeError("Full raw corpus search coverage too narrow: {'shards_searched': None}")
         return [_hit("weak", "Metformin resistance training review", "Review evidence.")]
 
-    with pytest.raises(RuntimeError, match="coverage too narrow"):
+    with pytest.raises(MemoBuildError, match="no receipt-bound alpha memo candidate"):
         build_alpha_memo(
             topic="metformin resistance training adaptation",
             seed_queries=[

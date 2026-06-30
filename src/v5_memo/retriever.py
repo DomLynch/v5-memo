@@ -41,6 +41,7 @@ def collect_seed_hits(
     seed_queries = _dedupe_seed_queries(seed_queries)
     seen: dict[str, int] = {}
     out: list[CorpusHit] = []
+    first_coverage_error: RuntimeError | None = None
     query_limit = min(per_query_limit, max(1, -(-max_hits // max(1, len(seed_queries)))))
     for query in seed_queries:
         try:
@@ -49,6 +50,9 @@ def collect_seed_hits(
             message = str(exc)
             if message.startswith("Full raw corpus search coverage too narrow"):
                 if "'sweep_stopped_no_hits': True" in message or '"sweep_stopped_no_hits": true' in message:
+                    continue
+                first_coverage_error = first_coverage_error or exc
+                if out or len(seed_queries) > 1:
                     continue
                 raise
             continue
@@ -72,6 +76,8 @@ def collect_seed_hits(
                 return out
         if stop_when is not None and stop_when(out):
             return out
+    if not out and first_coverage_error is not None:
+        raise first_coverage_error
     return out
 
 
