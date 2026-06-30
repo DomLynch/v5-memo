@@ -2443,6 +2443,34 @@ def _catalog_entries_match_shard_dir(entries: list[ShardCatalogEntry], shard_dir
     return True
 
 
+def _remap_catalog_entries_to_shard_dir(
+    entries: list[ShardCatalogEntry],
+    shard_dir: Path,
+) -> list[ShardCatalogEntry] | None:
+    remapped: list[ShardCatalogEntry] = []
+    for entry in entries:
+        batch_name = entry.path.parent.name
+        shard_name = entry.path.name
+        if not batch_name.startswith("batch_") or not shard_name.startswith("fullraw_shard_"):
+            return None
+        remapped.append(ShardCatalogEntry(
+            path=shard_dir / batch_name / shard_name,
+            batch_id=entry.batch_id,
+            shard_id=entry.shard_id,
+            sources=entry.sources,
+            files_completed=entry.files_completed,
+            papers_inserted=entry.papers_inserted,
+            bytes_used=entry.bytes_used,
+            year_min=entry.year_min,
+            year_max=entry.year_max,
+            cited_by_min=entry.cited_by_min,
+            cited_by_max=entry.cited_by_max,
+            cited_by_avg=entry.cited_by_avg,
+            topic_terms=entry.topic_terms,
+        ))
+    return remapped if _catalog_entries_match_shard_dir(remapped, shard_dir) else None
+
+
 def write_shard_catalog_cache(path: Path, entries: list[ShardCatalogEntry]) -> None:
     _write_json_file(path, {
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -3149,6 +3177,12 @@ def run_server() -> None:
             if cached_catalog is not None and _catalog_entries_match_shard_dir(cached_catalog, shard_dir):
                 catalog_cache = (now, cached_catalog)
                 return cached_catalog
+            if cached_catalog is not None:
+                remapped_catalog = _remap_catalog_entries_to_shard_dir(cached_catalog, shard_dir)
+                if remapped_catalog is not None:
+                    write_shard_catalog_cache(shard_catalog_path, remapped_catalog)
+                    catalog_cache = (now, remapped_catalog)
+                    return remapped_catalog
         catalog = build_shard_catalog(shard_dir, trust_filenames=trust_shard_filenames)
         if shard_catalog_path is not None:
             write_shard_catalog_cache(shard_catalog_path, catalog)

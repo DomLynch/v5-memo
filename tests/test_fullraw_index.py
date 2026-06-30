@@ -1828,6 +1828,32 @@ def test_shard_catalog_cache_rejects_entries_outside_current_root(tmp_path: Path
     assert not fullraw_index._catalog_entries_match_shard_dir([shared_entry], isolated_root)
 
 
+def test_shard_catalog_cache_remaps_entries_to_current_root(tmp_path: Path) -> None:
+    shared_root = tmp_path / "shared"
+    isolated_root = tmp_path / "isolated"
+    shared_entry = ShardCatalogEntry(
+        path=shared_root / "batch_00001" / "fullraw_shard_0002.sqlite",
+        batch_id=1,
+        shard_id=2,
+        sources=("openalex",),
+        files_completed=3,
+        papers_inserted=42,
+        bytes_used=2048,
+        year_min=2001,
+        year_max=2024,
+        cited_by_min=1,
+        cited_by_max=50,
+        cited_by_avg=8.5,
+        topic_terms=("resveratrol",),
+    )
+
+    remapped = fullraw_index._remap_catalog_entries_to_shard_dir([shared_entry], isolated_root)
+
+    assert remapped == [
+        replace(shared_entry, path=isolated_root / "batch_00001" / "fullraw_shard_0002.sqlite")
+    ]
+
+
 def test_select_search_shard_entries_balances_sources_and_rotates_by_query(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     entries = [_entry(tmp_path, idx, "openalex" if idx < 4 else "pubmed") for idx in range(8)]
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_SHARD_LIMIT", "4")
