@@ -1643,6 +1643,22 @@ def test_claim_card_downgrades_conference_and_supplemental_receipts() -> None:
     assert jissn_supplement.confidence == "low"
 
 
+def test_claim_card_treats_systematic_review_as_indirect_synthesis() -> None:
+    hit = CorpusHit(
+        hit_id="10.review",
+        title="Systematic review of cold-water immersion after resistance training",
+        abstract="Systematic review summarized randomized human trials of cold-water immersion after resistance training.",
+        source="fullraw:openalex",
+        doi="10.review",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "mechanism", "review context"))
+
+    assert card.design == "synthesis"
+    assert card.support_type == "indirect"
+    assert card.confidence == "low"
+
+
 def test_claim_card_treats_human_supplementation_as_direct_intervention() -> None:
     hit = CorpusHit(
         hit_id="10.1016/j.isci.2025.111814",
