@@ -928,6 +928,33 @@ def test_strict_cache_only_probe_respects_no_queue(
     assert body["error"] == "coverage_too_narrow"
 
 
+def test_sweep_cache_entry_marks_no_hit_stop_without_becoming_ready() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[],
+        receipt={
+            "shards_searched": 128,
+            "shards_total": 1525,
+            "partial_shard_search": True,
+            "sweep_remaining_shards": 1397,
+            "sweep_stopped_no_hits": True,
+            "sweep_no_hit_stop_shards": 128,
+            "sweep_result_limit": 25,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+        },
+    )
+
+    assert fullraw_index.sweep_cache_entry_stopped_no_hits(entry)
+    assert not fullraw_index.sweep_cache_entry_is_ready(
+        entry,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        require_complete_search=True,
+        require_complete_sweep=True,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
 def test_fast_health_reports_async_sweep_queue_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
