@@ -8,7 +8,7 @@ import re
 import sys
 import time
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -445,8 +445,15 @@ def _submit_researka_with_cooldown(
                 submit_url=submit_url,
             ), {}
         except HTTPError as exc:
-            cooldown_state = _record_researka_submit_cooldown(exc)
-            fail_receipt = _submit_failed_receipt(exc, cooldown_state)
+            response_body = _http_error_body(exc)
+            response_headers = _rate_limit_headers(exc)
+            cooldown_state = _record_researka_submit_cooldown(exc, response_body=response_body)
+            fail_receipt = _submit_failed_receipt(
+                exc,
+                cooldown_state,
+                response_body=response_body,
+                response_headers=response_headers,
+            )
             if exc.code != 429:
                 return {}, fail_receipt
             cooldown = _researka_submit_cooldown()
@@ -470,7 +477,13 @@ def _submit_defer_receipt(remaining: float, state: Mapping[str, object]) -> dict
     }
 
 
-def _submit_failed_receipt(exc: HTTPError, cooldown_state: Mapping[str, object]) -> dict[str, object]:
+def _submit_failed_receipt(
+    exc: HTTPError,
+    cooldown_state: Mapping[str, object],
+    *,
+    response_body: str | None = None,
+    response_headers: Mapping[str, str] | None = None,
+) -> dict[str, object]:
     receipt: dict[str, object] = {
         "error": "researka_submit_failed",
         "status": exc.code,
@@ -479,9 +492,13 @@ def _submit_failed_receipt(exc: HTTPError, cooldown_state: Mapping[str, object])
         "cooldown_until": cooldown_state.get("until_iso", "") if cooldown_state else "",
         "attempts": cooldown_state.get("attempts", "") if cooldown_state else "",
     }
-    if body := _http_error_body(exc):
+    if limit_kind := cooldown_state.get("limit_kind"):
+        receipt["limit_kind"] = limit_kind
+    body = _http_error_body(exc) if response_body is None else response_body
+    if body:
         receipt["response_body"] = body
-    if headers := _rate_limit_headers(exc):
+    headers = _rate_limit_headers(exc) if response_headers is None else dict(response_headers)
+    if headers:
         receipt["response_headers"] = headers
     return receipt
 
@@ -507,19 +524,25 @@ def _rate_limit_headers(exc: HTTPError) -> dict[str, str]:
     return out
 
 
-def _record_researka_submit_cooldown(exc: HTTPError) -> Mapping[str, object]:
+def _record_researka_submit_cooldown(exc: HTTPError, *, response_body: str = "") -> Mapping[str, object]:
     if exc.code != 429:
         return {}
     retry_after = _float_value(exc.headers.get("Retry-After", "") if exc.headers is not None else "")
     path = _researka_submit_cooldown_path()
     previous = _read_json_mapping(path)
     attempts = int(_float_value(previous.get("attempts"))) + 1 if previous else 1
+    limit_kind = "daily" if _is_daily_limit_response(response_body) else "rate"
     if retry_after <= 0:
-        base = _float_value(os.environ.get("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_SECONDS", "300")) or 300.0
-        retry_after = base * (2 ** min(attempts - 1, 4))
-    until = time.time() + max(1.0, min(retry_after, 3600.0))
+        if limit_kind == "daily":
+            retry_after = _daily_limit_retry_after_seconds()
+        else:
+            base = _float_value(os.environ.get("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_SECONDS", "300")) or 300.0
+            retry_after = base * (2 ** min(attempts - 1, 4))
+    max_cooldown = 86400.0 if limit_kind == "daily" else 3600.0
+    until = time.time() + max(1.0, min(retry_after, max_cooldown))
     payload: dict[str, object] = {
         "attempts": attempts,
+        "limit_kind": limit_kind,
         "until": until,
         "until_iso": datetime.fromtimestamp(until, UTC).isoformat(),
         "status": exc.code,
@@ -528,6 +551,21 @@ def _record_researka_submit_cooldown(exc: HTTPError) -> Mapping[str, object]:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, sort_keys=True))
     return payload
+
+
+def _is_daily_limit_response(response_body: str) -> bool:
+    return "daily_limit_exceeded" in response_body.casefold()
+
+
+def _daily_limit_retry_after_seconds() -> float:
+    override = _float_value(os.environ.get("V5_MEMO_RESEARKA_DAILY_LIMIT_COOLDOWN_SECONDS", ""))
+    if override > 0:
+        return override
+    now = time.time()
+    today = datetime.fromtimestamp(now, UTC).date()
+    reset_day = today + timedelta(days=1)
+    reset = datetime(reset_day.year, reset_day.month, reset_day.day, tzinfo=UTC) + timedelta(minutes=5)
+    return max(300.0, reset.timestamp() - now)
 
 
 def _researka_submit_cooldown_path() -> Path:

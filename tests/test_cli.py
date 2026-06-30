@@ -2,6 +2,7 @@ import json
 import sys
 import time
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from email.message import Message
 from io import BytesIO
 from pathlib import Path
@@ -16,6 +17,7 @@ from v5_memo.__main__ import (
     _alpha_shaped_planned_queries,
     _dedupe_queries,
     _publish_blocker,
+    _record_researka_submit_cooldown,
     _submit_failed_receipt,
     _topic_anchored_queries,
     main,
@@ -611,6 +613,7 @@ def test_cli_submit_researka_writes_receipt_on_submit_rate_limit(
         "retry_after": "60",
         "cooldown_until": receipt["cooldown_until"],
         "attempts": 1,
+        "limit_kind": "rate",
         "response_headers": {"Retry-After": "60"},
     }
     cooldown = json.loads(cooldown_path.read_text())
@@ -695,6 +698,25 @@ def test_submit_failed_receipt_preserves_rate_limit_details() -> None:
 
     assert receipt["response_body"] == '{"error":"rate_limit","detail":"slow down"}'
     assert receipt["response_headers"] == {"Retry-After": "30", "X-RateLimit-Remaining": "0"}
+
+
+def test_record_submit_cooldown_uses_daily_reset_for_daily_limit(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cooldown_path = tmp_path / "submit-cooldown.json"
+    fixed_now = datetime(2026, 6, 30, 23, 50, tzinfo=UTC).timestamp()
+    exc = HTTPError("https://api.researka.org/submissions", 429, "Too Many Requests", Message(), None)
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_PATH", str(cooldown_path))
+    monkeypatch.delenv("V5_MEMO_RESEARKA_DAILY_LIMIT_COOLDOWN_SECONDS", raising=False)
+    monkeypatch.setattr("v5_memo.__main__.time.time", lambda: fixed_now)
+
+    cooldown = _record_researka_submit_cooldown(exc, response_body='{"detail":"daily_limit_exceeded"}')
+
+    assert cooldown["limit_kind"] == "daily"
+    assert cooldown["attempts"] == 1
+    assert cooldown["until"] == datetime(2026, 7, 1, 0, 5, tzinfo=UTC).timestamp()
 
 
 def test_cli_submit_researka_waits_through_submit_cooldown(
