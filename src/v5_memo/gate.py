@@ -25,6 +25,17 @@ _PRIMARY_SIGNAL_ROLES = frozenset({
 })
 _CONTEXT_ROLES = frozenset({"boundary", "consensus", "mechanism", "replication"})
 _PROXY_ROLES = frozenset({"boundary"})
+_PROXY_OUTCOME_TERMS = frozenset({
+    "acute",
+    "damage",
+    "delayed",
+    "early",
+    "immediate",
+    "inflammation",
+    "pain",
+    "short",
+    "stress",
+})
 
 
 def candidate_alpha_tier(candidate: InsightCandidate) -> str:
@@ -134,7 +145,7 @@ def _proxy_boundary_receipts(claim_cards: Sequence[ClaimCard]) -> tuple[str, ...
         card.receipt_id
         for card in claim_cards
         if card.role in _PROXY_ROLES
-        and card.direction == "proxy"
+        and (card.direction == "proxy" or bool(set(card.outcome.split("/")) & _PROXY_OUTCOME_TERMS))
         and card.population == "human"
         and card.support_type == "direct"
     )

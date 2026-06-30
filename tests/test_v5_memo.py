@@ -2137,6 +2137,60 @@ def test_publish_blocker_rejects_proxy_without_independent_directional_contrast(
     }
 
 
+def test_publish_blocker_rejects_directional_acute_proxy_without_independent_contrast() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Acute damage endpoint should not anchor chronic-adaptation alpha by itself.",
+        bridge_terms=("cold", "immersion", "training"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("rct", "review", "acute"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "rct",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "negative",
+                "direct",
+                "high",
+                "Single RCT negative chronic signal.",
+            ),
+            ClaimCard(
+                "review",
+                "mechanism",
+                "synthesis",
+                "human",
+                "acute/context/damage",
+                "negative/null/positive",
+                "indirect",
+                "medium",
+                "Review context.",
+            ),
+            ClaimCard(
+                "acute",
+                "boundary",
+                "intervention_study",
+                "human",
+                "acute/damage/performance",
+                "negative",
+                "direct",
+                "high",
+                "Acute thickness endpoint.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "proxy_without_independent_directional_contrast",
+        "receipt_ids": ("acute",),
+    }
+
+
 def test_publish_blocker_allows_proxy_with_independent_directional_contrast() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion resistance training adaptation",
@@ -2177,7 +2231,7 @@ def test_publish_blocker_allows_proxy_with_independent_directional_contrast() ->
                 "intervention_study",
                 "human",
                 "acute/damage/performance",
-                "proxy",
+                "negative",
                 "direct",
                 "high",
                 "Proxy context.",
