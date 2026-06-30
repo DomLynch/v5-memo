@@ -1548,6 +1548,8 @@ def test_shard_local_cache_auto_budget_honors_min_free_gb(
     (cache_dir / "ready.sqlite").write_bytes(b"x" * 10)
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "auto")
+    monkeypatch.delenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_BYTES", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_GB", raising=False)
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MIN_FREE_GB", "0.0000002")
     monkeypatch.setattr(
         "v5_memo.fullraw_index.shutil.disk_usage",
