@@ -2044,6 +2044,22 @@ def _cached_materialized_shard_path(path: Path) -> Path | None:
     return None
 
 
+def _cache_tmp_owner_alive(path: Path) -> bool:
+    try:
+        pid = int(path.name.rsplit(".tmp.", 1)[1].split(".", 1)[0])
+    except (IndexError, ValueError):
+        return True
+    if pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def _evict_shard_cache(
     cache_dir: Path,
     *,
@@ -2064,7 +2080,11 @@ def _evict_shard_cache(
         for path in cache_dir.glob(pattern):
             if not path.is_file() or path == keep or path.resolve() in preserved:
                 continue
-            if ".sqlite.tmp." in path.name and now - path.stat().st_mtime < tmp_ttl_seconds:
+            if (
+                ".sqlite.tmp." in path.name
+                and now - path.stat().st_mtime < tmp_ttl_seconds
+                and _cache_tmp_owner_alive(path)
+            ):
                 continue
             entries.append(path)
     total = sum(path.stat().st_size for path in entries)
