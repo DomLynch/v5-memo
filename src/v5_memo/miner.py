@@ -1049,6 +1049,8 @@ def _claim_card(hit: CorpusHit, role: ReceiptRole) -> ClaimCard:
     if _is_proxy_signal(outcome, role_name):
         role_name = "boundary"
         direction = "proxy"
+        if support_type == "direct":
+            confidence = "medium"
     return ClaimCard(
         receipt_id=hit.hit_id,
         role=role_name,
@@ -1117,6 +1119,9 @@ def _outcome_label(terms: frozenset[str]) -> str:
     if "hypertrophy" in terms:
         return "hypertrophy"
     if {"muscle", "thickness"} <= terms:
+        if terms & (_TIMING | _ADVERSE_ENDPOINT) and not terms & {"chronic", "long"}:
+            timing = sorted(terms & (_TIMING | _ADVERSE_ENDPOINT))
+            return "/".join([*timing[:2], "muscle", "thickness"])
         return "muscle thickness"
     candidates = sorted(terms & (_OUTCOME | _METRIC | _ADVERSE_ENDPOINT | _BOUNDARY | _TIMING))
     return "/".join(candidates[:3]) if candidates else "unspecified"

@@ -437,6 +437,24 @@ def test_build_minimax_prompt_surfaces_late_receipt_statistics() -> None:
     assert "muscle thickness" in prompt
 
 
+def test_build_minimax_prompt_surfaces_comparator_direction_context() -> None:
+    receipt = CorpusHit(
+        hit_id="cwi",
+        title="Cold-water immersion acute muscle thickness study",
+        abstract=(
+            "Human participants completed resistance training. At 48 h and 72 h, "
+            "muscle thickness was higher with passive recovery than cold-water immersion."
+        ),
+        source="fullraw",
+        doi="10.1519/JSC.0000000000002322",
+    )
+
+    prompt = build_minimax_prompt(_candidate(), [receipt, _receipts()[1]])
+
+    assert "Statistics/context:" in prompt
+    assert "higher with passive recovery than cold-water immersion" in prompt
+
+
 def test_minimax_stat_validator_ignores_doi_decimal_prefixes() -> None:
     receipts = [
         CorpusHit(

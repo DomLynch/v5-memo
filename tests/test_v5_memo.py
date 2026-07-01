@@ -1949,9 +1949,31 @@ def test_claim_card_demotes_acute_proxy_endpoint_signals() -> None:
     assert proxy_card.direction == "proxy"
     assert proxy_card.outcome == "acute/damage/performance"
     assert proxy_card.support_type == "direct"
+    assert proxy_card.confidence == "medium"
     assert chronic_card.role == "negative_signal"
     assert chronic_card.direction == "negative"
     assert chronic_card.outcome == "long/performance"
+
+
+def test_claim_card_demotes_acute_muscle_thickness_as_proxy_context() -> None:
+    hit = CorpusHit(
+        hit_id="10.1519/JSC.0000000000002322",
+        title="Cold water immersion alters acute muscle thickness after resistance training",
+        abstract=(
+            "Human participants completed resistance training. At 48 h and 72 h, muscle "
+            "thickness was higher with passive recovery than cold-water immersion."
+        ),
+        source="fullraw:openalex",
+        doi="10.1519/JSC.0000000000002322",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "negative_signal", "candidate evidence stream"))
+
+    assert card.role == "boundary"
+    assert card.direction == "proxy"
+    assert card.outcome == "acute/muscle/thickness"
+    assert card.support_type == "direct"
+    assert card.confidence == "medium"
 
 
 def test_claim_card_does_not_treat_safety_feasibility_pilot_as_positive_efficacy() -> None:

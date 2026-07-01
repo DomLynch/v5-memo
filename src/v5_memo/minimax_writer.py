@@ -43,6 +43,11 @@ _DOI_TRAILING_PUNCTUATION = ".,;:*_`"
 _STAT_CONTEXT_RE = re.compile(r"(?i)(?:confidence interval|\bci\b|effect size|cohen'?s d|hedges'? g|standardized mean difference).{0,120}")
 _STAT_ANCHOR_RE = re.compile(r"(?i)\b(?:p\s*=\s*\.?\d+|g\s*=\s*[-+]?\d+(?:\.\d+)?|95%\s*(?:confidence interval|\bci\b)|confidence interval)")
 _LIMIT_ANCHOR_RE = re.compile(r"(?i)\b\d+\s+(?:adults|athletes|men|participants|patients|players|subjects|volunteers|women)\b")
+_COMPARATOR_CONTEXT_RE = re.compile(
+    r"(?i)\b(?:higher|lower|greater|less|reduced|attenuated|suppressed|increased|"
+    r"decreased|passive|control|placebo|versus|vs\.?|compared|24\s*h|48\s*h|72\s*h|"
+    r"post-?exercise)\b"
+)
 _STAT_NUMBER_RE = re.compile(r"[-+]?\d+\.\d+%?|[-+]?\d+%")
 _ADVICE_RE = re.compile(
     r"(?i)\b(?:athletes?|clinicians?|companies?|investors?|managers?|patients?|practitioners?)\b"
@@ -135,7 +140,7 @@ class MiniMaxM3MemoWriter:
                 system=(
                     "You write concise research alpha memos. Use only the supplied receipts. "
                     "Do not add uncited mechanisms, claims, facts, statistics, references, "
-                    "or advice/action recommendations."
+                    "or advice/action recommendations. Preserve higher/lower comparator direction."
                 ),
                 temperature=temperature,
                 max_tokens=self._max_tokens,
@@ -822,6 +827,16 @@ def _receipt_stat_context(text: str) -> str:
     for match in _LIMIT_ANCHOR_RE.finditer(normalized):
         start = max(0, match.start() - 100)
         end = min(len(normalized), match.end() + 160)
+        snippet = normalized[start:end].strip(" ,.;")
+        key = snippet.casefold()
+        if key not in seen:
+            seen.add(key)
+            snippets.append(snippet)
+        if len(snippets) >= 8:
+            break
+    for match in _COMPARATOR_CONTEXT_RE.finditer(normalized):
+        start = max(0, match.start() - 120)
+        end = min(len(normalized), match.end() + 180)
         snippet = normalized[start:end].strip(" ,.;")
         key = snippet.casefold()
         if key not in seen:
