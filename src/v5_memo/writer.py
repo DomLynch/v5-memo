@@ -1,10 +1,10 @@
 """Render V5 memo drafts from already-bound receipts."""
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 
 from v5_memo.gate import candidate_alpha_tier
-from v5_memo.schemas import CorpusHit, InsightCandidate
+from v5_memo.schemas import ClaimCard, CorpusHit, InsightCandidate
 
 _TITLE_STOPWORDS = frozenset({"during", "after", "before", "following", "under", "with"})
 
@@ -21,10 +21,11 @@ def render_alpha_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]
         raise ValueError("cannot render memo without receipts")
     bridge = ", ".join(candidate.bridge_terms) or "unspecified bridge"
     tension = ", ".join(candidate.tension_terms) or "not detected"
+    hypothesis = _bounded_hypothesis(candidate)
     lines = [
         f"# Alpha memo: {_memo_title(candidate)}",
         "",
-        f"**Alpha hypothesis:** {candidate.thesis}",
+        f"**Alpha hypothesis:** {hypothesis}",
         "",
         f"**Signal score:** `{candidate.score}` "
         f"(novelty `{candidate.novelty_score}`, evidence `{candidate.evidence_score}`)",
@@ -50,11 +51,7 @@ def render_alpha_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]
         ),
         "",
         "**What would falsify it:**",
-        (
-            "A follow-up search fails to find direct receipts where the bridge "
-            "term and both evidence streams appear in the same source-grounded "
-            "claim, or the apparent connection collapses to one duplicated source."
-        ),
+        _falsification_clause(candidate),
         "",
         "**Receipts:**",
     ]
@@ -98,6 +95,72 @@ def _receipt_line(index: int, hit: CorpusHit) -> str:
     venue = f", {hit.venue}" if hit.venue else ""
     locator = hit.receipt_id if hit.receipt_id != hit.hit_id else hit.url or hit.hit_id
     return f"{index}. `{hit.hit_id}` {hit.title}{year}{venue}. Source: {hit.source}. ID: {locator}"
+
+
+def _bounded_hypothesis(candidate: InsightCandidate) -> str:
+    direct_cards = _direct_human_cards(candidate)
+    if len(direct_cards) < 2:
+        return candidate.thesis
+    outcomes = _non_generic_labels(card.outcome for card in direct_cards)
+    directions = _non_generic_labels(
+        direction
+        for card in direct_cards
+        for direction in card.direction.split("/")
+        if direction not in {"proxy", "unclear"}
+    )
+    designs = _non_generic_labels(card.design for card in direct_cards)
+    outcome_text = _join_labels(outcomes[:3]) or "the cited endpoints"
+    direction_text = _join_labels(directions[:3]) or "mixed"
+    design_text = _join_labels(designs[:2]) or "study"
+    return (
+        f"In {candidate.topic}, direct human {design_text} receipts support a bounded "
+        f"{direction_text} signal across {outcome_text}; treat it as hypothesis-level "
+        "until the same population and endpoint are replicated."
+    )
+
+
+def _falsification_clause(candidate: InsightCandidate) -> str:
+    if len(_direct_human_cards(candidate)) < 2:
+        return (
+            "A follow-up search fails to find direct receipts where the bridge "
+            "term and both evidence streams appear in the same source-grounded "
+            "claim, or the apparent connection collapses to one duplicated source."
+        )
+    return (
+        "A direct human replication in the same population and endpoint shows no "
+        "bounded contrast, or the apparent contrast collapses to duplicated, "
+        "precursor, or off-axis receipts."
+    )
+
+
+def _direct_human_cards(candidate: InsightCandidate) -> list[ClaimCard]:
+    return [
+        card
+        for card in candidate.claim_cards
+        if card.population == "human"
+        and card.support_type == "direct"
+        and card.confidence == "high"
+        and card.role != "safety_feasibility"
+    ]
+
+
+def _non_generic_labels(values: Iterable[str]) -> list[str]:
+    out: list[str] = []
+    for value in values:
+        clean = value.replace("_", " ").strip().casefold()
+        if not clean or clean in {"long", "outcome", "outcomes", "unspecified"}:
+            continue
+        if clean not in out:
+            out.append(clean)
+    return out
+
+
+def _join_labels(labels: Sequence[str]) -> str:
+    if len(labels) <= 1:
+        return labels[0] if labels else ""
+    if len(labels) == 2:
+        return f"{labels[0]} and {labels[1]}"
+    return f"{', '.join(labels[:-1])}, and {labels[-1]}"
 
 
 def _memo_title(candidate: InsightCandidate) -> str:

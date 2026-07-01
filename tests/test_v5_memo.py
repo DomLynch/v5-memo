@@ -213,6 +213,62 @@ def test_miner_emits_claim_cards_before_prose() -> None:
     assert "**Claim ledger:**" in memo
 
 
+def test_template_writer_replaces_auto_thesis_with_bounded_claim() -> None:
+    candidate = InsightCandidate(
+        topic="metformin resistance training",
+        thesis=(
+            "metformin resistance training may be hiding a metformin / diabetic / "
+            "not boundary condition: training modulate humoral inflammatory and "
+            "one bout training does point in different directions."
+        ),
+        bridge_terms=("metformin", "training"),
+        tension_terms=("null", "negative"),
+        receipt_ids=("glycemic", "hypertrophy"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard(
+                "glycemic",
+                "null_signal",
+                "randomized_trial",
+                "human",
+                "glycemic control",
+                "null",
+                "direct",
+                "high",
+                "Metformin and resistance training measured glycemic control in human adults.",
+            ),
+            ClaimCard(
+                "hypertrophy",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "hypertrophy",
+                "negative",
+                "direct",
+                "high",
+                "Metformin blunted muscle hypertrophy after resistance training in human adults.",
+            ),
+        ),
+    )
+    receipts = [
+        _hit("glycemic", "Glycemic control trial", "Human glycemic control trial."),
+        _hit("hypertrophy", "Hypertrophy trial", "Human hypertrophy trial."),
+    ]
+
+    memo = render_memo(candidate, receipts)
+
+    assert "may be hiding" not in memo
+    assert "training modulate humoral inflammatory" not in memo
+    assert (
+        "**Alpha hypothesis:** In metformin resistance training, direct human "
+        "randomized trial receipts support a bounded null and negative signal"
+    ) in memo
+    assert "same population and endpoint" in memo
+
+
 def test_publish_quality_filter_removes_weak_candidates_before_writing() -> None:
     weak = InsightCandidate(
         topic="nicotinamide exercise performance",
