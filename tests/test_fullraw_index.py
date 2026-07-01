@@ -261,7 +261,7 @@ def test_isolated_shard_search_kills_timed_out_child(
         )
 
     assert fake.killed is True
-    assert fake.waits == [1.0, None]
+    assert fake.waits == [1.0]
 
 
 def test_write_json_ignores_disconnected_client() -> None:

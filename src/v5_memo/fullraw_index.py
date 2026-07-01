@@ -1917,13 +1917,11 @@ def _search_one_shard_isolated(
         stdout, stderr = proc.communicate(timeout=child_timeout + 1.0)
     except subprocess.TimeoutExpired as exc:
         proc.kill()
-        try:
+        # FUSE-backed SQLite reads can sit in disk wait after SIGKILL. Do not
+        # let one stuck child pin the sweep lane forever; the caller records
+        # this shard as timed out/deferred and moves on.
+        with suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=1.0)
-        except subprocess.TimeoutExpired:
-            # FUSE-backed SQLite reads can sit in disk wait after SIGKILL.
-            # Keep the worker occupied until the child is reaped so future
-            # batches apply backpressure instead of piling up stuck children.
-            proc.wait()
         raise TimeoutError(f"isolated shard search timed out: {path}") from exc
     if proc.returncode != 0:
         raise sqlite3.Error((stderr or stdout or "isolated shard search failed").strip()[:500])
