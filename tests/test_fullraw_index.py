@@ -1056,6 +1056,7 @@ def test_sweep_cache_entry_marks_no_hit_stop_without_becoming_ready() -> None:
     )
 
     assert fullraw_index.sweep_cache_entry_stopped_no_hits(entry)
+    assert fullraw_index._sweep_cache_entry_should_stop_no_hits(entry, 128)
     assert not fullraw_index.sweep_cache_entry_is_ready(
         entry,
         min_shards_searched=1525,
@@ -1064,6 +1065,39 @@ def test_sweep_cache_entry_marks_no_hit_stop_without_becoming_ready() -> None:
         require_complete_sweep=True,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
     )
+
+
+def test_partial_zero_hit_sweep_cache_honors_no_hit_stop_after_restart() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[],
+        receipt={
+            "shards_searched": 151,
+            "shards_total": 1525,
+            "partial_shard_search": True,
+            "sweep_remaining_shards": 1374,
+            "sweep_result_limit": 25,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+        },
+    )
+
+    assert fullraw_index._sweep_cache_entry_should_stop_no_hits(entry, 128)
+    assert not fullraw_index._sweep_cache_entry_should_stop_no_hits(entry, 200)
+
+    entry_with_hits = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "signal"}],
+        receipt={
+            "shards_searched": 151,
+            "shards_total": 1525,
+            "partial_shard_search": True,
+            "sweep_remaining_shards": 1374,
+            "sweep_result_limit": 25,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+        },
+    )
+
+    assert not fullraw_index._sweep_cache_entry_should_stop_no_hits(entry_with_hits, 128)
 
 
 def test_fast_health_reports_async_sweep_queue_config(

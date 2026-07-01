@@ -2616,6 +2616,12 @@ def sweep_cache_entry_stopped_no_hits(entry: SweepCacheEntry) -> bool:
     return entry.receipt.get("sweep_stopped_no_hits") is True
 
 
+def _sweep_cache_entry_should_stop_no_hits(entry: SweepCacheEntry, stop_shards: int) -> bool:
+    if sweep_cache_entry_stopped_no_hits(entry):
+        return True
+    return stop_shards > 0 and not entry.hits and _sweep_cache_entry_progress(entry) >= stop_shards
+
+
 def _sweep_cache_entry_progress(entry: SweepCacheEntry) -> int:
     return _int_or_none(entry.receipt.get("shards_searched")) or 0
 
@@ -3555,7 +3561,7 @@ def run_server() -> None:
         existing = sweep_cache_get(key)
         if (
             existing is not None
-            and sweep_cache_entry_stopped_no_hits(existing)
+            and _sweep_cache_entry_should_stop_no_hits(existing, sweep_no_hit_stop_shards)
             and _sweep_cache_entry_has_result_limit(existing, result_limit)
         ):
             return "stopped_no_hits"
