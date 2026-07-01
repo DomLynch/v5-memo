@@ -785,10 +785,10 @@ def test_miner_accepts_direct_human_reversal_when_anchor_is_full_text_only() -> 
         ),
         _hit(
             "outcome",
-            "Outcome observed blunting",
+            "Outcome observed null response",
             (
-                "Randomized human trial observed metformin blunted resistance "
-                "training adaptation."
+                "Randomized human trial protocol observed metformin made no difference "
+                "to resistance training adaptation."
             ),
         ),
     ]
@@ -801,6 +801,7 @@ def test_miner_accepts_direct_human_reversal_when_anchor_is_full_text_only() -> 
 
     assert candidates
     assert candidates[0].receipt_ids == ("promise", "outcome")
+    assert tuple(role.role for role in candidates[0].receipt_roles) == ("positive_signal", "null_signal")
     assert candidate_publish_blocker(candidates[0]) is None
 
 

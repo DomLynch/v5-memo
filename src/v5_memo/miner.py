@@ -230,6 +230,11 @@ def mine_insights(
         if tier == "discovery_seed" and not include_discovery:
             continue
         receipt_roles = _receipt_roles(left, right, shape_reasons)
+        if direct_human_reversal:
+            receipt_roles = (
+                ReceiptRole(left.hit_id, _direction_signal_role(left), "direct human reversal"),
+                ReceiptRole(right.hit_id, _direction_signal_role(right), "direct human reversal"),
+            )
         evidence_graph = _evidence_graph(
             clean_hits,
             left,
@@ -920,6 +925,13 @@ def _signal_role(text: str) -> str:
     if len(polarity) == 1:
         return f"{next(iter(polarity))}_signal"
     return "evidence"
+
+
+def _direction_signal_role(hit: CorpusHit) -> str:
+    polarity = _direction_polarity(hit)
+    if len(polarity) == 1:
+        return f"{next(iter(polarity))}_signal"
+    return _signal_role(hit.text)
 
 
 def _claim_cards(
