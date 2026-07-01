@@ -1511,8 +1511,8 @@ def test_publish_blocker_allows_direct_human_plus_context() -> None:
         evidence_score=80,
         reasons=("tier:publishable_alpha",),
         claim_cards=(
-            ClaimCard("human-a", "positive_signal", "randomized_trial", "human", "performance", "positive", "direct", "high", "human trial"),
-            ClaimCard("human-b", "negative_signal", "intervention_study", "human", "performance", "negative", "direct", "high", "human trial"),
+            ClaimCard("human-a", "positive_signal", "randomized_trial", "human", "performance", "positive", "direct", "high", "Nicotinamide riboside exercise performance human trial."),
+            ClaimCard("human-b", "negative_signal", "intervention_study", "human", "performance", "negative", "direct", "high", "Nicotinamide riboside exercise performance human trial."),
             ClaimCard("rat", "boundary", "mechanistic_model", "animal", "performance", "negative", "indirect", "medium", "rat model"),
         ),
     )
