@@ -1955,7 +1955,7 @@ def test_claim_card_demotes_acute_proxy_endpoint_signals() -> None:
     assert chronic_card.outcome == "long/performance"
 
 
-def test_claim_card_keeps_muscle_thickness_as_direct_hypertrophy_endpoint() -> None:
+def test_claim_card_marks_acute_muscle_thickness_as_within_arm_context() -> None:
     hit = CorpusHit(
         hit_id="10.1519/JSC.0000000000002322",
         title="Cold water immersion alters acute muscle thickness after resistance training",
@@ -1969,11 +1969,11 @@ def test_claim_card_keeps_muscle_thickness_as_direct_hypertrophy_endpoint() -> N
 
     card = _claim_card(hit, ReceiptRole(hit.hit_id, "negative_signal", "candidate evidence stream"))
 
-    assert card.role == "negative_signal"
+    assert card.role == "acute_within_arm_signal"
     assert card.direction != "proxy"
     assert card.outcome == "muscle thickness"
     assert card.support_type == "direct"
-    assert card.confidence == "high"
+    assert card.confidence == "medium"
 
 
 def test_claim_card_does_not_treat_safety_feasibility_pilot_as_positive_efficacy() -> None:
@@ -2130,6 +2130,60 @@ def test_publish_blocker_rejects_weak_primary_signal_receipts() -> None:
     assert candidate_publish_blocker(candidate) == {
         "error": "primary_signal_not_strong_direct_human",
         "receipt_ids": ("indirect",),
+    }
+
+
+def test_publish_blocker_rejects_off_modality_primary_signal() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Team-sport post-match evidence should not be primary strength-training evidence.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("strength", "soccer", "direct"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "strength",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "muscle thickness",
+                "negative",
+                "direct",
+                "high",
+                "Strength-training adaptation was attenuated.",
+            ),
+            ClaimCard(
+                "soccer",
+                "null_signal",
+                "intervention_study",
+                "human",
+                "long/performance",
+                "null",
+                "direct",
+                "high",
+                "Post-match recovery did not improve in highly trained soccer players.",
+            ),
+            ClaimCard(
+                "direct",
+                "replication",
+                "intervention_study",
+                "human",
+                "strength",
+                "negative",
+                "direct",
+                "high",
+                "Direct human replication.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_modality_primary_signal",
+        "receipt_ids": ("soccer",),
     }
 
 

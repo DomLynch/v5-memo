@@ -1046,6 +1046,9 @@ def _claim_card(hit: CorpusHit, role: ReceiptRole) -> ClaimCard:
     confidence = "high" if support_type == "direct" and direction != "unclear" else "medium" if direction != "unclear" else "low"
     role_name = "safety_feasibility" if safety_feasibility and role.role.endswith("_signal") else role.role
     outcome = _outcome_label(terms)
+    if _is_acute_within_arm_muscle_thickness(terms, outcome, role_name):
+        role_name = "acute_within_arm_signal"
+        confidence = "medium"
     if _is_proxy_signal(outcome, role_name):
         role_name = "boundary"
         direction = "proxy"
@@ -1070,6 +1073,19 @@ def _is_proxy_signal(outcome: str, role_name: str) -> bool:
         role_name in {"negative_signal", "null_signal", "positive_signal"}
         and bool(outcome_terms & (_ADVERSE_ENDPOINT | _TIMING))
         and not bool(outcome_terms & {"chronic", "long"})
+    )
+
+
+def _is_acute_within_arm_muscle_thickness(
+    terms: frozenset[str],
+    outcome: str,
+    role_name: str,
+) -> bool:
+    return (
+        role_name in {"negative_signal", "null_signal", "positive_signal"}
+        and outcome == "muscle thickness"
+        and not bool(terms & {"chronic", "long"})
+        and bool(terms & {"acute", "before", "after", "pre", "post", "hour", "hours"})
     )
 
 

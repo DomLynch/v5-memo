@@ -1,6 +1,7 @@
 """Selector gate contracts for V5 memo candidates."""
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 from v5_memo.schemas import ClaimCard, CorpusHit, InsightCandidate, SearchFailure
@@ -131,6 +132,12 @@ def candidate_publish_blocker(candidate: InsightCandidate) -> dict[str, object] 
             "error": "positive_role_direction_mismatch",
             "receipt_ids": direction_mismatch,
         }
+    off_modality = _off_modality_primary_receipts(candidate.topic, claim_cards)
+    if off_modality:
+        return {
+            "error": "off_modality_primary_signal",
+            "receipt_ids": off_modality,
+        }
     proxy_receipts = _proxy_boundary_receipts(claim_cards)
     if proxy_receipts and not _has_independent_directional_contrast(claim_cards):
         return {
@@ -162,6 +169,21 @@ def _has_independent_directional_contrast(claim_cards: Sequence[ClaimCard]) -> b
             continue
         directions.update(set(card.direction.split("/")) & {"negative", "null", "positive"})
     return len(directions) >= 2
+
+
+def _off_modality_primary_receipts(
+    topic: str,
+    claim_cards: Sequence[ClaimCard],
+) -> tuple[str, ...]:
+    topic_terms = set(re.findall(r"[a-z0-9]+", topic.casefold()))
+    if not topic_terms & {"resistance", "strength"}:
+        return ()
+    return tuple(
+        card.receipt_id
+        for card in claim_cards
+        if card.role in _PRIMARY_SIGNAL_ROLES
+        and ("post-match" in card.quote.casefold() or "post match" in card.quote.casefold())
+    )
 
 
 def no_alpha_failure(
