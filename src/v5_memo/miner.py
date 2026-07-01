@@ -112,6 +112,7 @@ _NON_PRIMARY_SOURCE_PHRASES = (
     "abstract supplement",
 )
 _SUPPLEMENT_DOI_RE = re.compile(r"(?:^|[-_.])s\d+(?:[-_.])p\d+(?:$|[-_.])")
+_NUMBERED_ABSTRACT_TITLE_RE = re.compile(r"\b\d{2,5}-pub:")
 _TOPIC_CONTEXT_STOP = frozenset({
     "adapt", "adaptation", "aging", "angle", "condition", "effect", "effects",
     "evidence", "healthspan", "human", "intervention", "longevity", "mechanism",
@@ -870,6 +871,7 @@ def _is_non_primary_receipt(hit: CorpusHit) -> bool:
         or doi.startswith("10.3410/f.")
         or doi.startswith("10.1249/01.mss.")
         or bool(_SUPPLEMENT_DOI_RE.search(doi))
+        or bool(_NUMBERED_ABSTRACT_TITLE_RE.search(descriptor))
     )
 
 

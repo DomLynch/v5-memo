@@ -1868,6 +1868,13 @@ def test_claim_card_downgrades_conference_and_supplemental_receipts() -> None:
         source="fullraw:openalex",
         doi="10.1249/01.mss.0000764428.80520.ab",
     )
+    ada_abstract_hit = CorpusHit(
+        hit_id="ada-abstract",
+        title="2267-PUB: Skeletal Muscle Response to Exercise in Patients Taking Metformin",
+        abstract="Randomized human trial abstract reported metabolic syndrome outcomes.",
+        source="fullraw:openalex",
+        doi="10.2337/db19-2267-pub",
+    )
 
     conference = _claim_card(conference_hit, ReceiptRole("faseb", "boundary", "conference abstract"))
     supplement = _claim_card(supplement_hit, ReceiptRole("supplement", "context", "supporting data"))
@@ -1883,6 +1890,10 @@ def test_claim_card_downgrades_conference_and_supplemental_receipts() -> None:
         acsm_abstract_hit,
         ReceiptRole("acsm-abstract", "null_signal", "abstract context"),
     )
+    ada_abstract = _claim_card(
+        ada_abstract_hit,
+        ReceiptRole("ada-abstract", "null_signal", "abstract context"),
+    )
 
     assert conference.population == "human"
     assert conference.support_type == "indirect"
@@ -1893,6 +1904,7 @@ def test_claim_card_downgrades_conference_and_supplemental_receipts() -> None:
     assert jissn_supplement.confidence == "low"
     assert faculty_opinions.support_type == "indirect"
     assert acsm_abstract.support_type == "indirect"
+    assert ada_abstract.support_type == "indirect"
 
 
 def test_claim_card_treats_systematic_review_as_indirect_synthesis() -> None:
