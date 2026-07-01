@@ -2123,6 +2123,60 @@ def test_publish_blocker_rejects_positive_role_with_null_direction() -> None:
     }
 
 
+def test_publish_blocker_rejects_mixed_metabolic_muscle_axis_bundle() -> None:
+    candidate = InsightCandidate(
+        topic="metformin resistance training",
+        thesis="Glycemic and hypertrophy receipts need a tighter axis before submit.",
+        bridge_terms=("metformin", "training"),
+        tension_terms=("null", "positive"),
+        receipt_ids=("glycemic", "hypertrophy", "body-comp"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "glycemic",
+                "null_signal",
+                "randomized_trial",
+                "human",
+                "long",
+                "null",
+                "direct",
+                "high",
+                "Resistance exercise with metformin measured glycemic control and insulin sensitivity in T2DM adults.",
+            ),
+            ClaimCard(
+                "hypertrophy",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "hypertrophy",
+                "negative",
+                "direct",
+                "high",
+                "Progressive resistance training had a blunted muscle hypertrophy response with metformin.",
+            ),
+            ClaimCard(
+                "body-comp",
+                "replication",
+                "intervention_study",
+                "human",
+                "unspecified",
+                "positive",
+                "direct",
+                "high",
+                "Resistance training changed body composition compared with metformin treatment.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "mixed_outcome_axis_bundle",
+        "receipt_ids": ("glycemic", "hypertrophy", "body-comp"),
+    }
+
+
 def test_publish_blocker_rejects_weak_primary_signal_receipts() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion",

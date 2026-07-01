@@ -37,6 +37,29 @@ _PROXY_OUTCOME_TERMS = frozenset({
     "short",
     "stress",
 })
+_METABOLIC_AXIS_TERMS = frozenset({
+    "diabetes",
+    "diabetic",
+    "glucose",
+    "glycemic",
+    "glycaemic",
+    "hyperglycemia",
+    "hyperglycemic",
+    "insulin",
+    "metabolic",
+    "prediabetes",
+    "t2dm",
+})
+_MUSCLE_ADAPTATION_AXIS_TERMS = frozenset({
+    "atrophy",
+    "body composition",
+    "hypertrophic",
+    "hypertrophy",
+    "lean mass",
+    "muscle",
+    "myofiber",
+    "strength",
+})
 _TOPIC_ANCHOR_STOP = frozenset({
     "adult",
     "adults",
@@ -150,6 +173,12 @@ def candidate_publish_blocker(candidate: InsightCandidate) -> dict[str, object] 
             "error": "positive_role_direction_mismatch",
             "receipt_ids": direction_mismatch,
         }
+    mixed_axis = _mixed_metabolic_muscle_axis_receipts(claim_cards)
+    if mixed_axis:
+        return {
+            "error": "mixed_outcome_axis_bundle",
+            "receipt_ids": mixed_axis,
+        }
     off_topic = _off_topic_primary_receipts(candidate.topic, claim_cards)
     if off_topic:
         return {
@@ -193,6 +222,22 @@ def _has_independent_directional_contrast(claim_cards: Sequence[ClaimCard]) -> b
             continue
         directions.update(set(card.direction.split("/")) & {"negative", "null", "positive"})
     return len(directions) >= 2
+
+
+def _mixed_metabolic_muscle_axis_receipts(claim_cards: Sequence[ClaimCard]) -> tuple[str, ...]:
+    metabolic_ids: list[str] = []
+    muscle_ids: list[str] = []
+    for card in claim_cards:
+        if card.population != "human" or card.support_type != "direct":
+            continue
+        text = f"{card.outcome} {card.quote}".casefold()
+        if any(term in text for term in _METABOLIC_AXIS_TERMS):
+            metabolic_ids.append(card.receipt_id)
+        if any(term in text for term in _MUSCLE_ADAPTATION_AXIS_TERMS):
+            muscle_ids.append(card.receipt_id)
+    if not metabolic_ids or not muscle_ids:
+        return ()
+    return tuple(dict.fromkeys([*metabolic_ids, *muscle_ids]))
 
 
 def _off_modality_primary_receipts(
