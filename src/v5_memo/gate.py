@@ -132,6 +132,12 @@ def candidate_publish_blocker(candidate: InsightCandidate) -> dict[str, object] 
             "error": "positive_role_direction_mismatch",
             "receipt_ids": direction_mismatch,
         }
+    off_topic = _off_topic_primary_receipts(candidate.topic, claim_cards)
+    if off_topic:
+        return {
+            "error": "off_topic_primary_signal",
+            "receipt_ids": off_topic,
+        }
     off_modality = _off_modality_primary_receipts(candidate.topic, claim_cards)
     if off_modality:
         return {
@@ -184,6 +190,29 @@ def _off_modality_primary_receipts(
         if card.role in _PRIMARY_SIGNAL_ROLES
         and ("post-match" in card.quote.casefold() or "post match" in card.quote.casefold())
     )
+
+
+def _off_topic_primary_receipts(
+    topic: str,
+    claim_cards: Sequence[ClaimCard],
+) -> tuple[str, ...]:
+    topic_terms = set(re.findall(r"[a-z0-9]+", topic.casefold()))
+    required_terms = topic_terms & {"resistance", "strength", "training"}
+    if not required_terms:
+        return ()
+    return tuple(
+        card.receipt_id
+        for card in claim_cards
+        if card.role in _PRIMARY_SIGNAL_ROLES
+        and _off_topic_quote(card.quote)
+        and not (required_terms & set(re.findall(r"[a-z0-9]+", card.quote.casefold())))
+        and card.outcome not in {"hypertrophy", "muscle thickness"}
+    )
+
+
+def _off_topic_quote(quote: str) -> bool:
+    text = quote.casefold()
+    return any(term in text for term in ("accidental", "cold-weather", "military", "warfighter"))
 
 
 def no_alpha_failure(

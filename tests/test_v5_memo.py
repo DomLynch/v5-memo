@@ -2187,6 +2187,60 @@ def test_publish_blocker_rejects_off_modality_primary_signal() -> None:
     }
 
 
+def test_publish_blocker_rejects_off_topic_primary_signal() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Military cold exposure should not be primary resistance-training evidence.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("strength", "military", "direct"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "strength",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "muscle thickness",
+                "negative",
+                "direct",
+                "high",
+                "Strength-training adaptation was attenuated.",
+            ),
+            ClaimCard(
+                "military",
+                "negative_signal",
+                "intervention_study",
+                "human",
+                "performance/setting",
+                "negative",
+                "direct",
+                "high",
+                "Accidental cold-water immersion undermined warfighter readiness.",
+            ),
+            ClaimCard(
+                "direct",
+                "replication",
+                "intervention_study",
+                "human",
+                "strength",
+                "negative",
+                "direct",
+                "high",
+                "Direct human replication.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_topic_primary_signal",
+        "receipt_ids": ("military",),
+    }
+
+
 def test_publish_blocker_rejects_weak_context_receipts() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion",
