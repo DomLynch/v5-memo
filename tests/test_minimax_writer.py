@@ -253,6 +253,40 @@ Hypothesis only."""
     assert "do not tell athletes" in retry_prompt
 
 
+def test_minimax_writer_retries_once_after_unsupported_statistics() -> None:
+    bad_text = """# Alpha memo: NAD mitochondrial sleep exercise bridge
+## Core signal
+NAD and mitochondrial repair may connect the receipts with effect sizes 0.30 and 0.36.
+## The 2+2=5 angle
+Sleep fragmentation and exercise response share the same receipt-bound bridge.
+## Why this could matter
+The bridge gives a testable resilience hypothesis.
+## What would break the idea
+The idea breaks if follow-up receipts do not connect the bridge terms.
+## Claim ledger
+- receipt-bound claim: 10.1/sleep-nad support=direct
+## Receipts
+- 10.1/sleep-nad
+- 10.2/exercise-nad
+## Safety note
+Hypothesis only."""
+    good_text = bad_text.replace(" with effect sizes 0.30 and 0.36", "")
+    opener = FakeOpener([bad_text, good_text])
+    writer = MiniMaxM3MemoWriter(api_key="test-key", opener=opener)
+
+    memo = writer.render(_candidate(), _receipts())
+
+    assert "0.30" not in memo
+    assert "0.36" not in memo
+    assert len(opener.requests) == 2
+    request_data = opener.requests[1].data
+    assert isinstance(request_data, bytes)
+    body = json.loads(request_data.decode("utf-8"))
+    retry_prompt = body["messages"][0]["content"][0]["text"]
+    assert "unsupported statistical numbers" in retry_prompt
+    assert "Remove unsupported statistical numbers" in retry_prompt
+
+
 def test_minimax_prompt_includes_structured_claim_ledger() -> None:
     candidate = InsightCandidate(
         topic="longevity resilience",

@@ -159,7 +159,8 @@ def _minimax_retry_note(error: ValueError | None) -> str:
         "Remove any advice/action framing: do not tell athletes, clinicians, companies, "
         "investors, managers, patients, or practitioners what they should do, use, avoid, "
         "buy, sell, take, prescribe, or prioritize. Keep implications as an alpha signal "
-        "and one falsifiable hypothesis. Remove any unlisted DOI-like references."
+        "and one falsifiable hypothesis. Remove any unlisted DOI-like references. "
+        "Remove unsupported statistical numbers unless the exact number appears in the locked receipts."
     )
 
 
