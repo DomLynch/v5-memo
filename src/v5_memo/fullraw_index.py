@@ -139,7 +139,7 @@ def _shard_local_cache_health(*, include_dynamic_budget: bool = True) -> dict[st
 
 
 _FULL_COVERAGE_PREFIX_SHARDS = max(1, int(_fullraw_env("V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS", "32")))
-_SWEEP_STRATEGY = "profile_relaxed_v11"
+_SWEEP_STRATEGY = "profile_relaxed_v12"
 _SWEEP_MIN_RESULT_LIMIT = 10
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _SHARD_LOCAL_CACHE_IN_PROGRESS: set[Path] = set()
@@ -1625,6 +1625,8 @@ def _profile_relaxed_sweep_query(
     ordered = [term for term in terms if term in candidate_terms]
     if len(ordered) > max_terms:
         alpha_terms = [term for term in terms if term in _ALPHA_SWEEP_TERMS and term in ordered]
+        if "resistance" in ordered and "training" in terms and "water" not in terms:
+            alpha_terms = ["resistance", *alpha_terms]
         if alpha_terms:
             protected = list(dict.fromkeys((first, alpha_terms[0])))
             fill = _spread_terms([term for term in ordered if term not in protected], max_terms - len(protected))

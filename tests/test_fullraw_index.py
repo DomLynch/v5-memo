@@ -2250,6 +2250,9 @@ def test_sweep_passes_do_not_invent_side_queries(tmp_path: Path) -> None:
     assert [item.role for item in passes] == ["focused", "citation_heavy", "recency"]
     assert all("risk" not in item.query and "patients" not in item.query for item in passes)
     assert fullraw_index._sweep_search_passes("resveratrol blunts exercise training", entries, rank_mode="relevance")[0].query == "resveratrol blunts training"
+    metformin_adaptation_query = fullraw_index._sweep_search_passes("metformin resistance training adaptation", entries, rank_mode="relevance")[0].query
+    assert "resistance" in metformin_adaptation_query
+    assert metformin_adaptation_query != "metformin training adaptation"
     metformin_query = fullraw_index._sweep_search_passes("metformin blunts muscle hypertrophy progressive resistance training", entries, rank_mode="relevance")[0].query
     assert metformin_query.startswith("metformin ")
     assert "blunts" in metformin_query
