@@ -3708,6 +3708,11 @@ def run_server() -> None:
                     isinstance(raw_priority, str)
                     and raw_priority.strip().casefold() in {"1", "true", "yes", "on"}
                 )
+                raw_allow_partial_results = payload.get("allow_partial_results")
+                allow_partial_results = raw_allow_partial_results is True or (
+                    isinstance(raw_allow_partial_results, str)
+                    and raw_allow_partial_results.strip().casefold() in {"1", "true", "yes", "on"}
+                )
                 if _should_force_cache_queue(
                     shard_dir_configured=shard_dir is not None,
                     require_complete_search=require_complete_search,
@@ -3850,7 +3855,7 @@ def run_server() -> None:
                             _write_json(self, status, body)
                             return
                         if partial_progress:
-                            hits = []
+                            hits = cached.hits[:limit] if allow_partial_results and cached is not None else []
                     _write_json(self, 200, {
                         "meta": {
                             "count": len(hits),
@@ -3859,6 +3864,7 @@ def run_server() -> None:
                             "rank_mode": rank_mode,
                             "shard_receipt": receipt,
                             "cache_only": True,
+                            "partial_results": bool(partial_progress and allow_partial_results and hits),
                             "async_sweep": {
                                 "enabled": sweep_enabled and bool(catalog),
                                 "status": sweep_status,
