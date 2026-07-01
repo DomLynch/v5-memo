@@ -183,12 +183,18 @@ def mine_insights(
             continue
         if not _pair_has_topic_context(left, right, topic_context_terms, shape_reasons):
             continue
+        direct_human_reversal = direct_human_pair and bool(tension_terms) and len(bridge) >= 2
         incomplete_elite_context = bool(
             set(shape_reasons) & _ELITE_SHAPES
             and topic_context_terms
             and not _pair_has_full_topic_context(left, right, topic_context_terms)
         )
-        if anchor_terms and set(shape_reasons) & _ELITE_SHAPES and not anchor_bridge:
+        if (
+            anchor_terms
+            and set(shape_reasons) & _ELITE_SHAPES
+            and not anchor_bridge
+            and not direct_human_reversal
+        ):
             continue
         coupling_reasons = _coupling_reasons(
             left,
@@ -202,7 +208,6 @@ def mine_insights(
             tension_terms,
         )
         strong_anchor_bridge = bool(tension_terms and len(anchor_bridge) >= 2)
-        direct_human_reversal = direct_human_pair and bool(tension_terms) and len(bridge) >= 2
         if not (strong_anchor_bridge or elite_anchor_bridge) and not _has_title_owned_bridge(
             left,
             right,

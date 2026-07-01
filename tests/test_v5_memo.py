@@ -773,6 +773,37 @@ def test_pipeline_anchors_cover_late_planned_query_angles() -> None:
     assert result.candidate.receipt_ids == ("promise", "outcome")
 
 
+def test_miner_accepts_direct_human_reversal_when_anchor_is_full_text_only() -> None:
+    hits = [
+        _hit(
+            "promise",
+            "Protocol expected augmentation",
+            (
+                "Randomized human trial protocol expected metformin to augment "
+                "resistance training adaptation."
+            ),
+        ),
+        _hit(
+            "outcome",
+            "Outcome observed blunting",
+            (
+                "Randomized human trial observed metformin blunted resistance "
+                "training adaptation."
+            ),
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="metformin resistance training adaptation",
+        required_anchor_terms=query_anchor_terms(["metformin resistance training adaptation"]),
+    )
+
+    assert candidates
+    assert candidates[0].receipt_ids == ("promise", "outcome")
+    assert candidate_publish_blocker(candidates[0]) is None
+
+
 def test_pipeline_stops_retrieval_once_publishable_candidate_exists() -> None:
     calls: list[str] = []
     hits = [
