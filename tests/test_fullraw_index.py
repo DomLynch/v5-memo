@@ -2330,6 +2330,52 @@ def test_materialized_shard_cache_preserves_fresh_temp_files(
     assert keep.exists()
 
 
+def test_materialized_shard_cache_evicts_dead_pid_temp_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    dead_tmp = cache_dir / ".dead.sqlite.tmp.999999.1"
+    keep = cache_dir / "keep.sqlite"
+    for path in (dead_tmp, keep):
+        path.write_bytes(b"x" * 6)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "6")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_TMP_TTL_SECONDS", "3600")
+
+    def fake_kill(pid: int, sig: int) -> None:
+        del sig
+        if pid == 999999:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(os, "kill", fake_kill)
+
+    fullraw_index._evict_shard_cache(cache_dir, required_bytes=0, keep=keep)
+
+    assert not dead_tmp.exists()
+    assert keep.exists()
+
+
+def test_materialized_shard_cache_preserves_live_pid_temp_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    live_tmp = cache_dir / ".live.sqlite.tmp.123.1"
+    keep = cache_dir / "keep.sqlite"
+    for path in (live_tmp, keep):
+        path.write_bytes(b"x" * 6)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "6")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_TMP_TTL_SECONDS", "3600")
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+
+    fullraw_index._evict_shard_cache(cache_dir, required_bytes=0, keep=keep)
+
+    assert live_tmp.exists()
+    assert keep.exists()
+
+
 def test_auto_sweep_workers_scales_by_inflight(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "cpu_count", lambda: 16)
     monkeypatch.delenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", raising=False)
