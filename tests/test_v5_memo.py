@@ -234,7 +234,7 @@ def test_template_writer_replaces_auto_thesis_with_bounded_claim() -> None:
                 "null_signal",
                 "randomized_trial",
                 "human",
-                "glycemic control",
+                "long/glycemic control",
                 "null",
                 "direct",
                 "high",
@@ -245,7 +245,7 @@ def test_template_writer_replaces_auto_thesis_with_bounded_claim() -> None:
                 "negative_signal",
                 "randomized_trial",
                 "human",
-                "hypertrophy",
+                "hypertrophy/setting",
                 "negative",
                 "direct",
                 "high",
@@ -266,6 +266,8 @@ def test_template_writer_replaces_auto_thesis_with_bounded_claim() -> None:
         "**Alpha hypothesis:** In metformin resistance training, direct human "
         "randomized trial receipts support a bounded null and negative signal"
     ) in memo
+    assert "long/" not in memo
+    assert "/setting" not in memo
     assert "same population and endpoint" in memo
 
 

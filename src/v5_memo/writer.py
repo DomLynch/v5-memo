@@ -147,11 +147,12 @@ def _direct_human_cards(candidate: InsightCandidate) -> list[ClaimCard]:
 def _non_generic_labels(values: Iterable[str]) -> list[str]:
     out: list[str] = []
     for value in values:
-        clean = value.replace("_", " ").strip().casefold()
-        if not clean or clean in {"long", "outcome", "outcomes", "unspecified"}:
-            continue
-        if clean not in out:
-            out.append(clean)
+        for label in value.split("/"):
+            clean = label.replace("_", " ").strip().casefold()
+            if not clean or clean in {"long", "outcome", "outcomes", "setting", "unspecified"}:
+                continue
+            if clean not in out:
+                out.append(clean)
     return out
 
 
@@ -161,6 +162,10 @@ def _join_labels(labels: Sequence[str]) -> str:
     if len(labels) == 2:
         return f"{labels[0]} and {labels[1]}"
     return f"{', '.join(labels[:-1])}, and {labels[-1]}"
+
+
+def _display_label(value: str, *, fallback: str = "unspecified") -> str:
+    return _join_labels(_non_generic_labels([value])) or fallback
 
 
 def _memo_title(candidate: InsightCandidate) -> str:
@@ -193,9 +198,11 @@ def _claim_card_lines(candidate: InsightCandidate) -> list[str]:
         return ["- no structured claim cards assigned"]
     return [
         (
-            f"- `{card.receipt_id}`: {card.role}; design={card.design}; "
-            f"population={card.population}; outcome={card.outcome}; "
-            f"direction={card.direction}; support={card.support_type}/{card.confidence}"
+            f"- `{card.receipt_id}`: {card.role}; "
+            f"design={_display_label(card.design, fallback=card.design.replace('_', ' '))}; "
+            f"population={card.population}; outcome={_display_label(card.outcome)}; "
+            f"direction={_display_label(card.direction, fallback=card.direction.replace('_', ' '))}; "
+            f"support={card.support_type}/{card.confidence}"
         )
         for card in candidate.claim_cards
     ]
