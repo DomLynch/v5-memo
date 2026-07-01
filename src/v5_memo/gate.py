@@ -191,6 +191,12 @@ def candidate_publish_blocker(candidate: InsightCandidate) -> dict[str, object] 
             "error": "off_modality_primary_signal",
             "receipt_ids": off_modality,
         }
+    off_axis_context = _off_axis_direct_context_receipts(candidate.topic, claim_cards)
+    if off_axis_context:
+        return {
+            "error": "off_axis_direct_context",
+            "receipt_ids": off_axis_context,
+        }
     proxy_receipts = _proxy_boundary_receipts(claim_cards)
     if proxy_receipts and not _has_independent_directional_contrast(claim_cards):
         return {
@@ -255,6 +261,23 @@ def _off_modality_primary_receipts(
     )
 
 
+def _off_axis_direct_context_receipts(
+    topic: str,
+    claim_cards: Sequence[ClaimCard],
+) -> tuple[str, ...]:
+    topic_terms = set(re.findall(r"[a-z0-9]+", topic.casefold()))
+    if not (topic_terms & {"adaptation", "exercise", "resistance", "strength", "training"}):
+        return ()
+    return tuple(
+        card.receipt_id
+        for card in claim_cards
+        if card.role not in _PRIMARY_SIGNAL_ROLES
+        and card.population == "human"
+        and card.support_type == "direct"
+        and _off_topic_quote(card.quote)
+    )
+
+
 def _off_topic_primary_receipts(
     topic: str,
     claim_cards: Sequence[ClaimCard],
@@ -290,7 +313,7 @@ def _topic_primary_anchor_terms(topic_terms: set[str]) -> set[str]:
 
 def _off_topic_quote(quote: str) -> bool:
     text = quote.casefold()
-    return any(term in text for term in ("accidental", "cold-weather", "military", "warfighter"))
+    return any(term in text for term in ("accidental", "cold-weather", "hypothermia", "military", "warfighter"))
 
 
 def no_alpha_failure(
