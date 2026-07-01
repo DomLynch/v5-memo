@@ -1382,6 +1382,27 @@ def test_full_raw_client_strict_full_coverage_defaults_to_one_variant(
     assert client._max_variants == 1
 
 
+def test_full_raw_client_strict_full_coverage_raises_backfill_default(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_TOKEN", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT", raising=False)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", "index-secret")
+
+    strict_client = FullRawCorpusSearchClient.from_env(strict=True)
+    loose_client = FullRawCorpusSearchClient.from_env(strict=False)
+
+    assert strict_client._doi_abstract_backfill_limit == 16
+    assert loose_client._doi_abstract_backfill_limit == 6
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT", "3")
+
+    explicit_client = FullRawCorpusSearchClient.from_env(strict=True)
+
+    assert explicit_client._doi_abstract_backfill_limit == 3
+
+
 def test_full_raw_client_explicit_max_variants_overrides_strict_default(
     monkeypatch: MonkeyPatch,
 ) -> None:

@@ -345,6 +345,7 @@ class FullRawCorpusSearchClient:
         min_shards_searched = _int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", default_min_shards)
         full_coverage_search = strict and bool(token) and min_shards_searched >= default_min_shards
         default_max_variants = 1 if full_coverage_search else 16
+        default_backfill_limit = 16 if full_coverage_search else 6
         return cls(
             search_url=search_url,
             token=token,
@@ -358,7 +359,7 @@ class FullRawCorpusSearchClient:
             sweep_poll_seconds=_float_env("V5_MEMO_FULL_RAW_SWEEP_POLL_SECONDS", 1.0),
             doi_abstract_backfill_limit=_int_env(
                 "V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT",
-                6,
+                default_backfill_limit,
             ),
             min_shards_searched=min_shards_searched,
             min_sources_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", default_min_sources),
