@@ -2685,6 +2685,55 @@ def test_publish_quality_keeps_negative_null_contrast_after_dropping_weak_contex
     assert candidate_publish_blocker(selected[0]) is None
 
 
+def test_publish_quality_rejects_candidate_when_context_trim_drops_all_receipts() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Proxy-only receipts should not become an empty public bundle.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("proxy",),
+        receipt_ids=("proxy-a", "proxy-b"),
+        score=100,
+        novelty_score=70,
+        evidence_score=100,
+        reasons=("shape:boundary_condition", "tier:elite_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "proxy-a",
+                "boundary",
+                "intervention_study",
+                "human",
+                "acute/damage/performance",
+                "proxy",
+                "direct",
+                "high",
+                "Cold water immersion acute damage proxy signal.",
+            ),
+            ClaimCard(
+                "proxy-b",
+                "boundary",
+                "intervention_study",
+                "human",
+                "acute/damage/performance",
+                "proxy",
+                "direct",
+                "high",
+                "Cold water immersion acute performance proxy signal.",
+            ),
+        ),
+    )
+
+    assert _publishable_candidates(
+        [candidate],
+        [
+            _hit("proxy-a", "Proxy A", "Cold water immersion acute damage proxy signal."),
+            _hit("proxy-b", "Proxy B", "Cold water immersion acute performance proxy signal."),
+        ],
+        "publishable_alpha",
+        frozenset(),
+        require_publish_quality=True,
+    ) == []
+
+
 def test_researka_payload_strips_markdown_wrapped_doi_receipt_labels() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion",

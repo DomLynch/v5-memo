@@ -145,6 +145,8 @@ def _publishable_candidates(
             continue
         if require_publish_quality:
             candidate = _drop_publish_context_receipts(candidate)
+            if len(candidate.receipt_ids) < 2 or len(candidate.claim_cards) < 2:
+                continue
             if candidate_publish_blocker(candidate) is not None:
                 continue
         out.append(candidate)
