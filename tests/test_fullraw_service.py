@@ -196,6 +196,7 @@ def test_v5_isolated_fullraw_service_uses_v5_lane() -> None:
     assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_GB=15" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB=1" in config
     assert "Environment=RESEARKA_FULLRAW_MAX_VARIANTS=1" in config
+    assert "Environment=RESEARKA_FULLRAW_DOI_ABSTRACT_BACKFILL_LIMIT=16" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKERS=" not in config
     assert "/etc/researka-fullraw.env" not in config
     assert "/etc/researka-fullraw-overrides.env" not in config
