@@ -269,7 +269,7 @@ def test_publish_quality_filter_removes_weak_candidates_before_writing() -> None
                 "negative",
                 "direct",
                 "high",
-                "human trial",
+                "Cold immersion training human trial.",
             ),
             ClaimCard(
                 "human-b",
@@ -280,7 +280,7 @@ def test_publish_quality_filter_removes_weak_candidates_before_writing() -> None
                 "positive",
                 "direct",
                 "high",
-                "human study",
+                "Cold immersion training human study.",
             ),
         ),
     )
@@ -2209,7 +2209,7 @@ def test_publish_blocker_rejects_off_modality_primary_signal() -> None:
                 "null",
                 "direct",
                 "high",
-                "Post-match recovery did not improve in highly trained soccer players.",
+                "Post-match cold-water immersion recovery did not improve in highly trained soccer players.",
             ),
             ClaimCard(
                 "direct",
@@ -2282,6 +2282,49 @@ def test_publish_blocker_rejects_off_topic_primary_signal() -> None:
     assert candidate_publish_blocker(candidate) == {
         "error": "off_topic_primary_signal",
         "receipt_ids": ("military",),
+    }
+
+
+def test_publish_blocker_rejects_primary_signal_without_topic_anchor() -> None:
+    candidate = InsightCandidate(
+        topic="creatine older adults function trial",
+        thesis="Off-topic direct human rows should not pass just because they are strong trials.",
+        bridge_terms=("trial", "function"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("arsenic", "creatine"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "arsenic",
+                "tail_risk",
+                "randomized_trial",
+                "human",
+                "chronic/long/outcome",
+                "negative",
+                "direct",
+                "high",
+                "Chronic arsenic exposure altered methylation outcomes in adults.",
+            ),
+            ClaimCard(
+                "creatine",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "positive",
+                "direct",
+                "high",
+                "Creatine supplementation with exercise improved function in older adults.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_topic_primary_signal",
+        "receipt_ids": ("arsenic",),
     }
 
 
@@ -2360,7 +2403,7 @@ def test_publish_blocker_allows_proxy_with_negative_null_directional_contrast() 
                 "negative",
                 "direct",
                 "high",
-                "Single RCT negative chronic signal.",
+                "Cold water immersion resistance training chronic negative signal.",
             ),
             ClaimCard(
                 "proxy",
@@ -2382,7 +2425,7 @@ def test_publish_blocker_allows_proxy_with_negative_null_directional_contrast() 
                 "null",
                 "direct",
                 "high",
-                "Long-term soccer adaptation null signal.",
+                "Cold water immersion training adaptation null signal.",
             ),
         ),
     )
@@ -2411,7 +2454,7 @@ def test_publish_blocker_rejects_directional_acute_proxy_without_independent_con
                 "negative",
                 "direct",
                 "high",
-                "Single RCT negative chronic signal.",
+                "Cold water immersion resistance training chronic negative signal.",
             ),
             ClaimCard(
                 "review",
@@ -2465,7 +2508,7 @@ def test_publish_blocker_allows_proxy_with_independent_directional_contrast() ->
                 "negative",
                 "direct",
                 "high",
-                "Direct negative signal.",
+                "Cold water immersion training negative signal.",
             ),
             ClaimCard(
                 "positive",
@@ -2476,7 +2519,7 @@ def test_publish_blocker_allows_proxy_with_independent_directional_contrast() ->
                 "positive",
                 "direct",
                 "high",
-                "Direct positive signal.",
+                "Cold water immersion training positive signal.",
             ),
             ClaimCard(
                 "proxy",
@@ -2516,7 +2559,7 @@ def test_publish_quality_candidates_drop_weak_context_receipts() -> None:
                 "negative",
                 "direct",
                 "high",
-                "Direct human signal.",
+                "Cold water immersion direct negative human signal.",
             ),
             ClaimCard(
                 "direct-b",
@@ -2527,7 +2570,7 @@ def test_publish_quality_candidates_drop_weak_context_receipts() -> None:
                 "null",
                 "direct",
                 "high",
-                "Direct human signal.",
+                "Cold water immersion direct null human signal.",
             ),
             ClaimCard(
                 "weak-context",
@@ -2586,7 +2629,7 @@ def test_publish_quality_keeps_negative_null_contrast_after_dropping_weak_contex
                 "negative",
                 "direct",
                 "high",
-                "Direct negative human signal.",
+                "Cold water immersion direct negative human signal.",
             ),
             ClaimCard(
                 "null",
@@ -2597,7 +2640,7 @@ def test_publish_quality_keeps_negative_null_contrast_after_dropping_weak_contex
                 "null",
                 "direct",
                 "high",
-                "Direct null human signal.",
+                "Cold water immersion direct null human signal.",
             ),
             ClaimCard(
                 "proxy",

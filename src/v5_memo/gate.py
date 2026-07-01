@@ -37,6 +37,24 @@ _PROXY_OUTCOME_TERMS = frozenset({
     "short",
     "stress",
 })
+_TOPIC_ANCHOR_STOP = frozenset({
+    "adult",
+    "adults",
+    "effect",
+    "effects",
+    "function",
+    "functions",
+    "human",
+    "humans",
+    "older",
+    "outcome",
+    "outcomes",
+    "performance",
+    "study",
+    "studies",
+    "trial",
+    "trials",
+})
 
 
 def candidate_alpha_tier(candidate: InsightCandidate) -> str:
@@ -198,16 +216,31 @@ def _off_topic_primary_receipts(
 ) -> tuple[str, ...]:
     topic_terms = set(re.findall(r"[a-z0-9]+", topic.casefold()))
     required_terms = topic_terms & {"resistance", "strength", "training"}
-    if not required_terms:
-        return ()
-    return tuple(
-        card.receipt_id
-        for card in claim_cards
-        if card.role in _PRIMARY_SIGNAL_ROLES
-        and _off_topic_quote(card.quote)
-        and not (required_terms & set(re.findall(r"[a-z0-9]+", card.quote.casefold())))
-        and card.outcome not in {"hypertrophy", "muscle thickness"}
-    )
+    anchor_terms = _topic_primary_anchor_terms(topic_terms)
+    out: list[str] = []
+    for card in claim_cards:
+        if card.role not in _PRIMARY_SIGNAL_ROLES:
+            continue
+        card_terms = set(re.findall(r"[a-z0-9]+", card.quote.casefold()))
+        if (
+            required_terms
+            and _off_topic_quote(card.quote)
+            and not (required_terms & card_terms)
+            and card.outcome not in {"hypertrophy", "muscle thickness"}
+        ):
+            out.append(card.receipt_id)
+            continue
+        if anchor_terms and not (anchor_terms & card_terms):
+            out.append(card.receipt_id)
+    return tuple(out)
+
+
+def _topic_primary_anchor_terms(topic_terms: set[str]) -> set[str]:
+    return {
+        term
+        for term in topic_terms
+        if len(term) >= 4 and term not in _TOPIC_ANCHOR_STOP
+    }
 
 
 def _off_topic_quote(quote: str) -> bool:
