@@ -55,7 +55,7 @@ def test_build_command_preserves_strict_submit_gate(tmp_path: Path) -> None:
     assert command[command.index("--researka-submit-wait-seconds") + 1] == "10"
 
 
-def test_classify_accept_with_visibility_error_is_not_publish_success() -> None:
+def test_accept_decision_wins_even_when_visibility_update_warns() -> None:
     portfolio = _load_portfolio()
 
     status = portfolio.classify_run(
@@ -67,7 +67,7 @@ def test_classify_accept_with_visibility_error_is_not_publish_success() -> None:
         submit=True,
     )
 
-    assert status == "accepted_unlisted"
+    assert status == "accepted"
 
 
 def test_run_portfolio_continues_after_blocker_until_ready(tmp_path: Path) -> None:

@@ -133,8 +133,6 @@ def classify_run(returncode: int, receipt: Mapping[str, object], *, submit: bool
     if isinstance(raw_decision, Mapping):
         decision = str(raw_decision.get("decision") or "")
         if decision == "accept":
-            if "visibility_error" in receipt:
-                return "accepted_unlisted"
             return "accepted"
         if decision in {"reject", "revise"}:
             return f"decision:{decision}"
@@ -208,6 +206,9 @@ def run_portfolio(
         error = receipt.get("error")
         if error:
             record["error"] = error
+        visibility_error = receipt.get("visibility_error")
+        if visibility_error:
+            record["visibility_error"] = visibility_error
         records.append(record)
         if _should_stop(status):
             break
