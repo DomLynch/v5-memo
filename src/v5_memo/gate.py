@@ -284,6 +284,7 @@ def _off_topic_primary_receipts(
 ) -> tuple[str, ...]:
     topic_terms = set(re.findall(r"[a-z0-9]+", topic.casefold()))
     required_terms = topic_terms & {"resistance", "strength", "training"}
+    context_terms = _topic_primary_context_terms(topic)
     anchor_terms = _topic_primary_anchor_terms(topic_terms)
     out: list[str] = []
     for card in claim_cards:
@@ -297,9 +298,23 @@ def _off_topic_primary_receipts(
         ):
             out.append(card.receipt_id)
             continue
-        if anchor_terms and not (anchor_terms & card_terms):
+        if (
+            (context_terms and not (context_terms & card_terms))
+            or (anchor_terms and not (anchor_terms & card_terms))
+        ):
             out.append(card.receipt_id)
     return tuple(out)
+
+
+def _topic_primary_context_terms(topic: str) -> set[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in re.findall(r"[a-z0-9]+", topic.casefold()):
+        if len(raw) < 4 or raw in _TOPIC_ANCHOR_STOP or raw in seen:
+            continue
+        seen.add(raw)
+        ordered.append(raw)
+    return set(ordered[1:]) if len(ordered) > 1 else set()
 
 
 def _topic_primary_anchor_terms(topic_terms: set[str]) -> set[str]:

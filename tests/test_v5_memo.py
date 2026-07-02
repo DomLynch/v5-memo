@@ -2517,6 +2517,89 @@ def test_publish_blocker_rejects_off_topic_primary_signal() -> None:
     }
 
 
+def test_publish_blocker_requires_primary_topic_context() -> None:
+    candidate = InsightCandidate(
+        topic="caffeine cycling performance no difference",
+        thesis="Volleyball and sprint receipts should not publish as cycling evidence.",
+        bridge_terms=("caffeine", "performance"),
+        tension_terms=("positive", "null"),
+        receipt_ids=("sprint", "volleyball"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "sprint",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "positive",
+                "direct",
+                "high",
+                "Caffeine improved repeated sprint performance after napping.",
+            ),
+            ClaimCard(
+                "volleyball",
+                "null_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "null",
+                "direct",
+                "high",
+                "Caffeine mouth rinse did not improve volleyball skill accuracy.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_topic_primary_signal",
+        "receipt_ids": ("sprint", "volleyball"),
+    }
+
+
+def test_publish_blocker_allows_primary_topic_context() -> None:
+    candidate = InsightCandidate(
+        topic="urolithin muscle endurance older adults trial",
+        thesis="Aligned urolithin muscle-endurance human receipts can pass.",
+        bridge_terms=("urolithin", "muscle"),
+        tension_terms=("positive", "null"),
+        receipt_ids=("strength", "endurance"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "strength",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "muscle strength",
+                "positive",
+                "direct",
+                "high",
+                "Urolithin improved muscle strength and endurance in older adults.",
+            ),
+            ClaimCard(
+                "endurance",
+                "null_signal",
+                "randomized_trial",
+                "human",
+                "muscle endurance",
+                "null",
+                "direct",
+                "high",
+                "Urolithin muscle endurance response was null in older runners.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) is None
+
+
 def test_publish_quality_drops_off_axis_direct_context_receipts() -> None:
     candidate = InsightCandidate(
         topic="cold immersion training",
