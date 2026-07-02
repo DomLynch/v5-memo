@@ -293,7 +293,6 @@ def _off_topic_primary_receipts(
         if (
             required_terms
             and _off_topic_quote(card.quote)
-            and not (required_terms & card_terms)
             and card.outcome not in {"hypertrophy", "muscle thickness"}
         ):
             out.append(card.receipt_id)
