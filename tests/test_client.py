@@ -249,6 +249,24 @@ def test_full_raw_client_from_env_prefers_generic_researka_fullraw_names(monkeyp
     assert client._max_variants == 3
 
 
+def test_full_raw_client_from_env_prefers_v5_over_generic_overrides(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("RESEARKA_FULLRAW_SEARCH_URL", "http://127.0.0.1:9903/search")
+    monkeypatch.setenv("RESEARKA_FULLRAW_TOKEN", "generic-token")
+    monkeypatch.setenv("RESEARKA_FULLRAW_FOREGROUND_SWEEP_WAIT_SECONDS", "7200")
+    monkeypatch.setenv("RESEARKA_FULLRAW_QUERY_TIMEOUT", "240")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9915/search")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", "v5-token")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS", "0")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_QUERY_TIMEOUT", "20")
+
+    client = FullRawCorpusSearchClient.from_env(strict=True)
+
+    assert client._search_url == "http://127.0.0.1:9915/search"
+    assert client._token == "v5-token"
+    assert client._sweep_wait_seconds == 0.0
+    assert client._timeout == 20.0
+
+
 def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
     receipt = {
         "shards_total": 100,
