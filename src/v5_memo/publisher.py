@@ -235,7 +235,7 @@ def _submission_title(result: MemoResult, heading: str) -> str:
         or _auto_thesis_title(raw)
         or _incomplete_title(raw)
     ):
-        raw = _receipt_title(result) or result.candidate.topic
+        raw = _bundle_title(result) or _receipt_title(result) or result.candidate.topic
     return _clip_title(raw)
 
 

@@ -86,6 +86,10 @@ def _hit(hit_id: str, title: str, abstract: str) -> CorpusHit:
     return CorpusHit(hit_id=hit_id, title=title, abstract=abstract, source="openalex", doi=f"10.{hit_id}")
 
 
+def _direct_card(receipt_id: str, role: str, outcome: str, direction: str, quote: str) -> ClaimCard:
+    return ClaimCard(receipt_id, role, "intervention_study", "human", outcome, direction, "direct", "high", quote)
+
+
 class _JsonResponse:
     def __init__(self, payload: dict[str, object]) -> None:
         self._payload = payload
@@ -1850,6 +1854,72 @@ def test_researka_payload_uses_receipt_title_instead_of_auto_bridge_thesis_title
     assert payload["title"] == "Urolithin A provides cardioprotection and improves human cardiovascular health biomarkers"
 
 
+def test_researka_payload_prefers_bundle_title_for_heterogeneous_direct_endpoints() -> None:
+    candidate = InsightCandidate(
+        topic="cold immersion training",
+        thesis=(
+            "cold immersion training may be hiding a cold / immersion / training "
+            "boundary condition: acute muscle thickness and performance point in different directions."
+        ),
+        bridge_terms=("cold", "immersion", "training"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("thickness", "performance"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "thickness",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "muscle thickness",
+                "negative",
+                "direct",
+                "high",
+                "Cold-water immersion attenuated elbow flexor muscle thickness after strength training.",
+            ),
+            ClaimCard(
+                "performance",
+                "null_signal",
+                "intervention_study",
+                "human",
+                "performance",
+                "null",
+                "direct",
+                "high",
+                "Cold-water immersion training did not improve physical performance.",
+            ),
+        ),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="thickness",
+            title="Effect of Cold-Water Immersion on Elbow Flexors Muscle Thickness After Resistance Training",
+            abstract="Human randomized trial measured elbow flexor muscle thickness after resistance training.",
+            source="fullraw:semantic_scholar",
+            doi="10.1519/JSC.0000000000002322",
+        ),
+        CorpusHit(
+            hit_id="performance",
+            title="Cold-water immersion and training performance in human participants",
+            abstract="Human intervention study measured training performance.",
+            source="fullraw:openalex",
+            doi="10.performance",
+        ),
+    ]
+    markdown = "# Alpha memo: cold / immersion / training\n\nBody."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-memo-agent",
+        domain_slug="longevity_research",
+    )
+
+    assert payload["title"] == "Cold Immersion and Training Outcomes in Human Studies"
+
+
 def test_researka_payload_skips_incomplete_receipt_title() -> None:
     candidate = InsightCandidate(
         topic="resveratrol exercise protocol",
@@ -2395,6 +2465,76 @@ def test_publish_blocker_rejects_off_topic_primary_signal() -> None:
         "error": "off_topic_primary_signal",
         "receipt_ids": ("military",),
     }
+
+
+def test_publish_quality_drops_off_axis_direct_context_receipts() -> None:
+    candidate = InsightCandidate(
+        topic="cold immersion training",
+        thesis="Off-axis operational safety context should not publish inside a training signal bundle.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("performance-negative", "performance-null", "hypothermia"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "performance-negative",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "negative",
+                "direct",
+                "high",
+                "Cold immersion training reduced performance adaptation in human participants.",
+            ),
+            ClaimCard(
+                "performance-null",
+                "null_signal",
+                "intervention_study",
+                "human",
+                "performance",
+                "null",
+                "direct",
+                "high",
+                "Cold immersion training did not improve performance in human participants.",
+            ),
+            ClaimCard(
+                "hypothermia",
+                "replication",
+                "intervention_study",
+                "human",
+                "performance/setting",
+                "negative",
+                "direct",
+                "high",
+                "Military cold-water immersion training measured hypothermia and critical hand temperature.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_axis_direct_context",
+        "receipt_ids": ("hypothermia",),
+    }
+
+    selected = _publishable_candidates(
+        [candidate],
+        [
+            _hit("performance-negative", "Negative", "Randomized human trial negative signal."),
+            _hit("performance-null", "Null", "Human intervention study null signal."),
+            _hit("hypothermia", "Hypothermia", "Military hypothermia context."),
+        ],
+        "publishable_alpha",
+        frozenset(),
+        require_publish_quality=True,
+    )
+
+    assert len(selected) == 1
+    assert selected[0].receipt_ids == ("performance-negative", "performance-null")
+    assert candidate_publish_blocker(selected[0]) is None
 
 
 def test_publish_blocker_rejects_primary_signal_without_topic_anchor() -> None:

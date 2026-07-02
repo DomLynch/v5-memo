@@ -155,6 +155,7 @@ def _publishable_candidates(
 
 def _drop_publish_context_receipts(candidate: InsightCandidate) -> InsightCandidate:
     candidate = _drop_weak_context_receipts(candidate)
+    candidate = _drop_off_axis_context_receipts(candidate)
     return _drop_optional_proxy_context_receipts(candidate)
 
 
@@ -169,6 +170,20 @@ def _drop_weak_context_receipts(candidate: InsightCandidate) -> InsightCandidate
     if not drop_ids:
         return candidate
     return _drop_receipts(candidate, drop_ids)
+
+
+def _drop_off_axis_context_receipts(candidate: InsightCandidate) -> InsightCandidate:
+    blocker = candidate_publish_blocker(candidate)
+    if not blocker or blocker.get("error") != "off_axis_direct_context":
+        return candidate
+    raw_receipt_ids = blocker.get("receipt_ids", ())
+    if not isinstance(raw_receipt_ids, Sequence) or isinstance(raw_receipt_ids, str):
+        return candidate
+    drop_ids = {receipt_id for receipt_id in raw_receipt_ids if isinstance(receipt_id, str)}
+    if not drop_ids:
+        return candidate
+    trimmed = _drop_receipts(candidate, drop_ids)
+    return trimmed if len(trimmed.receipt_ids) >= 2 and candidate_publish_blocker(trimmed) is None else candidate
 
 
 def _drop_optional_proxy_context_receipts(candidate: InsightCandidate) -> InsightCandidate:
