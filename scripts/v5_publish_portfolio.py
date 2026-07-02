@@ -88,8 +88,6 @@ def build_command(lead: str, lead_dir: Path, receipt_path: Path, config: RunConf
         config.module,
         "--topic",
         lead,
-        "--query",
-        lead,
         "--searcher",
         config.searcher,
         "--min-alpha-tier",
@@ -135,10 +133,12 @@ def classify_run(returncode: int, receipt: Mapping[str, object], *, submit: bool
     if isinstance(raw_decision, Mapping):
         decision = str(raw_decision.get("decision") or "")
         if decision == "accept":
+            if "visibility_error" in receipt:
+                return "accepted_unlisted"
             return "accepted"
         if decision in {"reject", "revise"}:
             return f"decision:{decision}"
-    if submit and returncode == 0 and ("submission" in receipt or "submission_id" in receipt):
+    if submit and returncode == 0 and any(key in receipt for key in ("submission", "submission_id", "id")):
         return "submitted"
     error = receipt.get("error")
     if error == "researka_submit_deferred":

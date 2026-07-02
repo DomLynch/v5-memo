@@ -45,6 +45,7 @@ def test_build_command_preserves_strict_submit_gate(tmp_path: Path) -> None:
     )
 
     assert command[:3] == ["python3", "-m", "v5_memo"]
+    assert "--query" not in command
     assert "--require-full-raw-corpus" in command
     assert command[command.index("--searcher") + 1] == "fullraw"
     assert command[command.index("--min-alpha-tier") + 1] == "publishable"
@@ -52,6 +53,21 @@ def test_build_command_preserves_strict_submit_gate(tmp_path: Path) -> None:
     assert "--researka-list-if-accepted" in command
     assert command[command.index("--researka-decision-wait-seconds") + 1] == "60"
     assert command[command.index("--researka-submit-wait-seconds") + 1] == "10"
+
+
+def test_classify_accept_with_visibility_error_is_not_publish_success() -> None:
+    portfolio = _load_portfolio()
+
+    status = portfolio.classify_run(
+        0,
+        {
+            "decision": {"decision": "accept"},
+            "visibility_error": {"error": "researka_visibility_update_failed"},
+        },
+        submit=True,
+    )
+
+    assert status == "accepted_unlisted"
 
 
 def test_run_portfolio_continues_after_blocker_until_ready(tmp_path: Path) -> None:
