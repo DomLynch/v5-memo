@@ -522,7 +522,12 @@ class FullRawCorpusSearchClient:
         initial_error: SearchBackendError | None = None
         try:
             data = self._request_search(payload)
-            if self._uses_cache_sweep_contract() and _empty_unreceipted_fullraw_response(data):
+            if (
+                self._uses_cache_sweep_contract()
+                and request_limit > 10
+                and not _full_raw_async_sweep_status(data)
+                and _empty_unreceipted_fullraw_response(data)
+            ):
                 fallback_payloads: list[dict[str, object]] = []
                 if "search_pass" in payload:
                     fallback_payload = dict(payload)
@@ -803,7 +808,19 @@ def _full_raw_shard_receipt(data: Any) -> dict[str, object]:
 
 
 def _empty_unreceipted_fullraw_response(data: Any) -> bool:
-    return not _full_raw_shard_receipt(data) and not _parse_full_raw_search_response(data)
+    receipt = _full_raw_shard_receipt(data)
+    has_coverage = any(
+        key in receipt
+        for key in (
+            "partial_shard_search",
+            "shards_searched",
+            "shards_total",
+            "source_count_searched",
+            "sources_searched",
+            "sweep_failed_shards",
+        )
+    )
+    return not has_coverage and not _parse_full_raw_search_response(data)
 
 
 def _full_raw_receipt_summary(receipt: dict[str, object]) -> dict[str, object]:

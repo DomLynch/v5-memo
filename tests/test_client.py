@@ -306,7 +306,7 @@ def test_full_raw_client_retries_without_search_pass_when_cache_receipt_is_empty
         payload = json.loads(cast(bytes, request.data).decode("utf-8"))
         payloads.append(payload)
         if "search_pass" in payload:
-            return FakeResponse({"meta": {"count": 0}, "results": []})
+            return FakeResponse({"meta": {"count": 0, "shard_receipt": {"authenticated": True}}, "results": []})
         return FakeResponse({
             "meta": {
                 "count": 1,
@@ -345,7 +345,7 @@ def test_full_raw_client_retries_without_search_pass_when_cache_receipt_is_empty
         strict=True,
     )
 
-    hits = client.search("cold water immersion", limit=1)
+    hits = client.search("cold water immersion", limit=50)
 
     assert len(hits) == 1
     assert "search_pass" in payloads[0]
@@ -362,7 +362,7 @@ def test_full_raw_client_retries_low_limit_when_completed_cache_is_limit_scoped(
         payload = json.loads(cast(bytes, request.data).decode("utf-8"))
         payloads.append(payload)
         if payload["limit"] > 10:
-            return FakeResponse({"meta": {"count": 0}, "results": []})
+            return FakeResponse({"meta": {"count": 0, "shard_receipt": {"authenticated": True}}, "results": []})
         return FakeResponse({
             "meta": {
                 "count": 1,
