@@ -166,7 +166,7 @@ def candidate_publish_blocker(candidate: InsightCandidate) -> dict[str, object] 
         card.receipt_id
         for card in claim_cards
         if card.role in {"promise", "positive_signal"}
-        and set(card.direction.split("/")) & {"negative", "null"}
+        and _positive_role_direction_mismatch(card)
     )
     if direction_mismatch:
         return {
@@ -204,6 +204,13 @@ def candidate_publish_blocker(candidate: InsightCandidate) -> dict[str, object] 
             "receipt_ids": proxy_receipts,
         }
     return None
+
+
+def _positive_role_direction_mismatch(card: ClaimCard) -> bool:
+    directions = set(card.direction.split("/"))
+    if not directions & {"negative", "null"}:
+        return False
+    return card.role == "promise" or "positive" not in directions
 
 
 def _proxy_boundary_receipts(claim_cards: Sequence[ClaimCard]) -> tuple[str, ...]:

@@ -2079,7 +2079,7 @@ def test_claim_card_keeps_beneficial_reductions_positive_for_publish_gate() -> N
 
     card = _claim_card(hit, ReceiptRole(hit.hit_id, "positive_signal", "human trial"))
     candidate = InsightCandidate(
-        topic="urolithin muscle endurance older adults trial",
+        topic="urolithin muscle strength endurance older adults trial",
         thesis="Urolithin direct human receipts should not be blocked by beneficial reduction wording.",
         bridge_terms=("urolithin", "muscle"),
         tension_terms=("positive",),
@@ -2300,6 +2300,46 @@ def test_publish_blocker_rejects_positive_role_with_null_direction() -> None:
         "error": "positive_role_direction_mismatch",
         "receipt_ids": ("receipt-a",),
     }
+
+
+def test_publish_blocker_allows_noisy_positive_signal_direction_when_positive_present() -> None:
+    candidate = InsightCandidate(
+        topic="urolithin muscle strength endurance older adults trial",
+        thesis="Direct positive human signals should survive incidental reduction wording.",
+        bridge_terms=("urolithin", "muscle"),
+        tension_terms=("positive",),
+        receipt_ids=("strength", "endurance"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:boundary_condition", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "strength",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "muscle strength",
+                "negative/positive",
+                "direct",
+                "high",
+                "Urolithin improved strength while lowering damage markers.",
+            ),
+            ClaimCard(
+                "endurance",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "muscle endurance",
+                "negative/positive",
+                "direct",
+                "high",
+                "Urolithin improved endurance while reducing fatigue.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) is None
 
 
 def test_publish_blocker_rejects_mixed_metabolic_muscle_axis_bundle() -> None:
