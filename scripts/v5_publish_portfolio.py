@@ -11,7 +11,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 DEFAULT_LEADS = (
@@ -21,7 +21,53 @@ DEFAULT_LEADS = (
     "resveratrol exercise training mitochondrial adaptation trial",
     "cold water immersion resistance training adaptation trial",
 )
+DISCOVERY_INTERVENTIONS = (
+    "urolithin a",
+    "nicotinamide riboside",
+    "nmn",
+    "taurine",
+    "creatine",
+    "omega 3",
+    "vitamin d",
+    "collagen peptides",
+    "nitrate supplementation",
+    "beetroot nitrate",
+    "sauna bathing",
+    "heat therapy",
+    "cold water immersion",
+    "metformin",
+    "acarbose",
+    "rapamycin",
+    "fisetin senolytic",
+    "quercetin dasatinib senolytic",
+    "spermidine",
+    "resveratrol",
+    "curcumin",
+    "ashwagandha",
+    "beta alanine",
+    "time restricted eating",
+    "ketogenic diet",
+    "protein timing",
+    "leucine supplementation",
+)
+DISCOVERY_CONTEXTS = (
+    "muscle strength older adults randomized trial",
+    "resistance training adaptation human trial",
+    "exercise recovery inflammation placebo trial",
+    "mitochondrial function exercise adaptation human trial",
+    "frailty physical function older adults trial",
+    "sarcopenia lean mass randomized trial",
+    "endurance performance older adults trial",
+    "blood pressure vascular aging trial",
+    "insulin sensitivity exercise training trial",
+    "cognitive aging physical function trial",
+    "sleep recovery exercise adaptation trial",
+    "bone density resistance training trial",
+    "tendon collagen adaptation trial",
+    "immune inflammation aging placebo trial",
+)
 TAIL_CHARS = 2000
+STATE_TIME_FORMAT = "%Y%m%dT%H%M%SZ"
 
 Runner = Callable[
     [Sequence[str], Mapping[str, str], Path],
@@ -45,6 +91,11 @@ class RunConfig:
     submit_wait_seconds: float
     max_leads: int
     state_path: Path | None
+    lead_file: Path | None
+    auto_discover_leads: bool
+    min_open_leads: int
+    discover_count: int
+    blocked_retry_hours: float
 
 
 def _repo_root() -> Path:
@@ -52,7 +103,7 @@ def _repo_root() -> Path:
 
 
 def _timestamp() -> str:
-    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime(STATE_TIME_FORMAT)
 
 
 def _slug(value: str) -> str:
@@ -60,12 +111,16 @@ def _slug(value: str) -> str:
     return slug[:80] or "lead"
 
 
+def _lead_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
 def _dedupe(values: Sequence[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for value in values:
         stripped = value.strip()
-        key = stripped.casefold()
+        key = _lead_key(stripped)
         if stripped and key not in seen:
             seen.add(key)
             result.append(stripped)
@@ -144,6 +199,118 @@ def _completed_leads(state: Mapping[str, object]) -> Mapping[str, object]:
     return raw if isinstance(raw, Mapping) else {}
 
 
+def _attempted_leads(state: Mapping[str, object]) -> Mapping[str, object]:
+    raw = state.get("attempted_leads")
+    return raw if isinstance(raw, Mapping) else {}
+
+
+def _state_keys(values: Mapping[str, object]) -> set[str]:
+    return {_lead_key(str(value)) for value in values}
+
+
+def _parse_state_time(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.strptime(value, STATE_TIME_FORMAT).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def _attempt_on_cooldown(
+    lead: str,
+    state: Mapping[str, object],
+    *,
+    retry_hours: float,
+    now: datetime,
+) -> bool:
+    if retry_hours <= 0:
+        return False
+    attempts = _attempted_leads(state)
+    lead_key = _lead_key(lead)
+    for raw_lead, raw_meta in attempts.items():
+        if _lead_key(str(raw_lead)) != lead_key or not isinstance(raw_meta, Mapping):
+            continue
+        status = str(raw_meta.get("status") or "")
+        if status in {"accepted", "submitted", "ready"}:
+            return False
+        updated_at = _parse_state_time(raw_meta.get("updated_at"))
+        if updated_at is None:
+            return False
+        return now - updated_at < timedelta(hours=retry_hours)
+    return False
+
+
+def _available_leads(
+    leads: Sequence[str],
+    state: Mapping[str, object],
+    *,
+    blocked_retry_hours: float,
+    now: datetime,
+) -> list[str]:
+    completed_keys = _state_keys(_completed_leads(state))
+    return [
+        lead
+        for lead in leads
+        if _lead_key(lead) not in completed_keys
+        and not _attempt_on_cooldown(lead, state, retry_hours=blocked_retry_hours, now=now)
+    ]
+
+
+def discover_leads(
+    known_leads: Sequence[str],
+    state: Mapping[str, object],
+    *,
+    count: int,
+) -> list[str]:
+    if count <= 0:
+        return []
+    known = {_lead_key(lead) for lead in known_leads}
+    known.update(_state_keys(_completed_leads(state)))
+    known.update(_state_keys(_attempted_leads(state)))
+    out: list[str] = []
+    for context in DISCOVERY_CONTEXTS:
+        for intervention in DISCOVERY_INTERVENTIONS:
+            lead = f"{intervention} {context}"
+            key = _lead_key(lead)
+            if key in known:
+                continue
+            known.add(key)
+            out.append(lead)
+            if len(out) >= count:
+                return out
+    return out
+
+
+def _append_leads(path: Path | None, leads: Sequence[str]) -> None:
+    if path is None or not leads:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.read_text() if path.exists() else ""
+    prefix = "" if not existing or existing.endswith("\n") else "\n"
+    path.write_text(f"{existing}{prefix}" + "\n".join(leads) + "\n")
+
+
+def _save_attempted_lead(
+    path: Path | None,
+    state: dict[str, object],
+    record: Mapping[str, object],
+) -> None:
+    if path is None:
+        return
+    raw = state.setdefault("attempted_leads", {})
+    if not isinstance(raw, dict):
+        raw = {}
+        state["attempted_leads"] = raw
+    raw[str(record["lead"])] = {
+        "receipt_path": record["receipt_path"],
+        "status": record["status"],
+        "updated_at": _timestamp(),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2, sort_keys=True))
+
+
 def _save_completed_lead(
     path: Path | None,
     state: dict[str, object],
@@ -217,10 +384,28 @@ def run_portfolio(
     repo_root = cwd or _repo_root()
     run_env = env or _env_for_repo(repo_root)
     state = _load_state(config.state_path)
-    completed_leads = _completed_leads(state)
-    open_leads = [lead for lead in leads if lead not in completed_leads]
-    lead_limit = config.max_leads if config.max_leads > 0 else len(open_leads)
-    selected = list(open_leads[:lead_limit])
+    now = datetime.now(UTC)
+    expanded_leads = list(leads)
+    available_leads = _available_leads(
+        expanded_leads,
+        state,
+        blocked_retry_hours=config.blocked_retry_hours,
+        now=now,
+    )
+    discovered: list[str] = []
+    if config.auto_discover_leads and len(available_leads) < config.min_open_leads:
+        needed = max(config.discover_count, config.min_open_leads - len(available_leads))
+        discovered = discover_leads(expanded_leads, state, count=needed)
+        _append_leads(config.lead_file, discovered)
+        expanded_leads.extend(discovered)
+        available_leads = _available_leads(
+            expanded_leads,
+            state,
+            blocked_retry_hours=config.blocked_retry_hours,
+            now=now,
+        )
+    lead_limit = config.max_leads if config.max_leads > 0 else len(available_leads)
+    selected = list(available_leads[:lead_limit])
     records: list[dict[str, object]] = []
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -249,6 +434,7 @@ def run_portfolio(
         if visibility_error:
             record["visibility_error"] = visibility_error
         records.append(record)
+        _save_attempted_lead(config.state_path, state, record)
         if _should_stop(status):
             if status in {"accepted", "submitted"}:
                 _save_completed_lead(config.state_path, state, record)
@@ -256,8 +442,24 @@ def run_portfolio(
 
     summary = {
         "created_at": _timestamp(),
+        "auto_discover_leads": config.auto_discover_leads,
+        "available_leads": len(available_leads),
+        "discovered_leads": discovered,
         "submit": config.submit,
-        "skipped_completed_leads": len(leads) - len(open_leads),
+        "skipped_completed_leads": sum(
+            1 for lead in expanded_leads if _lead_key(lead) in _state_keys(_completed_leads(state))
+        ),
+        "skipped_recent_attempts": sum(
+            1
+            for lead in expanded_leads
+            if _lead_key(lead) not in _state_keys(_completed_leads(state))
+            and _attempt_on_cooldown(
+                lead,
+                state,
+                retry_hours=config.blocked_retry_hours,
+                now=now,
+            )
+        ),
         "selected_leads": len(selected),
         "attempted_leads": len(records),
         "final_status": records[-1]["status"] if records else "no_new_leads",
@@ -292,6 +494,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--submit-wait-seconds", type=float, default=0.0)
     parser.add_argument("--max-leads", type=int, default=0)
     parser.add_argument("--state-path", type=Path)
+    parser.add_argument("--auto-discover-leads", action="store_true")
+    parser.add_argument("--min-open-leads", type=int, default=0)
+    parser.add_argument("--discover-count", type=int, default=20)
+    parser.add_argument("--blocked-retry-hours", type=float, default=0.0)
     return parser.parse_args(argv)
 
 
@@ -302,6 +508,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("at least one lead is required")
     if args.max_leads < 0:
         raise SystemExit("--max-leads must be >= 0")
+    if args.min_open_leads < 0:
+        raise SystemExit("--min-open-leads must be >= 0")
+    if args.discover_count < 0:
+        raise SystemExit("--discover-count must be >= 0")
+    if args.blocked_retry_hours < 0:
+        raise SystemExit("--blocked-retry-hours must be >= 0")
     config = RunConfig(
         output_dir=args.output_dir,
         python=args.python,
@@ -317,6 +529,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         submit_wait_seconds=args.submit_wait_seconds,
         max_leads=args.max_leads,
         state_path=args.state_path,
+        lead_file=Path(args.lead_file) if args.lead_file else None,
+        auto_discover_leads=args.auto_discover_leads,
+        min_open_leads=args.min_open_leads,
+        discover_count=args.discover_count,
+        blocked_retry_hours=args.blocked_retry_hours,
     )
     return run_portfolio(leads, config)
 
