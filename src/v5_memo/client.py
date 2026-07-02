@@ -525,7 +525,7 @@ class FullRawCorpusSearchClient:
             if (
                 self._uses_cache_sweep_contract()
                 and request_limit > 10
-                and not _full_raw_async_sweep_status(data)
+                and _full_raw_async_sweep_status(data) not in {"busy", "queued", "running"}
                 and _empty_unreceipted_fullraw_response(data)
             ):
                 fallback_payloads: list[dict[str, object]] = []
