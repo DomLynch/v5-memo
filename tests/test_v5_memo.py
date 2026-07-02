@@ -2420,6 +2420,49 @@ def test_publish_blocker_rejects_off_modality_primary_signal() -> None:
     }
 
 
+def test_publish_blocker_rejects_training_topic_recovery_primary_signal() -> None:
+    candidate = InsightCandidate(
+        topic="cold immersion training",
+        thesis="Recovery receipts should not publish as primary training-adaptation evidence.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("strength", "soccer"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "strength",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "muscle thickness",
+                "negative",
+                "direct",
+                "high",
+                "Cold immersion training reduced strength adaptation.",
+            ),
+            ClaimCard(
+                "soccer",
+                "null_signal",
+                "intervention_study",
+                "human",
+                "performance",
+                "null",
+                "direct",
+                "high",
+                "Cold-water immersion recovery did not improve in highly trained soccer players.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_modality_primary_signal",
+        "receipt_ids": ("soccer",),
+    }
+
+
 def test_publish_blocker_rejects_off_topic_primary_signal() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion resistance training adaptation",
