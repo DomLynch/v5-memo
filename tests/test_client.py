@@ -16,6 +16,7 @@ from v5_memo.client import (
     OpenAlexFullCorpusSearchClient,
     ResearkaSearchClient,
     SearchBackendError,
+    _backfill_missing_openalex_abstracts,
     _fullraw_search_passes,
     _parse_corpus_search_response,
     _parse_full_raw_search_response,
@@ -1394,13 +1395,17 @@ def test_full_raw_client_strict_full_coverage_raises_backfill_default(
     loose_client = FullRawCorpusSearchClient.from_env(strict=False)
 
     assert strict_client._doi_abstract_backfill_limit == 16
+    assert strict_client._doi_abstract_backfill_budget_seconds == 24.0
     assert loose_client._doi_abstract_backfill_limit == 6
+    assert loose_client._doi_abstract_backfill_budget_seconds == 12.0
 
     monkeypatch.setenv("V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT", "3")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_BUDGET_SECONDS", "5")
 
     explicit_client = FullRawCorpusSearchClient.from_env(strict=True)
 
     assert explicit_client._doi_abstract_backfill_limit == 3
+    assert explicit_client._doi_abstract_backfill_budget_seconds == 5.0
 
 
 def test_full_raw_client_explicit_max_variants_overrides_strict_default(
@@ -1903,6 +1908,37 @@ def test_fullraw_search_backfills_missing_doi_abstracts(monkeypatch: MonkeyPatch
     assert hits[0].abstract == "Protocol hypothesized metformin would augment training"
     assert hits[0].metadata["abstract_backfill"] == "openalex_doi"
     assert any("api.openalex.org/works/doi:" in url for url in seen_urls)
+
+
+def test_fullraw_openalex_backfill_stops_at_total_budget(monkeypatch: MonkeyPatch) -> None:
+    calls: list[str] = []
+    monotonic_values = iter([0.0, 0.0, 99.0])
+
+    def fake_monotonic() -> float:
+        return next(monotonic_values)
+
+    def fake_fetch(doi: str) -> CorpusHit:
+        calls.append(doi)
+        return CorpusHit(
+            hit_id=doi,
+            title=f"Study {doi}",
+            abstract=f"Backfilled {doi}",
+            source="openalex:full-corpus",
+            doi=doi,
+        )
+
+    monkeypatch.setattr("v5_memo.client.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("v5_memo.client._fetch_openalex_work_by_doi", fake_fetch)
+    hits = [
+        CorpusHit(hit_id=str(index), title=f"Study 10.1/test{index}", abstract="", source="fullraw", doi=f"10.1/test{index}")
+        for index in range(3)
+    ]
+
+    out = _backfill_missing_openalex_abstracts(hits, limit=3, budget_seconds=1.0)
+
+    assert calls == ["10.1/test0"]
+    assert out[0].abstract == "Backfilled 10.1/test0"
+    assert out[1].abstract == ""
 
 def test_fullraw_search_drops_doi_title_mismatch(monkeypatch: MonkeyPatch) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:

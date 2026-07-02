@@ -308,6 +308,7 @@ class FullRawCorpusSearchClient:
         sweep_wait_seconds: float = 0.0,
         sweep_poll_seconds: float = 1.0,
         doi_abstract_backfill_limit: int = 0,
+        doi_abstract_backfill_budget_seconds: float = 0.0,
         min_shards_searched: int = 0,
         min_sources_searched: int = 0,
         require_auth: bool = False,
@@ -324,6 +325,7 @@ class FullRawCorpusSearchClient:
         self._sweep_wait_seconds = max(0.0, sweep_wait_seconds)
         self._sweep_poll_seconds = max(0.0, sweep_poll_seconds)
         self._doi_abstract_backfill_limit = max(0, doi_abstract_backfill_limit)
+        self._doi_abstract_backfill_budget_seconds = max(0.0, doi_abstract_backfill_budget_seconds)
         self._min_shards_searched = max(0, min_shards_searched)
         self._min_sources_searched = max(0, min_sources_searched)
         self._require_auth = require_auth or bool(self._token)
@@ -360,6 +362,10 @@ class FullRawCorpusSearchClient:
             doi_abstract_backfill_limit=_int_env(
                 "V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT",
                 default_backfill_limit,
+            ),
+            doi_abstract_backfill_budget_seconds=_float_env(
+                "V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_BUDGET_SECONDS",
+                24.0 if full_coverage_search else 12.0,
             ),
             min_shards_searched=min_shards_searched,
             min_sources_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", default_min_sources),
@@ -483,6 +489,7 @@ class FullRawCorpusSearchClient:
         return _backfill_missing_openalex_abstracts(
             ranked_hits,
             limit=self._doi_abstract_backfill_limit,
+            budget_seconds=self._doi_abstract_backfill_budget_seconds,
         )
 
     def _log_progress(self, message: str) -> None:
@@ -864,11 +871,13 @@ def _backfill_missing_openalex_abstracts(
     hits: list[CorpusHit],
     *,
     limit: int,
+    budget_seconds: float = 0.0,
 ) -> list[CorpusHit]:
     if limit <= 0:
         return hits
     out: list[CorpusHit | None] = list(hits)
     backfilled = 0
+    started = time.monotonic()
     eligible = [
         (index, hit)
         for index, hit in enumerate(hits)
@@ -877,6 +886,8 @@ def _backfill_missing_openalex_abstracts(
     eligible.sort(key=lambda item: _doi_backfill_priority(item[1]), reverse=True)
     for index, hit in eligible:
         if backfilled >= limit:
+            break
+        if budget_seconds > 0 and time.monotonic() - started >= budget_seconds:
             break
         doi = hit.doi
         if doi is None:
