@@ -251,7 +251,7 @@ def _off_modality_primary_receipts(
     claim_cards: Sequence[ClaimCard],
 ) -> tuple[str, ...]:
     topic_terms = set(re.findall(r"[a-z0-9]+", topic.casefold()))
-    if not topic_terms & {"resistance", "strength"}:
+    if not topic_terms & {"adaptation", "exercise", "resistance", "strength", "training"}:
         return ()
     return tuple(
         card.receipt_id
