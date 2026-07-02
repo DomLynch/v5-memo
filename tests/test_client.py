@@ -547,7 +547,9 @@ def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) ->
     }
 
 
-def test_full_raw_client_rejects_low_limit_cache_for_publish_sized_recall(monkeypatch: object) -> None:
+def test_full_raw_client_uses_completed_low_limit_cache_for_pending_publish_sized_recall(
+    monkeypatch: object,
+) -> None:
     payloads: list[dict[str, object]] = []
 
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
@@ -600,11 +602,11 @@ def test_full_raw_client_rejects_low_limit_cache_for_publish_sized_recall(monkey
         strict=True,
     )
 
-    with pytest.raises(SearchBackendError, match="coverage too narrow"):
-        client.search("metformin resistance training adaptation", limit=25)
+    hits = client.search("metformin resistance training adaptation", limit=25)
 
-    assert [payload["limit"] for payload in payloads] == [25]
-    assert [payload["top_k"] for payload in payloads] == [25]
+    assert hits[0].doi == "10.123/metformin"
+    assert [payload["limit"] for payload in payloads] == [25, 25, 10]
+    assert [payload["top_k"] for payload in payloads] == [25, 25, 10]
 
 
 def test_full_raw_client_skips_cold_variant_for_later_trusted_variant(monkeypatch: object) -> None:
