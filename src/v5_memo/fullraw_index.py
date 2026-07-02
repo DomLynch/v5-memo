@@ -1973,23 +1973,24 @@ def _materialized_shard_path(
     tmp_path = cache_path.with_name(f".{cache_path.name}.tmp.{os.getpid()}.{threading.get_ident()}")
     base_preserve = preserve or set()
     with _SHARD_LOCAL_CACHE_LOCK:
+        reserved_bytes = sum(_SHARD_LOCAL_CACHE_RESERVED_BYTES.values())
         _evict_shard_cache(
             cache_path.parent,
-            required_bytes=source_stat.st_size,
+            required_bytes=reserved_bytes + source_stat.st_size,
             keep=cache_path,
             preserve=base_preserve | _SHARD_LOCAL_CACHE_IN_PROGRESS,
         )
         if max_cache_bytes is not None:
             cache_bytes = _shard_cache_used_bytes(cache_path.parent)
-            reserved_bytes = sum(_SHARD_LOCAL_CACHE_RESERVED_BYTES.values())
             if cache_bytes + reserved_bytes + source_stat.st_size > max_cache_bytes:
                 _SHARD_LOCAL_CACHE_IN_PROGRESS.discard(cache_path)
                 return path
         _SHARD_LOCAL_CACHE_RESERVED_BYTES[tmp_path] = source_stat.st_size
         _SHARD_LOCAL_CACHE_IN_PROGRESS.add(tmp_path)
+        reserved_bytes = sum(_SHARD_LOCAL_CACHE_RESERVED_BYTES.values())
         _evict_shard_cache(
             cache_path.parent,
-            required_bytes=source_stat.st_size,
+            required_bytes=reserved_bytes,
             keep=cache_path,
             preserve=base_preserve | _SHARD_LOCAL_CACHE_IN_PROGRESS,
         )

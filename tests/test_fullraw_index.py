@@ -1960,6 +1960,37 @@ def test_materialized_shard_path_skips_populate_when_cache_budget_exhausted(
     assert fullraw_index._cached_materialized_shard_path(remote) is None
 
 
+def test_materialized_shard_path_evicts_for_existing_reservations(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    remote = tmp_path / "remote" / "fullraw_shard_0001.sqlite"
+    remote.parent.mkdir()
+    remote.write_bytes(b"data")
+    cache_dir.mkdir()
+    old_cache = cache_dir / "old.sqlite"
+    old_cache.write_bytes(b"xxxx")
+    reserved = cache_dir / ".reserved.sqlite.tmp.1.1"
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "10")
+    with fullraw_index._SHARD_LOCAL_CACHE_LOCK:
+        fullraw_index._SHARD_LOCAL_CACHE_IN_PROGRESS.clear()
+        fullraw_index._SHARD_LOCAL_CACHE_RESERVED_BYTES.clear()
+        fullraw_index._SHARD_LOCAL_CACHE_IN_PROGRESS.add(reserved)
+        fullraw_index._SHARD_LOCAL_CACHE_RESERVED_BYTES[reserved] = 4
+    try:
+        materialized = fullraw_index._materialized_shard_path(remote, populate=True)
+    finally:
+        with fullraw_index._SHARD_LOCAL_CACHE_LOCK:
+            fullraw_index._SHARD_LOCAL_CACHE_IN_PROGRESS.clear()
+            fullraw_index._SHARD_LOCAL_CACHE_RESERVED_BYTES.clear()
+
+    assert materialized != remote
+    assert materialized.exists()
+    assert not old_cache.exists()
+
+
 def test_materialized_shard_path_avoids_remote_stat_when_cache_budget_exhausted(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
