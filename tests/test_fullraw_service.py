@@ -192,8 +192,8 @@ def test_v5_isolated_fullraw_service_uses_v5_lane() -> None:
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=1" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=1" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=4" in config
-    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto" in config
-    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_GB=15" in config
+    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=12884901888" in config
+    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_GB" not in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB=3" in config
     assert "Environment=RESEARKA_FULLRAW_MAX_VARIANTS=1" in config
     assert "Environment=RESEARKA_FULLRAW_DOI_ABSTRACT_BACKFILL_LIMIT=16" in config
