@@ -36,6 +36,11 @@ def test_build_command_preserves_strict_submit_gate(tmp_path: Path) -> None:
         submit_wait_seconds=10,
         max_leads=1,
         state_path=None,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=0,
     )
 
     command = portfolio.build_command(
@@ -88,6 +93,11 @@ def test_run_portfolio_continues_after_blocker_until_ready(tmp_path: Path) -> No
         submit_wait_seconds=0,
         max_leads=0,
         state_path=None,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=0,
     )
     calls: list[list[str]] = []
 
@@ -140,6 +150,11 @@ def test_run_portfolio_skips_completed_leads_and_saves_success(tmp_path: Path) -
         submit_wait_seconds=0,
         max_leads=0,
         state_path=state_path,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=0,
     )
     calls: list[list[str]] = []
 
@@ -169,3 +184,116 @@ def test_run_portfolio_skips_completed_leads_and_saves_success(tmp_path: Path) -
     assert calls[0][calls[0].index("--topic") + 1] == "fresh lead"
     assert summary["skipped_completed_leads"] == 1
     assert state["completed_leads"]["fresh lead"]["status"] == "accepted"
+
+
+def test_auto_discovery_appends_unique_leads_when_open_queue_is_low(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    lead_file = tmp_path / "leads.txt"
+    lead_file.write_text("done lead\nurolithin a muscle strength older adults randomized trial\n")
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({"completed_leads": {"done lead": {"status": "accepted"}}}))
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=state_path,
+        lead_file=lead_file,
+        auto_discover_leads=True,
+        min_open_leads=3,
+        discover_count=3,
+        blocked_retry_hours=0,
+    )
+
+    def fake_runner(
+        command: list[str],
+        _env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps({"memo": "ready"}))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    code = portfolio.run_portfolio(
+        ["done lead", "urolithin a muscle strength older adults randomized trial"],
+        config,
+        runner=fake_runner,
+        env={},
+        cwd=Path.cwd(),
+    )
+
+    lead_lines = [line for line in lead_file.read_text().splitlines() if line]
+    summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
+    assert code == 0
+    assert len(lead_lines) == len(set(lead_lines))
+    assert len(summary["discovered_leads"]) == 3
+    assert "urolithin a muscle strength older adults randomized trial" not in summary["discovered_leads"]
+
+
+def test_recent_blocked_leads_cool_down_so_later_leads_can_run(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "attempted_leads": {
+            "blocked lead": {
+                "status": "blocked:search_backend_error",
+                "updated_at": portfolio._timestamp(),
+            },
+        },
+    }))
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=state_path,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=24,
+    )
+    calls: list[list[str]] = []
+
+    def fake_runner(
+        command: list[str],
+        _env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps({"memo": "ready"}))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    code = portfolio.run_portfolio(
+        ["blocked lead", "fresh lead"],
+        config,
+        runner=fake_runner,
+        env={},
+        cwd=Path.cwd(),
+    )
+
+    summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
+    assert code == 0
+    assert calls[0][calls[0].index("--topic") + 1] == "fresh lead"
+    assert summary["skipped_recent_attempts"] == 1

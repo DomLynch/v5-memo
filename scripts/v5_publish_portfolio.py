@@ -66,6 +66,14 @@ DISCOVERY_CONTEXTS = (
     "tendon collagen adaptation trial",
     "immune inflammation aging placebo trial",
 )
+DISCOVERY_ANGLES = (
+    "",
+    "null result",
+    "dose response",
+    "sex differences",
+    "subgroup response",
+    "adverse adaptation",
+)
 TAIL_CHARS = 2000
 STATE_TIME_FORMAT = "%Y%m%dT%H%M%SZ"
 
@@ -269,16 +277,17 @@ def discover_leads(
     known.update(_state_keys(_completed_leads(state)))
     known.update(_state_keys(_attempted_leads(state)))
     out: list[str] = []
-    for context in DISCOVERY_CONTEXTS:
-        for intervention in DISCOVERY_INTERVENTIONS:
-            lead = f"{intervention} {context}"
-            key = _lead_key(lead)
-            if key in known:
-                continue
-            known.add(key)
-            out.append(lead)
-            if len(out) >= count:
-                return out
+    for angle in DISCOVERY_ANGLES:
+        for context in DISCOVERY_CONTEXTS:
+            for intervention in DISCOVERY_INTERVENTIONS:
+                lead = " ".join(part for part in (intervention, context, angle) if part)
+                key = _lead_key(lead)
+                if key in known:
+                    continue
+                known.add(key)
+                out.append(lead)
+                if len(out) >= count:
+                    return out
     return out
 
 
@@ -386,6 +395,7 @@ def run_portfolio(
     state = _load_state(config.state_path)
     now = datetime.now(UTC)
     expanded_leads = list(leads)
+    initial_completed_keys = _state_keys(_completed_leads(state))
     available_leads = _available_leads(
         expanded_leads,
         state,
@@ -406,6 +416,20 @@ def run_portfolio(
         )
     lead_limit = config.max_leads if config.max_leads > 0 else len(available_leads)
     selected = list(available_leads[:lead_limit])
+    skipped_completed_count = sum(
+        1 for lead in expanded_leads if _lead_key(lead) in initial_completed_keys
+    )
+    skipped_recent_count = sum(
+        1
+        for lead in expanded_leads
+        if _lead_key(lead) not in initial_completed_keys
+        and _attempt_on_cooldown(
+            lead,
+            state,
+            retry_hours=config.blocked_retry_hours,
+            now=now,
+        )
+    )
     records: list[dict[str, object]] = []
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -446,20 +470,8 @@ def run_portfolio(
         "available_leads": len(available_leads),
         "discovered_leads": discovered,
         "submit": config.submit,
-        "skipped_completed_leads": sum(
-            1 for lead in expanded_leads if _lead_key(lead) in _state_keys(_completed_leads(state))
-        ),
-        "skipped_recent_attempts": sum(
-            1
-            for lead in expanded_leads
-            if _lead_key(lead) not in _state_keys(_completed_leads(state))
-            and _attempt_on_cooldown(
-                lead,
-                state,
-                retry_hours=config.blocked_retry_hours,
-                now=now,
-            )
-        ),
+        "skipped_completed_leads": skipped_completed_count,
+        "skipped_recent_attempts": skipped_recent_count,
         "selected_leads": len(selected),
         "attempted_leads": len(records),
         "final_status": records[-1]["status"] if records else "no_new_leads",
