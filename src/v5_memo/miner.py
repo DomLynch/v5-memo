@@ -40,14 +40,21 @@ _NEGATIVE = frozenset({
     "suppress", "suppressed", "suppresses", "worse", "worsened",
 })
 _ATTENUATE = frozenset({"attenuate", "attenuated"})
+_BENEFICIAL_REDUCTION = _ATTENUATE | frozenset({
+    "decrease", "decreased", "lower", "lowered", "reduce", "reduced",
+})
 _ADVERSE_ENDPOINT = frozenset({
     "acth", "cortisol", "damage", "death", "deaths", "error", "errors",
     "fatal", "fatality", "inflammation", "mortality", "pain", "risk", "stress",
+})
+_BENEFICIAL_REDUCTION_ENDPOINT = _ADVERSE_ENDPOINT | frozenset({
+    "fatigue", "fatigability", "soreness",
 })
 _NULL = frozenset({"null", "neutral", "unchanged", "failed", "nonsignificant"})
 _NULL_PHRASE_RE = re.compile(
     r"\b(?:does|do|did|is|are|was|were)\s+not\b|\bno\s+difference(?:s)?\b|\bwithout\s+difference(?:s)?\b"
 )
+_WEAK_NULL_PHRASE_RE = re.compile(r"\b(?:do|were)\s+not\b")
 _NEGATED = frozenset({
     "fail", "failed", "fails", "lack", "lacked", "lacks", "no", "not", "without",
 })
@@ -625,16 +632,30 @@ def _polarity(text: str) -> frozenset[str]:
         out.add("positive")
     if negated_positive:
         out.add("null")
-    if tokens & _NEGATIVE:
-        if tokens & _ATTENUATE and tokens & _ADVERSE_ENDPOINT and not (tokens & (_NEGATIVE - _ATTENUATE)):
+    negative_terms = tokens & _NEGATIVE
+    if negative_terms:
+        if negative_terms <= _BENEFICIAL_REDUCTION and _has_beneficial_reduction_context(text):
             out.add("positive")
         else:
             out.add("negative")
-    if tokens & _NULL or _NULL_PHRASE_RE.search(text.casefold()):
+    null_phrase = _NULL_PHRASE_RE.search(text.casefold())
+    weak_null = bool(null_phrase and _WEAK_NULL_PHRASE_RE.fullmatch(null_phrase.group(0)))
+    if tokens & _NULL or (null_phrase and not (weak_null and "positive" in out)):
         out.add("null")
     if len(out) > 1:
         out.add("mixed")
     return frozenset(out)
+
+
+def _has_beneficial_reduction_context(text: str) -> bool:
+    words = [_norm_token(raw) for raw in _WORD.findall(text.casefold())]
+    for index, word in enumerate(words):
+        if (
+            word in _BENEFICIAL_REDUCTION
+            and set(words[index + 1:index + 4]) & _BENEFICIAL_REDUCTION_ENDPOINT
+        ):
+            return True
+    return False
 
 
 def _positive_context(text: str) -> tuple[bool, bool]:

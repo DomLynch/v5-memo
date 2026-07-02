@@ -341,8 +341,6 @@ class FullRawCorpusSearchClient:
             or _fullraw_env("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "").strip()
         )
         search_url = _fullraw_env("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "")
-        if not search_url and token:
-            search_url = "http://127.0.0.1:9903/search"
         default_min_shards = 1525 if token else 0
         default_min_sources = 5 if token else 0
         search_budget_seconds = _float_env("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", 180.0)

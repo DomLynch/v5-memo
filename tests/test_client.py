@@ -1494,7 +1494,7 @@ def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) ->
     assert client._require_auth is True
 
 
-def test_full_raw_client_from_env_uses_index_token_fullraw_defaults(
+def test_full_raw_client_from_env_requires_explicit_url_with_index_token(
     monkeypatch: MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", raising=False)
@@ -1503,8 +1503,8 @@ def test_full_raw_client_from_env_uses_index_token_fullraw_defaults(
 
     client = FullRawCorpusSearchClient.from_env()
 
-    assert client.configured is True
-    assert client._search_url == "http://127.0.0.1:9903/search"
+    assert client.configured is False
+    assert client._search_url == ""
     assert client._token == "index-secret"
     assert client._min_shards_searched == 1525
     assert client._min_sources_searched == 5

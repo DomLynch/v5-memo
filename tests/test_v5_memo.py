@@ -2064,6 +2064,50 @@ def test_claim_card_treats_human_supplementation_as_direct_intervention() -> Non
     assert card.confidence == "high"
 
 
+def test_claim_card_keeps_beneficial_reductions_positive_for_publish_gate() -> None:
+    hit = CorpusHit(
+        hit_id="urolithin-positive",
+        title="Urolithin A improves muscle endurance in older adults",
+        abstract=(
+            "A randomized human trial found that urolithin A improved muscle endurance "
+            "and reduced fatigue. Exploratory biomarkers were not different and do not "
+            "explain the endurance response."
+        ),
+        source="fullraw:openalex",
+        doi="10.1001/jamanetworkopen.2021.44279",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "positive_signal", "human trial"))
+    candidate = InsightCandidate(
+        topic="urolithin muscle endurance older adults trial",
+        thesis="Urolithin direct human receipts should not be blocked by beneficial reduction wording.",
+        bridge_terms=("urolithin", "muscle"),
+        tension_terms=("positive",),
+        receipt_ids=(hit.hit_id, "supporting-positive"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:boundary_condition", "tier:publishable_alpha"),
+        claim_cards=(
+            card,
+            ClaimCard(
+                "supporting-positive",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "muscle strength",
+                "positive",
+                "direct",
+                "high",
+                "Urolithin improved muscle strength in a second randomized human trial.",
+            ),
+        ),
+    )
+
+    assert card.direction == "positive"
+    assert candidate_publish_blocker(candidate) is None
+
+
 def test_claim_card_treats_players_training_as_direct_human_intervention() -> None:
     hit = CorpusHit(
         hit_id="10.players",
