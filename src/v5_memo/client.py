@@ -88,7 +88,7 @@ def _fullraw_env_names(name: str) -> tuple[str, ...]:
     if not name.startswith(_FULLRAW_LEGACY_PREFIX):
         return (name,)
     suffix = name.removeprefix(_FULLRAW_LEGACY_PREFIX)
-    candidates = (*_FULLRAW_SPECIAL_ALIASES.get(name, ()), f"{_FULLRAW_GENERIC_PREFIX}{suffix}", name)
+    candidates = (name, *_FULLRAW_SPECIAL_ALIASES.get(name, ()), f"{_FULLRAW_GENERIC_PREFIX}{suffix}")
     return tuple(dict.fromkeys(candidates))
 
 
