@@ -522,6 +522,15 @@ class FullRawCorpusSearchClient:
         initial_error: SearchBackendError | None = None
         try:
             data = self._request_search(payload)
+            if (
+                self._uses_cache_sweep_contract()
+                and "search_pass" in payload
+                and not _full_raw_shard_receipt(data)
+                and not _parse_full_raw_search_response(data)
+            ):
+                fallback_payload = dict(payload)
+                fallback_payload.pop("search_pass", None)
+                data = self._request_search(fallback_payload)
         except SearchBackendError as exc:
             if not self._sweep_wait_seconds:
                 raise

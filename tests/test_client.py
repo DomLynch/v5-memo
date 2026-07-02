@@ -296,6 +296,62 @@ def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
     assert hits[0].metadata["shard_receipt"] == receipt
 
 
+def test_full_raw_client_retries_without_search_pass_when_cache_receipt_is_empty(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        payloads.append(payload)
+        if "search_pass" in payload:
+            return FakeResponse({"meta": {"count": 0}, "results": []})
+        return FakeResponse({
+            "meta": {
+                "count": 1,
+                "shard_receipt": {
+                    "authenticated": True,
+                    "shards_searched": 1525,
+                    "shards_total": 1525,
+                    "partial_shard_search": False,
+                    "sweep_failed_shards": 0,
+                    "sources_searched": {
+                        "biorxiv": 1,
+                        "openalex": 1,
+                        "pubmed": 1,
+                        "semantic_scholar": 1,
+                        "semantic_scholar_abstracts": 1,
+                    },
+                },
+            },
+            "results": [{
+                "doi": "10.1113/jp270570",
+                "title": "Post-exercise cold water immersion attenuates adaptations",
+                "abstract": "Cold water immersion attenuated resistance training adaptations.",
+                "year": 2015,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="token",
+        max_variants=1,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        require_auth=True,
+        strict=True,
+    )
+
+    hits = client.search("cold water immersion", limit=1)
+
+    assert len(hits) == 1
+    assert "search_pass" in payloads[0]
+    assert "search_pass" not in payloads[1]
+
+
 def test_full_raw_client_requires_auth_receipt_when_token_configured(monkeypatch: object) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del request, timeout
