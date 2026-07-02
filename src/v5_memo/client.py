@@ -522,15 +522,23 @@ class FullRawCorpusSearchClient:
         initial_error: SearchBackendError | None = None
         try:
             data = self._request_search(payload)
-            if (
-                self._uses_cache_sweep_contract()
-                and "search_pass" in payload
-                and not _full_raw_shard_receipt(data)
-                and not _parse_full_raw_search_response(data)
-            ):
-                fallback_payload = dict(payload)
-                fallback_payload.pop("search_pass", None)
-                data = self._request_search(fallback_payload)
+            if self._uses_cache_sweep_contract() and _empty_unreceipted_fullraw_response(data):
+                fallback_payloads: list[dict[str, object]] = []
+                if "search_pass" in payload:
+                    fallback_payload = dict(payload)
+                    fallback_payload.pop("search_pass", None)
+                    fallback_payloads.append(fallback_payload)
+                if request_limit > 10:
+                    low_limit_payload = {**payload, "limit": 10, "top_k": 10}
+                    fallback_payloads.append(low_limit_payload)
+                    if "search_pass" in payload:
+                        low_limit_unscoped = dict(low_limit_payload)
+                        low_limit_unscoped.pop("search_pass", None)
+                        fallback_payloads.append(low_limit_unscoped)
+                for fallback_payload in fallback_payloads:
+                    data = self._request_search(fallback_payload)
+                    if not _empty_unreceipted_fullraw_response(data):
+                        break
         except SearchBackendError as exc:
             if not self._sweep_wait_seconds:
                 raise
@@ -792,6 +800,10 @@ def _full_raw_shard_receipt(data: Any) -> dict[str, object]:
     if not isinstance(receipt, dict):
         return {}
     return dict(receipt)
+
+
+def _empty_unreceipted_fullraw_response(data: Any) -> bool:
+    return not _full_raw_shard_receipt(data) and not _parse_full_raw_search_response(data)
 
 
 def _full_raw_receipt_summary(receipt: dict[str, object]) -> dict[str, object]:
