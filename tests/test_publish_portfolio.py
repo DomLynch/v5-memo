@@ -186,6 +186,57 @@ def test_run_portfolio_skips_completed_leads_and_saves_success(tmp_path: Path) -
     assert state["completed_leads"]["fresh lead"]["status"] == "accepted"
 
 
+def test_submitted_without_decision_is_not_completed(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    state_path = tmp_path / "state.json"
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=True,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=0,
+        state_path=state_path,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=24,
+    )
+
+    def fake_runner(
+        command: list[str],
+        _env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps({"submission_id": "pending-submit"}))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    code = portfolio.run_portfolio(
+        ["pending lead"],
+        config,
+        runner=fake_runner,
+        env={},
+        cwd=Path.cwd(),
+    )
+
+    state = json.loads(state_path.read_text())
+    summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
+    assert code == 0
+    assert summary["final_status"] == "submitted"
+    assert state["attempted_leads"]["pending lead"]["status"] == "submitted"
+    assert "pending lead" not in state.get("completed_leads", {})
+
+
 def test_auto_discovery_appends_unique_leads_when_open_queue_is_low(tmp_path: Path) -> None:
     portfolio = _load_portfolio()
     lead_file = tmp_path / "leads.txt"
@@ -287,6 +338,65 @@ def test_recent_blocked_leads_cool_down_so_later_leads_can_run(tmp_path: Path) -
 
     code = portfolio.run_portfolio(
         ["blocked lead", "fresh lead"],
+        config,
+        runner=fake_runner,
+        env={},
+        cwd=Path.cwd(),
+    )
+
+    summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
+    assert code == 0
+    assert calls[0][calls[0].index("--topic") + 1] == "fresh lead"
+    assert summary["skipped_recent_attempts"] == 1
+
+
+def test_recent_submitted_leads_cool_down_so_later_leads_can_run(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "attempted_leads": {
+            "pending lead": {
+                "status": "submitted",
+                "updated_at": portfolio._timestamp(),
+            },
+        },
+    }))
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=state_path,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=24,
+    )
+    calls: list[list[str]] = []
+
+    def fake_runner(
+        command: list[str],
+        _env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps({"memo": "ready"}))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    code = portfolio.run_portfolio(
+        ["pending lead", "fresh lead"],
         config,
         runner=fake_runner,
         env={},

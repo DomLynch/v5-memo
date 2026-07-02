@@ -240,7 +240,7 @@ def _attempt_on_cooldown(
         if _lead_key(str(raw_lead)) != lead_key or not isinstance(raw_meta, Mapping):
             continue
         status = str(raw_meta.get("status") or "")
-        if status in {"accepted", "submitted", "ready"}:
+        if status in {"accepted", "ready"}:
             return False
         updated_at = _parse_state_time(raw_meta.get("updated_at"))
         if updated_at is None:
@@ -460,7 +460,7 @@ def run_portfolio(
         records.append(record)
         _save_attempted_lead(config.state_path, state, record)
         if _should_stop(status):
-            if status in {"accepted", "submitted"}:
+            if status == "accepted":
                 _save_completed_lead(config.state_path, state, record)
             break
 
