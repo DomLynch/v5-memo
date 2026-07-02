@@ -258,6 +258,7 @@ def test_full_raw_client_from_env_prefers_v5_over_generic_overrides(monkeypatch:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", "v5-token")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS", "0")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_QUERY_TIMEOUT", "20")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_ALLOW_COMPLETED_LOW_LIMIT_FALLBACK", "1")
 
     client = FullRawCorpusSearchClient.from_env(strict=True)
 
@@ -265,6 +266,7 @@ def test_full_raw_client_from_env_prefers_v5_over_generic_overrides(monkeypatch:
     assert client._token == "v5-token"
     assert client._sweep_wait_seconds == 0.0
     assert client._timeout == 20.0
+    assert client._allow_completed_low_limit_fallback is True
 
 
 def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
