@@ -35,6 +35,7 @@ def test_build_command_preserves_strict_submit_gate(tmp_path: Path) -> None:
         decision_poll_seconds=2,
         submit_wait_seconds=10,
         max_leads=1,
+        state_path=None,
     )
 
     command = portfolio.build_command(
@@ -86,6 +87,7 @@ def test_run_portfolio_continues_after_blocker_until_ready(tmp_path: Path) -> No
         decision_poll_seconds=1,
         submit_wait_seconds=0,
         max_leads=0,
+        state_path=None,
     )
     calls: list[list[str]] = []
 
@@ -117,3 +119,53 @@ def test_run_portfolio_continues_after_blocker_until_ready(tmp_path: Path) -> No
     assert summary["attempted_leads"] == 2
     assert summary["records"][0]["status"] == "blocked:candidate_publish_blocker"
     assert summary["records"][1]["status"] == "ready"
+
+
+def test_run_portfolio_skips_completed_leads_and_saves_success(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({"completed_leads": {"done lead": {"status": "accepted"}}}))
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=True,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=0,
+        state_path=state_path,
+    )
+    calls: list[list[str]] = []
+
+    def fake_runner(
+        command: list[str],
+        _env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps({"decision": {"decision": "accept"}}))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    code = portfolio.run_portfolio(
+        ["done lead", "fresh lead"],
+        config,
+        runner=fake_runner,
+        env={},
+        cwd=Path.cwd(),
+    )
+
+    state = json.loads(state_path.read_text())
+    summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
+    assert code == 0
+    assert len(calls) == 1
+    assert calls[0][calls[0].index("--topic") + 1] == "fresh lead"
+    assert summary["skipped_completed_leads"] == 1
+    assert state["completed_leads"]["fresh lead"]["status"] == "accepted"

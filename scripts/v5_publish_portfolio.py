@@ -44,6 +44,7 @@ class RunConfig:
     decision_poll_seconds: float
     submit_wait_seconds: float
     max_leads: int
+    state_path: Path | None
 
 
 def _repo_root() -> Path:
@@ -128,6 +129,41 @@ def _read_json(path: Path) -> dict[str, object]:
     return data if isinstance(data, dict) else {"error": "invalid_receipt_shape"}
 
 
+def _load_state(path: Path | None) -> dict[str, object]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _completed_leads(state: Mapping[str, object]) -> Mapping[str, object]:
+    raw = state.get("completed_leads")
+    return raw if isinstance(raw, Mapping) else {}
+
+
+def _save_completed_lead(
+    path: Path | None,
+    state: dict[str, object],
+    record: Mapping[str, object],
+) -> None:
+    if path is None:
+        return
+    raw = state.setdefault("completed_leads", {})
+    if not isinstance(raw, dict):
+        raw = {}
+        state["completed_leads"] = raw
+    raw[str(record["lead"])] = {
+        "receipt_path": record["receipt_path"],
+        "status": record["status"],
+        "updated_at": _timestamp(),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2, sort_keys=True))
+
+
 def classify_run(returncode: int, receipt: Mapping[str, object], *, submit: bool) -> str:
     raw_decision = receipt.get("decision")
     if isinstance(raw_decision, Mapping):
@@ -180,8 +216,11 @@ def run_portfolio(
 ) -> int:
     repo_root = cwd or _repo_root()
     run_env = env or _env_for_repo(repo_root)
-    lead_limit = config.max_leads if config.max_leads > 0 else len(leads)
-    selected = list(leads[:lead_limit])
+    state = _load_state(config.state_path)
+    completed_leads = _completed_leads(state)
+    open_leads = [lead for lead in leads if lead not in completed_leads]
+    lead_limit = config.max_leads if config.max_leads > 0 else len(open_leads)
+    selected = list(open_leads[:lead_limit])
     records: list[dict[str, object]] = []
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -211,19 +250,22 @@ def run_portfolio(
             record["visibility_error"] = visibility_error
         records.append(record)
         if _should_stop(status):
+            if status in {"accepted", "submitted"}:
+                _save_completed_lead(config.state_path, state, record)
             break
 
     summary = {
         "created_at": _timestamp(),
         "submit": config.submit,
+        "skipped_completed_leads": len(leads) - len(open_leads),
         "selected_leads": len(selected),
         "attempted_leads": len(records),
-        "final_status": records[-1]["status"] if records else "no_leads",
+        "final_status": records[-1]["status"] if records else "no_new_leads",
         "records": records,
     }
     (config.output_dir / "portfolio.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
     final_status = str(summary["final_status"])
-    if final_status in {"accepted", "submitted", "ready"}:
+    if final_status in {"accepted", "submitted", "ready", "no_new_leads"}:
         return 0
     return 6 if final_status == "deferred" else 1
 
@@ -249,6 +291,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--decision-poll-seconds", type=float, default=5.0)
     parser.add_argument("--submit-wait-seconds", type=float, default=0.0)
     parser.add_argument("--max-leads", type=int, default=0)
+    parser.add_argument("--state-path", type=Path)
     return parser.parse_args(argv)
 
 
@@ -273,6 +316,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         decision_poll_seconds=args.decision_poll_seconds,
         submit_wait_seconds=args.submit_wait_seconds,
         max_leads=args.max_leads,
+        state_path=args.state_path,
     )
     return run_portfolio(leads, config)
 
