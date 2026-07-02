@@ -2369,7 +2369,7 @@ def test_publish_blocker_rejects_weak_primary_signal_receipts() -> None:
 def test_publish_blocker_rejects_off_modality_primary_signal() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion resistance training adaptation",
-        thesis="Team-sport post-match evidence should not be primary strength-training evidence.",
+        thesis="Team-sport recovery evidence should not be primary strength-training evidence.",
         bridge_terms=("cold", "immersion"),
         tension_terms=("negative", "null"),
         receipt_ids=("strength", "soccer", "direct"),
@@ -2398,7 +2398,7 @@ def test_publish_blocker_rejects_off_modality_primary_signal() -> None:
                 "null",
                 "direct",
                 "high",
-                "Post-match cold-water immersion recovery did not improve in highly trained soccer players.",
+                "Cold-water immersion recovery did not improve in highly trained soccer players.",
             ),
             ClaimCard(
                 "direct",

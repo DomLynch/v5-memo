@@ -257,7 +257,7 @@ def _off_modality_primary_receipts(
         card.receipt_id
         for card in claim_cards
         if card.role in _PRIMARY_SIGNAL_ROLES
-        and ("post-match" in card.quote.casefold() or "post match" in card.quote.casefold())
+        and _off_modality_training_quote(card.quote)
     )
 
 
@@ -313,6 +313,15 @@ def _topic_primary_anchor_terms(topic_terms: set[str]) -> set[str]:
 def _off_topic_quote(quote: str) -> bool:
     text = quote.casefold()
     return any(term in text for term in ("accidental", "cold-weather", "hypothermia", "military", "warfighter"))
+
+
+def _off_modality_training_quote(quote: str) -> bool:
+    text = quote.casefold()
+    return (
+        "post-match" in text
+        or "post match" in text
+        or ("recovery" in text and "soccer" in text)
+    )
 
 
 def no_alpha_failure(
