@@ -1160,7 +1160,7 @@ def _outcome_label(terms: frozenset[str]) -> str:
 
 
 def _claim_quote(hit: CorpusHit) -> str:
-    text = " ".join((hit.abstract or hit.title).split())
+    text = " ".join(f"{hit.title}. {hit.abstract}".split())
     return text[:180].rstrip()
 
 

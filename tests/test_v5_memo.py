@@ -1869,26 +1869,18 @@ def test_researka_payload_prefers_bundle_title_for_heterogeneous_direct_endpoint
         evidence_score=100,
         reasons=("shape:directional_reversal", "tier:publishable_alpha"),
         claim_cards=(
-            ClaimCard(
+            _direct_card(
                 "thickness",
                 "negative_signal",
-                "randomized_trial",
-                "human",
                 "muscle thickness",
                 "negative",
-                "direct",
-                "high",
                 "Cold-water immersion attenuated elbow flexor muscle thickness after strength training.",
             ),
-            ClaimCard(
+            _direct_card(
                 "performance",
                 "null_signal",
-                "intervention_study",
-                "human",
                 "performance",
                 "null",
-                "direct",
-                "high",
                 "Cold-water immersion training did not improve physical performance.",
             ),
         ),
@@ -2208,6 +2200,21 @@ def test_claim_card_preserves_muscle_thickness_outcome() -> None:
     assert card.outcome == "muscle thickness"
 
 
+def test_claim_card_quote_keeps_title_terms_for_publish_gate() -> None:
+    hit = CorpusHit(
+        hit_id="10.hypothermia",
+        title="Prevalence of hypothermia during military cold-water immersion training",
+        abstract="Human participants completed a cold-water immersion training assessment.",
+        source="fullraw:semantic_scholar",
+        doi="10.hypothermia",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "replication", "context"))
+
+    assert "hypothermia" in card.quote.casefold()
+    assert "military" in card.quote.casefold()
+
+
 def test_publish_blocker_rejects_positive_role_with_null_direction() -> None:
     candidate = InsightCandidate(
         topic="cold water immersion",
@@ -2473,51 +2480,42 @@ def test_publish_quality_drops_off_axis_direct_context_receipts() -> None:
         thesis="Off-axis operational safety context should not publish inside a training signal bundle.",
         bridge_terms=("cold", "immersion"),
         tension_terms=("negative", "null"),
-        receipt_ids=("performance-negative", "performance-null", "hypothermia"),
+        receipt_ids=("performance-negative", "performance-null", "10.hypothermia"),
         score=100,
         novelty_score=58,
         evidence_score=100,
         reasons=("shape:directional_reversal", "tier:publishable_alpha"),
         claim_cards=(
-            ClaimCard(
+            _direct_card(
                 "performance-negative",
                 "negative_signal",
-                "randomized_trial",
-                "human",
                 "performance",
                 "negative",
-                "direct",
-                "high",
                 "Cold immersion training reduced performance adaptation in human participants.",
             ),
-            ClaimCard(
+            _direct_card(
                 "performance-null",
                 "null_signal",
-                "intervention_study",
-                "human",
                 "performance",
                 "null",
-                "direct",
-                "high",
                 "Cold immersion training did not improve performance in human participants.",
             ),
-            ClaimCard(
-                "hypothermia",
-                "replication",
-                "intervention_study",
-                "human",
-                "performance/setting",
-                "negative",
-                "direct",
-                "high",
-                "Military cold-water immersion training measured hypothermia and critical hand temperature.",
+            _claim_card(
+                CorpusHit(
+                    hit_id="10.hypothermia",
+                    title="Prevalence of hypothermia during military cold-water immersion training",
+                    abstract="Human participants completed cold-water immersion training and reduced performance.",
+                    source="fullraw:semantic_scholar",
+                    doi="10.hypothermia",
+                ),
+                ReceiptRole("10.hypothermia", "replication", "context"),
             ),
         ),
     )
 
     assert candidate_publish_blocker(candidate) == {
         "error": "off_axis_direct_context",
-        "receipt_ids": ("hypothermia",),
+        "receipt_ids": ("10.hypothermia",),
     }
 
     selected = _publishable_candidates(
@@ -2525,7 +2523,7 @@ def test_publish_quality_drops_off_axis_direct_context_receipts() -> None:
         [
             _hit("performance-negative", "Negative", "Randomized human trial negative signal."),
             _hit("performance-null", "Null", "Human intervention study null signal."),
-            _hit("hypothermia", "Hypothermia", "Military hypothermia context."),
+            _hit("10.hypothermia", "Hypothermia", "Military hypothermia context."),
         ],
         "publishable_alpha",
         frozenset(),
