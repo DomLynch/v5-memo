@@ -339,6 +339,7 @@ def test_full_raw_client_retries_without_search_pass_when_cache_receipt_is_empty
         search_url="https://search.example/full-raw",
         token="token",
         max_variants=1,
+        allow_completed_low_limit_fallback=True,
         min_shards_searched=1525,
         min_sources_searched=5,
         require_auth=True,
@@ -395,6 +396,7 @@ def test_full_raw_client_retries_low_limit_when_completed_cache_is_limit_scoped(
         search_url="https://search.example/full-raw",
         token="token",
         max_variants=1,
+        allow_completed_low_limit_fallback=True,
         min_shards_searched=1525,
         min_sources_searched=5,
         require_auth=True,
@@ -559,8 +561,15 @@ def test_full_raw_client_uses_completed_low_limit_cache_for_pending_publish_size
         if payload["limit"] == 25:
             return FakeResponse({
                 "meta": {
-                    "shard_receipt": {"authenticated": True},
-                    "async_sweep": {"status": "running"},
+                    "shard_receipt": {
+                        "authenticated": True,
+                        "partial_shard_search": True,
+                        "shards_searched": 291,
+                        "shards_total": 1525,
+                        "sweep_failed_shards": 0,
+                        "sources_searched": {"openalex": 291},
+                    },
+                    "async_sweep": {"status": "queued"},
                 },
                 "results": [],
             })
@@ -597,6 +606,7 @@ def test_full_raw_client_uses_completed_low_limit_cache_for_pending_publish_size
         search_url="https://search.example/full-raw",
         token="token",
         max_variants=1,
+        allow_completed_low_limit_fallback=True,
         min_shards_searched=1525,
         min_sources_searched=5,
         strict=True,

@@ -309,6 +309,7 @@ class FullRawCorpusSearchClient:
         sweep_poll_seconds: float = 1.0,
         doi_abstract_backfill_limit: int = 0,
         doi_abstract_backfill_budget_seconds: float = 0.0,
+        allow_completed_low_limit_fallback: bool = False,
         min_shards_searched: int = 0,
         min_sources_searched: int = 0,
         require_auth: bool = False,
@@ -326,6 +327,7 @@ class FullRawCorpusSearchClient:
         self._sweep_poll_seconds = max(0.0, sweep_poll_seconds)
         self._doi_abstract_backfill_limit = max(0, doi_abstract_backfill_limit)
         self._doi_abstract_backfill_budget_seconds = max(0.0, doi_abstract_backfill_budget_seconds)
+        self._allow_completed_low_limit_fallback = allow_completed_low_limit_fallback
         self._min_shards_searched = max(0, min_shards_searched)
         self._min_sources_searched = max(0, min_sources_searched)
         self._require_auth = require_auth or bool(self._token)
@@ -366,6 +368,10 @@ class FullRawCorpusSearchClient:
             doi_abstract_backfill_budget_seconds=_float_env(
                 "V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_BUDGET_SECONDS",
                 24.0 if full_coverage_search else 12.0,
+            ),
+            allow_completed_low_limit_fallback=_bool_env(
+                "V5_MEMO_FULL_RAW_ALLOW_COMPLETED_LOW_LIMIT_FALLBACK",
+                False,
             ),
             min_shards_searched=min_shards_searched,
             min_sources_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", default_min_sources),
@@ -525,14 +531,20 @@ class FullRawCorpusSearchClient:
             if (
                 self._uses_cache_sweep_contract()
                 and request_limit > 10
-                and _empty_unreceipted_fullraw_response(data)
+                and (
+                    _empty_unreceipted_fullraw_response(data)
+                    or (
+                        self._allow_completed_low_limit_fallback
+                        and not self._receipt_is_sufficient(_full_raw_shard_receipt(data))
+                    )
+                )
             ):
                 fallback_payloads: list[dict[str, object]] = []
                 if "search_pass" in payload:
                     fallback_payload = dict(payload)
                     fallback_payload.pop("search_pass", None)
                     fallback_payloads.append(fallback_payload)
-                if request_limit > 10:
+                if self._allow_completed_low_limit_fallback:
                     low_limit_payload = {**payload, "limit": 10, "top_k": 10}
                     fallback_payloads.append(low_limit_payload)
                     if "search_pass" in payload:
@@ -541,7 +553,12 @@ class FullRawCorpusSearchClient:
                         fallback_payloads.append(low_limit_unscoped)
                 for fallback_payload in fallback_payloads:
                     data = self._request_search(fallback_payload)
-                    if not _empty_unreceipted_fullraw_response(data):
+                    if self._receipt_is_sufficient(_full_raw_shard_receipt(data)):
+                        break
+                    if (
+                        not self._allow_completed_low_limit_fallback
+                        and not _empty_unreceipted_fullraw_response(data)
+                    ):
                         break
         except SearchBackendError as exc:
             if not self._sweep_wait_seconds:
