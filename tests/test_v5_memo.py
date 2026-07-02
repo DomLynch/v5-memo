@@ -2452,7 +2452,7 @@ def test_publish_blocker_rejects_off_topic_primary_signal() -> None:
                 "negative",
                 "direct",
                 "high",
-                "Accidental cold-water immersion undermined warfighter readiness.",
+                "Military cold-water immersion training measured hypothermia and undermined warfighter readiness.",
             ),
             ClaimCard(
                 "direct",
