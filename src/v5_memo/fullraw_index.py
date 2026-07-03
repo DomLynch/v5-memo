@@ -2878,6 +2878,26 @@ def _sweep_queue_summary(
     }
 
 
+def _prune_stale_sweep_inflight(
+    sweep_inflight: set[str],
+    sweep_inflight_started: dict[str, float],
+    *,
+    now: float,
+    stale_after_seconds: float,
+) -> tuple[str, ...]:
+    if stale_after_seconds <= 0:
+        return ()
+    stale = tuple(
+        key
+        for key in tuple(sweep_inflight)
+        if now - sweep_inflight_started.get(key, now) > stale_after_seconds
+    )
+    for key in stale:
+        sweep_inflight.discard(key)
+        sweep_inflight_started.pop(key, None)
+    return stale
+
+
 def shard_coverage_gate_response(
     receipt: dict[str, object],
     *,
@@ -3227,9 +3247,14 @@ def run_server() -> None:
     catalog_cache: tuple[float, list[ShardCatalogEntry]] = (0.0, [])
     sweep_cache: dict[str, SweepCacheEntry] = {}
     sweep_inflight: set[str] = set()
+    sweep_inflight_started: dict[str, float] = {}
     sweep_queued: set[str] = set()
     sweep_queued_jobs: dict[str, SweepJob] = {}
     sweep_lock = threading.RLock()
+    sweep_inflight_stale_seconds = (
+        _float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_INFLIGHT_STALE_SECONDS", ""))
+        or max(180.0, min(sweep_timeout_seconds, 300.0))
+    )
 
     def sweep_queue_summary() -> dict[str, object]:
         with sweep_lock:
@@ -3389,6 +3414,9 @@ def run_server() -> None:
             sweep_cache[key] = entry
             if final:
                 sweep_inflight.discard(key)
+                sweep_inflight_started.pop(key, None)
+            elif key in sweep_inflight:
+                sweep_inflight_started[key] = time.monotonic()
         cache_path = _sweep_cache_path(sweep_cache_dir, key)
         if cache_path is not None:
             _write_sweep_cache(cache_path, entry)
@@ -3531,6 +3559,7 @@ def run_server() -> None:
                 next_job = None
                 with sweep_lock:
                     sweep_inflight.discard(job.key)
+                    sweep_inflight_started.pop(job.key, None)
                     sweep_queued.discard(job.key)
                     sweep_queued_jobs.pop(job.key, None)
                     next_job = _take_next_queued_sweep_job(
@@ -3540,6 +3569,8 @@ def run_server() -> None:
                         max_inflight=sweep_max_inflight,
                         allow_priority_burst=sweep_priority_burst,
                     )
+                    if next_job is not None:
+                        sweep_inflight_started[next_job.key] = time.monotonic()
                 if next_job is not None:
                     start_sweep_worker(next_job)
 
@@ -3616,9 +3647,53 @@ def run_server() -> None:
                 job = next_job
             if status != "queued":
                 return status
+            sweep_inflight_started[job.key] = time.monotonic()
             sweep_queued_jobs.pop(key, None)
         start_sweep_worker(job)
         return "queued"
+
+    def start_sweep_watchdog() -> None:
+        if not sweep_enabled or shard_dir is None:
+            return
+
+        def watchdog() -> None:
+            interval = max(5.0, min(60.0, sweep_inflight_stale_seconds / 3.0))
+            while True:
+                time.sleep(interval)
+                next_jobs: list[SweepJob] = []
+                stale: tuple[str, ...]
+                with sweep_lock:
+                    stale = _prune_stale_sweep_inflight(
+                        sweep_inflight,
+                        sweep_inflight_started,
+                        now=time.monotonic(),
+                        stale_after_seconds=sweep_inflight_stale_seconds,
+                    )
+                    if stale:
+                        for key in stale:
+                            print(
+                                f"fullraw sweep inflight lease expired key={key}",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                    while True:
+                        next_job = _take_next_queued_sweep_job(
+                            sweep_inflight=sweep_inflight,
+                            sweep_queued=sweep_queued,
+                            sweep_queued_jobs=sweep_queued_jobs,
+                            max_inflight=sweep_max_inflight,
+                            allow_priority_burst=sweep_priority_burst,
+                        )
+                        if next_job is None:
+                            break
+                        sweep_inflight_started[next_job.key] = time.monotonic()
+                        next_jobs.append(next_job)
+                for next_job in next_jobs:
+                    start_sweep_worker(next_job)
+
+        threading.Thread(target=watchdog, daemon=True).start()
+
+    start_sweep_watchdog()
 
     def auth_receipt(receipt: dict[str, object]) -> dict[str, object]:
         return {
