@@ -244,12 +244,14 @@ def _portfolio_run_env(config: RunConfig, base_env: Mapping[str, str]) -> dict[s
     run_env = dict(base_env)
     if not (config.submit and config.searcher == "fullraw"):
         return run_env
+    injected_sweep_wait = False
     if (
         _positive_float(run_env.get(V5_SWEEP_WAIT_ENV)) is None
         and _positive_float(run_env.get(GENERIC_SWEEP_WAIT_ENV)) is None
     ):
         run_env[V5_SWEEP_WAIT_ENV] = PORTFOLIO_SWEEP_WAIT_SECONDS
-    if (
+        injected_sweep_wait = True
+    if injected_sweep_wait or (
         _positive_float(run_env.get(V5_SEARCH_BUDGET_ENV)) is None
         and _positive_float(run_env.get(GENERIC_SEARCH_BUDGET_ENV)) is None
     ):
