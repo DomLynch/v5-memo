@@ -297,7 +297,7 @@ def test_recent_blocked_leads_cool_down_so_later_leads_can_run(tmp_path: Path) -
     state_path.write_text(json.dumps({
         "attempted_leads": {
             "blocked lead": {
-                "status": "blocked:search_backend_error",
+                "status": "blocked:candidate_publish_blocker",
                 "updated_at": portfolio._timestamp(),
             },
         },
@@ -407,3 +407,71 @@ def test_recent_submitted_leads_cool_down_so_later_leads_can_run(tmp_path: Path)
     assert code == 0
     assert calls[0][calls[0].index("--topic") + 1] == "fresh lead"
     assert summary["skipped_recent_attempts"] == 1
+
+
+def test_search_coverage_warming_stops_without_daily_cooldown(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "attempted_leads": {
+            "cold lead": {
+                "status": "blocked:search_backend_error",
+                "updated_at": portfolio._timestamp(),
+            },
+        },
+    }))
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=True,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=12,
+        state_path=state_path,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=24,
+    )
+    calls: list[list[str]] = []
+
+    def fake_runner(
+        command: list[str],
+        run_env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        assert run_env["V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS"] == "1800"
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps({
+            "error": "search_backend_error",
+            "message": "Full raw corpus search coverage too narrow: {'shards_searched': None}",
+        }))
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="warming")
+
+    code = portfolio.run_portfolio(
+        ["cold lead", "fresh lead"],
+        config,
+        runner=fake_runner,
+        env={"RESEARKA_FULLRAW_FOREGROUND_SWEEP_WAIT_SECONDS": "0"},
+        cwd=Path.cwd(),
+    )
+
+    state = json.loads(state_path.read_text())
+    summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
+    assert code == 0
+    assert len(calls) == 1
+    assert calls[0][calls[0].index("--topic") + 1] == "cold lead"
+    assert summary["final_status"] == "warming:search_coverage"
+    assert summary["skipped_recent_attempts"] == 0
+    assert state["attempted_leads"]["cold lead"]["status"] == "warming:search_coverage"
+    assert "cold lead" not in state.get("completed_leads", {})

@@ -76,6 +76,11 @@ DISCOVERY_ANGLES = (
 )
 TAIL_CHARS = 2000
 STATE_TIME_FORMAT = "%Y%m%dT%H%M%SZ"
+PORTFOLIO_SWEEP_WAIT_SECONDS = "1800"
+V5_SWEEP_WAIT_ENV = "V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS"
+GENERIC_SWEEP_WAIT_ENV = "RESEARKA_FULLRAW_FOREGROUND_SWEEP_WAIT_SECONDS"
+V5_SEARCH_BUDGET_ENV = "V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS"
+GENERIC_SEARCH_BUDGET_ENV = "RESEARKA_FULLRAW_SEARCH_BUDGET_SECONDS"
 
 Runner = Callable[
     [Sequence[str], Mapping[str, str], Path],
@@ -225,6 +230,33 @@ def _parse_state_time(value: object) -> datetime | None:
         return None
 
 
+def _positive_float(value: object) -> float | None:
+    if not isinstance(value, str | int | float):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _portfolio_run_env(config: RunConfig, base_env: Mapping[str, str]) -> dict[str, str]:
+    run_env = dict(base_env)
+    if not (config.submit and config.searcher == "fullraw"):
+        return run_env
+    if (
+        _positive_float(run_env.get(V5_SWEEP_WAIT_ENV)) is None
+        and _positive_float(run_env.get(GENERIC_SWEEP_WAIT_ENV)) is None
+    ):
+        run_env[V5_SWEEP_WAIT_ENV] = PORTFOLIO_SWEEP_WAIT_SECONDS
+    if (
+        _positive_float(run_env.get(V5_SEARCH_BUDGET_ENV)) is None
+        and _positive_float(run_env.get(GENERIC_SEARCH_BUDGET_ENV)) is None
+    ):
+        run_env[V5_SEARCH_BUDGET_ENV] = PORTFOLIO_SWEEP_WAIT_SECONDS
+    return run_env
+
+
 def _attempt_on_cooldown(
     lead: str,
     state: Mapping[str, object],
@@ -240,7 +272,7 @@ def _attempt_on_cooldown(
         if _lead_key(str(raw_lead)) != lead_key or not isinstance(raw_meta, Mapping):
             continue
         status = str(raw_meta.get("status") or "")
-        if status in {"accepted", "ready"}:
+        if status in {"accepted", "ready", "blocked:search_backend_error"} or status.startswith("warming:"):
             return False
         updated_at = _parse_state_time(raw_meta.get("updated_at"))
         if updated_at is None:
@@ -353,6 +385,8 @@ def classify_run(returncode: int, receipt: Mapping[str, object], *, submit: bool
     error = receipt.get("error")
     if error == "researka_submit_deferred":
         return "deferred"
+    if error == "search_backend_error" and "coverage too narrow" in str(receipt.get("message") or "").casefold():
+        return "warming:search_coverage"
     if error:
         return f"blocked:{error}"
     if returncode == 0:
@@ -361,7 +395,7 @@ def classify_run(returncode: int, receipt: Mapping[str, object], *, submit: bool
 
 
 def _should_stop(status: str) -> bool:
-    return status in {"accepted", "submitted", "ready", "deferred"}
+    return status in {"accepted", "submitted", "ready", "deferred"} or status.startswith("warming:")
 
 
 def _run(command: Sequence[str], env: Mapping[str, str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -391,7 +425,7 @@ def run_portfolio(
     cwd: Path | None = None,
 ) -> int:
     repo_root = cwd or _repo_root()
-    run_env = env or _env_for_repo(repo_root)
+    run_env = _portfolio_run_env(config, env or _env_for_repo(repo_root))
     state = _load_state(config.state_path)
     now = datetime.now(UTC)
     expanded_leads = list(leads)
@@ -479,7 +513,7 @@ def run_portfolio(
     }
     (config.output_dir / "portfolio.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
     final_status = str(summary["final_status"])
-    if final_status in {"accepted", "submitted", "ready", "no_new_leads"}:
+    if final_status in {"accepted", "submitted", "ready", "no_new_leads"} or final_status.startswith("warming:"):
         return 0
     return 6 if final_status == "deferred" else 1
 
