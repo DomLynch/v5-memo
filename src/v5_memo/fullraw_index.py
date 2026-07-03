@@ -3253,7 +3253,7 @@ def run_server() -> None:
     sweep_lock = threading.RLock()
     sweep_inflight_stale_seconds = (
         _float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_INFLIGHT_STALE_SECONDS", ""))
-        or max(180.0, min(sweep_timeout_seconds, 300.0))
+        or max(900.0, min(sweep_timeout_seconds + 60.0, 1800.0))
     )
 
     def sweep_queue_summary() -> dict[str, object]:
