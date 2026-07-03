@@ -4,6 +4,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 
@@ -409,7 +410,7 @@ def test_recent_submitted_leads_cool_down_so_later_leads_can_run(tmp_path: Path)
     assert summary["skipped_recent_attempts"] == 1
 
 
-def test_search_coverage_warming_stops_without_daily_cooldown(tmp_path: Path) -> None:
+def test_search_coverage_warming_stops_then_uses_daily_cooldown(tmp_path: Path) -> None:
     portfolio = _load_portfolio()
     state_path = tmp_path / "state.json"
     state_path.write_text(json.dumps({
@@ -475,3 +476,18 @@ def test_search_coverage_warming_stops_without_daily_cooldown(tmp_path: Path) ->
     assert summary["skipped_recent_attempts"] == 0
     assert state["attempted_leads"]["cold lead"]["status"] == "warming:search_coverage"
     assert "cold lead" not in state.get("completed_leads", {})
+
+    calls.clear()
+    second_code = portfolio.run_portfolio(
+        ["cold lead", "fresh lead"],
+        replace(config, output_dir=tmp_path / "run2"),
+        runner=fake_runner,
+        env={"RESEARKA_FULLRAW_FOREGROUND_SWEEP_WAIT_SECONDS": "0"},
+        cwd=Path.cwd(),
+    )
+
+    second_summary = json.loads((tmp_path / "run2" / "portfolio.json").read_text())
+    assert second_code == 0
+    assert len(calls) == 1
+    assert calls[0][calls[0].index("--topic") + 1] == "fresh lead"
+    assert second_summary["skipped_recent_attempts"] == 1
