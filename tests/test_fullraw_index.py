@@ -1202,7 +1202,7 @@ def test_sweep_queue_summary_counts_priority_and_background_jobs() -> None:
 
 
 def test_stale_sweep_inflight_prune_releases_only_expired_keys() -> None:
-    inflight = {"fresh", "stale"}
+    inflight = {"fresh", "orphan", "stale"}
     started = {"fresh": 95.0, "stale": 10.0}
 
     stale = fullraw_index._prune_stale_sweep_inflight(
@@ -1212,7 +1212,7 @@ def test_stale_sweep_inflight_prune_releases_only_expired_keys() -> None:
         stale_after_seconds=60.0,
     )
 
-    assert stale == ("stale",)
+    assert set(stale) == {"orphan", "stale"}
     assert inflight == {"fresh"}
     assert started == {"fresh": 95.0}
 

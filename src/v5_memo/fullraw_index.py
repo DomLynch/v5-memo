@@ -2890,7 +2890,7 @@ def _prune_stale_sweep_inflight(
     stale = tuple(
         key
         for key in tuple(sweep_inflight)
-        if now - sweep_inflight_started.get(key, now) > stale_after_seconds
+        if now - sweep_inflight_started.get(key, 0.0) > stale_after_seconds
     )
     for key in stale:
         sweep_inflight.discard(key)
