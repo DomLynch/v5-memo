@@ -450,7 +450,7 @@ def test_search_coverage_warming_stops_then_uses_daily_cooldown(tmp_path: Path) 
         _cwd: Path,
     ) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        assert run_env["V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS"] == "3600"
+        assert run_env["V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS"] == "14400"
         receipt = Path(command[command.index("--publish-receipt-path") + 1])
         receipt.parent.mkdir(parents=True, exist_ok=True)
         receipt.write_text(json.dumps({
