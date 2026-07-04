@@ -2898,6 +2898,39 @@ def _prune_stale_sweep_inflight(
     return stale
 
 
+def _sweep_watchdog_tick(
+    *,
+    sweep_inflight: set[str],
+    sweep_inflight_started: dict[str, float],
+    sweep_queued: set[str],
+    sweep_queued_jobs: dict[str, SweepJob],
+    max_inflight: int,
+    allow_priority_burst: bool,
+    stale_after_seconds: float,
+    now: float,
+) -> tuple[tuple[str, ...], list[SweepJob]]:
+    stale = _prune_stale_sweep_inflight(
+        sweep_inflight,
+        sweep_inflight_started,
+        now=now,
+        stale_after_seconds=stale_after_seconds,
+    )
+    next_jobs: list[SweepJob] = []
+    while True:
+        next_job = _take_next_queued_sweep_job(
+            sweep_inflight=sweep_inflight,
+            sweep_queued=sweep_queued,
+            sweep_queued_jobs=sweep_queued_jobs,
+            max_inflight=max_inflight,
+            allow_priority_burst=allow_priority_burst,
+        )
+        if next_job is None:
+            break
+        sweep_inflight_started[next_job.key] = now
+        next_jobs.append(next_job)
+    return stale, next_jobs
+
+
 def shard_coverage_gate_response(
     receipt: dict[str, object],
     *,
@@ -3256,9 +3289,35 @@ def run_server() -> None:
         or max(900.0, min(sweep_timeout_seconds + 60.0, 1800.0))
     )
 
+    def sweep_watchdog_tick_locked(now: float) -> tuple[tuple[str, ...], list[SweepJob]]:
+        return _sweep_watchdog_tick(
+            sweep_inflight=sweep_inflight,
+            sweep_inflight_started=sweep_inflight_started,
+            sweep_queued=sweep_queued,
+            sweep_queued_jobs=sweep_queued_jobs,
+            max_inflight=sweep_max_inflight,
+            allow_priority_burst=sweep_priority_burst,
+            stale_after_seconds=sweep_inflight_stale_seconds,
+            now=now,
+        )
+
+    def report_sweep_tick(stale: tuple[str, ...], next_jobs: list[SweepJob]) -> None:
+        for key in stale:
+            print(
+                f"fullraw sweep inflight lease expired key={key}",
+                file=sys.stderr,
+                flush=True,
+            )
+        for next_job in next_jobs:
+            start_sweep_worker(next_job)
+
     def sweep_queue_summary() -> dict[str, object]:
+        stale: tuple[str, ...] = ()
+        next_jobs: list[SweepJob] = []
         with sweep_lock:
-            return _sweep_queue_summary(
+            if sweep_enabled and shard_dir is not None:
+                stale, next_jobs = sweep_watchdog_tick_locked(time.monotonic())
+            summary = _sweep_queue_summary(
                 sweep_inflight,
                 sweep_queued_jobs,
                 max_inflight=sweep_max_inflight,
@@ -3267,10 +3326,16 @@ def run_server() -> None:
                 workers=sweep_workers,
                 enabled=sweep_enabled and shard_dir is not None,
             )
+        report_sweep_tick(stale, next_jobs)
+        return summary
 
     def sweep_queue_state(key: str) -> dict[str, object]:
+        stale: tuple[str, ...] = ()
+        next_jobs: list[SweepJob] = []
         with sweep_lock:
-            return {
+            if sweep_enabled and shard_dir is not None:
+                stale, next_jobs = sweep_watchdog_tick_locked(time.monotonic())
+            state = {
                 **_sweep_queue_summary(
                     sweep_inflight,
                     sweep_queued_jobs,
@@ -3283,6 +3348,8 @@ def run_server() -> None:
                 "key_running": key in sweep_inflight,
                 "key_queued": key in sweep_queued_jobs,
             }
+        report_sweep_tick(stale, next_jobs)
+        return state
 
     def current_catalog() -> list[ShardCatalogEntry]:
         nonlocal catalog_cache
