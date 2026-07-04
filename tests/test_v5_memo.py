@@ -275,6 +275,71 @@ def test_template_writer_replaces_auto_thesis_with_bounded_claim() -> None:
     assert "same population and endpoint" in memo
 
 
+def test_template_writer_leads_with_synthesis_for_boundary_bundle() -> None:
+    candidate = InsightCandidate(
+        topic="metformin exercise training adaptation older adults trial",
+        thesis="Metformin evidence separates exercise adaptation from frailty boundary outcomes.",
+        bridge_terms=("metformin", "older", "diabete"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("exercise", "frailty"),
+        score=100,
+        novelty_score=53,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "exercise",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "cardiorespiratory fitness adaptation",
+                "negative",
+                "direct",
+                "high",
+                "Metformin impaired cardiorespiratory fitness adaptation during training.",
+            ),
+            ClaimCard(
+                "frailty",
+                "boundary",
+                "randomized_trial",
+                "human",
+                "frailty index",
+                "positive",
+                "direct",
+                "high",
+                "Metformin reduced frailty-index progression in a different older-adult endpoint.",
+            ),
+        ),
+    )
+    receipts = [
+        _hit(
+            "exercise",
+            "Metformin Impairs the Cardiorespiratory Fitness Adaptation to High-Intensity Power Training",
+            "Human randomized trial reported impaired cardiorespiratory fitness adaptation.",
+        ),
+        _hit(
+            "frailty",
+            "A Two-Year Trial of Metformin to Reduce Frailty in Older Adults with Glucose Intolerance",
+            "Human randomized trial reported reduced frailty-index progression.",
+        ),
+    ]
+
+    memo = render_memo(candidate, receipts)
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=memo),
+        author_agent_id="v5-memo-agent",
+        domain_slug="longevity_research",
+    )
+
+    assert memo.index("**Core signal:**") < memo.index("**Audit trail:**")
+    assert "**Receipt-level synthesis:**" in memo
+    assert "The bundle is heterogeneous" in memo
+    assert "diabetes" in memo
+    assert "diabete" not in memo.replace("diabetes", "")
+    assert payload["title"] == "Metformin: Training Adaptation With Boundary Evidence"
+    assert "Metformin Impairs the Cardiorespiratory Fitness" not in payload["title"]
+
+
 def test_publish_quality_filter_removes_weak_candidates_before_writing() -> None:
     weak = InsightCandidate(
         topic="nicotinamide exercise performance",

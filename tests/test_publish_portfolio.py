@@ -132,6 +132,63 @@ def test_run_portfolio_continues_after_blocker_until_ready(tmp_path: Path) -> No
     assert summary["records"][1]["status"] == "ready"
 
 
+def test_run_portfolio_times_out_stuck_lead_and_continues(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    config = portfolio.RunConfig(
+        output_dir=tmp_path,
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=True,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=2,
+        state_path=None,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=0,
+        lead_timeout_seconds=3,
+    )
+    calls: list[list[str]] = []
+
+    def fake_runner(
+        command: list[str],
+        _env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(command, timeout=3, output="partial", stderr="stuck")
+        receipt.write_text(json.dumps({"decision": {"decision": "accept"}}))
+        return subprocess.CompletedProcess(command, 0, stdout="accepted", stderr="")
+
+    code = portfolio.run_portfolio(
+        ["stuck lead", "good lead"],
+        config,
+        runner=fake_runner,
+        env={},
+        cwd=Path.cwd(),
+    )
+
+    summary = json.loads((tmp_path / "portfolio.json").read_text())
+    first_receipt = json.loads(Path(summary["records"][0]["receipt_path"]).read_text())
+    assert code == 0
+    assert len(calls) == 2
+    assert summary["records"][0]["status"] == "blocked:lead_timeout"
+    assert summary["records"][0]["returncode"] == 124
+    assert summary["records"][1]["status"] == "accepted"
+    assert first_receipt["error"] == "lead_timeout"
+
+
 def test_run_portfolio_skips_completed_leads_and_saves_success(tmp_path: Path) -> None:
     portfolio = _load_portfolio()
     state_path = tmp_path / "state.json"

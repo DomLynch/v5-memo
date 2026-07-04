@@ -252,8 +252,9 @@ def _display_label(value: str, *, fallback: str = "unspecified") -> str:
 
 def _memo_title(candidate: InsightCandidate) -> str:
     if candidate.bridge_terms:
-        terms = [term for term in candidate.bridge_terms if term not in _TITLE_STOPWORDS]
-        return " / ".join((terms or list(candidate.bridge_terms))[:3])
+        bridge_terms = _clean_labels(candidate.bridge_terms)
+        terms = [term for term in bridge_terms if term not in _TITLE_STOPWORDS]
+        return " / ".join((terms or bridge_terms)[:3])
     return candidate.topic
 
 

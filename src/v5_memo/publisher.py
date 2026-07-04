@@ -218,9 +218,12 @@ def _append_alpha_disclaimer(markdown: str) -> str:
 
 def _submission_title(result: MemoResult, heading: str) -> str:
     raw = heading.replace("Alpha memo: ", "", 1).strip()
-    endpoint_title = _endpoint_heterogeneity_title(result, _direct_human_claim_cards(result))
+    direct_human = _direct_human_claim_cards(result)
+    endpoint_title = _endpoint_heterogeneity_title(result, direct_human)
     if endpoint_title:
         raw = endpoint_title
+    elif _query_like_title(raw) or _bridge_only_title(raw, result.candidate.bridge_terms):
+        raw = _bundle_title(result) or raw
     if _incomplete_title(raw):
         raw = _receipt_title(result) or _first_sentence(result.candidate.thesis) or result.candidate.topic
     if _query_like_title(raw) or _non_article_title(raw):
@@ -264,12 +267,15 @@ def _bundle_title(result: MemoResult) -> str:
     endpoint_title = _endpoint_heterogeneity_title(result, direct_human)
     if endpoint_title:
         return endpoint_title
+    boundary_title = _boundary_bundle_title(result, direct_human)
     outcomes: set[str] = set()
     for card in direct_human:
         outcome = " ".join(_TITLE_TOKEN_RE.findall(card.outcome.casefold()))
         if outcome not in _GENERIC_OUTCOME_TERMS:
             outcomes.add(outcome)
     if len(direct_human) < 2 or len(outcomes) < 2:
+        if boundary_title:
+            return boundary_title
         return ""
     intervention = _topic_intervention_title(result.candidate.topic)
     if not intervention:
@@ -293,9 +299,23 @@ def _bundle_title(result: MemoResult) -> str:
         if outcome_tokens & {"performance", "recovery"}:
             contrast_label = "Recovery" if "recovery" in outcome_tokens else "Performance"
             return f"{intervention}: {contrast_label} and {outcome_label}"
+        if boundary_title:
+            return boundary_title
         return f"{intervention} and {outcome_label}"
     outcome_label = "Training Outcomes" if topic_tokens & training_terms else "Outcomes"
     return f"{intervention} and {outcome_label} in Human Studies"
+
+
+def _boundary_bundle_title(result: MemoResult, direct_human: Sequence[ClaimCard]) -> str:
+    if len(direct_human) < 2 or not any(card.role == "boundary" for card in direct_human):
+        return ""
+    intervention = _topic_intervention_title(result.candidate.topic)
+    if not intervention:
+        return ""
+    topic_tokens = set(_TITLE_TOKEN_RE.findall(result.candidate.topic.casefold()))
+    if topic_tokens & {"adaptation", "adaptations", "exercise", "resistance", "strength", "training"}:
+        return f"{intervention}: Training Adaptation With Boundary Evidence"
+    return f"{intervention}: Boundary Evidence Across Human Receipts"
 
 
 def _direct_human_claim_cards(result: MemoResult) -> list[ClaimCard]:
