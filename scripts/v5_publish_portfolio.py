@@ -241,22 +241,18 @@ def _positive_float(value: object) -> float | None:
     return parsed if parsed > 0 else None
 
 
+def _configured_env(env: Mapping[str, str], *names: str) -> bool:
+    return any(str(env.get(name, "")).strip() for name in names)
+
+
 def _portfolio_run_env(config: RunConfig, base_env: Mapping[str, str]) -> dict[str, str]:
     run_env = dict(base_env)
     if not (config.submit and config.searcher == "fullraw"):
         return run_env
-    injected_sweep_wait = False
-    if (
-        _positive_float(run_env.get(V5_SWEEP_WAIT_ENV)) is None
-        and _positive_float(run_env.get(GENERIC_SWEEP_WAIT_ENV)) is None
-    ):
+    if not _configured_env(run_env, V5_SWEEP_WAIT_ENV, GENERIC_SWEEP_WAIT_ENV):
         run_env[V5_SWEEP_WAIT_ENV] = PORTFOLIO_SWEEP_WAIT_SECONDS
-        injected_sweep_wait = True
-    if injected_sweep_wait or (
-        _positive_float(run_env.get(V5_SEARCH_BUDGET_ENV)) is None
-        and _positive_float(run_env.get(GENERIC_SEARCH_BUDGET_ENV)) is None
-    ):
-        run_env[V5_SEARCH_BUDGET_ENV] = PORTFOLIO_SWEEP_WAIT_SECONDS
+        if not _configured_env(run_env, V5_SEARCH_BUDGET_ENV, GENERIC_SEARCH_BUDGET_ENV):
+            run_env[V5_SEARCH_BUDGET_ENV] = PORTFOLIO_SWEEP_WAIT_SECONDS
     return run_env
 
 
@@ -275,7 +271,7 @@ def _attempt_on_cooldown(
         if _lead_key(str(raw_lead)) != lead_key or not isinstance(raw_meta, Mapping):
             continue
         status = str(raw_meta.get("status") or "")
-        if status in {"accepted", "ready", "blocked:search_backend_error", "blocked:lead_timeout"}:
+        if status in {"accepted", "ready", "blocked:search_backend_error"}:
             return False
         updated_at = _parse_state_time(raw_meta.get("updated_at"))
         if updated_at is None:
