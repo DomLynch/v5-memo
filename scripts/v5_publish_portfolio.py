@@ -109,6 +109,7 @@ class RunConfig:
     min_open_leads: int
     discover_count: int
     blocked_retry_hours: float
+    lead_timeout_seconds: float = 0.0
 
 
 def _repo_root() -> Path:
@@ -400,7 +401,13 @@ def _should_stop(status: str) -> bool:
     return status in {"accepted", "submitted", "ready", "deferred"} or status.startswith("warming:")
 
 
-def _run(command: Sequence[str], env: Mapping[str, str], cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run(
+    command: Sequence[str],
+    env: Mapping[str, str],
+    cwd: Path,
+    *,
+    timeout_seconds: float = 0.0,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         list(command),
         cwd=cwd,
@@ -408,7 +415,47 @@ def _run(command: Sequence[str], env: Mapping[str, str], cwd: Path) -> subproces
         text=True,
         capture_output=True,
         check=False,
+        timeout=timeout_seconds or None,
     )
+
+
+def _timeout_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return value
+
+
+def _run_lead(
+    runner: Runner,
+    command: Sequence[str],
+    env: Mapping[str, str],
+    cwd: Path,
+    receipt_path: Path,
+    *,
+    timeout_seconds: float,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        if runner is _run:
+            return _run(command, env, cwd, timeout_seconds=timeout_seconds)
+        return runner(command, env, cwd)
+    except subprocess.TimeoutExpired as exc:
+        message = f"lead timed out after {timeout_seconds:g}s"
+        if not receipt_path.exists():
+            receipt_path.write_text(json.dumps({
+                "error": "lead_timeout",
+                "message": message,
+                "timeout_seconds": timeout_seconds,
+            }))
+        stderr = _timeout_text(exc.stderr)
+        stderr = f"{stderr.rstrip()}\n{message}\n" if stderr else f"{message}\n"
+        return subprocess.CompletedProcess(
+            list(command),
+            124,
+            stdout=_timeout_text(exc.stdout),
+            stderr=stderr,
+        )
 
 
 def _env_for_repo(repo_root: Path) -> dict[str, str]:
@@ -474,7 +521,14 @@ def run_portfolio(
         receipt_path = lead_dir / "publish-receipt.json"
         lead_dir.mkdir(parents=True, exist_ok=True)
         command = build_command(lead, lead_dir, receipt_path, config)
-        completed = runner(command, run_env, repo_root)
+        completed = _run_lead(
+            runner,
+            command,
+            run_env,
+            repo_root,
+            receipt_path,
+            timeout_seconds=config.lead_timeout_seconds,
+        )
         (lead_dir / "stdout.txt").write_text(completed.stdout or "")
         (lead_dir / "stderr.txt").write_text(completed.stderr or "")
         receipt = _read_json(receipt_path)
@@ -546,6 +600,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-open-leads", type=int, default=0)
     parser.add_argument("--discover-count", type=int, default=20)
     parser.add_argument("--blocked-retry-hours", type=float, default=0.0)
+    parser.add_argument("--lead-timeout-seconds", type=float, default=0.0)
     return parser.parse_args(argv)
 
 
@@ -562,6 +617,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--discover-count must be >= 0")
     if args.blocked_retry_hours < 0:
         raise SystemExit("--blocked-retry-hours must be >= 0")
+    if args.lead_timeout_seconds < 0:
+        raise SystemExit("--lead-timeout-seconds must be >= 0")
     config = RunConfig(
         output_dir=args.output_dir,
         python=args.python,
@@ -582,6 +639,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         min_open_leads=args.min_open_leads,
         discover_count=args.discover_count,
         blocked_retry_hours=args.blocked_retry_hours,
+        lead_timeout_seconds=args.lead_timeout_seconds,
     )
     return run_portfolio(leads, config)
 

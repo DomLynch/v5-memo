@@ -19,20 +19,33 @@ def render_alpha_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]
     """Render a short memo without adding claims outside the candidate receipts."""
     if not receipts:
         raise ValueError("cannot render memo without receipts")
-    bridge = ", ".join(candidate.bridge_terms) or "unspecified bridge"
-    tension = ", ".join(candidate.tension_terms) or "not detected"
+    direct_cards = _direct_human_cards(candidate)
+    bridge = ", ".join(_clean_labels(candidate.bridge_terms)) or "unspecified bridge"
+    tension = ", ".join(_clean_labels(candidate.tension_terms)) or "not detected"
     hypothesis = _bounded_hypothesis(candidate)
     lines = [
         f"# Alpha memo: {_memo_title(candidate)}",
         "",
+        "Hypothesis-level alpha signal; not clinical advice.",
+        "",
         f"**Alpha hypothesis:** {hypothesis}",
         "",
-        f"**Signal score:** `{candidate.score}` "
-        f"(novelty `{candidate.novelty_score}`, evidence `{candidate.evidence_score}`)",
+        "**Core signal:**",
+        *_core_signal_lines(candidate, direct_cards),
         "",
-        f"**Evidence bridge:** {bridge}.",
+        "**Receipt-level synthesis:**",
+        *_synthesis_lines(candidate, direct_cards),
         "",
-        f"**Tension:** {tension}.",
+        "**Limits:**",
+        *_limit_lines(candidate, direct_cards),
+        "",
+        "**What would falsify it:**",
+        _falsification_clause(candidate),
+        "",
+        "**Audit trail:**",
+        f"- Signal score: `{candidate.score}` (novelty `{candidate.novelty_score}`, evidence `{candidate.evidence_score}`).",
+        f"- Evidence bridge terms: {bridge}.",
+        f"- Direction/tension terms: {tension}.",
         "",
         "**Evidence graph:**",
         *_evidence_graph_lines(candidate),
@@ -42,16 +55,6 @@ def render_alpha_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]
         "",
         "**Claim ledger:**",
         *_claim_card_lines(candidate),
-        "",
-        "**Why it matters:**",
-        (
-            "This is a receipt-bound lead for investigation: two independent "
-            "search hits share a non-obvious bridge term, so the memo can test "
-            "whether that bridge explains a boundary condition or a new angle."
-        ),
-        "",
-        "**What would falsify it:**",
-        _falsification_clause(candidate),
         "",
         "**Receipts:**",
     ]
@@ -133,6 +136,76 @@ def _falsification_clause(candidate: InsightCandidate) -> str:
     )
 
 
+def _core_signal_lines(candidate: InsightCandidate, direct_cards: Sequence[ClaimCard]) -> list[str]:
+    thesis = candidate.thesis.strip()
+    if len(direct_cards) < 2:
+        return [thesis if thesis.endswith(".") else f"{thesis}."]
+    outcomes = _non_generic_labels(card.outcome for card in direct_cards)
+    directions = _non_generic_labels(
+        direction
+        for card in direct_cards
+        for direction in card.direction.split("/")
+        if direction not in {"proxy", "unclear"}
+    )
+    designs = _non_generic_labels(card.design for card in direct_cards)
+    return [
+        (
+            f"The direct human receipts are {_join_labels(designs[:2]) or 'study'} evidence "
+            f"for {_join_labels(outcomes[:3]) or 'the cited endpoints'}."
+        ),
+        (
+            f"Because the recorded directions are {_join_labels(directions[:3]) or 'mixed'}, "
+            "this memo treats the bundle as endpoint-specific evidence rather than a pooled clinical effect."
+        ),
+    ]
+
+
+def _synthesis_lines(candidate: InsightCandidate, direct_cards: Sequence[ClaimCard]) -> list[str]:
+    del candidate
+    cards = list(direct_cards)
+    if not cards:
+        return ["- No direct human claim cards were assigned; keep this as a discovery lead only."]
+    return [_claim_summary_line(card) for card in cards]
+
+
+def _claim_summary_line(card: ClaimCard) -> str:
+    outcome = _display_label(card.outcome)
+    direction = _display_label(card.direction, fallback=card.direction.replace("_", " "))
+    design = _display_label(card.design, fallback=card.design.replace("_", " "))
+    quote = card.quote.strip()
+    suffix = f" {quote}" if quote else ""
+    return f"- `{card.receipt_id}` ({card.role}): {design} in {card.population}; {outcome} is {direction}.{suffix}"
+
+
+def _limit_lines(candidate: InsightCandidate, direct_cards: Sequence[ClaimCard]) -> list[str]:
+    if len(direct_cards) < 2:
+        return [
+            "Only one direct human receipt is bound, so this should not be read as a mature evidence synthesis.",
+            "The next step is another direct receipt in the same population and endpoint family.",
+        ]
+    outcomes = _non_generic_labels(card.outcome for card in direct_cards)
+    directions = _non_generic_labels(
+        direction
+        for card in direct_cards
+        for direction in card.direction.split("/")
+        if direction not in {"proxy", "unclear"}
+    )
+    limits = [
+        "The cited receipts should not be pooled unless population, intervention window, and endpoint match.",
+        "A same-endpoint human replication would move this from alpha signal toward claim-level evidence.",
+    ]
+    if len(outcomes) > 1 or len(directions) > 1 or any(card.role == "boundary" for card in direct_cards):
+        limits.insert(
+            0,
+            "The bundle is heterogeneous, so the memo separates endpoint roles instead of presenting one merged effect.",
+        )
+    if "conference" in " ".join(card.quote.casefold() for card in direct_cards):
+        limits.append("At least one receipt appears conference-level; treat that source as boundary evidence.")
+    if not candidate.receipt_ids:
+        limits.append("No receipt IDs were assigned by the selector.")
+    return limits
+
+
 def _direct_human_cards(candidate: InsightCandidate) -> list[ClaimCard]:
     return [
         card
@@ -148,12 +221,21 @@ def _non_generic_labels(values: Iterable[str]) -> list[str]:
     out: list[str] = []
     for value in values:
         for label in value.split("/"):
-            clean = label.replace("_", " ").strip().casefold()
+            clean = _clean_label(label)
             if not clean or clean in {"long", "outcome", "outcomes", "setting", "unspecified"}:
                 continue
             if clean not in out:
                 out.append(clean)
     return out
+
+
+def _clean_labels(values: Iterable[str]) -> list[str]:
+    return [_clean_label(value) for value in values if _clean_label(value)]
+
+
+def _clean_label(value: str) -> str:
+    clean = value.replace("_", " ").strip().casefold()
+    return {"diabete": "diabetes"}.get(clean, clean)
 
 
 def _join_labels(labels: Sequence[str]) -> str:
