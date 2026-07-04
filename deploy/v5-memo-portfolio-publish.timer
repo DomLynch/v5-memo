@@ -1,0 +1,11 @@
+[Unit]
+Description=Run V5 Memo portfolio publisher every 8 hours
+
+[Timer]
+OnCalendar=*-*-* 00/8:20:00
+RandomizedDelaySec=20min
+Persistent=true
+Unit=v5-memo-portfolio-publish.service
+
+[Install]
+WantedBy=timers.target
