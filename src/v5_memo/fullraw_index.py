@@ -3727,36 +3727,16 @@ def run_server() -> None:
             interval = max(5.0, min(60.0, sweep_inflight_stale_seconds / 3.0))
             while True:
                 time.sleep(interval)
-                next_jobs: list[SweepJob] = []
-                stale: tuple[str, ...]
-                with sweep_lock:
-                    stale = _prune_stale_sweep_inflight(
-                        sweep_inflight,
-                        sweep_inflight_started,
-                        now=time.monotonic(),
-                        stale_after_seconds=sweep_inflight_stale_seconds,
+                try:
+                    with sweep_lock:
+                        stale, next_jobs = sweep_watchdog_tick_locked(time.monotonic())
+                    report_sweep_tick(stale, next_jobs)
+                except Exception as exc:  # pragma: no cover - defensive watchdog guard
+                    print(
+                        f"fullraw sweep watchdog failed: {type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                        flush=True,
                     )
-                    if stale:
-                        for key in stale:
-                            print(
-                                f"fullraw sweep inflight lease expired key={key}",
-                                file=sys.stderr,
-                                flush=True,
-                            )
-                    while True:
-                        next_job = _take_next_queued_sweep_job(
-                            sweep_inflight=sweep_inflight,
-                            sweep_queued=sweep_queued,
-                            sweep_queued_jobs=sweep_queued_jobs,
-                            max_inflight=sweep_max_inflight,
-                            allow_priority_burst=sweep_priority_burst,
-                        )
-                        if next_job is None:
-                            break
-                        sweep_inflight_started[next_job.key] = time.monotonic()
-                        next_jobs.append(next_job)
-                for next_job in next_jobs:
-                    start_sweep_worker(next_job)
 
         threading.Thread(target=watchdog, daemon=True).start()
 

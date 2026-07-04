@@ -1217,6 +1217,32 @@ def test_stale_sweep_inflight_prune_releases_only_expired_keys() -> None:
     assert started == {"fresh": 95.0}
 
 
+def test_sweep_watchdog_tick_reclaims_stale_slot_and_promotes_queue() -> None:
+    inflight = {"stale"}
+    started = {"stale": 10.0}
+    queued = {"next"}
+    job = fullraw_index.SweepJob("next", "next query", 10, 1900, 2100, "relevance", [])
+    queued_jobs = {"next": job}
+
+    stale, next_jobs = fullraw_index._sweep_watchdog_tick(
+        sweep_inflight=inflight,
+        sweep_inflight_started=started,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_inflight=1,
+        allow_priority_burst=False,
+        stale_after_seconds=60.0,
+        now=100.0,
+    )
+
+    assert stale == ("stale",)
+    assert next_jobs == [job]
+    assert inflight == {"next"}
+    assert started == {"next": 100.0}
+    assert queued == set()
+    assert queued_jobs == {}
+
+
 def test_sweep_cache_write_preserves_highest_progress(tmp_path: Path) -> None:
     cache_path = tmp_path / "sweeps" / "metformin.json"
     older_partial = fullraw_index.SweepCacheEntry(
