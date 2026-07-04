@@ -132,7 +132,7 @@ def test_run_portfolio_continues_after_blocker_until_ready(tmp_path: Path) -> No
     assert summary["records"][1]["status"] == "ready"
 
 
-def test_run_portfolio_times_out_stuck_lead_as_warming(tmp_path: Path) -> None:
+def test_run_portfolio_times_out_stuck_lead_and_continues(tmp_path: Path) -> None:
     portfolio = _load_portfolio()
     config = portfolio.RunConfig(
         output_dir=tmp_path,
@@ -182,9 +182,10 @@ def test_run_portfolio_times_out_stuck_lead_as_warming(tmp_path: Path) -> None:
     summary = json.loads((tmp_path / "portfolio.json").read_text())
     first_receipt = json.loads(Path(summary["records"][0]["receipt_path"]).read_text())
     assert code == 0
-    assert len(calls) == 1
-    assert summary["records"][0]["status"] == "warming:lead_timeout"
+    assert len(calls) == 2
+    assert summary["records"][0]["status"] == "blocked:lead_timeout"
     assert summary["records"][0]["returncode"] == 124
+    assert summary["records"][1]["status"] == "accepted"
     assert first_receipt["error"] == "lead_timeout"
 
 
