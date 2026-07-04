@@ -271,7 +271,12 @@ def _attempt_on_cooldown(
         if _lead_key(str(raw_lead)) != lead_key or not isinstance(raw_meta, Mapping):
             continue
         status = str(raw_meta.get("status") or "")
-        if status in {"accepted", "ready", "blocked:search_backend_error"}:
+        if status.startswith("warming:") or status in {
+            "accepted",
+            "ready",
+            "blocked:search_backend_error",
+            "blocked:lead_timeout",
+        }:
             return False
         updated_at = _parse_state_time(raw_meta.get("updated_at"))
         if updated_at is None:

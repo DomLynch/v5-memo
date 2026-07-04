@@ -189,7 +189,7 @@ def test_run_portfolio_times_out_stuck_lead_and_continues(tmp_path: Path) -> Non
     assert first_receipt["error"] == "lead_timeout"
 
 
-def test_recent_lead_timeout_uses_retry_cooldown(tmp_path: Path) -> None:
+def test_recent_lead_timeout_remains_retryable(tmp_path: Path) -> None:
     portfolio = _load_portfolio()
     state_path = tmp_path / "state.json"
     state_path.write_text(json.dumps({
@@ -245,8 +245,8 @@ def test_recent_lead_timeout_uses_retry_cooldown(tmp_path: Path) -> None:
     summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
     assert code == 0
     assert len(calls) == 1
-    assert calls[0][calls[0].index("--topic") + 1] == "fresh lead"
-    assert summary["skipped_recent_attempts"] == 1
+    assert calls[0][calls[0].index("--topic") + 1] == "stuck lead"
+    assert summary["skipped_recent_attempts"] == 0
 
 
 def test_run_portfolio_skips_completed_leads_and_saves_success(tmp_path: Path) -> None:
@@ -527,7 +527,7 @@ def test_recent_submitted_leads_cool_down_so_later_leads_can_run(tmp_path: Path)
     assert summary["skipped_recent_attempts"] == 1
 
 
-def test_search_coverage_warming_stops_then_uses_daily_cooldown(tmp_path: Path) -> None:
+def test_search_coverage_warming_stops_without_overriding_zero_wait(tmp_path: Path) -> None:
     portfolio = _load_portfolio()
     state_path = tmp_path / "state.json"
     state_path.write_text(json.dumps({
@@ -608,8 +608,8 @@ def test_search_coverage_warming_stops_then_uses_daily_cooldown(tmp_path: Path) 
     second_summary = json.loads((tmp_path / "run2" / "portfolio.json").read_text())
     assert second_code == 0
     assert len(calls) == 1
-    assert calls[0][calls[0].index("--topic") + 1] == "fresh lead"
-    assert second_summary["skipped_recent_attempts"] == 1
+    assert calls[0][calls[0].index("--topic") + 1] == "cold lead"
+    assert second_summary["skipped_recent_attempts"] == 0
 
 
 def test_portfolio_injects_fullraw_wait_when_unconfigured(tmp_path: Path) -> None:
