@@ -44,8 +44,9 @@ _BENEFICIAL_REDUCTION = _ATTENUATE | frozenset({
     "decrease", "decreased", "lower", "lowered", "reduce", "reduced",
 })
 _ADVERSE_ENDPOINT = frozenset({
-    "acth", "cortisol", "damage", "death", "deaths", "error", "errors",
-    "fatal", "fatality", "inflammation", "mortality", "pain", "risk", "stress",
+    "acth", "cortisol", "damage", "death", "deaths", "decline", "disability",
+    "error", "errors", "fatal", "fatality", "frailty", "inflammation",
+    "morbidity", "mortality", "pain", "progression", "risk", "stress",
 })
 _BENEFICIAL_REDUCTION_ENDPOINT = _ADVERSE_ENDPOINT | frozenset({
     "fatigue", "fatigability", "soreness",
