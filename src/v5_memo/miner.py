@@ -44,11 +44,13 @@ _BENEFICIAL_REDUCTION = _ATTENUATE | frozenset({
     "decrease", "decreased", "lower", "lowered", "reduce", "reduced",
 })
 _ADVERSE_ENDPOINT = frozenset({
-    "acth", "cortisol", "damage", "death", "deaths", "decline", "disability",
-    "error", "errors", "fatal", "fatality", "frailty", "inflammation",
-    "morbidity", "mortality", "pain", "progression", "risk", "stress",
+    "acth", "cortisol", "damage", "death", "deaths", "error", "errors",
+    "fatal", "fatality", "inflammation", "mortality", "pain", "risk", "stress",
 })
-_BENEFICIAL_REDUCTION_ENDPOINT = _ADVERSE_ENDPOINT | frozenset({
+_HARM_REDUCTION_ENDPOINT = frozenset({
+    "decline", "disability", "frailty", "morbidity", "progression",
+})
+_BENEFICIAL_REDUCTION_ENDPOINT = _ADVERSE_ENDPOINT | _HARM_REDUCTION_ENDPOINT | frozenset({
     "fatigue", "fatigability", "soreness",
 })
 _NULL = frozenset({"null", "neutral", "unchanged", "failed", "nonsignificant"})
@@ -1177,7 +1179,7 @@ def _outcome_label(terms: frozenset[str]) -> str:
         return "hypertrophy"
     if {"muscle", "thickness"} <= terms:
         return "muscle thickness"
-    candidates = sorted(terms & (_OUTCOME | _METRIC | _ADVERSE_ENDPOINT | _BOUNDARY | _TIMING))
+    candidates = sorted(terms & (_OUTCOME | _METRIC | _ADVERSE_ENDPOINT | _HARM_REDUCTION_ENDPOINT | _BOUNDARY | _TIMING))
     return "/".join(candidates[:3]) if candidates else "unspecified"
 
 

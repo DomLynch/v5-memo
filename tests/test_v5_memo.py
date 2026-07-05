@@ -2173,6 +2173,25 @@ def test_claim_card_keeps_beneficial_reductions_positive_for_publish_gate() -> N
     assert candidate_publish_blocker(candidate) is None
 
 
+def test_claim_card_treats_reduced_frailty_progression_as_positive() -> None:
+    hit = CorpusHit(
+        hit_id="metformin-frailty",
+        title="Metformin reduces frailty progression in older adults",
+        abstract=(
+            "A randomized human trial found a significant reduction in frailty "
+            "progression rate with metformin treatment (p=0.0222)."
+        ),
+        source="fullraw:openalex",
+        doi="10.2337/db25-1998-lb",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "positive_signal", "human frailty outcome"))
+
+    assert card.role == "positive_signal"
+    assert card.direction == "positive"
+    assert "frailty" in card.outcome
+
+
 def test_claim_card_treats_players_training_as_direct_human_intervention() -> None:
     hit = CorpusHit(
         hit_id="10.players",
