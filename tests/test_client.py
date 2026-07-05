@@ -229,6 +229,17 @@ def test_fullraw_search_passes_prefer_topic_anchor_pairs() -> None:
     assert any(query.startswith("cold ") for query in queries)
 
 
+def test_fullraw_search_passes_keep_trial_when_single_variant_drops_fillers() -> None:
+    passes = _fullraw_search_passes(
+        "creatine resistance training older adults muscle strength trial",
+        limit=1,
+    )
+
+    assert [(item.name, item.query) for item in passes] == [
+        ("core", "creatine resistance training muscle strength trial"),
+    ]
+
+
 def test_full_raw_client_from_env_prefers_generic_researka_fullraw_names(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("RESEARKA_FULLRAW_SEARCH_URL", "http://127.0.0.1:9903/search")
     monkeypatch.setenv("RESEARKA_FULLRAW_TOKEN", "generic-token")
