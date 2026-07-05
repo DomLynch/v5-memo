@@ -3284,6 +3284,7 @@ def run_server() -> None:
         "V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST",
         "true",
     ).casefold() in {"1", "true", "yes"}
+    sweep_priority_max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_MAX_INFLIGHT") or 0
     sweep_timeout_seconds = _float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_TIMEOUT_SECONDS", "")) or 300.0
     sweep_timeout_seconds = max(1.0, min(sweep_timeout_seconds, 3600.0))
     sweep_shard_timeout_seconds = _float_or_none(
@@ -3329,6 +3330,7 @@ def run_server() -> None:
             sweep_queued_jobs=sweep_queued_jobs,
             max_inflight=sweep_max_inflight,
             allow_priority_burst=sweep_priority_burst,
+            priority_max_inflight=sweep_priority_max_inflight,
             stale_after_seconds=sweep_inflight_stale_seconds,
             now=now,
         )
@@ -3353,6 +3355,7 @@ def run_server() -> None:
                 sweep_inflight,
                 sweep_queued_jobs,
                 max_inflight=sweep_max_inflight,
+                priority_max_inflight=sweep_priority_max_inflight,
                 max_queue=sweep_max_queue,
                 priority_burst=sweep_priority_burst,
                 workers=sweep_workers,
@@ -3372,6 +3375,7 @@ def run_server() -> None:
                     sweep_inflight,
                     sweep_queued_jobs,
                     max_inflight=sweep_max_inflight,
+                    priority_max_inflight=sweep_priority_max_inflight,
                     max_queue=sweep_max_queue,
                     priority_burst=sweep_priority_burst,
                     workers=sweep_workers,
@@ -3524,7 +3528,11 @@ def run_server() -> None:
         def worker() -> None:
             try:
                 existing = sweep_cache_get(job.key)
-                if existing is not None and not _sweep_cache_entry_has_result_limit(existing, job.limit):
+                if (
+                    existing is not None
+                    and not _sweep_cache_entry_has_result_limit(existing, job.limit)
+                    and sweep_cache_entry_is_terminal(existing)
+                ):
                     existing = None
                 sweep_entries = select_sweep_shard_entries(job.catalog, query=job.query, limit=sweep_shard_limit)
                 if len(sweep_entries) >= len(job.catalog):
@@ -3667,6 +3675,7 @@ def run_server() -> None:
                         sweep_queued_jobs=sweep_queued_jobs,
                         max_inflight=sweep_max_inflight,
                         allow_priority_burst=sweep_priority_burst,
+                        priority_max_inflight=sweep_priority_max_inflight,
                     )
                     if next_job is not None:
                         sweep_inflight_started[next_job.key] = time.monotonic()
@@ -3722,6 +3731,7 @@ def run_server() -> None:
                 max_inflight=sweep_max_inflight,
                 priority=priority,
                 allow_priority_burst=sweep_priority_burst,
+                priority_max_inflight=sweep_priority_max_inflight,
             )
             if status == "queued" and key not in sweep_inflight:
                 _queue_sweep_job_with_priority(
@@ -3740,6 +3750,7 @@ def run_server() -> None:
                     sweep_queued_jobs=sweep_queued_jobs,
                     max_inflight=sweep_max_inflight,
                     allow_priority_burst=sweep_priority_burst,
+                    priority_max_inflight=sweep_priority_max_inflight,
                 )
                 if next_job is None:
                     return status
@@ -4534,10 +4545,10 @@ def _sweep_cache_key(
     sweep_strategy: str = _SWEEP_STRATEGY,
     sweep_catalog_scope: str = "",
 ) -> str:
+    _ = limit  # Result sufficiency is receipt-gated; the work key should not fragment on it.
     payload = json.dumps(
         {
             "query": query,
-            "result_limit": max(limit, _SWEEP_MIN_RESULT_LIMIT),
             "year_min": year_min,
             "year_max": year_max,
             "rank_mode": _rank_mode(rank_mode),
