@@ -482,6 +482,27 @@ def test_sweep_cache_key_ignores_result_limits() -> None:
     assert second == larger
 
 
+def test_sweep_cache_key_ignores_term_order() -> None:
+    first = fullraw_index._sweep_cache_key(
+        "creatine trial resistance",
+        limit=25,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        sweep_shard_limit=1525,
+    )
+    second = fullraw_index._sweep_cache_key(
+        "creatine resistance trial",
+        limit=25,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        sweep_shard_limit=1525,
+    )
+
+    assert first == second
+
+
 def test_sweep_cache_key_ignores_runtime_knobs() -> None:
     shorter_runtime = fullraw_index._sweep_cache_key(
         "metformin resistance training",
@@ -634,6 +655,30 @@ def test_sweep_cache_matcher_accepts_compatible_pass_query() -> None:
         result_limit=1,
         sweep_shard_limit=1525,
         sweep_pass_shard_limit=4,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
+def test_sweep_cache_matcher_accepts_partial_with_reordered_terms() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Creatine resistance training trial"}],
+        receipt={
+            "sweep_result_limit": 25,
+            "sweep_shard_limit": 1525,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_query": "creatine trial resistance",
+            "partial_shard_search": True,
+            "sweep_remaining_shards": 437,
+        },
+    )
+
+    assert fullraw_index._sweep_cache_entry_matches_request(
+        entry,
+        query="creatine resistance trial",
+        result_limit=25,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
     )
 

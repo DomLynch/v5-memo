@@ -2706,7 +2706,7 @@ def sweep_cache_entry_can_answer_request(
 
 
 def _normalize_sweep_cache_query(query: str) -> str:
-    return " ".join(_fts_terms(query))
+    return " ".join(sorted(_fts_terms(query)))
 
 
 def _sweep_cache_entry_queries(entry: SweepCacheEntry) -> set[str]:
@@ -2758,10 +2758,14 @@ def _sweep_queries_alias_equivalent(request_query: str, cached_query: str) -> bo
     cached_terms = _fts_terms(cached_query)
     if not request_terms or not cached_terms or len(request_terms) != len(cached_terms):
         return False
-    return all(
-        _term_aliases(request_term) & {cached_term}
-        for request_term, cached_term in zip(request_terms, cached_terms, strict=True)
-    )
+    unmatched = list(cached_terms)
+    for request_term in request_terms:
+        aliases = _term_aliases(request_term)
+        match_index = next((index for index, cached_term in enumerate(unmatched) if cached_term in aliases), None)
+        if match_index is None:
+            return False
+        unmatched.pop(match_index)
+    return True
 
 
 def _sweep_cache_entry_has_result_limit(entry: SweepCacheEntry, result_limit: int) -> bool:
@@ -4560,7 +4564,7 @@ def _sweep_cache_key(
     _ = limit  # Result sufficiency is receipt-gated; the work key should not fragment on it.
     payload = json.dumps(
         {
-            "query": query,
+            "query": _normalize_sweep_cache_query(query),
             "year_min": year_min,
             "year_max": year_max,
             "rank_mode": _rank_mode(rank_mode),
