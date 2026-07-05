@@ -2240,6 +2240,24 @@ def test_claim_card_treats_noun_reduction_in_frailty_progression_as_positive() -
     assert "frailty" in card.outcome
 
 
+def test_claim_card_keeps_wistar_rat_receipt_indirect_even_with_human_context() -> None:
+    hit = CorpusHit(
+        hit_id="resveratrol-rat",
+        title="Effect of continuous exercise training on SIRT3 and OGG1 in male Wistar rats",
+        abstract=(
+            "The introduction discusses human clinical relevance, but the randomized "
+            "study used 32 male Wistar rats to measure liver SIRT3 and OGG1 protein."
+        ),
+        source="fullraw:openalex",
+        doi=None,
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "positive_signal", "direct human precheck"))
+
+    assert card.population == "animal"
+    assert card.support_type == "indirect"
+
+
 def test_claim_card_treats_players_training_as_direct_human_intervention() -> None:
     hit = CorpusHit(
         hit_id="10.players",

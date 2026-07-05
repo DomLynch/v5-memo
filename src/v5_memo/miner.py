@@ -1169,14 +1169,14 @@ def _is_safety_feasibility_pilot(terms: frozenset[str]) -> bool:
 
 
 def _population_type(terms: frozenset[str]) -> str:
+    if terms & {"mouse", "mice", "rat", "rats", "animal", "animals", "wistar"}:
+        return "animal"
     if terms & {
         "athlete", "athletes", "human", "humans", "participant", "participants",
         "patient", "patients", "adult", "adults", "men", "women", "player", "players", "student",
         "students", "subject", "subjects", "volunteer", "volunteered", "volunteers",
     }:
         return "human"
-    if terms & {"mouse", "mice", "rat", "rats", "animal", "animals"}:
-        return "animal"
     if terms & {"cell", "cells", "cellular"}:
         return "cell_model"
     return "unspecified"
