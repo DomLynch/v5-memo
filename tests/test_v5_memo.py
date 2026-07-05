@@ -1303,6 +1303,12 @@ def test_query_anchor_terms_do_not_promote_context_to_anchor() -> None:
     )
 
 
+def test_query_anchor_terms_drop_broad_population_words() -> None:
+    assert query_anchor_terms(["metformin exercise training adaptation older adults trial"]) == (
+        "metformin",
+    )
+
+
 def test_query_anchor_terms_drop_alpha_shape_words() -> None:
     assert query_anchor_terms([
         "exercise adaptation intervention reversal",
@@ -1502,6 +1508,29 @@ def test_title_only_augment_protocol_can_pair_with_blunted_outcome() -> None:
     assert candidate.receipt_ids == ("protocol", "outcome")
     assert "shape:promise_outcome_reversal" in candidate.reasons
     assert candidate_alpha_tier(candidate) == "elite_alpha"
+
+
+def test_miner_rejects_training_pair_when_only_population_anchor_matches() -> None:
+    topic = "metformin exercise training adaptation older adults trial"
+    hits = [
+        _hit(
+            "exercise",
+            "Metformin impairs cardiorespiratory fitness adaptation to high-intensity power training in older adults",
+            "Randomized human trial in older adults with T2D observed metformin impaired VO2peak adaptation during high-intensity power training.",
+        ),
+        _hit(
+            "frailty",
+            "A two-year trial of metformin to reduce frailty in older adults with glucose intolerance",
+            "Randomized human trial in older adults with glucose intolerance found a significant reduction in frailty progression rate with metformin treatment.",
+        ),
+    ]
+
+    assert mine_insights(
+        hits,
+        topic=topic,
+        required_anchor_terms=query_anchor_terms([topic]),
+        include_discovery=True,
+    ) == []
 
 
 def test_short_single_word_bridge_is_not_enough_for_elite_shape() -> None:
@@ -2188,6 +2217,25 @@ def test_claim_card_treats_reduced_frailty_progression_as_positive() -> None:
     card = _claim_card(hit, ReceiptRole(hit.hit_id, "positive_signal", "human frailty outcome"))
 
     assert card.role == "positive_signal"
+    assert card.direction == "positive"
+    assert "frailty" in card.outcome
+
+
+def test_claim_card_treats_noun_reduction_in_frailty_progression_as_positive() -> None:
+    hit = CorpusHit(
+        hit_id="metformin-frailty-noun",
+        title="Metformin frailty outcomes in older adults",
+        abstract=(
+            "Frailty is a major cause of morbidity and disability. A randomized human "
+            "trial found a significant reduction in frailty progression rate with "
+            "metformin treatment (p=0.0222)."
+        ),
+        source="fullraw:openalex",
+        doi="10.2337/db25-1998-lb",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "positive_signal", "human frailty outcome"))
+
     assert card.direction == "positive"
     assert "frailty" in card.outcome
 

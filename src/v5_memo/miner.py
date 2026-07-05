@@ -20,12 +20,13 @@ _STOP = frozenset({
     "summary", "systematic", "the", "their", "there", "through", "trial", "using", "with",
 })
 _BRIDGE_STOP = _STOP | frozenset({
-    "action", "compare", "compared", "comparing", "comparative", "comparison",
+    "action", "adult", "adults", "aged", "compare", "compared", "comparing", "comparative", "comparison",
+    "elderly",
     "functional", "horse", "impairment", "intermittent", "learning",
     "men", "muscle", "power", "protein", "synthesi", "women",
     "case", "cases", "disease", "disorder", "disorders", "individual",
     "individuals", "patient", "people", "per", "person", "persons", "risk",
-    "such", "syndrome", "thus", "when", "following", "matched",
+    "older", "senior", "seniors", "such", "syndrome", "thus", "when", "following", "matched",
     "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
     "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
     "eighteen", "nineteen", "twenty",
@@ -36,12 +37,14 @@ _POSITIVE = frozenset({
 })
 _NEGATIVE = frozenset({
     "attenuate", "attenuated", "blunt", "blunted", "decrease", "decreased",
-    "impair", "impaired", "lower", "lowered", "reduce", "reduced",
-    "suppress", "suppressed", "suppresses", "worse", "worsened",
+    "decreasing", "impair", "impaired", "lower", "lowered", "lowering",
+    "reduce", "reduced", "reducing", "reduction", "suppress", "suppressed",
+    "suppresses", "worse", "worsened",
 })
 _ATTENUATE = frozenset({"attenuate", "attenuated"})
 _BENEFICIAL_REDUCTION = _ATTENUATE | frozenset({
-    "decrease", "decreased", "lower", "lowered", "reduce", "reduced",
+    "decrease", "decreased", "decreasing", "lower", "lowered", "lowering",
+    "reduce", "reduced", "reducing", "reduction",
 })
 _ADVERSE_ENDPOINT = frozenset({
     "acth", "cortisol", "damage", "death", "deaths", "error", "errors",
@@ -124,10 +127,10 @@ _NON_PRIMARY_SOURCE_PHRASES = (
 _SUPPLEMENT_DOI_RE = re.compile(r"(?:^|[-_.])s\d+(?:[-_.])p\d+(?:$|[-_.])")
 _NUMBERED_ABSTRACT_TITLE_RE = re.compile(r"\b\d{2,5}-pub:")
 _TOPIC_CONTEXT_STOP = frozenset({
-    "adapt", "adaptation", "aging", "angle", "condition", "effect", "effects",
-    "evidence", "healthspan", "human", "intervention", "longevity", "mechanism",
-    "mechanisms", "outcome", "outcomes", "pharmacology", "response", "responses",
-    "reversal", "study", "trial", "water",
+    "adapt", "adaptation", "adult", "aged", "aging", "angle", "condition", "effect", "effects",
+    "elderly", "evidence", "healthspan", "human", "intervention", "longevity", "mechanism",
+    "mechanisms", "older", "outcome", "outcomes", "pharmacology", "response", "responses",
+    "reversal", "senior", "study", "trial", "water",
 })
 
 
@@ -546,6 +549,8 @@ def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 3) -> tuple[
     generic = {
         "adapt",
         "adaptation",
+        "adult",
+        "aged",
         "aging",
         "angle",
         "condition",
@@ -557,6 +562,7 @@ def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 3) -> tuple[
         "longevity",
         "mechanism",
         "mimetic",
+        "older",
         "pharmacology",
         "protocol",
         "muscle",
@@ -564,6 +570,7 @@ def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 3) -> tuple[
         "resistance",
         "response",
         "reversal",
+        "senior",
         "stress",
         "synthesi",
         "train",
@@ -637,9 +644,10 @@ def _polarity(text: str) -> frozenset[str]:
         out.add("null")
     negative_terms = tokens & _NEGATIVE
     if negative_terms:
-        if negative_terms <= _BENEFICIAL_REDUCTION and _has_beneficial_reduction_context(text):
+        if _has_beneficial_reduction_context(text):
             out.add("positive")
-        else:
+            negative_terms -= _BENEFICIAL_REDUCTION
+        if negative_terms:
             out.add("negative")
     null_phrase = _NULL_PHRASE_RE.search(text.casefold())
     weak_null = bool(null_phrase and _WEAK_NULL_PHRASE_RE.fullmatch(null_phrase.group(0)))
