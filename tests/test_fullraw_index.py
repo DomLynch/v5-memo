@@ -573,6 +573,30 @@ def test_full_sweep_cache_query_uses_canonical_pass(tmp_path: Path) -> None:
     assert verbose == compact
 
 
+def test_full_sweep_cache_query_drops_broad_fillers(tmp_path: Path) -> None:
+    entries = [
+        replace(_entry(tmp_path, 0, "openalex"), topic_terms=("creatine", "trial", "resistance")),
+        replace(_entry(tmp_path, 1, "openalex"), topic_terms=("adults", "older", "muscle")),
+        replace(_entry(tmp_path, 2, "openalex"), topic_terms=("strength", "training", "resistance")),
+        replace(_entry(tmp_path, 3, "openalex"), topic_terms=("creatine", "resistance", "trial")),
+    ]
+
+    verbose = fullraw_index._sweep_cache_query(
+        "creatine resistance training older adults muscle strength trial",
+        entries,
+        sweep_shard_limit=4,
+        rank_mode="relevance",
+    )
+    compact = fullraw_index._sweep_cache_query(
+        "creatine resistance training trial",
+        entries,
+        sweep_shard_limit=4,
+        rank_mode="relevance",
+    )
+
+    assert verbose == compact == "creatine resistance trial"
+
+
 def test_sweep_cache_matcher_accepts_compatible_pass_query() -> None:
     entry = fullraw_index.SweepCacheEntry(
         created_at=time.time(),

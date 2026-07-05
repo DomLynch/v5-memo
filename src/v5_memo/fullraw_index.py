@@ -60,6 +60,13 @@ _ALPHA_SWEEP_TERMS = frozenset({
     "endpoint", "failed", "impair", "impaired", "impairs", "null", "primary",
     "protocol", "reduced", "reduces", "replication", "subgroup", "timing",
 })
+_SWEEP_QUERY_POPULATION_FILLER_TERMS = frozenset({
+    "adult", "adults", "aged", "elderly", "human", "humans", "older", "senior", "seniors",
+})
+_SWEEP_QUERY_FILLER_TERMS = frozenset({
+    *_SWEEP_QUERY_POPULATION_FILLER_TERMS,
+    "function", "muscle", "performance", "strength",
+})
 _FULLRAW_LEGACY_PREFIX = "V5_MEMO_FULL_RAW_"
 _FULLRAW_GENERIC_PREFIX = "RESEARKA_FULLRAW_"
 _FULLRAW_SPECIAL_ALIASES = {
@@ -1597,7 +1604,12 @@ def _profile_relaxed_sweep_query(
     *,
     max_terms: int = 3,
 ) -> str:
-    terms = _fts_terms(query)
+    raw_terms = _fts_terms(query)
+    filler_terms = _SWEEP_QUERY_FILLER_TERMS
+    if any(term in _ALPHA_SWEEP_TERMS for term in raw_terms):
+        filler_terms = _SWEEP_QUERY_POPULATION_FILLER_TERMS
+    filtered_terms = tuple(term for term in raw_terms if term not in filler_terms)
+    terms = filtered_terms if len(filtered_terms) >= 2 else raw_terms
     if len(terms) <= max_terms:
         return " ".join(terms)
     profile_counts: Counter[str] = Counter()
