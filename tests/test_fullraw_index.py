@@ -1151,6 +1151,7 @@ def test_fast_health_reports_async_sweep_queue_config(
         "priority_queued_count": 0,
         "background_queued_count": 0,
         "max_inflight": 2,
+        "priority_max_inflight": 3,
         "max_queue": 16,
         "priority_burst": True,
         "workers": fullraw_index._auto_sweep_workers(2),
@@ -1186,6 +1187,7 @@ def test_sweep_queue_summary_counts_priority_and_background_jobs() -> None:
         max_inflight=2,
         max_queue=16,
         priority_burst=True,
+        priority_max_inflight=4,
         workers=8,
         enabled=True,
     ) == {
@@ -1195,6 +1197,7 @@ def test_sweep_queue_summary_counts_priority_and_background_jobs() -> None:
         "priority_queued_count": 1,
         "background_queued_count": 1,
         "max_inflight": 2,
+        "priority_max_inflight": 4,
         "max_queue": 16,
         "priority_burst": True,
         "workers": 8,
@@ -1531,6 +1534,46 @@ def test_priority_burst_lane_is_bounded() -> None:
 
     assert next_job is None
     assert inflight == {"background", "first-priority"}
+    assert queued == {"target"}
+    assert queued_jobs == {"target": target}
+
+
+def test_priority_sweep_job_uses_configured_priority_inflight_ceiling() -> None:
+    inflight = {"background", "first-priority"}
+    queued = {"target"}
+    target = fullraw_index.SweepJob("target", "target query", 10, 1900, 2100, "relevance", [], priority=True)
+    queued_jobs = {"target": target}
+
+    next_job = fullraw_index._take_next_queued_sweep_job(
+        sweep_inflight=inflight,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_inflight=1,
+        priority_max_inflight=3,
+    )
+
+    assert next_job == target
+    assert inflight == {"background", "first-priority", "target"}
+    assert queued == set()
+    assert queued_jobs == {}
+
+
+def test_configured_priority_inflight_ceiling_remains_bounded() -> None:
+    inflight = {"background", "first-priority", "second-priority"}
+    queued = {"target"}
+    target = fullraw_index.SweepJob("target", "target query", 10, 1900, 2100, "relevance", [], priority=True)
+    queued_jobs = {"target": target}
+
+    next_job = fullraw_index._take_next_queued_sweep_job(
+        sweep_inflight=inflight,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_inflight=1,
+        priority_max_inflight=3,
+    )
+
+    assert next_job is None
+    assert inflight == {"background", "first-priority", "second-priority"}
     assert queued == {"target"}
     assert queued_jobs == {"target": target}
 
