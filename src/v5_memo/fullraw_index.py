@@ -1290,6 +1290,8 @@ def _cache_fit_path_batch(paths: list[Path], *, start: int, worker_count: int) -
         return batch
     max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
     budget = max(1, max_cache_bytes // _sweep_cache_inflight_lanes(max_inflight))
+    if per_worker_bytes := _sweep_worker_cache_bytes():
+        budget = min(budget, max(1, per_worker_bytes * max(1, worker_count)))
     out: list[Path] = []
     total = 0
     for path in batch:
@@ -1968,10 +1970,7 @@ def _materialized_shard_path(
             return cache_path
     if not populate:
         return path
-    populate_limit = max_cache_bytes
-    if per_worker_bytes := _sweep_worker_cache_bytes():
-        populate_limit = per_worker_bytes if populate_limit is None else min(populate_limit, per_worker_bytes)
-    if populate_limit is not None and source_stat.st_size > populate_limit:
+    if max_cache_bytes is not None and source_stat.st_size > max_cache_bytes:
         return path
     while True:
         with _SHARD_LOCAL_CACHE_LOCK:

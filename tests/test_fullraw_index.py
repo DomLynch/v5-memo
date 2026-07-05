@@ -1969,6 +1969,22 @@ def test_cache_fit_batch_keeps_parallel_batch_when_cache_budget_exhausted(
     assert fullraw_index._cache_fit_path_batch(remotes, start=0, worker_count=3) == remotes
 
 
+def test_cache_fit_batch_uses_worker_cache_as_scheduler_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    remotes = [tmp_path / f"remote-{idx}.sqlite" for idx in range(3)]
+    for path, size in zip(remotes, (30, 6, 6), strict=True):
+        path.write_bytes(b"x" * size)
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "100")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", "6")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT", "1")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", "0")
+
+    assert fullraw_index._cache_fit_path_batch(remotes, start=0, worker_count=3) == remotes[:1]
+    assert fullraw_index._cache_fit_path_batch(remotes, start=1, worker_count=2) == remotes[1:]
+
+
 def test_cache_fit_warm_entries_defers_oversized_remote_shards(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2172,7 +2188,7 @@ def test_materialized_shard_path_avoids_remote_stat_when_cache_budget_exhausted(
     assert fullraw_index._materialized_shard_path(remote, populate=True) == remote
 
 
-def test_materialized_shard_path_skips_populate_when_worker_cache_cap_exceeded(
+def test_materialized_shard_path_populates_when_worker_cache_cap_exceeded(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -2184,13 +2200,12 @@ def test_materialized_shard_path_skips_populate_when_worker_cache_cap_exceeded(
     monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", str(1024))
     monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", "2")
 
-    def fail_copy(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("oversized shard should be searched remotely")
+    materialized = fullraw_index._materialized_shard_path(remote, populate=True)
 
-    monkeypatch.setattr("v5_memo.fullraw_index.shutil.copy2", fail_copy)
-
-    assert fullraw_index._materialized_shard_path(remote, populate=True) == remote
-    assert fullraw_index._cached_materialized_shard_path(remote) is None
+    assert materialized != remote
+    assert materialized.exists()
+    assert materialized.read_bytes() == b"large"
+    assert fullraw_index._cached_materialized_shard_path(remote) == materialized
 
 
 def test_materialized_shard_path_skips_populate_when_available_cache_too_small(
