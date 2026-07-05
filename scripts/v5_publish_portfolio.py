@@ -400,7 +400,7 @@ def classify_run(returncode: int, receipt: Mapping[str, object], *, submit: bool
 
 
 def _should_stop(status: str) -> bool:
-    return status in {"accepted", "submitted", "ready", "deferred"} or status.startswith("warming:")
+    return status in {"accepted", "submitted", "ready", "deferred"}
 
 
 def _run(
