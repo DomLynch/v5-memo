@@ -2773,12 +2773,18 @@ def _admit_sweep_key(
     max_inflight: int,
     priority: bool = False,
     allow_priority_burst: bool = False,
+    priority_max_inflight: int = 0,
 ) -> str:
     if key in sweep_inflight:
         return "running"
     inflight_limit = max(1, max_inflight)
     if len(sweep_inflight) >= inflight_limit:
-        if priority and allow_priority_burst and len(sweep_inflight) < inflight_limit + 1:
+        priority_limit = _priority_inflight_limit(
+            max_inflight,
+            allow_priority_burst=allow_priority_burst,
+            priority_max_inflight=priority_max_inflight,
+        )
+        if priority and len(sweep_inflight) < priority_limit:
             sweep_queued.discard(key)
             sweep_inflight.add(key)
             return "queued"
@@ -2796,14 +2802,20 @@ def _take_next_queued_sweep_job(
     sweep_queued_jobs: dict[str, SweepJob],
     max_inflight: int,
     allow_priority_burst: bool = False,
+    priority_max_inflight: int = 0,
 ) -> SweepJob | None:
     inflight_limit = max(1, max_inflight)
+    priority_limit = _priority_inflight_limit(
+        max_inflight,
+        allow_priority_burst=allow_priority_burst,
+        priority_max_inflight=priority_max_inflight,
+    )
     for key in tuple(sweep_queued_jobs):
         job = sweep_queued_jobs.pop(key)
         if key not in sweep_queued:
             continue
-        can_burst = allow_priority_burst and job.priority
-        if len(sweep_inflight) >= inflight_limit and (not can_burst or len(sweep_inflight) >= inflight_limit + 1):
+        can_burst = job.priority and priority_limit > inflight_limit
+        if len(sweep_inflight) >= inflight_limit and (not can_burst or len(sweep_inflight) >= priority_limit):
             sweep_queued_jobs[key] = job
             return None
         sweep_queued.discard(key)
@@ -2811,6 +2823,18 @@ def _take_next_queued_sweep_job(
         return job
     sweep_queued.clear()
     return None
+
+
+def _priority_inflight_limit(
+    max_inflight: int,
+    *,
+    allow_priority_burst: bool = False,
+    priority_max_inflight: int = 0,
+) -> int:
+    inflight_limit = max(1, max_inflight)
+    if priority_max_inflight > 0:
+        return max(inflight_limit, priority_max_inflight)
+    return inflight_limit + 1 if allow_priority_burst else inflight_limit
 
 
 def _queue_sweep_job(sweep_queued_jobs: dict[str, SweepJob], key: str, job: SweepJob) -> None:
@@ -2858,6 +2882,7 @@ def _sweep_queue_summary(
     sweep_queued_jobs: dict[str, SweepJob],
     *,
     max_inflight: int,
+    priority_max_inflight: int = 0,
     max_queue: int,
     priority_burst: bool,
     workers: int,
@@ -2872,6 +2897,11 @@ def _sweep_queue_summary(
         "priority_queued_count": priority_queued,
         "background_queued_count": max(0, queued_count - priority_queued),
         "max_inflight": max_inflight,
+        "priority_max_inflight": _priority_inflight_limit(
+            max_inflight,
+            allow_priority_burst=priority_burst,
+            priority_max_inflight=priority_max_inflight,
+        ),
         "max_queue": max_queue,
         "priority_burst": priority_burst,
         "workers": workers,
@@ -2906,6 +2936,7 @@ def _sweep_watchdog_tick(
     sweep_queued_jobs: dict[str, SweepJob],
     max_inflight: int,
     allow_priority_burst: bool,
+    priority_max_inflight: int = 0,
     stale_after_seconds: float,
     now: float,
 ) -> tuple[tuple[str, ...], list[SweepJob]]:
@@ -2923,6 +2954,7 @@ def _sweep_watchdog_tick(
             sweep_queued_jobs=sweep_queued_jobs,
             max_inflight=max_inflight,
             allow_priority_burst=allow_priority_burst,
+            priority_max_inflight=priority_max_inflight,
         )
         if next_job is None:
             break
