@@ -276,6 +276,7 @@ def _attempt_on_cooldown(
             "ready",
             "blocked:search_backend_error",
             "blocked:lead_timeout",
+            "decision:revise",
         }:
             return False
         updated_at = _parse_state_time(raw_meta.get("updated_at"))
