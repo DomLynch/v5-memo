@@ -586,7 +586,7 @@ def test_recent_revise_decision_remains_retryable(tmp_path: Path) -> None:
     assert summary["skipped_recent_attempts"] == 0
 
 
-def test_search_coverage_warming_continues_without_overriding_zero_wait(tmp_path: Path) -> None:
+def test_search_coverage_warming_continues_past_generic_zero_wait(tmp_path: Path) -> None:
     portfolio = _load_portfolio()
     state_path = tmp_path / "state.json"
     state_path.write_text(json.dumps({
@@ -627,8 +627,8 @@ def test_search_coverage_warming_continues_without_overriding_zero_wait(tmp_path
     ) -> subprocess.CompletedProcess[str]:
         calls.append(command)
         assert run_env["RESEARKA_FULLRAW_FOREGROUND_SWEEP_WAIT_SECONDS"] == "0"
-        assert "V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS" not in run_env
-        assert "V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS" not in run_env
+        assert run_env["V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS"] == "21600"
+        assert run_env["V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS"] == "21600"
         receipt = Path(command[command.index("--publish-receipt-path") + 1])
         receipt.parent.mkdir(parents=True, exist_ok=True)
         if command[command.index("--topic") + 1] == "fresh lead":
@@ -703,3 +703,36 @@ def test_portfolio_injects_fullraw_wait_when_unconfigured(tmp_path: Path) -> Non
 
     assert run_env["V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS"] == "21600"
     assert run_env["V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS"] == "21600"
+
+
+def test_portfolio_respects_explicit_v5_zero_wait(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    config = portfolio.RunConfig(
+        output_dir=tmp_path,
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=True,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=None,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=0,
+    )
+
+    run_env = portfolio._portfolio_run_env(
+        config,
+        {"V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS": "0"},
+    )
+
+    assert run_env["V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS"] == "0"
+    assert "V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS" not in run_env

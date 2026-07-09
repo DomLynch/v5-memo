@@ -236,7 +236,7 @@ def test_fullraw_search_passes_keep_trial_when_single_variant_drops_fillers() ->
     )
 
     assert [(item.name, item.query) for item in passes] == [
-        ("core", "creatine resistance training trial"),
+        ("core", "creatine resistance training muscle strength trial"),
     ]
 
 
