@@ -932,6 +932,36 @@ def test_miner_accepts_direct_human_reversal_when_anchor_is_full_text_only() -> 
     assert candidate_publish_blocker(candidates[0]) is None
 
 
+def test_miner_rejects_partial_multiword_entity_anchor() -> None:
+    topic = "beta alanine resistance training older adults trial"
+    hits = [
+        _hit(
+            "beta-alanine",
+            "Beta-Alanine protocol expected resistance training augmentation",
+            "Randomized human trial expected beta-alanine to augment resistance training performance in older adults.",
+        ),
+        _hit(
+            "hmb",
+            "Beta-hydroxy-beta-methylbutyrate resistance training trial blunted strength",
+            "Randomized human trial observed beta-hydroxy-beta-methylbutyrate blunted resistance training performance in older women.",
+        ),
+        _hit(
+            "amyloid",
+            "Amyloid beta resistance training trial negative performance",
+            "Animal intervention study resistance training reduced amyloid beta and negative performance.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic=topic,
+        required_anchor_terms=query_anchor_terms([topic]),
+        include_discovery=True,
+    )
+
+    assert candidates == []
+
+
 def test_pipeline_stops_retrieval_once_publishable_candidate_exists() -> None:
     calls: list[str] = []
     hits = [

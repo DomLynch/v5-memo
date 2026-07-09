@@ -132,6 +132,7 @@ _TOPIC_CONTEXT_STOP = frozenset({
     "mechanisms", "older", "outcome", "outcomes", "pharmacology", "response", "responses",
     "reversal", "senior", "study", "trial", "water",
 })
+_AMBIGUOUS_ENTITY_PREFIXES = frozenset({"alpha", "beta", "delta", "gamma", "omega"})
 
 
 def mine_insights(
@@ -601,6 +602,8 @@ def _pair_has_anchor(
     right_tokens: frozenset[str],
     anchor_terms: frozenset[str],
 ) -> bool:
+    if len(anchor_terms) > 1 and anchor_terms & _AMBIGUOUS_ENTITY_PREFIXES:
+        return anchor_terms <= left_tokens and anchor_terms <= right_tokens
     return bool(left_tokens & right_tokens & anchor_terms)
 
 
