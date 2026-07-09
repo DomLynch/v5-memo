@@ -235,7 +235,7 @@ def test_recent_lead_timeout_remains_retryable(tmp_path: Path) -> None:
         return subprocess.CompletedProcess(command, 0, stdout="accepted", stderr="")
 
     code = portfolio.run_portfolio(
-        ["stuck lead", "fresh lead"],
+        ["stuck lead"],
         config,
         runner=fake_runner,
         env={},
@@ -247,6 +247,31 @@ def test_recent_lead_timeout_remains_retryable(tmp_path: Path) -> None:
     assert len(calls) == 1
     assert calls[0][calls[0].index("--topic") + 1] == "stuck lead"
     assert summary["skipped_recent_attempts"] == 0
+
+
+def test_available_leads_prioritizes_untried_before_warming_retries() -> None:
+    portfolio = _load_portfolio()
+    state = {
+        "attempted_leads": {
+            "warming lead": {
+                "status": "warming:search_coverage",
+                "updated_at": portfolio._timestamp(),
+            },
+            "revision lead": {
+                "status": "decision:revise",
+                "updated_at": portfolio._timestamp(),
+            },
+        },
+    }
+
+    available = portfolio._available_leads(
+        ["warming lead", "revision lead", "fresh lead"],
+        state,
+        blocked_retry_hours=24,
+        now=portfolio.datetime.now(portfolio.UTC),
+    )
+
+    assert available == ["fresh lead", "warming lead", "revision lead"]
 
 
 def test_run_portfolio_skips_completed_leads_and_saves_success(tmp_path: Path) -> None:
@@ -573,7 +598,7 @@ def test_recent_revise_decision_remains_retryable(tmp_path: Path) -> None:
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     code = portfolio.run_portfolio(
-        ["revision lead", "fresh lead"],
+        ["revision lead"],
         config,
         runner=fake_runner,
         env={},
@@ -651,12 +676,11 @@ def test_search_coverage_warming_continues_past_generic_zero_wait(tmp_path: Path
     state = json.loads(state_path.read_text())
     summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
     assert code == 0
-    assert len(calls) == 2
-    assert calls[0][calls[0].index("--topic") + 1] == "cold lead"
-    assert calls[1][calls[1].index("--topic") + 1] == "fresh lead"
+    assert len(calls) == 1
+    assert calls[0][calls[0].index("--topic") + 1] == "fresh lead"
     assert summary["final_status"] == "submitted"
     assert summary["skipped_recent_attempts"] == 0
-    assert state["attempted_leads"]["cold lead"]["status"] == "warming:search_coverage"
+    assert state["attempted_leads"]["fresh lead"]["status"] == "submitted"
     assert "cold lead" not in state.get("completed_leads", {})
 
     calls.clear()

@@ -311,12 +311,29 @@ def _available_leads(
     now: datetime,
 ) -> list[str]:
     completed_keys = _state_keys(_completed_leads(state))
-    return [
+    available = [
         lead
         for lead in leads
         if _lead_key(lead) not in completed_keys
         and not _attempt_on_cooldown(lead, state, retry_hours=blocked_retry_hours, now=now)
     ]
+    return sorted(available, key=lambda lead: _attempt_priority(lead, state))
+
+
+def _attempt_priority(lead: str, state: Mapping[str, object]) -> int:
+    lead_key = _lead_key(lead)
+    for raw_lead, raw_meta in _attempted_leads(state).items():
+        if _lead_key(str(raw_lead)) != lead_key or not isinstance(raw_meta, Mapping):
+            continue
+        status = str(raw_meta.get("status") or "")
+        if status in {"blocked:lead_timeout", "blocked:researka_submit_failed"}:
+            return 1
+        if status.startswith("warming:") or status == "blocked:search_backend_error":
+            return 2
+        if status.startswith("decision:"):
+            return 3
+        return 4
+    return 0
 
 
 def discover_leads(
