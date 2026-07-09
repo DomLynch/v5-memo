@@ -326,14 +326,14 @@ def _attempt_priority(lead: str, state: Mapping[str, object]) -> int:
         if _lead_key(str(raw_lead)) != lead_key or not isinstance(raw_meta, Mapping):
             continue
         status = str(raw_meta.get("status") or "")
+        if status.startswith("warming:") or status == "blocked:search_backend_error":
+            return 0
         if status in {"blocked:lead_timeout", "blocked:researka_submit_failed"}:
             return 1
-        if status.startswith("warming:") or status == "blocked:search_backend_error":
-            return 2
         if status.startswith("decision:"):
             return 3
         return 4
-    return 0
+    return 2
 
 
 def discover_leads(
