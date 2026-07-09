@@ -2752,6 +2752,42 @@ def _sweep_cache_entry_matches_request(
     return any(_sweep_queries_alias_equivalent(request_query, cached_query) for cached_query in cached_queries)
 
 
+def _sweep_cache_entry_matches_active_or_completed_original_query(
+    entry: SweepCacheEntry,
+    *,
+    active_query: str,
+    original_query: str,
+    result_limit: int,
+    sweep_shard_limit: int,
+    sweep_pass_shard_limit: int,
+    sweep_strategy: str,
+    sweep_catalog_scope: str = "",
+) -> bool:
+    if _sweep_cache_entry_matches_request(
+        entry,
+        query=active_query,
+        result_limit=result_limit,
+        sweep_shard_limit=sweep_shard_limit,
+        sweep_pass_shard_limit=sweep_pass_shard_limit,
+        sweep_strategy=sweep_strategy,
+        sweep_catalog_scope=sweep_catalog_scope,
+    ):
+        return True
+    return bool(
+        original_query
+        and sweep_cache_entry_is_terminal(entry)
+        and _sweep_cache_entry_matches_request(
+            entry,
+            query=original_query,
+            result_limit=result_limit,
+            sweep_shard_limit=sweep_shard_limit,
+            sweep_pass_shard_limit=sweep_pass_shard_limit,
+            sweep_strategy=sweep_strategy,
+            sweep_catalog_scope=sweep_catalog_scope,
+        )
+    )
+
+
 def _sweep_queries_alias_equivalent(request_query: str, cached_query: str) -> bool:
     request_terms = _fts_terms(request_query)
     cached_terms = _fts_terms(cached_query)
@@ -3504,12 +3540,14 @@ def run_server() -> None:
         key: str,
         cache_query: str,
         *,
+        original_query: str = "",
         result_limit: int,
     ) -> SweepCacheEntry | None:
         entry = sweep_cache_get(key)
-        if entry is not None and _sweep_cache_entry_matches_request(
+        if entry is not None and _sweep_cache_entry_matches_active_or_completed_original_query(
             entry,
-            query=cache_query,
+            active_query=cache_query,
+            original_query=original_query,
             result_limit=result_limit,
             sweep_shard_limit=sweep_shard_limit,
             sweep_pass_shard_limit=sweep_pass_shard_limit,
@@ -3524,9 +3562,10 @@ def run_server() -> None:
             if path.name == f"{key}.json":
                 continue
             candidate = _load_sweep_cache(path, ttl_seconds=sweep_ttl)
-            if candidate is None or not _sweep_cache_entry_matches_request(
+            if candidate is None or not _sweep_cache_entry_matches_active_or_completed_original_query(
                 candidate,
-                query=cache_query,
+                active_query=cache_query,
+                original_query=original_query,
                 result_limit=result_limit,
                 sweep_shard_limit=sweep_shard_limit,
                 sweep_pass_shard_limit=sweep_pass_shard_limit,
@@ -3972,7 +4011,12 @@ def run_server() -> None:
                 sweep_catalog_scope=sweep_catalog_scope,
             )
             cached = (
-                compatible_sweep_cache_get(cache_key, cache_query, result_limit=result_limit)
+                compatible_sweep_cache_get(
+                    cache_key,
+                    cache_query,
+                    original_query=query,
+                    result_limit=result_limit,
+                )
                 if catalog
                 else None
             )

@@ -778,6 +778,60 @@ def test_completed_sweep_cache_with_saturated_limit_rejects_higher_limit() -> No
     )
 
 
+def test_completed_sweep_cache_matches_original_query_when_active_query_changed() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Urolithin runner recovery"} for _ in range(2)],
+        receipt={
+            "sweep_result_limit": 10,
+            "result_count_raw": 2,
+            "sweep_shard_limit": 1525,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_query": "urolithin trained runners",
+            "sweep_original_query": "urolithin muscle trained runners placebo trial",
+            "partial_shard_search": False,
+            "sweep_remaining_shards": 0,
+        },
+    )
+
+    assert fullraw_index._sweep_cache_entry_matches_active_or_completed_original_query(
+        entry,
+        active_query="urolithin runners trial",
+        original_query="urolithin muscle trained runners placebo trial",
+        result_limit=50,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
+def test_partial_sweep_cache_does_not_match_changed_original_query() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Urolithin runner recovery"}],
+        receipt={
+            "sweep_result_limit": 10,
+            "result_count_raw": 1,
+            "sweep_shard_limit": 1525,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_query": "urolithin trained runners",
+            "sweep_original_query": "urolithin muscle trained runners placebo trial",
+            "partial_shard_search": True,
+            "sweep_remaining_shards": 120,
+        },
+    )
+
+    assert not fullraw_index._sweep_cache_entry_matches_active_or_completed_original_query(
+        entry,
+        active_query="urolithin runners trial",
+        original_query="urolithin muscle trained runners placebo trial",
+        result_limit=10,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
 def test_sweep_cache_matcher_rejects_stale_catalog_scope() -> None:
     entry = fullraw_index.SweepCacheEntry(
         created_at=time.time(),
