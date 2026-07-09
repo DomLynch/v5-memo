@@ -732,8 +732,8 @@ def test_portfolio_caps_injected_fullraw_wait_to_lead_timeout(tmp_path: Path) ->
 
     run_env = portfolio._portfolio_run_env(config, {})
 
-    assert run_env["V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS"] == "200"
-    assert run_env["V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS"] == "200"
+    assert run_env["V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS"] == "60"
+    assert run_env["V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS"] == "60"
 
 
 def test_run_env_prefers_explicit_v5_zero_over_generic_default(tmp_path: Path) -> None:

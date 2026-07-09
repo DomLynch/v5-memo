@@ -260,7 +260,7 @@ def _format_seconds(value: float) -> str:
 def _portfolio_sweep_wait_seconds(config: RunConfig) -> str:
     wait_seconds = _positive_float(PORTFOLIO_SWEEP_WAIT_SECONDS) or 0.0
     if config.lead_timeout_seconds > 0:
-        wait_seconds = min(wait_seconds, max(30.0, config.lead_timeout_seconds / 3.0))
+        wait_seconds = min(wait_seconds, max(30.0, config.lead_timeout_seconds / 10.0))
     return _format_seconds(wait_seconds)
 
 
