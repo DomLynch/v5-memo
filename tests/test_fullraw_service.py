@@ -223,15 +223,16 @@ def test_v5_isolated_fullraw_env_overrides_shared_shard_dir() -> None:
     assert "RESEARKA_FULLRAW_INDEX_PORT=9915" in env_example
 
 
-def test_v5_portfolio_publisher_tries_broader_queue_with_shorter_lead_cap() -> None:
+def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
     config = (deploy_dir / "v5-memo-portfolio-publish.service").read_text()
     timer = (deploy_dir / "v5-memo-portfolio-publish.timer").read_text()
 
     assert "TimeoutStartSec=150min" in config
-    assert "Environment=V5_MEMO_PORTFOLIO_MAX_LEADS=12" in config
+    assert "One strict fullraw lead queues about five sweeps" in config
+    assert "Environment=V5_MEMO_PORTFOLIO_MAX_LEADS=3" in config
     assert "Environment=V5_MEMO_PORTFOLIO_LEAD_TIMEOUT_SECONDS=600" in config
-    assert '--max-leads "${V5_MEMO_PORTFOLIO_MAX_LEADS:-12}"' in config
+    assert '--max-leads "${V5_MEMO_PORTFOLIO_MAX_LEADS:-3}"' in config
     assert '--lead-timeout-seconds "${V5_MEMO_PORTFOLIO_LEAD_TIMEOUT_SECONDS:-600}"' in config
     assert "OnCalendar=*-*-* 00/8:20:00" in timer
 
