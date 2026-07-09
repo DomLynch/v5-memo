@@ -191,7 +191,7 @@ def test_v5_isolated_fullraw_service_uses_v5_lane() -> None:
     assert "Environment=RESEARKA_FULLRAW_SWEEP_NO_HIT_STOP_SHARDS=128" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=1" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in config
-    assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=4" in config
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=64" in config
     assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=25769803776" in config
     assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_GB" not in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES=536870912" in config
@@ -219,6 +219,7 @@ def test_v5_isolated_fullraw_env_overrides_shared_shard_dir() -> None:
     assert "RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=900" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=180" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=64" in env_example
     assert "RESEARKA_FULLRAW_INDEX_PORT=9915" in env_example
 
 
