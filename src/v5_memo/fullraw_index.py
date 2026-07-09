@@ -2768,7 +2768,19 @@ def _sweep_queries_alias_equivalent(request_query: str, cached_query: str) -> bo
 
 
 def _sweep_cache_entry_has_result_limit(entry: SweepCacheEntry, result_limit: int) -> bool:
-    return (_int_or_none(entry.receipt.get("sweep_result_limit")) or len(entry.hits)) >= result_limit
+    cached_limit = _int_or_none(entry.receipt.get("sweep_result_limit")) or len(entry.hits)
+    if cached_limit >= result_limit:
+        return True
+    if not sweep_cache_entry_is_terminal(entry):
+        return False
+    returned = _int_or_none(entry.receipt.get("result_count_raw"))
+    if returned is None:
+        returned = _int_or_none(entry.receipt.get("result_count_unique"))
+    if returned is None:
+        returned = _int_or_none(entry.receipt.get("result_count_returned"))
+    if returned is None:
+        returned = len(entry.hits)
+    return returned < cached_limit
 
 
 def _should_force_cache_queue(

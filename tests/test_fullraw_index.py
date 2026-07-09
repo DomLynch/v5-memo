@@ -728,6 +728,56 @@ def test_sweep_cache_matcher_accepts_only_completed_alias_equivalent_query() -> 
     )
 
 
+def test_completed_sweep_cache_with_unsaturated_limit_answers_higher_limit() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Urolithin runner recovery"} for _ in range(2)],
+        receipt={
+            "sweep_result_limit": 10,
+            "result_count_raw": 2,
+            "sweep_shard_limit": 1525,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_query": "urolithin trained runners",
+            "partial_shard_search": False,
+            "sweep_remaining_shards": 0,
+        },
+    )
+
+    assert fullraw_index._sweep_cache_entry_matches_request(
+        entry,
+        query="urolithin trained runners",
+        result_limit=50,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
+def test_completed_sweep_cache_with_saturated_limit_rejects_higher_limit() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": f"Creatine trial {index}"} for index in range(10)],
+        receipt={
+            "sweep_result_limit": 10,
+            "result_count_raw": 10,
+            "sweep_shard_limit": 1525,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_query": "creatine resistance training",
+            "partial_shard_search": False,
+            "sweep_remaining_shards": 0,
+        },
+    )
+
+    assert not fullraw_index._sweep_cache_entry_matches_request(
+        entry,
+        query="creatine resistance training",
+        result_limit=50,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
 def test_sweep_cache_matcher_rejects_stale_catalog_scope() -> None:
     entry = fullraw_index.SweepCacheEntry(
         created_at=time.time(),
