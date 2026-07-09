@@ -253,6 +253,17 @@ def _v5_or_positive_generic_env(
     )
 
 
+def _format_seconds(value: float) -> str:
+    return str(int(value)) if value.is_integer() else str(value)
+
+
+def _portfolio_sweep_wait_seconds(config: RunConfig) -> str:
+    wait_seconds = _positive_float(PORTFOLIO_SWEEP_WAIT_SECONDS) or 0.0
+    if config.lead_timeout_seconds > 0:
+        wait_seconds = min(wait_seconds, max(30.0, config.lead_timeout_seconds / 3.0))
+    return _format_seconds(wait_seconds)
+
+
 def _portfolio_run_env(config: RunConfig, base_env: Mapping[str, str]) -> dict[str, str]:
     run_env = dict(base_env)
     if not (config.submit and config.searcher == "fullraw"):
@@ -262,13 +273,13 @@ def _portfolio_run_env(config: RunConfig, base_env: Mapping[str, str]) -> dict[s
         v5_name=V5_SWEEP_WAIT_ENV,
         generic_name=GENERIC_SWEEP_WAIT_ENV,
     ):
-        run_env[V5_SWEEP_WAIT_ENV] = PORTFOLIO_SWEEP_WAIT_SECONDS
+        run_env[V5_SWEEP_WAIT_ENV] = _portfolio_sweep_wait_seconds(config)
         if not _v5_or_positive_generic_env(
             run_env,
             v5_name=V5_SEARCH_BUDGET_ENV,
             generic_name=GENERIC_SEARCH_BUDGET_ENV,
         ):
-            run_env[V5_SEARCH_BUDGET_ENV] = PORTFOLIO_SWEEP_WAIT_SECONDS
+            run_env[V5_SEARCH_BUDGET_ENV] = run_env[V5_SWEEP_WAIT_ENV]
     return run_env
 
 
