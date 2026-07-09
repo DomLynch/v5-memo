@@ -187,7 +187,8 @@ def test_v5_isolated_fullraw_service_uses_v5_lane() -> None:
     assert "Environment=RESEARKA_FULLRAW_SEARCH_ISOLATED=1" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/v5-fullraw-sweep-cache" in config
     assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/v5-shard-cache-5tb" in config
-    assert "Environment=RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=32" in config
+    assert "Match pass size to auto workers (3 * 4)" in config
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=12" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_NO_HIT_STOP_SHARDS=128" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=1" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in config
@@ -217,6 +218,8 @@ def test_v5_isolated_fullraw_env_overrides_shared_shard_dir() -> None:
     assert "RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES=8589934592" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB" not in env_example
     assert "RESEARKA_FULLRAW_FOREGROUND_SWEEP_WAIT_SECONDS=0" in env_example
+    assert "Match pass size to auto workers (3 * 4)" in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=12" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_NO_HIT_STOP_SHARDS=128" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=900" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=180" in env_example
