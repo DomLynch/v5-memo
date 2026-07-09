@@ -446,6 +446,8 @@ def _submit_researka_with_cooldown(
             ), {}
         except HTTPError as exc:
             response_body = _http_error_body(exc)
+            if duplicate_response := _duplicate_submission_response(exc, response_body):
+                return duplicate_response, {}
             response_headers = _rate_limit_headers(exc)
             cooldown_state = _record_researka_submit_cooldown(exc, response_body=response_body)
             fail_receipt = _submit_failed_receipt(
@@ -464,6 +466,22 @@ def _submit_researka_with_cooldown(
                 return {}, fail_receipt
             print(f"Researka submit retrying after cooldown: {int(remaining + 0.999)}s", file=sys.stderr)
             time.sleep(max(0.0, remaining))
+
+
+def _duplicate_submission_response(exc: HTTPError, response_body: str) -> dict[str, object]:
+    if exc.code != 409 or not response_body:
+        return {}
+    try:
+        payload = json.loads(response_body)
+    except json.JSONDecodeError:
+        return {}
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if not isinstance(detail, dict) or detail.get("error") != "duplicate_submission":
+        return {}
+    submission_id = detail.get("submission_id")
+    if not isinstance(submission_id, str) or not submission_id.strip():
+        return {}
+    return {"submission": {"id": submission_id.strip()}, "duplicate_submission": True}
 
 
 def _submit_defer_receipt(remaining: float, state: Mapping[str, object]) -> dict[str, object]:
