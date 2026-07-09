@@ -627,8 +627,8 @@ def test_search_coverage_warming_continues_past_generic_zero_wait(tmp_path: Path
     ) -> subprocess.CompletedProcess[str]:
         calls.append(command)
         assert run_env["RESEARKA_FULLRAW_FOREGROUND_SWEEP_WAIT_SECONDS"] == "0"
-        assert run_env["V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS"] == "21600"
-        assert run_env["V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS"] == "21600"
+        assert "V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS" not in run_env
+        assert "V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS" not in run_env
         receipt = Path(command[command.index("--publish-receipt-path") + 1])
         receipt.parent.mkdir(parents=True, exist_ok=True)
         if command[command.index("--topic") + 1] == "fresh lead":

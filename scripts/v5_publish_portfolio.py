@@ -241,16 +241,8 @@ def _positive_float(value: object) -> float | None:
     return parsed if parsed > 0 else None
 
 
-def _v5_or_positive_generic_env(
-    env: Mapping[str, str],
-    *,
-    v5_name: str,
-    generic_name: str,
-) -> bool:
-    return (
-        bool(str(env.get(v5_name, "")).strip())
-        or _positive_float(env.get(generic_name)) is not None
-    )
+def _configured_env(env: Mapping[str, str], name: str) -> bool:
+    return bool(str(env.get(name, "")).strip())
 
 
 def _format_seconds(value: float) -> str:
@@ -268,16 +260,14 @@ def _portfolio_run_env(config: RunConfig, base_env: Mapping[str, str]) -> dict[s
     run_env = dict(base_env)
     if not (config.submit and config.searcher == "fullraw"):
         return run_env
-    if not _v5_or_positive_generic_env(
-        run_env,
-        v5_name=V5_SWEEP_WAIT_ENV,
-        generic_name=GENERIC_SWEEP_WAIT_ENV,
+    if not (
+        _configured_env(run_env, V5_SWEEP_WAIT_ENV)
+        or _configured_env(run_env, GENERIC_SWEEP_WAIT_ENV)
     ):
         run_env[V5_SWEEP_WAIT_ENV] = _portfolio_sweep_wait_seconds(config)
-        if not _v5_or_positive_generic_env(
-            run_env,
-            v5_name=V5_SEARCH_BUDGET_ENV,
-            generic_name=GENERIC_SEARCH_BUDGET_ENV,
+        if not (
+            _configured_env(run_env, V5_SEARCH_BUDGET_ENV)
+            or _configured_env(run_env, GENERIC_SEARCH_BUDGET_ENV)
         ):
             run_env[V5_SEARCH_BUDGET_ENV] = run_env[V5_SWEEP_WAIT_ENV]
     return run_env
