@@ -422,7 +422,9 @@ def test_template_writer_scopes_companion_analyses_to_named_study() -> None:
     assert "count as one study program, not independent replication" in body
     assert "endpoint: metabolic adaptation; direction: attenuated" in body
     assert "endpoint: vascular response; direction: altered" in body
-    assert "source records report `10.1000/a` (2026) and `10.1000/b` (2025)" in body
+    assert "source records report 10.1000/a (2026) and 10.1000/b (2025)" in body
+    assert "`10.1000/a`" not in body
+    assert "`10.1000/b`" not in body
     assert "negative_signal" not in body
     assert "(boundary)" not in body
     assert "unspecified is" not in body
