@@ -627,7 +627,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--selector", choices=["deterministic", "minimax"])
     parser.add_argument("--min-alpha-tier", choices=["publishable", "elite"], default="publishable")
     parser.add_argument("--submit", action="store_true")
-    parser.add_argument("--decision-wait-seconds", type=float, default=180.0)
+    parser.add_argument("--decision-wait-seconds", type=float, default=600.0)
     parser.add_argument("--decision-poll-seconds", type=float, default=5.0)
     parser.add_argument("--submit-wait-seconds", type=float, default=0.0)
     parser.add_argument("--max-leads", type=int, default=0)
