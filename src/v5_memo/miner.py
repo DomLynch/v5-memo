@@ -6,6 +6,7 @@ from collections import Counter
 from collections.abc import Sequence
 from itertools import combinations
 
+from v5_memo.evidence import is_non_primary_receipt
 from v5_memo.schemas import ClaimCard, CorpusHit, EvidenceNode, InsightCandidate, ReceiptRole
 from v5_memo.scorer import score_connection
 
@@ -105,27 +106,6 @@ _SYNTHESIS_TITLE_TERMS = frozenset({
 _WEAK_ELITE_SOURCE_TERMS = frozenset({
     "abstract", "conference", "editorial", "poster", "supplement",
 })
-_NON_PRIMARY_SOURCE_PHRASES = (
-    "additional file",
-    "faculty opinions recommendation",
-    "supplementary file",
-    "supplemental file",
-    "supplementary material",
-    "supplemental material",
-    "supplementary data",
-    "supplemental data",
-    "data sheet",
-    "dataset",
-    "figshare",
-    "dryad",
-    "zenodo",
-    "conference abstract",
-    "meeting abstract",
-    "poster abstract",
-    "abstract supplement",
-)
-_SUPPLEMENT_DOI_RE = re.compile(r"(?:^|[-_.])s\d+(?:[-_.])p\d+(?:$|[-_.])")
-_NUMBERED_ABSTRACT_TITLE_RE = re.compile(r"\b\d{2,5}-pub:")
 _TOPIC_CONTEXT_STOP = frozenset({
     "adapt", "adaptation", "adult", "aged", "aging", "angle", "condition", "effect", "effects",
     "elderly", "evidence", "healthspan", "human", "intervention", "longevity", "mechanism",
@@ -144,7 +124,7 @@ def mine_insights(
     max_candidates: int = 30,
 ) -> list[InsightCandidate]:
     """Return ranked alpha candidates from source-diverse hit pairs."""
-    clean_hits = _dedupe_hits(hits)
+    clean_hits = [hit for hit in _dedupe_hits(hits) if not is_non_primary_receipt(hit)]
     if len(clean_hits) < 2:
         return []
 
@@ -880,34 +860,7 @@ def _is_weak_elite_receipt(hit: CorpusHit) -> bool:
         for part in (hit.title, hit.venue or "", hit.doi or "", hit.url)
         if part
     )
-    return bool(_tokens(text) & _WEAK_ELITE_SOURCE_TERMS) or _is_non_primary_receipt(hit)
-
-
-def _is_non_primary_receipt(hit: CorpusHit) -> bool:
-    descriptor = " ".join(
-        part.casefold()
-        for part in (
-            hit.title,
-            hit.abstract,
-            hit.venue or "",
-            hit.source,
-            hit.doi or "",
-            hit.hit_id,
-            hit.url,
-            " ".join(str(value) for value in hit.metadata.values()),
-        )
-        if part
-    )
-    if any(phrase in descriptor for phrase in _NON_PRIMARY_SOURCE_PHRASES):
-        return True
-    doi = str(hit.doi or hit.hit_id or "").casefold()
-    return (
-        ("10.1096/fasebj" in doi and ".s1." in doi)
-        or doi.startswith("10.3410/f.")
-        or doi.startswith("10.1249/01.mss.")
-        or bool(_SUPPLEMENT_DOI_RE.search(doi))
-        or bool(_NUMBERED_ABSTRACT_TITLE_RE.search(descriptor))
-    )
+    return bool(_tokens(text) & _WEAK_ELITE_SOURCE_TERMS) or is_non_primary_receipt(hit)
 
 
 def _receipt_roles(
@@ -1093,7 +1046,7 @@ def _claim_card(hit: CorpusHit, role: ReceiptRole) -> ClaimCard:
     safety_feasibility = _is_safety_feasibility_pilot(terms)
     direction = "unclear" if safety_feasibility else "/".join(sorted(_direction_polarity(hit))) or "unclear"
     direct_designs = {"randomized_trial", "cohort", "intervention_study"}
-    non_primary = _is_non_primary_receipt(hit)
+    non_primary = is_non_primary_receipt(hit)
     support_type = "direct" if design in direct_designs and population == "human" and not non_primary else "indirect"
     if safety_feasibility:
         support_type = "direct" if population == "human" and not non_primary else "indirect"

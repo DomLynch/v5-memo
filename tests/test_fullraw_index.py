@@ -1316,6 +1316,10 @@ def test_fast_health_reports_async_sweep_queue_config(
         "exists": False,
         "is_mount": False,
         "max_bytes": 64,
+        "copy_timeout_seconds": None,
+        "copy_inflight": 0,
+        "copy_timeouts_total": 0,
+        "copy_failures_total": 0,
     }
     assert body["async_sweep"] == {
         "enabled": True,
@@ -2188,6 +2192,48 @@ def test_materialized_shard_path_does_not_recache_local_cache_path(
 
     assert fullraw_index._shard_cache_path(cached) is None
     assert fullraw_index._materialized_shard_path(cached) == cached
+
+
+def test_shard_cache_copy_timeout_kills_stalled_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+    class StalledCopy:
+        def __init__(self) -> None:
+            self.killed = False
+            self.waits = 0
+
+        def wait(self, *, timeout: float) -> int:
+            self.waits += 1
+            if not self.killed:
+                raise subprocess.TimeoutExpired(cmd="copy", timeout=timeout)
+            return -9
+
+        def kill(self) -> None:
+            self.killed = True
+
+    stalled = StalledCopy()
+
+    def fake_popen(*_args: object, **_kwargs: object) -> StalledCopy:
+        return stalled
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    before = fullraw_index._shard_local_cache_health()
+    before_timeouts = before["copy_timeouts_total"]
+    before_failures = before["copy_failures_total"]
+    assert isinstance(before_timeouts, int)
+    assert isinstance(before_failures, int)
+    with pytest.raises(TimeoutError, match="shard cache copy timed out"):
+        fullraw_index._copy2_with_timeout(
+            Path("remote.sqlite"),
+            Path("local.sqlite"),
+            timeout_seconds=0.01,
+        )
+
+    assert stalled.killed
+    assert stalled.waits == 2
+    after = fullraw_index._shard_local_cache_health()
+    assert after["copy_inflight"] == 0
+    assert after["copy_timeouts_total"] == before_timeouts + 1
+    assert after["copy_failures_total"] == before_failures + 1
 
 
 def test_materialized_shard_path_does_not_copy_missing_cache_without_populate(

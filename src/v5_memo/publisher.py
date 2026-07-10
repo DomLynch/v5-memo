@@ -8,6 +8,7 @@ from typing import cast
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from v5_memo.evidence import source_artifact_type
 from v5_memo.schemas import ClaimCard, CorpusHit, MemoResult
 
 _RETRIEVAL_EVIDENCE_KEYS = (
@@ -77,19 +78,7 @@ _NON_ARTICLE_TITLE_PHRASES = (
     "comment on",
     "reply to",
 )
-_SUPPLEMENTAL_RECEIPT_PHRASES = (
-    *_NON_ARTICLE_TITLE_PHRASES,
-    "figshare",
-    "dryad",
-    "zenodo",
-)
-_CONFERENCE_RECEIPT_PHRASES = (
-    "conference abstract",
-    "meeting abstract",
-    "poster abstract",
-    "abstract supplement",
-)
-_SUPPLEMENT_DOI_RE = re.compile(r"(?:^|[-_.])s\d+(?:[-_.])p\d+(?:$|[-_.])")
+_RESEARKA_EVIDENCE_TYPES = frozenset({"primary", "review"})
 _INCOMPLETE_TITLE_ENDINGS = frozenset({
     "and",
     "or",
@@ -451,12 +440,21 @@ def _alpha_disclaimer_first(text: str) -> str:
 
 
 def _source_bundle_entry(hit: CorpusHit) -> dict[str, object]:
+    artifact_type = source_artifact_type(hit)
+    if artifact_type != "article":
+        raise ValueError(
+            f"unsupported_source_bundle_artifact_type:{hit.receipt_id}:{artifact_type}"
+        )
     evidence_type = _source_evidence_type(hit)
+    if evidence_type not in _RESEARKA_EVIDENCE_TYPES:
+        raise ValueError(
+            f"unsupported_source_bundle_evidence_type:{hit.receipt_id}:{evidence_type}"
+        )
     entry: dict[str, object] = {
         "title": hit.title,
         "url": hit.url,
         "source": hit.source,
-        "source_type": _source_type(hit, evidence_type),
+        "source_type": _source_type(hit),
         "year": hit.year,
         "evidence_type": evidence_type,
         "excerpt": _source_excerpt(hit),
@@ -472,22 +470,11 @@ def _source_bundle_entry(hit: CorpusHit) -> dict[str, object]:
 
 
 def _source_evidence_type(hit: CorpusHit) -> str:
-    text = _receipt_descriptor(hit)
-    if any(phrase in text for phrase in _SUPPLEMENTAL_RECEIPT_PHRASES):
-        return "supplemental"
-    if any(phrase in text for phrase in _CONFERENCE_RECEIPT_PHRASES):
-        return "conference_abstract"
-    doi = str(hit.doi or hit.hit_id or "").casefold()
-    if "10.6084/m9.figshare" in doi:
-        return "supplemental"
-    if ("10.1096/fasebj" in doi and ".s1." in doi) or _SUPPLEMENT_DOI_RE.search(doi):
-        return "conference_abstract"
-    return "primary"
+    text = f"{hit.title} {hit.metadata.get('evidence_type', '')}".casefold()
+    return "review" if any(term in text for term in ("review", "meta-analysis", "systematic")) else "primary"
 
 
-def _source_type(hit: CorpusHit, evidence_type: str) -> str:
-    if evidence_type != "primary":
-        return evidence_type[:40]
+def _source_type(hit: CorpusHit) -> str:
     raw = hit.source.split(":", 1)[-1] or hit.source or "openalex"
     clean = re.sub(r"[^a-z0-9_-]+", "_", raw.casefold()).strip("_")
     return (clean or "openalex")[:40]

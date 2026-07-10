@@ -142,6 +142,13 @@ def _shard_local_cache_health(*, include_dynamic_budget: bool = True) -> dict[st
         max_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
         if max_bytes is not None:
             health["max_bytes"] = max_bytes
+    with _SHARD_LOCAL_CACHE_LOCK:
+        health.update({
+            "copy_timeout_seconds": _shard_cache_copy_timeout_seconds(),
+            "copy_inflight": _SHARD_LOCAL_CACHE_COPY_INFLIGHT,
+            "copy_timeouts_total": _SHARD_LOCAL_CACHE_COPY_TIMEOUTS,
+            "copy_failures_total": _SHARD_LOCAL_CACHE_COPY_FAILURES,
+        })
     return health
 
 
@@ -151,6 +158,9 @@ _SWEEP_MIN_RESULT_LIMIT = 10
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _SHARD_LOCAL_CACHE_IN_PROGRESS: set[Path] = set()
 _SHARD_LOCAL_CACHE_RESERVED_BYTES: dict[Path, int] = {}
+_SHARD_LOCAL_CACHE_COPY_INFLIGHT = 0
+_SHARD_LOCAL_CACHE_COPY_TIMEOUTS = 0
+_SHARD_LOCAL_CACHE_COPY_FAILURES = 0
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
     ("forecast", ("forecast", "forecasts", "forecasting", "guidance", "estimate", "estimates")),
@@ -2006,7 +2016,11 @@ def _materialized_shard_path(
             preserve=base_preserve | _SHARD_LOCAL_CACHE_IN_PROGRESS,
         )
     try:
-        shutil.copy2(path, tmp_path)
+        _copy2_with_timeout(
+            path,
+            tmp_path,
+            timeout_seconds=_shard_cache_copy_timeout_seconds(),
+        )
         with _SHARD_LOCAL_CACHE_LOCK:
             if cache_path.exists() and cache_path.stat().st_size == source_stat.st_size:
                 os.utime(cache_path, None)
@@ -2026,6 +2040,61 @@ def _materialized_shard_path(
             _SHARD_LOCAL_CACHE_IN_PROGRESS.discard(tmp_path)
             _SHARD_LOCAL_CACHE_RESERVED_BYTES.pop(tmp_path, None)
         tmp_path.unlink(missing_ok=True)
+
+
+def _shard_cache_copy_timeout_seconds() -> float | None:
+    raw = _fullraw_env(
+        "V5_MEMO_FULL_RAW_SHARD_CACHE_COPY_TIMEOUT_SECONDS",
+        _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_TIMEOUT_SECONDS", ""),
+    )
+    timeout = _float_or_none(raw)
+    return timeout if timeout is not None and timeout > 0 else None
+
+
+def _copy2_with_timeout(source: Path, target: Path, *, timeout_seconds: float | None) -> None:
+    global _SHARD_LOCAL_CACHE_COPY_FAILURES
+    global _SHARD_LOCAL_CACHE_COPY_INFLIGHT
+    global _SHARD_LOCAL_CACHE_COPY_TIMEOUTS
+    if timeout_seconds is None:
+        shutil.copy2(source, target)
+        return
+    with _SHARD_LOCAL_CACHE_LOCK:
+        _SHARD_LOCAL_CACHE_COPY_INFLIGHT += 1
+    try:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import shutil,sys; shutil.copy2(sys.argv[1], sys.argv[2])",
+                str(source),
+                str(target),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            returncode = process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            process.kill()
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=1.0)
+            raise TimeoutError(
+                f"shard cache copy timed out after {timeout_seconds:g}s: {source}"
+            ) from exc
+        if returncode != 0:
+            raise OSError(f"shard cache copy failed with exit code {returncode}: {source}")
+    except TimeoutError:
+        with _SHARD_LOCAL_CACHE_LOCK:
+            _SHARD_LOCAL_CACHE_COPY_TIMEOUTS += 1
+            _SHARD_LOCAL_CACHE_COPY_FAILURES += 1
+        raise
+    except OSError:
+        with _SHARD_LOCAL_CACHE_LOCK:
+            _SHARD_LOCAL_CACHE_COPY_FAILURES += 1
+        raise
+    finally:
+        with _SHARD_LOCAL_CACHE_LOCK:
+            _SHARD_LOCAL_CACHE_COPY_INFLIGHT -= 1
 
 
 def _shard_cache_path(path: Path) -> Path | None:

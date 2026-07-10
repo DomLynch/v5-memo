@@ -8,6 +8,7 @@ from urllib.error import HTTPError
 import pytest
 
 from v5_memo.binder import bind_receipts
+from v5_memo.evidence import source_artifact_type
 from v5_memo.gate import (
     candidate_alpha_tier,
     candidate_publish_blocker,
@@ -1874,7 +1875,7 @@ def test_researka_payload_submits_human_title_and_plain_doi_citations() -> None:
     assert "10.1000/runners" in body
 
 
-def test_researka_payload_skips_non_article_title_and_types_supporting_receipts() -> None:
+def test_researka_payload_rejects_non_primary_receipts_before_intake() -> None:
     candidate = InsightCandidate(
         topic="nicotinamide riboside exercise performance",
         thesis="Nicotinamide riboside may expose a species and endpoint boundary in exercise performance.",
@@ -1920,20 +1921,67 @@ def test_researka_payload_skips_non_article_title_and_types_supporting_receipts(
     ]
     markdown = "# Alpha memo: Additional file 1: of The NAD+ precursor nicotinamide riboside decreases exercise performance in rats\n\nBody."
 
-    payload = build_researka_payload(
-        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
-        author_agent_id="v5-memo-agent",
-        domain_slug="longevity_research",
+    with pytest.raises(ValueError, match=r"unsupported_source_bundle_artifact_type:.*:supplemental"):
+        build_researka_payload(
+            MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+            author_agent_id="v5-memo-agent",
+            domain_slug="longevity_research",
+        )
+
+
+def test_miner_excludes_non_primary_artifacts_before_candidate_building() -> None:
+    hits = [
+        CorpusHit(
+            hit_id="supplement",
+            title="Additional file 1: Metformin to augment muscle training adaptation",
+            abstract="Protocol designed to augment exercise training adaptation in older adults.",
+            source="fullraw:openalex",
+            doi="10.6084/m9.figshare.c.1_d1",
+        ),
+        CorpusHit(
+            hit_id="trial",
+            title="Metformin blunts muscle training adaptation",
+            abstract=(
+                "Randomized human trial found metformin blunted exercise training adaptation "
+                "in older adults."
+            ),
+            source="fullraw:pubmed",
+            doi="10.1000/trial",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="metformin exercise training adaptation older adults trial",
+        required_anchor_terms=("metformin",),
     )
 
-    source_bundle = cast(list[dict[str, object]], payload["source_bundle"])
-    assert payload["title"] == "Nicotinamide riboside may expose a species and endpoint boundary in exercise performance."
-    assert source_bundle[0]["evidence_type"] == "supplemental"
-    assert source_bundle[0]["source_type"] == "supplemental"
-    assert source_bundle[1]["evidence_type"] == "conference_abstract"
-    assert source_bundle[2]["evidence_type"] == "conference_abstract"
-    assert source_bundle[3]["evidence_type"] == "primary"
-    assert "excerpt" in source_bundle[3]
+    assert candidates == []
+
+
+@pytest.mark.parametrize(
+    ("title", "doi", "expected"),
+    [
+        ("Randomized exercise trial", "10.1000/trial", "article"),
+        ("Additional file 1: trial checklist", "10.6084/m9.figshare.c.1_d1", "supplemental"),
+        ("Exercise trial abstract", "10.1249/01.mss.0000000000000001", "conference_abstract"),
+        ("Faculty Opinions recommendation of a trial", "10.3410/f.1", "secondary_commentary"),
+    ],
+)
+def test_source_artifact_policy_is_shared(
+    title: str,
+    doi: str,
+    expected: str,
+) -> None:
+    hit = CorpusHit(
+        hit_id=doi,
+        title=title,
+        abstract="Evidence descriptor.",
+        source="fullraw:test",
+        doi=doi,
+    )
+
+    assert source_artifact_type(hit) == expected
 
 
 def test_researka_payload_uses_receipt_title_instead_of_auto_bridge_thesis_title() -> None:
@@ -2054,7 +2102,7 @@ def test_researka_payload_skips_incomplete_receipt_title() -> None:
             title="Effects of 14 days of prophylactic resveratrol supplementation in trained endurance runners upon the inflammatory",
             abstract="Human runner intervention measured cytokine response after eccentric exercise.",
             source="fullraw:openalex",
-            doi="10.1186/1550-2783-8-s1-p15",
+            doi="10.1000/resveratrol-inflammation",
         ),
         CorpusHit(
             hit_id="complete",
