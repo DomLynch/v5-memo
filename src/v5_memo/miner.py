@@ -690,7 +690,7 @@ def _direction_polarity(hit: CorpusHit) -> frozenset[str]:
         return frozenset()
     title_polarity = _polarity(hit.title) - {"mixed"}
     full_polarity = _polarity(hit.text) - {"mixed"}
-    if len(title_polarity) == 1 and len(full_polarity) > 1 and title_polarity & (_NEGATIVE | _NULL):
+    if len(title_polarity) == 1 and len(full_polarity) > 1 and title_polarity & {"negative", "null"}:
         return title_polarity
     if len(title_polarity) == 1 and (not full_polarity or full_polarity <= title_polarity):
         return title_polarity

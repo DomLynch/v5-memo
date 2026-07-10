@@ -25,6 +25,7 @@ _MARKED_DOI_RE = re.compile(
     re.IGNORECASE,
 )
 _DOI_LABEL_RE = re.compile(r"\b(10\.\d{4,9}/[^\s\"'\])}>,;:`]+):", re.IGNORECASE)
+_BOLD_SECTION_RE = re.compile(r"^\*\*(?P<heading>[^*]+):\*\*(?:\s|$)")
 _TITLE_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _DANGLING_TITLE_TAIL_RE = re.compile(
     r":\s*(?:a|an|the|and|or|of|in|on|to|for|with|during|after|before|upon)?$",
@@ -79,6 +80,13 @@ _NON_ARTICLE_TITLE_PHRASES = (
     "reply to",
 )
 _RESEARKA_EVIDENCE_TYPES = frozenset({"primary", "review"})
+_INTERNAL_SUBMISSION_SECTIONS = frozenset({
+    "audit trail",
+    "claim ledger",
+    "evidence graph",
+    "receipt roles",
+    "safety note",
+})
 _INCOMPLETE_TITLE_ENDINGS = frozenset({
     "and",
     "or",
@@ -186,7 +194,26 @@ def build_researka_payload(result: MemoResult, *, author_agent_id: str, domain_s
 def _submission_markdown(markdown: str) -> str:
     plain = _MARKED_DOI_RE.sub(lambda match: match.group("doi").rstrip(".,;:*_`"), markdown)
     plain = _CODE_DOI_RE.sub(lambda match: match.group(1).rstrip(".,;:"), plain)
-    return _DOI_LABEL_RE.sub(r"\1 -", plain)
+    return _strip_internal_submission_sections(_DOI_LABEL_RE.sub(r"\1 -", plain))
+
+
+def _strip_internal_submission_sections(markdown: str) -> str:
+    lines: list[str] = []
+    skipping = False
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        bold_heading = _BOLD_SECTION_RE.match(stripped)
+        heading = (
+            bold_heading.group("heading").casefold()
+            if bold_heading
+            else stripped.removeprefix("## ").rstrip(":").casefold()
+        )
+        is_heading = stripped.startswith("## ") or bold_heading is not None
+        if is_heading:
+            skipping = heading in _INTERNAL_SUBMISSION_SECTIONS
+        if not skipping:
+            lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def _replace_heading(markdown: str, title: str) -> str:

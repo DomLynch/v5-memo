@@ -1741,6 +1741,22 @@ def test_miner_does_not_invent_timing_split_from_same_timing_word() -> None:
     assert "shape:timing_split" not in candidate.reasons
 
 
+def test_claim_card_prefers_directional_title_over_mixed_endpoint_abstract() -> None:
+    hit = CorpusHit(
+        hit_id="mixed-endpoints",
+        title="Intervention attenuates metabolic adaptation after training",
+        abstract=(
+            "Some endpoints increased, others did not change, and the intervention "
+            "attenuated the primary adaptation."
+        ),
+        source="fullraw:pubmed",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "negative_signal", "primary endpoint"))
+
+    assert card.direction == "negative"
+
+
 def test_researka_payload_preserves_memo_and_receipts() -> None:
     candidate = InsightCandidate(
         topic="resveratrol exercise adaptation",
@@ -1766,7 +1782,10 @@ def test_researka_payload_preserves_memo_and_receipts() -> None:
     )
 
     assert payload["article_type"] == "alpha_memo"
-    assert payload["body_markdown"] == markdown.strip()
+    body = cast(str, payload["body_markdown"])
+    assert "**Seed hypothesis:**" in body
+    assert "**Receipts:**" in body
+    assert "**Claim ledger:**" not in body
     assert payload["source_bundle"][0]["evidence_type"] == "primary"  # type: ignore[index]
 
 
@@ -2765,6 +2784,30 @@ def test_publish_blocker_rejects_off_modality_primary_signal() -> None:
     }
 
 
+def test_publish_blocker_rejects_indirect_selector_promise() -> None:
+    candidate = InsightCandidate(
+        topic="intervention training",
+        thesis="A protocol cannot carry the primary publish contrast.",
+        bridge_terms=("intervention", "training"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("protocol", "outcome", "replication"),
+        score=100,
+        novelty_score=60,
+        evidence_score=100,
+        reasons=("shape:expectation_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard("protocol", "promise", "randomized_trial", "human", "adaptation", "positive", "indirect", "medium", "Study protocol."),
+            ClaimCard("outcome", "outcome", "randomized_trial", "human", "adaptation", "negative", "direct", "high", "Direct outcome."),
+            ClaimCard("replication", "replication", "randomized_trial", "human", "adaptation", "negative", "direct", "high", "Direct replication."),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "primary_signal_not_strong_direct_human",
+        "receipt_ids": ("protocol",),
+    }
+
+
 def test_publish_blocker_rejects_training_topic_recovery_primary_signal() -> None:
     candidate = InsightCandidate(
         topic="cold immersion training",
@@ -3327,6 +3370,89 @@ def test_publish_quality_candidates_drop_weak_context_receipts() -> None:
     assert len(selected) == 1
     assert selected[0].receipt_ids == ("direct-a", "direct-b")
     assert candidate_publish_blocker(selected[0]) is None
+
+
+def test_publish_quality_drops_indirect_graph_context_receipts() -> None:
+    candidate = InsightCandidate(
+        topic="tool reliability",
+        thesis="Direct human signals with optional model context.",
+        bridge_terms=("intervention", "training"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("direct-a", "direct-b", "model-context"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        receipt_roles=(
+            ReceiptRole("direct-a", "negative_signal", "direct contrast"),
+            ReceiptRole("direct-b", "null_signal", "direct contrast"),
+        ),
+        claim_cards=(
+            ClaimCard("direct-a", "negative_signal", "randomized_trial", "human", "adaptation", "negative", "direct", "high", "Direct tool reliability negative signal."),
+            ClaimCard("direct-b", "null_signal", "randomized_trial", "human", "adaptation", "null", "direct", "high", "Direct tool reliability null signal."),
+            ClaimCard("model-context", "mechanism", "mechanistic_model", "animal", "adaptation", "positive", "indirect", "medium", "Optional model context."),
+        ),
+    )
+
+    selected = _publishable_candidates(
+        [candidate],
+        [
+            _hit("direct-a", "Direct A", "Randomized human trial negative signal."),
+            _hit("direct-b", "Direct B", "Randomized human trial null signal."),
+            _hit("model-context", "Model context", "Animal mechanism signal."),
+        ],
+        "publishable_alpha",
+        frozenset(),
+        require_publish_quality=True,
+    )
+
+    assert len(selected) == 1
+    assert selected[0].receipt_ids == ("direct-a", "direct-b")
+
+
+def test_researka_payload_strips_internal_diagnostic_sections() -> None:
+    candidate = InsightCandidate(
+        topic="intervention training",
+        thesis="Bounded training signal.",
+        bridge_terms=("intervention", "training"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("a", "b"),
+        score=90,
+        novelty_score=60,
+        evidence_score=90,
+        reasons=("shape:directional_reversal",),
+    )
+    receipts = [_hit("a", "Intervention trial A", "Negative signal."), _hit("b", "Intervention trial B", "Null signal.")]
+    markdown = """# Alpha memo: Intervention training signal
+
+**Core signal:**
+Public synthesis.
+
+**Audit trail:**
+- Internal score.
+
+**Claim ledger:**
+- Internal role.
+
+**Receipts:**
+1. 10.a Trial A.
+2. 10.b Trial B.
+
+**Safety note:** Internal writer instruction.
+"""
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-memo-agent",
+        domain_slug="performance",
+    )
+    body = cast(str, payload["body_markdown"])
+
+    assert "Public synthesis." in body
+    assert "**Receipts:**" in body
+    assert "Audit trail" not in body
+    assert "Claim ledger" not in body
+    assert "Safety note" not in body
 
 
 def test_publish_quality_keeps_negative_null_contrast_after_dropping_weak_context() -> None:

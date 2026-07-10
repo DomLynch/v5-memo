@@ -156,7 +156,21 @@ def _publishable_candidates(
 def _drop_publish_context_receipts(candidate: InsightCandidate) -> InsightCandidate:
     candidate = _drop_weak_context_receipts(candidate)
     candidate = _drop_off_axis_context_receipts(candidate)
-    return _drop_optional_proxy_context_receipts(candidate)
+    candidate = _drop_optional_proxy_context_receipts(candidate)
+    return _drop_indirect_graph_context_receipts(candidate)
+
+
+def _drop_indirect_graph_context_receipts(candidate: InsightCandidate) -> InsightCandidate:
+    selected_ids = {role.receipt_id for role in candidate.receipt_roles}
+    drop_ids = {
+        card.receipt_id
+        for card in candidate.claim_cards
+        if card.receipt_id not in selected_ids and card.support_type == "indirect"
+    }
+    if not drop_ids:
+        return candidate
+    trimmed = _drop_receipts(candidate, drop_ids)
+    return trimmed if len(trimmed.receipt_ids) >= 2 and candidate_publish_blocker(trimmed) is None else candidate
 
 
 def _drop_weak_context_receipts(candidate: InsightCandidate) -> InsightCandidate:

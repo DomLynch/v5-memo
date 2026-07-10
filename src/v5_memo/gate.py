@@ -21,7 +21,9 @@ _PRIMARY_SIGNAL_ROLES = frozenset({
     "aggregate_signal",
     "negative_signal",
     "null_signal",
+    "outcome",
     "positive_signal",
+    "promise",
     "tail_risk",
 })
 _CONTEXT_ROLES = frozenset({"boundary", "consensus", "mechanism", "replication"})
