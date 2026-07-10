@@ -1835,6 +1835,30 @@ def test_researka_payload_preserves_memo_and_receipts() -> None:
     assert payload["source_bundle"][0]["evidence_type"] == "primary"  # type: ignore[index]
 
 
+def test_researka_payload_binds_revision_parent() -> None:
+    candidate = InsightCandidate(
+        topic="revision topic",
+        thesis="Revised bounded signal.",
+        bridge_terms=("revision", "signal"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("a", "b"),
+        score=90,
+        novelty_score=60,
+        evidence_score=90,
+        reasons=("shape:directional_reversal",),
+    )
+    receipts = [_hit("a", "Revision trial A", "Negative result."), _hit("b", "Revision trial B", "Null result.")]
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown="# Alpha memo: Revised bounded signal"),
+        author_agent_id="v5-memo-agent",
+        domain_slug="performance",
+        parent_submission_id=" parent-submission ",
+    )
+
+    assert payload["parent_submission_id"] == "parent-submission"
+
+
 def test_researka_payload_drops_dangling_clipped_title_subtitle() -> None:
     candidate = InsightCandidate(
         topic="training adaptation",

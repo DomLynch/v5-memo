@@ -142,6 +142,10 @@ def main() -> None:
     parser.add_argument("--researka-list-if-accepted", action="store_true")
     parser.add_argument("--researka-agent-id", default=os.environ.get("V5_MEMO_RESEARKA_AGENT_ID", ""))
     parser.add_argument("--researka-domain-slug", default=os.environ.get("V5_MEMO_RESEARKA_DOMAIN_SLUG", ""))
+    parser.add_argument(
+        "--researka-parent-submission-id",
+        default=os.environ.get("V5_MEMO_RESEARKA_PARENT_SUBMISSION_ID", ""),
+    )
     parser.add_argument("--researka-api-base", default=os.environ.get("V5_MEMO_RESEARKA_API_BASE", "https://api.researka.org"))
     parser.add_argument("--researka-submit-url", default=os.environ.get("V5_MEMO_RESEARKA_SUBMIT_URL", ""))
     parser.add_argument(
@@ -347,11 +351,19 @@ def main() -> None:
             _write_json(args.publish_receipt_path, blocker)
             print(f"Publish blocked: {blocker['error']}", file=sys.stderr)
             raise SystemExit(5)
-        payload = build_researka_payload(
-            result,
-            author_agent_id=config.agent_id,
-            domain_slug=config.domain_slug,
-        )
+        if args.researka_parent_submission_id.strip():
+            payload = build_researka_payload(
+                result,
+                author_agent_id=config.agent_id,
+                domain_slug=config.domain_slug,
+                parent_submission_id=args.researka_parent_submission_id,
+            )
+        else:
+            payload = build_researka_payload(
+                result,
+                author_agent_id=config.agent_id,
+                domain_slug=config.domain_slug,
+            )
         response, fail_receipt = _submit_researka_with_cooldown(
             payload,
             agent_key=config.agent_key,

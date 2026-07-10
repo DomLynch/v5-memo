@@ -492,10 +492,17 @@ def test_cli_submit_researka_uses_generated_memo(
         seen["require_publish_quality"] = kwargs["require_publish_quality"]
         return SimpleNamespace(markdown="# Alpha memo: ok\n")
 
-    def fake_build_payload(result: SimpleNamespace, *, author_agent_id: str, domain_slug: str) -> dict[str, object]:
+    def fake_build_payload(
+        result: SimpleNamespace,
+        *,
+        author_agent_id: str,
+        domain_slug: str,
+        parent_submission_id: str = "",
+    ) -> dict[str, object]:
         seen["markdown"] = result.markdown
         seen["author_agent_id"] = author_agent_id
         seen["domain_slug"] = domain_slug
+        seen["parent_submission_id"] = parent_submission_id
         return {"title": "ok"}
 
     def fake_submit(
@@ -526,6 +533,8 @@ def test_cli_submit_researka_uses_generated_memo(
             "v5_memo",
             "--demo",
             "--submit-researka",
+            "--researka-parent-submission-id",
+            "parent-submission",
             "--publish-receipt-path",
             str(receipt_path),
         ],
@@ -540,6 +549,7 @@ def test_cli_submit_researka_uses_generated_memo(
         "markdown": "# Alpha memo: ok\n",
         "author_agent_id": "v5-memo-agent",
         "domain_slug": "longevity_research",
+        "parent_submission_id": "parent-submission",
         "payload": {"title": "ok"},
         "agent_key": "submit-key",
         "api_base": "https://api.researka.org",

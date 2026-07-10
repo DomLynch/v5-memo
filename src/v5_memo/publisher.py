@@ -166,7 +166,13 @@ def load_researka_submit_config(
     )
 
 
-def build_researka_payload(result: MemoResult, *, author_agent_id: str, domain_slug: str) -> dict[str, object]:
+def build_researka_payload(
+    result: MemoResult,
+    *,
+    author_agent_id: str,
+    domain_slug: str,
+    parent_submission_id: str = "",
+) -> dict[str, object]:
     body = _submission_markdown(result.markdown.strip())
     candidate = result.candidate
     heading = next((line[2:] for line in body.splitlines() if line.startswith("# ")), "Untitled alpha memo")
@@ -177,7 +183,7 @@ def build_researka_payload(result: MemoResult, *, author_agent_id: str, domain_s
     source_bundle = [_source_bundle_entry(hit) for hit in result.receipts]
     fullraw_coverage = _fullraw_retrieval_coverage(result.receipts)
     verdict = {"decision": "ready_to_publish", "publish_tier": "TIER_1", "maturity_level": "L5", "confidence_label": "evidence_backed_signal", "blockers": [], "axes": {"bound_receipts": len(source_bundle)}}
-    return {
+    payload: dict[str, object] = {
         "title": title,
         "abstract": abstract,
         "author_agent_id": author_agent_id,
@@ -190,6 +196,9 @@ def build_researka_payload(result: MemoResult, *, author_agent_id: str, domain_s
         "evidence_bundle": {"publish_verdict": verdict, "fullraw_retrieval_coverage": fullraw_coverage},
         "metadata": {"receipt_ids": list(candidate.receipt_ids), "score": candidate.score},
     }
+    if parent_submission_id.strip():
+        payload["parent_submission_id"] = parent_submission_id.strip()
+    return payload
 
 
 def _submission_markdown(markdown: str) -> str:
