@@ -418,7 +418,9 @@ def test_template_writer_scopes_companion_analyses_to_named_study() -> None:
 
     assert payload["title"] == "EX-OUT Program: Endpoint-Specific Intervention and Exercise Findings"
     body = cast(str, payload["body_markdown"])
-    assert "Within the EX-OUT program" in body
+    assert "Within the shared EX-OUT program cohort" in body
+    assert "endpoint-dependent rather than uniformly additive" in body
+    assert "intervention-exercise interaction attenuated metabolic adaptation and altered vascular response" in body
     assert "10.1000/a and 10.1000/b are companion analyses from the same EX-OUT trial program" in body
     assert body.count("one evidence unit") == 1
     assert "endpoint: metabolic adaptation; direction: attenuated" in body
@@ -426,6 +428,8 @@ def test_template_writer_scopes_companion_analyses_to_named_study() -> None:
     assert "source records report 10.1000/a (2026) and 10.1000/b (2025)" in body
     assert "`10.1000/a`" not in body
     assert "`10.1000/b`" not in body
+    assert "Source-record years 2025 and 2026 may include electronic-first publication dates" in body
+    assert "missing protocol details are not inferred across companion articles" in body
     assert "negative_signal" not in body
     assert "(boundary)" not in body
     assert "unspecified is" not in body
