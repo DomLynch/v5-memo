@@ -9,6 +9,26 @@ from v5_memo.schemas import ClaimCard, CorpusHit, InsightCandidate
 
 _TITLE_STOPWORDS = frozenset({"during", "after", "before", "following", "under", "with"})
 _NAMED_STUDY_RE = re.compile(r"\(([A-Z][A-Z0-9-]{2,15})\)\s+(?:study|trial)\b")
+_REDUCTION_TITLE_RE = re.compile(
+    r"\breduction in (?P<endpoint>.+?)(?=[:.;]|\s+(?:among|after|during|following|in (?:adults|patients|participants))\b|$)",
+    re.IGNORECASE,
+)
+_DIRECTIONAL_TITLE_RE = re.compile(
+    r"\b(?P<direction>attenuates?|blunts?|reduces?|decreases?|increases?|improves?|worsens?|alters?|modifies?)\s+"
+    r"(?P<endpoint>.+?)(?=[:.;]|\s+(?:among|after|during|following|in (?:adults|patients|participants))\b|$)",
+    re.IGNORECASE,
+)
+_DIRECTION_DISPLAY = {
+    "alter": "altered",
+    "attenuate": "attenuated",
+    "blunt": "blunted",
+    "decrease": "decreased",
+    "improve": "improved",
+    "increase": "increased",
+    "modify": "modified",
+    "reduce": "reduced",
+    "worsen": "worsened",
+}
 
 
 def render_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> str:
@@ -37,7 +57,7 @@ def render_alpha_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]
         *_core_signal_lines(candidate, direct_cards, study_family=study_family),
         "",
         "**Receipt-level synthesis:**",
-        *_synthesis_lines(candidate, direct_cards),
+        *_synthesis_lines(candidate, direct_cards, receipts, study_family=study_family),
         "",
         "**Limits:**",
         *_limit_lines(candidate, direct_cards, study_family=study_family),
@@ -107,6 +127,14 @@ def _bounded_hypothesis(candidate: InsightCandidate, *, study_family: str = "") 
     direct_cards = _direct_human_cards(candidate)
     if len(direct_cards) < 2:
         return candidate.thesis
+    if study_family:
+        designs = _non_generic_labels(card.design for card in direct_cards)
+        design_text = _join_labels(designs[:2]) or "study"
+        return (
+            f"Within the {study_family} trial program, direct human {design_text} companion analyses "
+            "report endpoint-specific findings from one evidence unit; treat them as hypothesis-level "
+            "until the same endpoints are independently replicated."
+        )
     outcomes = _non_generic_labels(card.outcome for card in direct_cards)
     directions = _non_generic_labels(
         direction
@@ -150,6 +178,15 @@ def _core_signal_lines(
     thesis = candidate.thesis.strip()
     if len(direct_cards) < 2:
         return [thesis if thesis.endswith(".") else f"{thesis}."]
+    if study_family:
+        designs = _non_generic_labels(card.design for card in direct_cards)
+        return [
+            (
+                f"The direct human companion analyses are {_join_labels(designs[:2]) or 'study'} evidence "
+                f"from the same {study_family} trial program, not independent trials."
+            ),
+            "Each article is therefore reported by its own endpoint and textual direction, without pooling effects.",
+        ]
     outcomes = _non_generic_labels(card.outcome for card in direct_cards)
     directions = _non_generic_labels(
         direction
@@ -171,21 +208,70 @@ def _core_signal_lines(
     ]
 
 
-def _synthesis_lines(candidate: InsightCandidate, direct_cards: Sequence[ClaimCard]) -> list[str]:
+def _synthesis_lines(
+    candidate: InsightCandidate,
+    direct_cards: Sequence[ClaimCard],
+    receipts: Sequence[CorpusHit],
+    *,
+    study_family: str = "",
+) -> list[str]:
     del candidate
     cards = list(direct_cards)
     if not cards:
         return ["- No direct human claim cards were assigned; keep this as a discovery lead only."]
-    return [_claim_summary_line(card) for card in cards]
+    hits_by_id = {
+        receipt_id: hit
+        for hit in receipts
+        for receipt_id in {hit.hit_id, hit.receipt_id}
+    }
+    lines: list[str] = []
+    if study_family:
+        lines.append(
+            f"- Evidence unit: the listed articles are endpoint-specific companion analyses from the same "
+            f"{study_family} trial program; they count as one study program, not independent replication."
+        )
+    dated_receipts = [f"`{hit.receipt_id}` ({hit.year})" for hit in receipts if hit.year]
+    if dated_receipts:
+        lines.append(
+            "- Publication metadata: source records report "
+            f"{_join_labels(dated_receipts)}; these are article publication years, not trial dates."
+        )
+    lines.extend(
+        _claim_summary_line(card, hit=hits_by_id.get(card.receipt_id), study_family=study_family)
+        for card in cards
+    )
+    return lines
 
 
-def _claim_summary_line(card: ClaimCard) -> str:
-    outcome = _display_label(card.outcome)
-    direction = _display_label(card.direction, fallback=card.direction.replace("_", " "))
+def _claim_summary_line(card: ClaimCard, *, hit: CorpusHit | None = None, study_family: str = "") -> str:
+    outcome, direction = _endpoint_finding(card, hit)
     design = _display_label(card.design, fallback=card.design.replace("_", " "))
-    quote = card.quote.strip()
-    suffix = f" {quote}" if quote else ""
-    return f"- `{card.receipt_id}` ({card.role}): {design} in {card.population}; {outcome} is {direction}.{suffix}"
+    receipt_id = hit.receipt_id if hit else card.receipt_id
+    family = f"{study_family} companion analysis; " if study_family else ""
+    source_title = f" Source title: {hit.title.strip()}" if hit and hit.title.strip() else ""
+    return (
+        f"- `{receipt_id}`: {family}{design} in {card.population}; endpoint: {outcome}; "
+        f"direction: {direction}.{source_title}"
+    )
+
+
+def _endpoint_finding(card: ClaimCard, hit: CorpusHit | None) -> tuple[str, str]:
+    fallback_direction = _display_label(card.direction, fallback=card.direction.replace("_", " "))
+    if not hit or not hit.title.strip():
+        return _display_label(card.outcome), fallback_direction
+    title = hit.title.strip().rstrip(".")
+    if match := _REDUCTION_TITLE_RE.search(title):
+        return _clean_endpoint(match.group("endpoint")), "reduced"
+    if match := _DIRECTIONAL_TITLE_RE.search(title):
+        raw_direction = match.group("direction").casefold().removesuffix("s")
+        return _clean_endpoint(match.group("endpoint")), _DIRECTION_DISPLAY.get(raw_direction, fallback_direction)
+    return _display_label(card.outcome, fallback=title), fallback_direction
+
+
+def _clean_endpoint(value: str) -> str:
+    clean = re.sub(r"^(?:a|an|the)\s+", "", value.strip(), flags=re.IGNORECASE)
+    clean = re.sub(r"^clinically significant\s+", "", clean, flags=re.IGNORECASE)
+    return clean.rstrip(" .:;").casefold()
 
 
 def _limit_lines(
@@ -213,7 +299,8 @@ def _limit_lines(
     if study_family:
         limits.insert(
             0,
-            f"The {study_family} papers are companion analyses from one study program, not independent trials.",
+            f"The {study_family} papers are companion analyses from the same trial program and one evidence unit, "
+            "not independent trials.",
         )
     if len(outcomes) > 1 or len(directions) > 1 or any(card.role == "boundary" for card in direct_cards):
         limits.insert(

@@ -386,23 +386,25 @@ def test_template_writer_scopes_companion_analyses_to_named_study() -> None:
         evidence_score=100,
         reasons=("shape:boundary_condition", "tier:publishable_alpha"),
         claim_cards=(
-            ClaimCard("a", "negative_signal", "randomized_trial", "human", "metabolic endpoint", "negative", "direct", "high", "Primary analysis."),
-            ClaimCard("b", "boundary", "randomized_trial", "human", "vascular endpoint", "negative", "direct", "high", "Companion analysis."),
+            ClaimCard("a", "negative_signal", "randomized_trial", "human", "unspecified", "negative", "direct", "high", "Primary analysis."),
+            ClaimCard("b", "boundary", "randomized_trial", "human", "risk", "negative", "direct", "high", "Companion analysis."),
         ),
     )
     receipts = [
         CorpusHit(
             hit_id="a",
-            title="Primary endpoint analysis",
+            title="Intervention attenuates metabolic adaptation after exercise training",
             abstract="Secondary analysis of the Example Outcomes (EX-OUT) study.",
             source="fullraw:pubmed",
+            year=2026,
             doi="10.1000/a",
         ),
         CorpusHit(
             hit_id="b",
-            title="Companion endpoint analysis",
+            title="Intervention alters vascular response in adults at elevated risk",
             abstract="The same randomized program reported a vascular endpoint.",
             source="fullraw:pubmed",
+            year=2025,
             doi="10.1000/b",
         ),
     ]
@@ -416,8 +418,41 @@ def test_template_writer_scopes_companion_analyses_to_named_study() -> None:
 
     assert payload["title"] == "EX-OUT Study: Endpoint-Specific Intervention and Exercise Findings"
     body = cast(str, payload["body_markdown"])
-    assert "Within the EX-OUT study program" in body
-    assert "companion analyses from one study program, not independent trials" in body
+    assert "Within the EX-OUT trial program" in body
+    assert "count as one study program, not independent replication" in body
+    assert "endpoint: metabolic adaptation; direction: attenuated" in body
+    assert "endpoint: vascular response; direction: altered" in body
+    assert "source records report `10.1000/a` (2026) and `10.1000/b` (2025)" in body
+    assert "negative_signal" not in body
+    assert "(boundary)" not in body
+    assert "unspecified is" not in body
+
+
+def test_template_writer_extracts_reduction_endpoint_without_domain_rules() -> None:
+    candidate = InsightCandidate(
+        topic="intervention outcome",
+        thesis="Endpoint-specific finding.",
+        bridge_terms=("intervention", "outcome"),
+        tension_terms=("positive",),
+        receipt_ids=("a", "b"),
+        score=90,
+        novelty_score=60,
+        evidence_score=90,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard("a", "outcome", "randomized_trial", "human", "unspecified", "positive", "direct", "high", ""),
+            ClaimCard("b", "outcome", "randomized_trial", "human", "unspecified", "positive", "direct", "high", ""),
+        ),
+    )
+    receipts = [
+        _hit("a", "Program induces a clinically significant reduction in symptom severity: A trial", "Human randomized trial."),
+        _hit("b", "Program improves functional capacity after training", "Human randomized trial."),
+    ]
+
+    memo = render_memo(candidate, receipts)
+
+    assert "endpoint: symptom severity; direction: reduced" in memo
+    assert "endpoint: functional capacity; direction: improved" in memo
 
 
 def test_publish_quality_filter_removes_weak_candidates_before_writing() -> None:

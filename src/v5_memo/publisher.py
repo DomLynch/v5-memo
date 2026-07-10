@@ -19,9 +19,9 @@ _RETRIEVAL_EVIDENCE_KEYS = (
     "rank_mode",
 )
 _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
-_CODE_DOI_RE = re.compile(r"`(10\.\d{4,9}/[^`\s]+)`", re.IGNORECASE)
+_CODE_DOI_RE = re.compile(r"`(10\.\d{4,9}/[^`\s]+)`(?=\s*:)", re.IGNORECASE)
 _MARKED_DOI_RE = re.compile(
-    r"(?P<wrap>`|\*\*|__)(?P<doi>10\.\d{4,9}/[^\s`<>()\[\]{}\"']+?)(?P=wrap)",
+    r"(?P<wrap>\*\*|__)(?P<doi>10\.\d{4,9}/[^\s`<>()\[\]{}\"']+?)(?P=wrap)",
     re.IGNORECASE,
 )
 _DOI_LABEL_RE = re.compile(r"\b(10\.\d{4,9}/[^\s\"'\])}>,;:`]+):", re.IGNORECASE)
