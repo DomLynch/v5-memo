@@ -27,7 +27,11 @@ from v5_memo.minimax_writer import (
     validate_minimax_memo,
 )
 from v5_memo.pipeline import _publishable_candidates, _selector_slate, build_alpha_memo
-from v5_memo.publisher import build_researka_payload, submit_researka
+from v5_memo.publisher import (
+    build_researka_payload,
+    set_researka_public_visibility,
+    submit_researka,
+)
 from v5_memo.retriever import collect_seed_hits
 from v5_memo.schemas import (
     ClaimCard,
@@ -151,6 +155,35 @@ def test_submit_researka_does_not_retry_429_by_default(monkeypatch: pytest.Monke
         )
 
     assert len(calls) == 1
+
+
+def test_visibility_403_verifies_already_listed_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+
+    def fake_urlopen(request: object, timeout: float) -> _JsonResponse:
+        del timeout
+        calls.append(request)
+        if len(calls) == 1:
+            raise HTTPError(
+                "https://api.researka.org/ops/publications/pub-1/visibility",
+                403,
+                "Forbidden",
+                Message(),
+                None,
+            )
+        return _JsonResponse({"metadata": {"public_visibility": "listed"}})
+
+    monkeypatch.setattr("v5_memo.publisher.urlopen", fake_urlopen)
+
+    assert set_researka_public_visibility("pub-1", agent_key="agent-key") == {
+        "id": "pub-1",
+        "public_visibility": "listed",
+        "updated": False,
+        "verified": True,
+    }
+    assert len(calls) == 2
 
 
 class _StaticSearch:

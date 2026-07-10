@@ -663,9 +663,54 @@ def set_researka_public_visibility(
         method="POST",
         headers=headers,
     )
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+    except HTTPError as exc:
+        if exc.code != 403:
+            raise
+        publication = fetch_researka_publication(
+            publication_id,
+            api_base=api_base,
+            timeout=timeout,
+        )
+        if researka_publication_visibility(publication) != "listed":
+            raise
+        return {
+            "id": publication_id,
+            "public_visibility": "listed",
+            "updated": False,
+            "verified": True,
+        }
+    return cast(dict[str, object], data) if isinstance(data, dict) else {"response": data}
+
+
+def fetch_researka_publication(
+    publication_id: str,
+    *,
+    api_base: str = "https://api.researka.org",
+    timeout: float = 30.0,
+) -> dict[str, object]:
+    url = f"{api_base.rstrip('/')}/publications/{publication_id}"
+    req = Request(url, method="GET", headers={"Accept": "application/json"})
     with urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode())
     return cast(dict[str, object], data) if isinstance(data, dict) else {"response": data}
+
+
+def researka_publication_visibility(publication: Mapping[str, object]) -> str:
+    nested = publication.get("publication")
+    record = nested if isinstance(nested, Mapping) else publication
+    if record.get("publicVisible") is True or record.get("public_visible") is True:
+        return "listed"
+    metadata = record.get("metadata")
+    metadata_record = metadata if isinstance(metadata, Mapping) else {}
+    for source in (record, metadata_record):
+        for key in ("publicVisibility", "public_visibility", "visibility"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().casefold()
+    return ""
 
 
 def researka_submission_id(response: Mapping[str, object]) -> str:

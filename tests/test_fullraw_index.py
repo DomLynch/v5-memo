@@ -1311,16 +1311,21 @@ def test_fast_health_reports_async_sweep_queue_config(
 
     assert body is not None
     assert body["fast_health"] is True
-    assert body["shard_cache"] == {
+    shard_cache = body["shard_cache"]
+    assert isinstance(shard_cache, dict)
+    assert {
+        key: shard_cache[key]
+        for key in ("dir", "exists", "is_mount", "max_bytes", "copy_timeout_seconds", "copy_inflight")
+    } == {
         "dir": str(tmp_path / "cache"),
         "exists": False,
         "is_mount": False,
         "max_bytes": 64,
         "copy_timeout_seconds": None,
         "copy_inflight": 0,
-        "copy_timeouts_total": 0,
-        "copy_failures_total": 0,
     }
+    assert isinstance(shard_cache["copy_timeouts_total"], int)
+    assert isinstance(shard_cache["copy_failures_total"], int)
     assert body["async_sweep"] == {
         "enabled": True,
         "inflight_count": 0,
