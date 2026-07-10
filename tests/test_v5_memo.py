@@ -374,6 +374,52 @@ def test_template_writer_leads_with_synthesis_for_boundary_bundle() -> None:
     assert "Metformin Impairs the Cardiorespiratory Fitness" not in payload["title"]
 
 
+def test_template_writer_scopes_companion_analyses_to_named_study() -> None:
+    candidate = InsightCandidate(
+        topic="intervention exercise training adaptation",
+        thesis="Endpoint-specific findings within one study program.",
+        bridge_terms=("intervention", "exercise"),
+        tension_terms=("negative",),
+        receipt_ids=("a", "b"),
+        score=100,
+        novelty_score=55,
+        evidence_score=100,
+        reasons=("shape:boundary_condition", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard("a", "negative_signal", "randomized_trial", "human", "metabolic endpoint", "negative", "direct", "high", "Primary analysis."),
+            ClaimCard("b", "boundary", "randomized_trial", "human", "vascular endpoint", "negative", "direct", "high", "Companion analysis."),
+        ),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="a",
+            title="Primary endpoint analysis",
+            abstract="Secondary analysis of the Example Outcomes (EX-OUT) study.",
+            source="fullraw:pubmed",
+            doi="10.1000/a",
+        ),
+        CorpusHit(
+            hit_id="b",
+            title="Companion endpoint analysis",
+            abstract="The same randomized program reported a vascular endpoint.",
+            source="fullraw:pubmed",
+            doi="10.1000/b",
+        ),
+    ]
+
+    memo = render_memo(candidate, receipts)
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=memo),
+        author_agent_id="v5-memo-agent",
+        domain_slug="performance",
+    )
+
+    assert payload["title"] == "EX-OUT Study: Endpoint-Specific Intervention and Exercise Findings"
+    body = cast(str, payload["body_markdown"])
+    assert "Within the EX-OUT study program" in body
+    assert "companion analyses from one study program, not independent trials" in body
+
+
 def test_publish_quality_filter_removes_weak_candidates_before_writing() -> None:
     weak = InsightCandidate(
         topic="nicotinamide exercise performance",

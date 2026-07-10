@@ -26,6 +26,7 @@ _MARKED_DOI_RE = re.compile(
 )
 _DOI_LABEL_RE = re.compile(r"\b(10\.\d{4,9}/[^\s\"'\])}>,;:`]+):", re.IGNORECASE)
 _BOLD_SECTION_RE = re.compile(r"^\*\*(?P<heading>[^*]+):\*\*(?:\s|$)")
+_NAMED_STUDY_TITLE_RE = re.compile(r"^[A-Z][A-Z0-9-]{2,15}\s+Study:")
 _TITLE_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _DANGLING_TITLE_TAIL_RE = re.compile(
     r":\s*(?:a|an|the|and|or|of|in|on|to|for|with|during|after|before|upon)?$",
@@ -234,6 +235,8 @@ def _append_alpha_disclaimer(markdown: str) -> str:
 
 def _submission_title(result: MemoResult, heading: str) -> str:
     raw = heading.replace("Alpha memo: ", "", 1).strip()
+    if _NAMED_STUDY_TITLE_RE.match(raw):
+        return _clip_title(raw)
     direct_human = _direct_human_claim_cards(result)
     endpoint_title = _endpoint_heterogeneity_title(result, direct_human)
     if endpoint_title:
