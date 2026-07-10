@@ -60,7 +60,7 @@ def render_alpha_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]
         *_synthesis_lines(candidate, direct_cards, receipts, study_family=study_family),
         "",
         "**Limits:**",
-        *_limit_lines(candidate, direct_cards, study_family=study_family),
+        *_limit_lines(candidate, direct_cards, receipts=receipts, study_family=study_family),
         "",
         "**What would falsify it:**",
         _falsification_clause(candidate),
@@ -128,12 +128,9 @@ def _bounded_hypothesis(candidate: InsightCandidate, *, study_family: str = "") 
     if len(direct_cards) < 2:
         return candidate.thesis
     if study_family:
-        designs = _non_generic_labels(card.design for card in direct_cards)
-        design_text = _join_labels(designs[:2]) or "study"
         return (
-            f"Within the {study_family} trial program, direct human {design_text} companion analyses "
-            "report endpoint-specific findings from one evidence unit; treat them as hypothesis-level "
-            "until the same endpoints are independently replicated."
+            f"Within the {study_family} program, the cited companion analyses report endpoint-specific "
+            "findings that warrant independent testing."
         )
     outcomes = _non_generic_labels(card.outcome for card in direct_cards)
     directions = _non_generic_labels(
@@ -179,13 +176,8 @@ def _core_signal_lines(
     if len(direct_cards) < 2:
         return [thesis if thesis.endswith(".") else f"{thesis}."]
     if study_family:
-        designs = _non_generic_labels(card.design for card in direct_cards)
         return [
-            (
-                f"The direct human companion analyses are {_join_labels(designs[:2]) or 'study'} evidence "
-                f"from the same {study_family} trial program, not independent trials."
-            ),
-            "Each article is therefore reported by its own endpoint and textual direction, without pooling effects.",
+            "The cited articles are summarized separately by endpoint and textual direction; no pooled effect is claimed.",
         ]
     outcomes = _non_generic_labels(card.outcome for card in direct_cards)
     directions = _non_generic_labels(
@@ -225,11 +217,6 @@ def _synthesis_lines(
         for receipt_id in {hit.hit_id, hit.receipt_id}
     }
     lines: list[str] = []
-    if study_family:
-        lines.append(
-            f"- Evidence unit: the listed articles are endpoint-specific companion analyses from the same "
-            f"{study_family} trial program; they count as one study program, not independent replication."
-        )
     dated_receipts = [f"`{hit.receipt_id}` ({hit.year})" for hit in receipts if hit.year]
     if dated_receipts:
         lines.append(
@@ -278,12 +265,36 @@ def _limit_lines(
     candidate: InsightCandidate,
     direct_cards: Sequence[ClaimCard],
     *,
+    receipts: Sequence[CorpusHit] = (),
     study_family: str = "",
 ) -> list[str]:
     if len(direct_cards) < 2:
         return [
             "Only one direct human receipt is bound, so this should not be read as a mature evidence synthesis.",
             "The next step is another direct receipt in the same population and endpoint family.",
+        ]
+    if study_family:
+        hits_by_id = {
+            receipt_id: hit
+            for hit in receipts
+            for receipt_id in {hit.hit_id, hit.receipt_id}
+        }
+        matched = [(card, hits_by_id.get(card.receipt_id)) for card in direct_cards]
+        receipt_labels = [f"`{hit.receipt_id if hit else card.receipt_id}`" for card, hit in matched]
+        endpoint_labels = _non_generic_labels(_endpoint_finding(card, hit)[0] for card, hit in matched)
+        return [
+            (
+                f"Receipts {_join_labels(receipt_labels)} are companion analyses from the same {study_family} "
+                "trial program; they form one evidence unit, not independent replications."
+            ),
+            (
+                f"Those cited receipts cover distinct endpoints ({_join_labels(endpoint_labels)}); "
+                "no pooled effect is claimed."
+            ),
+            (
+                "Independent human replication matching a cited receipt's population, intervention window, "
+                "and endpoint is needed before claim-level use."
+            ),
         ]
     outcomes = _non_generic_labels(card.outcome for card in direct_cards)
     directions = _non_generic_labels(
@@ -296,12 +307,6 @@ def _limit_lines(
         "The cited receipts should not be pooled unless population, intervention window, and endpoint match.",
         "A same-endpoint human replication would move this from alpha signal toward claim-level evidence.",
     ]
-    if study_family:
-        limits.insert(
-            0,
-            f"The {study_family} papers are companion analyses from the same trial program and one evidence unit, "
-            "not independent trials.",
-        )
     if len(outcomes) > 1 or len(directions) > 1 or any(card.role == "boundary" for card in direct_cards):
         limits.insert(
             0,
@@ -364,7 +369,7 @@ def _memo_title(candidate: InsightCandidate, *, study_family: str = "") -> str:
         terms = [term for term in bridge_terms if term not in _TITLE_STOPWORDS]
         if study_family:
             bridge = _join_labels([term.title() for term in (terms or bridge_terms)[:2]])
-            return f"{study_family} Study: Endpoint-Specific {bridge} Findings"
+            return f"{study_family} Program: Endpoint-Specific {bridge} Findings"
         return " / ".join((terms or bridge_terms)[:3])
     return candidate.topic
 

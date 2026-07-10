@@ -26,7 +26,7 @@ _MARKED_DOI_RE = re.compile(
 )
 _DOI_LABEL_RE = re.compile(r"\b(10\.\d{4,9}/[^\s\"'\])}>,;:`]+):", re.IGNORECASE)
 _BOLD_SECTION_RE = re.compile(r"^\*\*(?P<heading>[^*]+):\*\*(?:\s|$)")
-_NAMED_STUDY_TITLE_RE = re.compile(r"^[A-Z][A-Z0-9-]{2,15}\s+Study:")
+_NAMED_STUDY_TITLE_RE = re.compile(r"^[A-Z][A-Z0-9-]{2,15}\s+(?:Study|Program):")
 _TITLE_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _DANGLING_TITLE_TAIL_RE = re.compile(
     r":\s*(?:a|an|the|and|or|of|in|on|to|for|with|during|after|before|upon)?$",
