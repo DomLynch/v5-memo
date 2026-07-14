@@ -2252,7 +2252,9 @@ def test_materialized_shard_path_does_not_recache_local_cache_path(
     assert fullraw_index._materialized_shard_path(cached) == cached
 
 
-def test_shard_cache_copy_timeout_kills_stalled_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_shard_cache_copy_timeout_kills_stalled_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class StalledCopy:
         def __init__(self) -> None:
             self.killed = False
@@ -2273,13 +2275,15 @@ def test_shard_cache_copy_timeout_kills_stalled_copy(monkeypatch: pytest.MonkeyP
         return stalled
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monotonic = iter((0.0, 0.0, 0.02))
+    monkeypatch.setattr("v5_memo.fullraw_index.time.monotonic", lambda: next(monotonic))
 
     before = fullraw_index._shard_local_cache_health()
     before_timeouts = before["copy_timeouts_total"]
     before_failures = before["copy_failures_total"]
     assert isinstance(before_timeouts, int)
     assert isinstance(before_failures, int)
-    with pytest.raises(TimeoutError, match="shard cache copy timed out"):
+    with pytest.raises(TimeoutError, match="shard cache copy made no progress"):
         fullraw_index._copy2_with_timeout(
             Path("remote.sqlite"),
             Path("local.sqlite"),
@@ -2292,6 +2296,45 @@ def test_shard_cache_copy_timeout_kills_stalled_copy(monkeypatch: pytest.MonkeyP
     assert after["copy_inflight"] == 0
     assert after["copy_timeouts_total"] == before_timeouts + 1
     assert after["copy_failures_total"] == before_failures + 1
+
+
+def test_shard_cache_copy_timeout_resets_when_copy_progresses(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "local.sqlite"
+
+    class ProgressingCopy:
+        waits = 0
+
+        def wait(self, *, timeout: float) -> int:
+            del timeout
+            self.waits += 1
+            if self.waits < 3:
+                target.write_bytes(b"x" * self.waits)
+                raise subprocess.TimeoutExpired(cmd="copy", timeout=0.01)
+            return 0
+
+        def kill(self) -> None:
+            raise AssertionError("progressing copy must not be killed")
+
+    progressing = ProgressingCopy()
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: progressing)
+    monotonic = iter((0.0, 0.0, 0.02, 0.02, 0.04, 0.04))
+    monkeypatch.setattr("v5_memo.fullraw_index.time.monotonic", lambda: next(monotonic))
+
+    before = fullraw_index._shard_local_cache_health()
+    fullraw_index._copy2_with_timeout(
+        Path("remote.sqlite"),
+        target,
+        timeout_seconds=0.01,
+    )
+    after = fullraw_index._shard_local_cache_health()
+
+    assert progressing.waits == 3
+    assert after["copy_inflight"] == 0
+    assert after["copy_timeouts_total"] == before["copy_timeouts_total"]
+    assert after["copy_failures_total"] == before["copy_failures_total"]
 
 
 def test_materialized_shard_path_does_not_copy_missing_cache_without_populate(

@@ -2079,15 +2079,28 @@ def _copy2_with_timeout(source: Path, target: Path, *, timeout_seconds: float | 
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        try:
-            returncode = process.wait(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired as exc:
-            process.kill()
-            with suppress(subprocess.TimeoutExpired):
-                process.wait(timeout=1.0)
-            raise TimeoutError(
-                f"shard cache copy timed out after {timeout_seconds:g}s: {source}"
-            ) from exc
+        last_size = -1
+        last_progress_at = time.monotonic()
+        while True:
+            remaining = timeout_seconds - (time.monotonic() - last_progress_at)
+            if remaining <= 0:
+                process.kill()
+                with suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=1.0)
+                raise TimeoutError(
+                    f"shard cache copy made no progress for {timeout_seconds:g}s: {source}"
+                )
+            try:
+                returncode = process.wait(timeout=min(1.0, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                try:
+                    current_size = target.stat().st_size
+                except OSError:
+                    current_size = -1
+                if current_size > last_size:
+                    last_size = current_size
+                    last_progress_at = time.monotonic()
         if returncode != 0:
             raise OSError(f"shard cache copy failed with exit code {returncode}: {source}")
     except TimeoutError:
