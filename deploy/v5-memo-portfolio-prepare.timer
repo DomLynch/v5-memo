@@ -1,0 +1,11 @@
+[Unit]
+Description=Maintain the V5 Memo ready buffer hourly
+
+[Timer]
+OnCalendar=*-*-* *:50:00
+RandomizedDelaySec=5min
+Persistent=true
+Unit=v5-memo-portfolio-prepare.service
+
+[Install]
+WantedBy=timers.target

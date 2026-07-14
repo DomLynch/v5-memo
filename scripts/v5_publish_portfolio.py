@@ -110,6 +110,7 @@ class RunConfig:
     discover_count: int
     blocked_retry_hours: float
     lead_timeout_seconds: float = 0.0
+    ready_buffer_size: int = 0
 
 
 def _repo_root() -> Path:
@@ -218,6 +219,17 @@ def _attempted_leads(state: Mapping[str, object]) -> Mapping[str, object]:
     return raw if isinstance(raw, Mapping) else {}
 
 
+def _ready_lead_keys(state: Mapping[str, object]) -> set[str]:
+    completed = _state_keys(_completed_leads(state))
+    return {
+        _lead_key(str(lead))
+        for lead, meta in _attempted_leads(state).items()
+        if isinstance(meta, Mapping)
+        and str(meta.get("status") or "") == "ready"
+        and _lead_key(str(lead)) not in completed
+    }
+
+
 def _state_keys(values: Mapping[str, object]) -> set[str]:
     return {_lead_key(str(value)) for value in values}
 
@@ -309,6 +321,7 @@ def _available_leads(
     *,
     blocked_retry_hours: float,
     now: datetime,
+    prefer_ready: bool = False,
 ) -> list[str]:
     completed_keys = _state_keys(_completed_leads(state))
     available = [
@@ -317,15 +330,25 @@ def _available_leads(
         if _lead_key(lead) not in completed_keys
         and not _attempt_on_cooldown(lead, state, retry_hours=blocked_retry_hours, now=now)
     ]
-    return sorted(available, key=lambda lead: _attempt_priority(lead, state))
+    return sorted(
+        available,
+        key=lambda lead: _attempt_priority(lead, state, prefer_ready=prefer_ready),
+    )
 
 
-def _attempt_priority(lead: str, state: Mapping[str, object]) -> int:
+def _attempt_priority(
+    lead: str,
+    state: Mapping[str, object],
+    *,
+    prefer_ready: bool = False,
+) -> int:
     lead_key = _lead_key(lead)
     for raw_lead, raw_meta in _attempted_leads(state).items():
         if _lead_key(str(raw_lead)) != lead_key or not isinstance(raw_meta, Mapping):
             continue
         status = str(raw_meta.get("status") or "")
+        if status == "ready":
+            return -1 if prefer_ready else 4
         if status.startswith("warming:") or status == "blocked:search_backend_error":
             return 0
         if status in {"blocked:lead_timeout", "blocked:researka_submit_failed"}:
@@ -520,6 +543,7 @@ def run_portfolio(
         state,
         blocked_retry_hours=config.blocked_retry_hours,
         now=now,
+        prefer_ready=config.submit,
     )
     discovered: list[str] = []
     if config.auto_discover_leads and len(available_leads) < config.min_open_leads:
@@ -532,8 +556,19 @@ def run_portfolio(
             state,
             blocked_retry_hours=config.blocked_retry_hours,
             now=now,
+            prefer_ready=config.submit,
         )
+    eligible_keys = {_lead_key(lead) for lead in expanded_leads}
+    ready_keys = _ready_lead_keys(state) & eligible_keys
+    ready_before = len(ready_keys)
+    preparing = not config.submit and config.ready_buffer_size > 0
+    if preparing:
+        available_leads = [
+            lead for lead in available_leads if _lead_key(lead) not in ready_keys
+        ]
     lead_limit = config.max_leads if config.max_leads > 0 else len(available_leads)
+    if preparing:
+        lead_limit = min(lead_limit, max(0, config.ready_buffer_size - ready_before))
     selected = list(available_leads[:lead_limit])
     skipped_completed_count = sum(
         1 for lead in expanded_leads if _lead_key(lead) in initial_completed_keys
@@ -585,10 +620,17 @@ def run_portfolio(
             record["visibility_error"] = visibility_error
         records.append(record)
         _save_attempted_lead(config.state_path, state, record)
-        if _should_stop(status):
+        if _should_stop(status) and not preparing:
             if status == "accepted":
                 _save_completed_lead(config.state_path, state, record)
             break
+
+    ready_after = len(_ready_lead_keys(state) & eligible_keys)
+    no_attempt_status = (
+        "ready_buffer_full"
+        if preparing and ready_before >= config.ready_buffer_size
+        else "no_new_leads"
+    )
 
     summary = {
         "created_at": _timestamp(),
@@ -596,16 +638,26 @@ def run_portfolio(
         "available_leads": len(available_leads),
         "discovered_leads": discovered,
         "submit": config.submit,
+        "preparing": preparing,
+        "ready_buffer_size": config.ready_buffer_size,
+        "ready_buffer_count_before": ready_before,
+        "ready_buffer_count_after": ready_after,
         "skipped_completed_leads": skipped_completed_count,
         "skipped_recent_attempts": skipped_recent_count,
         "selected_leads": len(selected),
         "attempted_leads": len(records),
-        "final_status": records[-1]["status"] if records else "no_new_leads",
+        "final_status": records[-1]["status"] if records else no_attempt_status,
         "records": records,
     }
     (config.output_dir / "portfolio.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
     final_status = str(summary["final_status"])
-    if final_status in {"accepted", "submitted", "ready", "no_new_leads"} or final_status.startswith("warming:"):
+    if final_status in {
+        "accepted",
+        "submitted",
+        "ready",
+        "ready_buffer_full",
+        "no_new_leads",
+    } or final_status.startswith("warming:"):
         return 0
     return 6 if final_status == "deferred" else 1
 
@@ -637,6 +689,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--discover-count", type=int, default=20)
     parser.add_argument("--blocked-retry-hours", type=float, default=0.0)
     parser.add_argument("--lead-timeout-seconds", type=float, default=0.0)
+    parser.add_argument("--ready-buffer-size", type=int, default=0)
     return parser.parse_args(argv)
 
 
@@ -655,6 +708,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--blocked-retry-hours must be >= 0")
     if args.lead_timeout_seconds < 0:
         raise SystemExit("--lead-timeout-seconds must be >= 0")
+    if args.ready_buffer_size < 0:
+        raise SystemExit("--ready-buffer-size must be >= 0")
     config = RunConfig(
         output_dir=args.output_dir,
         python=args.python,
@@ -676,6 +731,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         discover_count=args.discover_count,
         blocked_retry_hours=args.blocked_retry_hours,
         lead_timeout_seconds=args.lead_timeout_seconds,
+        ready_buffer_size=args.ready_buffer_size,
     )
     return run_portfolio(leads, config)
 

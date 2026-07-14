@@ -232,8 +232,11 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
     config = (deploy_dir / "v5-memo-portfolio-publish.service").read_text()
     timer = (deploy_dir / "v5-memo-portfolio-publish.timer").read_text()
+    prepare_config = (deploy_dir / "v5-memo-portfolio-prepare.service").read_text()
+    prepare_timer = (deploy_dir / "v5-memo-portfolio-prepare.timer").read_text()
 
     assert "TimeoutStartSec=150min" in config
+    assert "Ready leads are consumed first" in config
     assert "One strict fullraw lead queues about five sweeps" in config
     assert "Environment=V5_MEMO_PORTFOLIO_MAX_LEADS=3" in config
     assert "Environment=V5_MEMO_PORTFOLIO_LEAD_TIMEOUT_SECONDS=600" in config
@@ -242,6 +245,15 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert '--lead-timeout-seconds "${V5_MEMO_PORTFOLIO_LEAD_TIMEOUT_SECONDS:-600}"' in config
     assert '--decision-wait-seconds "${V5_MEMO_PORTFOLIO_DECISION_WAIT_SECONDS:-600}"' in config
     assert "OnCalendar=*-*-* 00/8:20:00" in timer
+    assert "Environment=V5_MEMO_READY_BUFFER_SIZE=3" in prepare_config
+    assert "Environment=V5_MEMO_PREPARE_MAX_LEADS=1" in prepare_config
+    assert '--ready-buffer-size "${V5_MEMO_READY_BUFFER_SIZE:-3}"' in prepare_config
+    assert "--submit" not in prepare_config
+    assert "--state-path /var/lib/v5-memo/portfolio-runs/state.json" in prepare_config
+    assert "/usr/bin/flock -n 9" in prepare_config
+    assert "/usr/bin/flock -w 900 9" in config
+    assert "OnCalendar=*-*-* *:50:00" in prepare_timer
+    assert "Unit=v5-memo-portfolio-prepare.service" in prepare_timer
 
 
 def test_v5_isolated_fullraw_mount_uses_separate_vfs_cache() -> None:

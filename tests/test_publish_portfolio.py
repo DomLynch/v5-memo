@@ -274,6 +274,142 @@ def test_available_leads_prioritizes_warming_retries_before_untried() -> None:
     assert available == ["warming lead", "fresh lead", "revision lead"]
 
 
+def test_available_leads_prioritizes_ready_supply_for_submit() -> None:
+    portfolio = _load_portfolio()
+    state = {
+        "attempted_leads": {
+            "ready lead": {"status": "ready", "updated_at": portfolio._timestamp()},
+            "warming lead": {
+                "status": "warming:search_coverage",
+                "updated_at": portfolio._timestamp(),
+            },
+        },
+    }
+
+    available = portfolio._available_leads(
+        ["warming lead", "fresh lead", "ready lead"],
+        state,
+        blocked_retry_hours=24,
+        now=portfolio.datetime.now(portfolio.UTC),
+        prefer_ready=True,
+    )
+
+    assert available == ["ready lead", "warming lead", "fresh lead"]
+
+
+def test_prepare_run_fills_only_missing_ready_capacity(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "attempted_leads": {
+            "ready lead": {"status": "ready", "updated_at": portfolio._timestamp()},
+            "orphan ready": {"status": "ready", "updated_at": portfolio._timestamp()},
+        }
+    }))
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=3,
+        state_path=state_path,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=24,
+        ready_buffer_size=2,
+    )
+    calls: list[list[str]] = []
+
+    def fake_runner(
+        command: list[str],
+        _env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps({"memo": "ready"}))
+        return subprocess.CompletedProcess(command, 0, stdout="ready", stderr="")
+
+    code = portfolio.run_portfolio(
+        ["ready lead", "fresh lead", "unused lead"],
+        config,
+        runner=fake_runner,
+        env={},
+        cwd=Path.cwd(),
+    )
+
+    summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
+    state = json.loads(state_path.read_text())
+    assert code == 0
+    assert len(calls) == 1
+    assert calls[0][calls[0].index("--topic") + 1] == "fresh lead"
+    assert summary["ready_buffer_count_before"] == 1
+    assert summary["ready_buffer_count_after"] == 2
+    assert summary["selected_leads"] == 1
+    assert state["attempted_leads"]["ready lead"]["status"] == "ready"
+    assert state["attempted_leads"]["orphan ready"]["status"] == "ready"
+    assert state["attempted_leads"]["fresh lead"]["status"] == "ready"
+
+
+def test_prepare_run_is_noop_when_ready_buffer_is_full(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "attempted_leads": {
+            "ready one": {"status": "ready", "updated_at": portfolio._timestamp()},
+            "ready two": {"status": "ready", "updated_at": portfolio._timestamp()},
+        }
+    }))
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=state_path,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=24,
+        ready_buffer_size=2,
+    )
+
+    code = portfolio.run_portfolio(
+        ["ready one", "ready two", "fresh lead"],
+        config,
+        runner=lambda *_args: (_ for _ in ()).throw(AssertionError("must not run")),
+        env={},
+        cwd=Path.cwd(),
+    )
+
+    summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
+    assert code == 0
+    assert summary["attempted_leads"] == 0
+    assert summary["final_status"] == "ready_buffer_full"
+    assert summary["ready_buffer_count_before"] == 2
+    assert summary["ready_buffer_count_after"] == 2
+
+
 def test_run_portfolio_skips_completed_leads_and_saves_success(tmp_path: Path) -> None:
     portfolio = _load_portfolio()
     state_path = tmp_path / "state.json"
