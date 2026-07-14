@@ -2265,6 +2265,9 @@ def test_materialized_shard_path_skips_populate_when_cache_budget_exhausted(
     tmp_path: Path,
 ) -> None:
     cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    cached = cache_dir / "old.sqlite"
+    cached.write_bytes(b"old cache")
     remote = tmp_path / "remote" / "fullraw_shard_0001.sqlite"
     remote.parent.mkdir()
     remote.write_text("remote shard", encoding="utf-8")
@@ -2283,6 +2286,7 @@ def test_materialized_shard_path_skips_populate_when_cache_budget_exhausted(
 
     assert fullraw_index._materialized_shard_path(remote, populate=True) == remote
     assert fullraw_index._cached_materialized_shard_path(remote) is None
+    assert not cached.exists()
 
 
 def test_materialized_shard_path_evicts_for_existing_reservations(

@@ -19,6 +19,7 @@ from v5_memo.__main__ import (
     _publish_blocker,
     _record_researka_submit_cooldown,
     _submit_failed_receipt,
+    _submit_researka_with_cooldown,
     _topic_anchored_queries,
     main,
 )
@@ -45,6 +46,58 @@ _COVERAGE_THRESHOLD_ENV = (
 def _isolate_cli_coverage_threshold_env(monkeypatch: MonkeyPatch) -> None:
     for name in _COVERAGE_THRESHOLD_ENV:
         monkeypatch.delenv(name, raising=False)
+
+
+def test_submit_researka_with_cooldown_retries_transient_server_error(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    now = 1000.0
+    calls: list[int] = []
+    sleeps: list[float] = []
+
+    def fake_time() -> float:
+        return now
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        sleeps.append(seconds)
+        now += seconds
+
+    def fake_submit(
+        payload: dict[str, object],
+        *,
+        agent_key: str,
+        api_base: str,
+        submit_url: str = "",
+    ) -> dict[str, object]:
+        del payload, agent_key, api_base, submit_url
+        calls.append(1)
+        if len(calls) == 1:
+            raise HTTPError(
+                "https://api.researka.org/submissions",
+                500,
+                "Internal Server Error",
+                Message(),
+                BytesIO(b"nginx"),
+            )
+        return {"submission_id": "sub-after-retry"}
+
+    monkeypatch.setattr("v5_memo.__main__.time.time", fake_time)
+    monkeypatch.setattr("v5_memo.__main__.time.sleep", fake_sleep)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+
+    response, failure = _submit_researka_with_cooldown(
+        {"title": "bounded alpha"},
+        agent_key="agent-key",
+        api_base="https://api.researka.org",
+        submit_url="",
+        wait_seconds=5,
+    )
+
+    assert response == {"submission_id": "sub-after-retry"}
+    assert failure == {}
+    assert len(calls) == 2
+    assert sleeps == [1.0]
 
 
 class EmptyFullRaw:

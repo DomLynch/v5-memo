@@ -442,6 +442,7 @@ def _submit_researka_with_cooldown(
     wait_seconds: float,
 ) -> tuple[dict[str, object], dict[str, object]]:
     deadline = time.time() + max(0.0, wait_seconds)
+    transient_attempts = 0
     while True:
         if cooldown := _researka_submit_cooldown():
             remaining, state = cooldown
@@ -468,6 +469,20 @@ def _submit_researka_with_cooldown(
                 response_body=response_body,
                 response_headers=response_headers,
             )
+            if exc.code in {500, 502, 503, 504}:
+                transient_attempts += 1
+                retry_after = _float_value(
+                    exc.headers.get("Retry-After", "") if exc.headers is not None else ""
+                )
+                delay = retry_after or min(2 ** (transient_attempts - 1), 8.0)
+                if time.time() + delay > deadline:
+                    return {}, fail_receipt
+                print(
+                    f"Researka submit retrying transient HTTP {exc.code} after {delay:g}s",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+                continue
             if exc.code != 429:
                 return {}, fail_receipt
             cooldown = _researka_submit_cooldown()

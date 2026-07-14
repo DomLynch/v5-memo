@@ -193,9 +193,9 @@ def test_v5_isolated_fullraw_service_uses_v5_lane() -> None:
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=1" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=64" in config
-    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=25769803776" in config
+    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto" in config
     assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_GB" not in config
-    assert "Auto workers = local cache cap / per-worker cache budget" in config
+    assert "Auto workers = dynamic local cache budget / per-worker cache budget" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES=8589934592" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB" not in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=180" in config
@@ -213,8 +213,8 @@ def test_v5_isolated_fullraw_env_overrides_shared_shard_dir() -> None:
     assert "RESEARKA_FULLRAW_SHARD_DIR=/var/lib/v5-memo/v5-isolated-fullraw-fts-remote" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/v5-fullraw-sweep-cache" in env_example
     assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/v5-shard-cache-5tb" in env_example
-    assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=25769803776" in env_example
-    assert "Auto workers = local cache cap / per-worker cache budget" in env_example
+    assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto" in env_example
+    assert "Auto workers = dynamic local cache budget / per-worker cache budget" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES=8589934592" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB" not in env_example
     assert "RESEARKA_FULLRAW_FOREGROUND_SWEEP_WAIT_SECONDS=0" in env_example

@@ -1970,6 +1970,13 @@ def _materialized_shard_path(
     if populate:
         max_cache_bytes = _shard_local_cache_max_bytes(cache_path.parent)
         if max_cache_bytes is not None and max_cache_bytes <= 0:
+            with _SHARD_LOCAL_CACHE_LOCK:
+                _evict_shard_cache(
+                    cache_path.parent,
+                    required_bytes=0,
+                    keep=cache_path,
+                    preserve=preserve,
+                )
             return path
     else:
         max_cache_bytes = None
@@ -2149,7 +2156,7 @@ def _evict_shard_cache(
     preserve: set[Path] | None = None,
 ) -> None:
     max_bytes = _shard_local_cache_max_bytes(cache_dir)
-    if max_bytes is None or max_bytes <= 0:
+    if max_bytes is None:
         return
     preserved = {path.resolve() for path in (preserve or set())}
     tmp_ttl_seconds = _float_or_none(
