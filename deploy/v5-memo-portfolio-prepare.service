@@ -1,0 +1,18 @@
+[Unit]
+Description=V5 Memo bounded portfolio readiness feeder
+Wants=network-online.target v5-memo-isolated-fullraw-search.service
+After=network-online.target v5-memo-isolated-fullraw-search.service
+
+[Service]
+TimeoutStartSec=15min
+Type=oneshot
+WorkingDirectory=/opt/v5-memo
+EnvironmentFile=/etc/v5-memo/env
+EnvironmentFile=/etc/v5-memo/isolated-fullraw.env
+Environment=PYTHONPATH=/opt/v5-memo/src
+# Fill a bounded generic ready buffer one lead at a time; never submit from this unit.
+Environment=V5_MEMO_READY_BUFFER_SIZE=3
+Environment=V5_MEMO_PREPARE_MAX_LEADS=1
+Environment=V5_MEMO_PREPARE_LEAD_TIMEOUT_SECONDS=600
+ExecStart=/bin/bash -lc 'run_dir=/var/lib/v5-memo/portfolio-prep-runs/$(date -u +%%Y%%m%%dT%%H%%M%%SZ); mkdir -p "$run_dir"; exec /usr/bin/python3 scripts/v5_publish_portfolio.py --lead-file /etc/v5-memo/v5-portfolio-leads.txt --output-dir "$run_dir" --state-path /var/lib/v5-memo/portfolio-runs/state.json --auto-discover-leads --min-open-leads 40 --discover-count 20 --blocked-retry-hours 24 --max-leads "${V5_MEMO_PREPARE_MAX_LEADS:-1}" --lead-timeout-seconds "${V5_MEMO_PREPARE_LEAD_TIMEOUT_SECONDS:-600}" --ready-buffer-size "${V5_MEMO_READY_BUFFER_SIZE:-3}"'
+

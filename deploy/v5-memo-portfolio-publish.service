@@ -11,6 +11,7 @@ EnvironmentFile=/etc/v5-memo/env
 EnvironmentFile=/etc/v5-memo/isolated-fullraw.env
 EnvironmentFile=/etc/v5-memo/researka-submit.env
 Environment=PYTHONPATH=/opt/v5-memo/src
+# Ready leads are consumed first; cold leads remain a bounded fallback.
 # One strict fullraw lead queues about five sweeps; keep each run focused on finishing coverage.
 Environment=V5_MEMO_PORTFOLIO_MAX_LEADS=3
 Environment=V5_MEMO_PORTFOLIO_LEAD_TIMEOUT_SECONDS=600
