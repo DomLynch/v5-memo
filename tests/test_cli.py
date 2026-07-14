@@ -100,6 +100,43 @@ def test_submit_researka_with_cooldown_retries_transient_server_error(
     assert sleeps == [1.0]
 
 
+def test_submit_researka_with_cooldown_respects_zero_retry_budget(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+
+    def fake_submit(
+        payload: dict[str, object],
+        *,
+        agent_key: str,
+        api_base: str,
+        submit_url: str = "",
+    ) -> dict[str, object]:
+        del payload, agent_key, api_base, submit_url
+        calls.append(1)
+        raise HTTPError(
+            "https://api.researka.org/submissions",
+            500,
+            "Internal Server Error",
+            Message(),
+            BytesIO(b"nginx"),
+        )
+
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+
+    response, failure = _submit_researka_with_cooldown(
+        {"title": "bounded alpha"},
+        agent_key="agent-key",
+        api_base="https://api.researka.org",
+        submit_url="",
+        wait_seconds=0,
+    )
+
+    assert response == {}
+    assert failure["status"] == 500
+    assert len(calls) == 1
+
+
 class EmptyFullRaw:
     configured = False
 
