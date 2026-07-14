@@ -27,7 +27,7 @@ from v5_memo.llm.minimax_client import (
 )
 from v5_memo.schemas import CorpusHit, InsightCandidate
 
-RECEIPT_ABSTRACT_CHAR_LIMIT = 1400
+RECEIPT_ABSTRACT_CHAR_LIMIT = 60
 _REQUIRED_MEMO_SECTIONS = (
     "# Alpha memo:",
     "## Core signal",
@@ -40,6 +40,21 @@ _REQUIRED_MEMO_SECTIONS = (
 )
 _DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s<>()\[\]{}\"']+", re.IGNORECASE)
 _DOI_TRAILING_PUNCTUATION = ".,;:*_`"
+_STAT_CONTEXT_RE = re.compile(r"(?i)(?:confidence interval|\bci\b|effect size|cohen'?s d|hedges'? g|standardized mean difference).{0,120}")
+_STAT_ANCHOR_RE = re.compile(r"(?i)\b(?:p\s*=\s*\.?\d+|g\s*=\s*[-+]?\d+(?:\.\d+)?|95%\s*(?:confidence interval|\bci\b)|confidence interval)")
+_LIMIT_ANCHOR_RE = re.compile(r"(?i)\b\d+\s+(?:adults|athletes|men|participants|patients|players|subjects|volunteers|women)\b")
+_COMPARATOR_CONTEXT_RE = re.compile(
+    r"(?i)\b(?:higher|lower|greater|less|reduced|attenuated|suppressed|increased|"
+    r"decreased|passive|control|placebo|versus|vs\.?|compared|24\s*h|48\s*h|72\s*h|"
+    r"post-?exercise)\b"
+)
+_STAT_NUMBER_RE = re.compile(r"[-+]?\d+\.\d+%?|[-+]?\d+%")
+_ADVICE_RE = re.compile(
+    r"(?i)\b(?:athletes?|clinicians?|companies?|investors?|managers?|patients?|practitioners?)\b"
+    r"[^.\n]{0,120}\bshould\b|\bshould\s+(?:avoid|buy|invest|prescribe|prioriti[sz]e|sell|take|treat|use)\b"
+)
+_MARKET_FRAMING_RE = re.compile(r"(?i)\b(?:market\s+for|reframe\s+the\s+market|commercial\s+market|investment)\b")
+_CONVERSION_OVERCLAIM_RE = re.compile(r"(?is)\bconverts?\b.{0,160}\binto\b")
 _TITLE_WORD_RE = re.compile(r"[a-z][a-z0-9]{2,}")
 _TITLE_STOPWORDS = frozenset({
     "alpha", "memo", "and", "for", "from", "into", "may", "not", "the", "with",
@@ -54,6 +69,11 @@ _TITLE_STOPWORDS = frozenset({
     "while", "even", "yet", "leave", "leaves", "leaving", "level", "levels", "lift", "lifts",
     "elevate", "elevates", "elevated", "elevating",
     "status", "statuses", "suppress", "suppresses", "suppressed", "suppressing",
+})
+_BODY_SITE_TERMS = frozenset({
+    "ankle", "arm", "calf", "elbow", "flexor", "glute", "hamstring", "hip",
+    "knee", "leg", "limb", "quadricep", "soleus", "tendon", "thigh",
+    "vastus", "medialis",
 })
 
 
@@ -100,8 +120,17 @@ class MiniMaxM3MemoWriter:
 
     def render(self, candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> str:
         prompt = build_minimax_prompt(candidate, receipts)
-        markdown = self._write(prompt, temperature=0.35)
-        return validate_minimax_memo(markdown, receipts, candidate=candidate)
+        last_error: ValueError | None = None
+        for attempt in range(2):
+            retry_note = "" if attempt == 0 else _minimax_retry_note(last_error)
+            markdown = self._write(prompt + retry_note, temperature=0.35 if attempt == 0 else 0.0)
+            try:
+                return validate_minimax_memo(markdown, receipts, candidate=candidate)
+            except ValueError as exc:
+                last_error = exc
+                if attempt == 1:
+                    raise
+        raise AssertionError("unreachable MiniMax writer retry loop")
 
     def _write(self, prompt: str, *, temperature: float) -> str:
         return _strip_markdown_fence(
@@ -110,7 +139,8 @@ class MiniMaxM3MemoWriter:
                 prompt=prompt,
                 system=(
                     "You write concise research alpha memos. Use only the supplied receipts. "
-                    "Do not add uncited mechanisms, claims, facts, statistics, or references."
+                    "Do not add uncited mechanisms, claims, facts, statistics, references, "
+                    "or advice/action recommendations. Preserve higher/lower comparator direction."
                 ),
                 temperature=temperature,
                 max_tokens=self._max_tokens,
@@ -120,6 +150,19 @@ class MiniMaxM3MemoWriter:
                 opener=self._opener,
             )
         )
+
+
+def _minimax_retry_note(error: ValueError | None) -> str:
+    return (
+        "\n\nPrevious draft failed validation: "
+        f"{error}. Rewrite from the locked receipts only. "
+        "Remove any advice/action framing: do not tell athletes, clinicians, companies, "
+        "investors, managers, patients, or practitioners what they should do, use, avoid, "
+        "buy, sell, take, prescribe, or prioritize. Keep implications as an alpha signal "
+        "and one falsifiable hypothesis. Remove any unlisted DOI-like references. "
+        "Remove unsupported statistical numbers unless the exact number appears in the locked receipts. "
+        "If the validation error names unsupported terms, remove those exact terms."
+    )
 
 
 class MiniMaxM3SearchPlanner:
@@ -223,7 +266,7 @@ class MiniMaxM3CandidateSelector:
                 "You are a strict research alpha selector. Pick only tight, receipt-bound "
                 "bridges. Return only valid JSON."
             ),
-            temperature=0.2,
+            temperature=0.0,
             max_tokens=self._max_tokens,
             base_url=self._base_url,
             model=self._model,
@@ -245,33 +288,42 @@ def build_minimax_prompt(candidate: InsightCandidate, receipts: Sequence[CorpusH
 Hard rules:
 - Use only the supplied receipts.
 - Keep every receipt ID exactly as written.
-- Do not invent mechanisms, clinical advice, causal certainty, new papers, or new numbers.
+- Do not invent mechanisms, causal certainty, new papers, or new numbers.
+- Do not make market, product, or investment claims unless receipts say those concepts.
+- Never recommend actions; no should-use/avoid, prescribe, take, buy, sell, or prioritize language.
 - If a connection is uncertain, say it is a hypothesis.
-- Treat the seed topic as search context only; do not use broad seed-topic words in
-  the title unless those words appear in the locked receipt titles/abstracts.
+- Treat the seed topic as search context only; use broad seed words in the title only if receipts contain them.
 - Title the memo around receipt-owned concepts, not around the user's seed query.
 - In the title, copy receipt/bridge terms verbatim; do not use synonyms or paraphrases.
-- The title must be made only from locked receipt title/abstract words or listed
-  bridge terms. Put framing words such as opposite, direction, trend, divergent,
-  and framing in the body, not the title.
-- Scope every implication to the receipts: state the specific population, market,
-  company, channel, model, benchmark, timeframe, geography, or source type only when
-  the receipts provide it.
+- The title must be made only from locked receipt title/abstract words or listed bridge terms.
+- Scope every implication to the receipts: population, market/company/channel/model/benchmark, endpoint, timeframe, geography, source type.
 - State the receipt-owned timing exactly; do not turn pre-exercise, prior-to-use,
   or post-intervention exposure into "during" unless a receipt says during.
 - If receipts split by endpoint or metric, say it is not a direct contradiction
   unless both receipts measure the same endpoint family.
-- Respect receipt roles: if a receipt is labeled promise, protocol, intent, or
-  mechanism, describe it as expected/designed/hypothesized/framed, not as an observed result or confirmed endpoint.
-- Use source-appropriate descriptors from the receipts, not generic prestige labels:
-  trial/protocol, filing/report, benchmark, case study, market study, campaign, interview,
-  dataset, or model card.
-- Make the memo read like an insight, not a literature summary: surface the non-obvious bridge,
-  contradiction, boundary condition, inversion, neglected proxy, metric mismatch, or
-  cross-domain transfer.
-- Avoid generic phrases such as "more research is needed" unless tied to a receipt-specific test.
-- In "What would break the idea", name one concrete next-step uncertainty or
-  study design that would resolve the boundary.
+- Do not say "opposite directions" unless protocol/design/population/endpoint match;
+  otherwise quantify the protocol/design gap and frame a bounded contrast.
+- If overall gains coexist with a control/comparator-favored contrast, label the
+  claim ledger mixed/comparator-favored, not simply positive.
+- If claim-card role is safety_feasibility or receipt says pilot/safety/feasibility, do not call it positive efficacy.
+- Never call a receipt "feasibility/safety-adjacent" unless its claim-card role is safety_feasibility.
+- Respect receipt roles: promise/protocol/intent/mechanism means expected/designed/hypothesized/framed, not observed result or confirmed endpoint.
+- Anchor on the strongest direct human evidence; put weaker context/proxy receipts after it.
+- In Core signal, name sample size/statistical context for the strongest receipt; frame one small RCT/cohort as one receipt, not settled consensus.
+- Do not equate acute swelling, soreness, thickness, or damage proxies with chronic adaptation
+  unless the receipt says adaptation, hypertrophy, or strength changed.
+- Proxy/boundary receipts are secondary; do not make them co-equal anchors for chronic-adaptation claims.
+- If a proxy/boundary receipt sits beside chronic or long-term adaptation receipts, frame the core signal as endpoint heterogeneity.
+- If a systematic review or synthesis receipt has its own negative/null/positive direction,
+  convergence or context only
+- If receipts use different modalities/populations/endpoints, frame as unresolved endpoint heterogeneity;
+  do not claim one protocol condition converts one result into another.
+- Use the 2+2=5 section to state the bounded contrast; if the receipts are heterogeneous
+  rather than contradictory, explicitly say they are not directly contradictory.
+- Use source-appropriate descriptors from the receipts: trial/protocol, filing/report, benchmark, case study, market study, campaign, interview, dataset, model card.
+- Make the memo read like an insight: surface contradiction, boundary condition, inversion, neglected proxy, metric mismatch, or cross-domain transfer.
+- In "Why this could matter", give one falsifiable hypothesis, not a list.
+- In "What would break the idea", name one concrete next-step uncertainty or study design.
 - Include a concise Claim ledger section before Receipts. Each claim must use the
   supplied claim-card receipt ID and support type; do not invent unsupported claims.
 - Use this exact receipt-owned title first line: # Alpha memo: {title}
@@ -287,6 +339,8 @@ Required structure:
 ## Claim ledger
 ## Receipts
 ## Safety note
+
+Safety note: concrete limitations only; include sample size, sex if stated or "sex not stated", training status, population, protocol.
 
 Candidate thesis:
 {candidate.thesis}
@@ -486,10 +540,73 @@ def validate_minimax_memo(
         raise ValueError(
             f"MiniMax memo included unreceipted DOI-like references: {', '.join(extra_dois)}"
         )
+    _validate_supported_stat_numbers(text, receipts)
+    _validate_receipt_owned_body_terms(text, receipts)
+    _validate_no_conversion_overclaim(text)
+    _validate_public_alpha_framing(text, receipts)
     if candidate is not None:
         _validate_receipt_owned_title(text, receipts, candidate)
         _validate_claim_ledger(text, candidate)
     return text + "\n"
+
+
+def _validate_supported_stat_numbers(markdown: str, receipts: Sequence[CorpusHit]) -> None:
+    receipt_numbers = {
+        _normalize_stat_number(match.group(0))
+        for hit in receipts
+        for match in _STAT_NUMBER_RE.finditer(hit.text)
+    }
+    unsupported: list[str] = []
+    for context in _STAT_CONTEXT_RE.finditer(markdown):
+        for number in _STAT_NUMBER_RE.findall(context.group(0)):
+            if _looks_like_doi_prefix(number, context.group(0)):
+                continue
+            normalized = _normalize_stat_number(number)
+            if normalized not in receipt_numbers:
+                unsupported.append(number)
+    if unsupported:
+        raise MemoFormatError(
+            "MiniMax memo included unsupported statistical numbers: "
+            + ", ".join(dict.fromkeys(unsupported))
+        )
+
+
+def _normalize_stat_number(value: str) -> str:
+    raw = value.strip().rstrip("%")
+    try:
+        number = float(raw)
+    except ValueError:
+        return value.strip()
+    return f"{number:g}" + ("%" if value.strip().endswith("%") else "")
+
+
+def _looks_like_doi_prefix(number: str, context: str) -> bool:
+    raw = number.strip().rstrip("%")
+    if not raw.startswith("10."):
+        return False
+    return re.search(rf"(?<![\d.]){re.escape(raw)}(?:/|[A-Za-z])", context) is not None
+
+
+def _validate_public_alpha_framing(markdown: str, receipts: Sequence[CorpusHit]) -> None:
+    if _ADVICE_RE.search(markdown):
+        raise MemoScopeError("MiniMax memo included advice/action framing")
+    receipt_text = " ".join(hit.text for hit in receipts).casefold()
+    if "market" not in receipt_text and _MARKET_FRAMING_RE.search(markdown):
+        raise MemoScopeError("MiniMax memo included unreceipted market framing")
+
+
+def _validate_no_conversion_overclaim(markdown: str) -> None:
+    if _CONVERSION_OVERCLAIM_RE.search(markdown):
+        raise MemoScopeError("MiniMax memo claimed one receipt condition converts another result")
+
+
+def _validate_receipt_owned_body_terms(markdown: str, receipts: Sequence[CorpusHit]) -> None:
+    unsupported = sorted((_title_terms(markdown) & _BODY_SITE_TERMS) - _receipt_terms(receipts))
+    if unsupported:
+        raise MemoScopeError(
+            "MiniMax memo used body-site terms not supported by receipts: "
+            + ", ".join(unsupported)
+        )
 
 
 def _validate_claim_ledger(markdown: str, candidate: InsightCandidate) -> None:
@@ -514,8 +631,10 @@ def _receipt_block(index: int, hit: CorpusHit) -> str:
     year = str(hit.year) if hit.year is not None else "unknown"
     venue = hit.venue or "unknown venue"
     receipt_id = _receipt_display_id(hit)
-    locator = hit.doi or hit.url or hit.hit_id
+    locator = _receipt_locator(hit)
     abstract = _truncate_receipt_text(hit.abstract, RECEIPT_ABSTRACT_CHAR_LIMIT)
+    stat_context = _receipt_stat_context(hit.abstract)
+    stat_line = f"\nStatistics/context: {stat_context}" if stat_context else ""
     return (
         f"Receipt {index}\n"
         f"ID: {receipt_id}\n"
@@ -524,7 +643,7 @@ def _receipt_block(index: int, hit: CorpusHit) -> str:
         f"Venue: {venue}\n"
         f"Source: {hit.source}\n"
         f"Locator: {locator}\n"
-        f"Abstract: {abstract}"
+        f"Abstract: {abstract}{stat_line}"
     )
 
 
@@ -692,20 +811,74 @@ def _truncate_receipt_text(text: str, limit: int) -> str:
     return normalized[: max(0, limit - 16)].rstrip() + " ... [truncated]"
 
 
+def _receipt_stat_context(text: str) -> str:
+    normalized = " ".join(text.split())
+    snippets: list[str] = []
+    seen: set[str] = set()
+    for match in _STAT_ANCHOR_RE.finditer(normalized):
+        start = max(0, match.start() - 120)
+        end = min(len(normalized), match.end() + 180)
+        snippet = normalized[start:end].strip(" ,.;")
+        key = snippet.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        snippets.append(snippet)
+        if len(snippets) >= 8:
+            break
+    for match in _LIMIT_ANCHOR_RE.finditer(normalized):
+        start = max(0, match.start() - 100)
+        end = min(len(normalized), match.end() + 160)
+        snippet = normalized[start:end].strip(" ,.;")
+        key = snippet.casefold()
+        if key not in seen:
+            seen.add(key)
+            snippets.append(snippet)
+        if len(snippets) >= 8:
+            break
+    for match in _COMPARATOR_CONTEXT_RE.finditer(normalized):
+        start = max(0, match.start() - 120)
+        end = min(len(normalized), match.end() + 180)
+        snippet = normalized[start:end].strip(" ,.;")
+        key = snippet.casefold()
+        if key not in seen:
+            seen.add(key)
+            snippets.append(snippet)
+        if len(snippets) >= 8:
+            break
+    if not snippets:
+        return ""
+    outcome_terms = {"adaptation", "adaptations", "jump", "muscle", "performance", "strength", "thickness"}
+    snippets.sort(
+        key=lambda value: (
+            bool(set(_TITLE_WORD_RE.findall(value.casefold())) & outcome_terms),
+            len(_STAT_NUMBER_RE.findall(value)),
+        ),
+        reverse=True,
+    )
+    return _truncate_receipt_text(" | ".join(snippets[:2]), 360)
+
+
 def _receipt_dois(receipts: Sequence[CorpusHit]) -> set[str]:
     allowed: set[str] = set()
     for hit in receipts:
-        for value in (hit.doi, hit.receipt_id):
+        for value in (hit.receipt_id,):
             if value:
                 allowed.update(_extract_dois(value))
     return allowed
 
 
 def _receipt_display_id(hit: CorpusHit) -> str:
-    if hit.doi:
-        return hit.doi
+    if hit.receipt_id != hit.hit_id:
+        return hit.receipt_id
     match = re.search(r"\bW\d+\b", hit.hit_id, re.IGNORECASE)
     return match.group(0) if match else hit.hit_id
+
+
+def _receipt_locator(hit: CorpusHit) -> str:
+    if hit.receipt_id != hit.hit_id:
+        return hit.receipt_id
+    return hit.url or hit.hit_id
 
 
 def _extract_dois(text: str) -> set[str]:

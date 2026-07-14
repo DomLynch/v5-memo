@@ -67,11 +67,20 @@ _FULLRAW_QUERY_FILLER_DROP = {
     "efficacy",
     "evidence",
     "healthy",
+    "adult",
+    "adults",
+    "aged",
+    "elderly",
+    "human",
+    "humans",
+    "older",
     "paper",
     "papers",
     "participants",
     "randomized",
     "research",
+    "senior",
+    "seniors",
     "study",
     "studies",
 }
@@ -88,7 +97,7 @@ def _fullraw_env_names(name: str) -> tuple[str, ...]:
     if not name.startswith(_FULLRAW_LEGACY_PREFIX):
         return (name,)
     suffix = name.removeprefix(_FULLRAW_LEGACY_PREFIX)
-    candidates = (*_FULLRAW_SPECIAL_ALIASES.get(name, ()), f"{_FULLRAW_GENERIC_PREFIX}{suffix}", name)
+    candidates = (name, *_FULLRAW_SPECIAL_ALIASES.get(name, ()), f"{_FULLRAW_GENERIC_PREFIX}{suffix}")
     return tuple(dict.fromkeys(candidates))
 
 
@@ -116,6 +125,8 @@ _DOI_BACKFILL_PRIORITY_TERMS = {
     "reduced",
     "trial",
 }
+_FULLRAW_COMPLETED_CACHE_FALLBACK_LIMIT = 10
+_UNSAFE_DOI_CHARS = frozenset("()[]{}")
 
 
 class OpenAlexFullCorpusSearchClient:
@@ -306,6 +317,8 @@ class FullRawCorpusSearchClient:
         sweep_wait_seconds: float = 0.0,
         sweep_poll_seconds: float = 1.0,
         doi_abstract_backfill_limit: int = 0,
+        doi_abstract_backfill_budget_seconds: float = 0.0,
+        allow_completed_low_limit_fallback: bool = False,
         min_shards_searched: int = 0,
         min_sources_searched: int = 0,
         require_auth: bool = False,
@@ -322,6 +335,8 @@ class FullRawCorpusSearchClient:
         self._sweep_wait_seconds = max(0.0, sweep_wait_seconds)
         self._sweep_poll_seconds = max(0.0, sweep_poll_seconds)
         self._doi_abstract_backfill_limit = max(0, doi_abstract_backfill_limit)
+        self._doi_abstract_backfill_budget_seconds = max(0.0, doi_abstract_backfill_budget_seconds)
+        self._allow_completed_low_limit_fallback = allow_completed_low_limit_fallback
         self._min_shards_searched = max(0, min_shards_searched)
         self._min_sources_searched = max(0, min_sources_searched)
         self._require_auth = require_auth or bool(self._token)
@@ -335,24 +350,37 @@ class FullRawCorpusSearchClient:
             or _fullraw_env("V5_MEMO_FULL_RAW_CORPUS_TOKEN", "").strip()
         )
         search_url = _fullraw_env("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "")
-        if not search_url and token:
-            search_url = "http://127.0.0.1:9903/search"
         default_min_shards = 1525 if token else 0
         default_min_sources = 5 if token else 0
-        search_budget_seconds = min(_float_env("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", 180.0), 900.0)
+        search_budget_seconds = _float_env("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", 180.0)
+        min_shards_searched = _int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", default_min_shards)
+        full_coverage_search = strict and bool(token) and min_shards_searched >= default_min_shards
+        default_max_variants = 1 if full_coverage_search else 16
+        default_backfill_limit = 16 if full_coverage_search else 6
         return cls(
             search_url=search_url,
             token=token,
             timeout=min(_float_env("V5_MEMO_FULL_RAW_QUERY_TIMEOUT", _float_env("V5_MEMO_FULL_RAW_CORPUS_TIMEOUT", 60.0)), 240.0),
-            max_variants=min(_int_env("V5_MEMO_FULL_RAW_MAX_VARIANTS", 16), 4),
+            max_variants=min(
+                _int_env("V5_MEMO_FULL_RAW_MAX_VARIANTS", default_max_variants),
+                4,
+            ),
             search_budget_seconds=search_budget_seconds,
             sweep_wait_seconds=min(_float_env("V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS", 0.0), search_budget_seconds),
             sweep_poll_seconds=_float_env("V5_MEMO_FULL_RAW_SWEEP_POLL_SECONDS", 1.0),
             doi_abstract_backfill_limit=_int_env(
                 "V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT",
-                6,
+                default_backfill_limit,
             ),
-            min_shards_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", default_min_shards),
+            doi_abstract_backfill_budget_seconds=_float_env(
+                "V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_BUDGET_SECONDS",
+                24.0 if full_coverage_search else 12.0,
+            ),
+            allow_completed_low_limit_fallback=_bool_env(
+                "V5_MEMO_FULL_RAW_ALLOW_COMPLETED_LOW_LIMIT_FALLBACK",
+                False,
+            ),
+            min_shards_searched=min_shards_searched,
             min_sources_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", default_min_sources),
             require_auth=_bool_env("V5_MEMO_FULL_RAW_REQUIRE_AUTH", bool(token)),
             progress=_bool_env("V5_MEMO_FULL_RAW_PROGRESS", False),
@@ -410,6 +438,8 @@ class FullRawCorpusSearchClient:
                 ):
                     if best:
                         break
+                    if search_pass.query != query and variant_index < len(search_passes):
+                        continue
                     raise
                 if best:
                     break
@@ -441,7 +471,15 @@ class FullRawCorpusSearchClient:
                 current = best.get(scored.source_key)
                 if current is None or score > current[0]:
                     best[scored.source_key] = (score, scored)
-            if len(best) >= limit and not self._uses_cache_sweep_contract():
+            if len(best) >= limit:
+                break
+            if (
+                self._strict
+                and search_pass.name in {"core", "focused"}
+                and all(pass_.name not in {"core", "focused"} for pass_ in search_passes[variant_index:])
+                and len(best) >= min(limit, _FULLRAW_COMPLETED_CACHE_FALLBACK_LIMIT)
+            ):
+                self._log_progress("fullraw trusted focused slate complete; skipping broad fallback")
                 break
         self._log_progress(f"fullraw query done in {time.monotonic() - started:.1f}s; hits={len(best)}")
         duplicate_rate = round(duplicate_seen / total_seen, 4) if total_seen else 0.0
@@ -464,6 +502,7 @@ class FullRawCorpusSearchClient:
         return _backfill_missing_openalex_abstracts(
             ranked_hits,
             limit=self._doi_abstract_backfill_limit,
+            budget_seconds=self._doi_abstract_backfill_budget_seconds,
         )
 
     def _log_progress(self, message: str) -> None:
@@ -471,10 +510,11 @@ class FullRawCorpusSearchClient:
             print(message, file=sys.stderr, flush=True)
 
     def _search_variant(self, search_pass: FullRawSearchPass, *, limit: int) -> list[CorpusHit]:
+        request_limit = max(1, min(limit, 200))
         payload = {
             "query": search_pass.query[:1024],
-            "limit": max(1, min(limit, 200)),
-            "top_k": max(1, min(limit, 200)),
+            "limit": request_limit,
+            "top_k": request_limit,
             "year_min": self._year_min,
             "year_max": self._year_max,
             "corpus": "full_raw_450m_plus",
@@ -483,10 +523,50 @@ class FullRawCorpusSearchClient:
             "timeout_seconds": self._timeout,
         }
         if self._uses_cache_sweep_contract():
-            payload.update({"cache_only": True, "queue_if_missing": True, "priority": True})
+            coverage_required = bool(self._min_shards_searched or self._min_sources_searched)
+            payload.update({
+                "cache_only": True,
+                "queue_if_missing": True,
+                "priority": True,
+                "min_shards_searched": self._min_shards_searched,
+                "min_sources_searched": self._min_sources_searched,
+                "require_complete_search": coverage_required,
+            })
         initial_error: SearchBackendError | None = None
         try:
             data = self._request_search(payload)
+            if (
+                self._uses_cache_sweep_contract()
+                and request_limit > 10
+                and (
+                    _empty_unreceipted_fullraw_response(data)
+                    or (
+                        self._allow_completed_low_limit_fallback
+                        and not self._receipt_is_sufficient(_full_raw_shard_receipt(data))
+                    )
+                )
+            ):
+                fallback_payloads: list[dict[str, object]] = []
+                if "search_pass" in payload:
+                    fallback_payload = dict(payload)
+                    fallback_payload.pop("search_pass", None)
+                    fallback_payloads.append(fallback_payload)
+                if self._allow_completed_low_limit_fallback:
+                    low_limit_payload = {**payload, "limit": 10, "top_k": 10}
+                    fallback_payloads.append(low_limit_payload)
+                    if "search_pass" in payload:
+                        low_limit_unscoped = dict(low_limit_payload)
+                        low_limit_unscoped.pop("search_pass", None)
+                        fallback_payloads.append(low_limit_unscoped)
+                for fallback_payload in fallback_payloads:
+                    data = self._request_search(fallback_payload)
+                    if self._receipt_is_sufficient(_full_raw_shard_receipt(data)):
+                        break
+                    if (
+                        not self._allow_completed_low_limit_fallback
+                        and not _empty_unreceipted_fullraw_response(data)
+                    ):
+                        break
         except SearchBackendError as exc:
             if not self._sweep_wait_seconds:
                 raise
@@ -494,12 +574,17 @@ class FullRawCorpusSearchClient:
             data = {}
         receipt = _full_raw_shard_receipt(data)
         sweep_status = _full_raw_async_sweep_status(data)
-        can_wait_for_sweep = initial_error is not None or sweep_status in {"miss", "queued", "running"}
+        stopped_no_hits = receipt.get("sweep_stopped_no_hits") is True
+        can_wait_for_sweep = (
+            not stopped_no_hits
+            and (initial_error is not None or sweep_status in {"miss", "queued", "running"})
+        )
         coverage_error = isinstance(data, dict) and data.get("error") == "coverage_too_narrow"
         if (
             self._sweep_wait_seconds
             and search_pass.name in {"focused", "core"}
             and (not _parse_full_raw_search_response(data) or not self._receipt_is_sufficient(receipt))
+            and not stopped_no_hits
             and (can_wait_for_sweep or coverage_error)
         ):
             cached = self._wait_for_sweep_hit(payload)
@@ -530,8 +615,12 @@ class FullRawCorpusSearchClient:
             except SearchBackendError:
                 data = {}
                 status = "error"
+            receipt = _full_raw_shard_receipt(data)
             if status == "hit":
                 self._log_progress("fullraw async sweep cache hit")
+                return data
+            if status == "stopped_no_hits" or receipt.get("sweep_stopped_no_hits") is True:
+                self._log_progress("fullraw async sweep stopped with no hits")
                 return data
             if status == "disabled":
                 return None
@@ -741,6 +830,22 @@ def _full_raw_shard_receipt(data: Any) -> dict[str, object]:
     return dict(receipt)
 
 
+def _empty_unreceipted_fullraw_response(data: Any) -> bool:
+    receipt = _full_raw_shard_receipt(data)
+    has_coverage = any(
+        key in receipt
+        for key in (
+            "partial_shard_search",
+            "shards_searched",
+            "shards_total",
+            "source_count_searched",
+            "sources_searched",
+            "sweep_failed_shards",
+        )
+    )
+    return not has_coverage and not _parse_full_raw_search_response(data)
+
+
 def _full_raw_receipt_summary(receipt: dict[str, object]) -> dict[str, object]:
     return {
         "shards_searched": receipt.get("shards_searched"),
@@ -749,6 +854,7 @@ def _full_raw_receipt_summary(receipt: dict[str, object]) -> dict[str, object]:
         "sweep_failed_shards": receipt.get("sweep_failed_shards"),
         "source_count_searched": receipt.get("source_count_searched"),
         "sweep_remaining_shards": receipt.get("sweep_remaining_shards"),
+        "sweep_stopped_no_hits": receipt.get("sweep_stopped_no_hits"),
         "sweep_strategy": receipt.get("sweep_strategy"),
         "authenticated": receipt.get("authenticated"),
     }
@@ -796,7 +902,8 @@ def _parse_openalex_work(item: Any, *, match_count: int | None) -> CorpusHit | N
     title = _clean(item.get("display_name") or item.get("title"), limit=500)
     if not title:
         return None
-    doi = _normalize_doi(item.get("doi"))
+    raw_doi = _normalize_doi(item.get("doi"))
+    doi = _safe_doi(raw_doi)
     openalex_id = _clean(item.get("id"), limit=256)
     primary_location = item.get("primary_location")
     location = primary_location if isinstance(primary_location, dict) else {}
@@ -814,6 +921,7 @@ def _parse_openalex_work(item: Any, *, match_count: int | None) -> CorpusHit | N
         venue=venue,
         metadata={
             "openalex_id": openalex_id,
+            "raw_doi": raw_doi if raw_doi != doi else "",
             "cited_by_count": _int_or_none(item.get("cited_by_count")),
             "query_match_count": match_count,
         },
@@ -824,11 +932,13 @@ def _backfill_missing_openalex_abstracts(
     hits: list[CorpusHit],
     *,
     limit: int,
+    budget_seconds: float = 0.0,
 ) -> list[CorpusHit]:
     if limit <= 0:
         return hits
     out: list[CorpusHit | None] = list(hits)
     backfilled = 0
+    started = time.monotonic()
     eligible = [
         (index, hit)
         for index, hit in enumerate(hits)
@@ -837,6 +947,8 @@ def _backfill_missing_openalex_abstracts(
     eligible.sort(key=lambda item: _doi_backfill_priority(item[1]), reverse=True)
     for index, hit in eligible:
         if backfilled >= limit:
+            break
+        if budget_seconds > 0 and time.monotonic() - started >= budget_seconds:
             break
         doi = hit.doi
         if doi is None:
@@ -904,7 +1016,8 @@ def _parse_paper_hit(item: Any) -> CorpusHit | None:
     title = _clean(item.get("title"), limit=500)
     if not title:
         return None
-    doi = _clean(item.get("doi"), limit=256) or None
+    raw_doi = _normalize_doi(item.get("doi"))
+    doi = _safe_doi(raw_doi)
     pmid = _clean(item.get("pmid"), limit=64)
     pmcid = _clean(item.get("pmcid"), limit=64)
     hit_id = doi or pmid or pmcid or title
@@ -920,6 +1033,7 @@ def _parse_paper_hit(item: Any) -> CorpusHit | None:
         metadata={
             "pmid": pmid,
             "pmcid": pmcid,
+            "raw_doi": raw_doi if raw_doi != doi else "",
             "cited_by_count": _int_or_none(item.get("cited_by_count")),
             "similarity_score": _float_or_none(item.get("similarity_score")),
         },
@@ -937,7 +1051,8 @@ def _parse_full_raw_paper_hit(
     title = _clean(item.get("title") or item.get("display_name") or item.get("name"), limit=500)
     if not title:
         return None
-    doi = _normalize_doi(item.get("doi"))
+    raw_doi = _normalize_doi(item.get("doi"))
+    doi = _safe_doi(raw_doi)
     year = _int_or_none(item.get("year") or item.get("publication_year"))
     pmid = _clean(item.get("pmid"), limit=64)
     pmcid = _clean(item.get("pmcid"), limit=64)
@@ -974,6 +1089,7 @@ def _parse_full_raw_paper_hit(
         metadata={
             "pmid": pmid,
             "pmcid": pmcid,
+            "raw_doi": raw_doi if raw_doi != doi else "",
             "openalex_id": openalex_id,
             "semantic_scholar_id": s2_id,
             "arxiv_id": arxiv_id,
@@ -998,6 +1114,12 @@ def _normalize_doi(value: object) -> str | None:
     if not doi:
         return None
     return re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi, flags=re.I) or None
+
+
+def _safe_doi(value: str | None) -> str | None:
+    if not value or any(char in value for char in _UNSAFE_DOI_CHARS):
+        return None
+    return value
 
 
 def _doi_year_conflicts(doi: str | None, year: int | None) -> bool:
@@ -1127,7 +1249,7 @@ def _fullraw_search_passes(query: str, *, limit: int) -> list[FullRawSearchPass]
     raw_terms = _query_terms(query)
     terms = tuple(dict.fromkeys(raw_terms))
     if (
-        2 <= len(terms) <= 5
+        2 <= len(terms) <= 6
         and len(terms) == len(raw_terms)
         and not any(term in _FULLRAW_QUERY_FILLER_DROP for term in terms)
         and add("focused", " ".join(terms))

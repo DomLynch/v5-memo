@@ -1,17 +1,47 @@
 import json
 from collections.abc import Callable, Sequence
+from email.message import Message
 from pathlib import Path
 from typing import Any, cast
+from urllib.error import HTTPError
 
 import pytest
 
 from v5_memo.binder import bind_receipts
-from v5_memo.gate import candidate_alpha_tier, memo_coverage_failure
-from v5_memo.miner import mine_insights, query_anchor_terms
-from v5_memo.pipeline import _selector_slate, build_alpha_memo
-from v5_memo.publisher import build_researka_payload
+from v5_memo.evidence import source_artifact_type
+from v5_memo.gate import (
+    candidate_alpha_tier,
+    candidate_publish_blocker,
+    memo_coverage_failure,
+    no_alpha_failure,
+)
+from v5_memo.miner import (
+    _claim_card,
+    _prioritize_evidence_bundle,
+    mine_insights,
+    query_anchor_terms,
+)
+from v5_memo.minimax_writer import (
+    MemoFormatError,
+    build_minimax_prompt,
+    validate_minimax_memo,
+)
+from v5_memo.pipeline import _publishable_candidates, _selector_slate, build_alpha_memo
+from v5_memo.publisher import (
+    build_researka_payload,
+    set_researka_public_visibility,
+    submit_researka,
+)
 from v5_memo.retriever import collect_seed_hits
-from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult
+from v5_memo.schemas import (
+    ClaimCard,
+    CorpusHit,
+    EvidenceNode,
+    InsightCandidate,
+    MemoBuildError,
+    MemoResult,
+    ReceiptRole,
+)
 from v5_memo.scorer import score_connection
 from v5_memo.writer import render_memo
 
@@ -59,6 +89,101 @@ def _hits() -> list[CorpusHit]:
 
 def _hit(hit_id: str, title: str, abstract: str) -> CorpusHit:
     return CorpusHit(hit_id=hit_id, title=title, abstract=abstract, source="openalex", doi=f"10.{hit_id}")
+
+
+def _direct_card(receipt_id: str, role: str, outcome: str, direction: str, quote: str) -> ClaimCard:
+    return ClaimCard(receipt_id, role, "intervention_study", "human", outcome, direction, "direct", "high", quote)
+
+
+class _JsonResponse:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+
+    def __enter__(self) -> "_JsonResponse":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode()
+
+
+def test_submit_researka_retries_429_with_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[object] = []
+    sleeps: list[float] = []
+
+    def fake_urlopen(request: object, timeout: float) -> _JsonResponse:
+        del timeout
+        calls.append(request)
+        if len(calls) == 1:
+            headers = Message()
+            headers["Retry-After"] = "0.25"
+            raise HTTPError("https://api.researka.org/submissions", 429, "Too Many Requests", headers, None)
+        return _JsonResponse({"submission_id": "sub-retry"})
+
+    monkeypatch.setattr("v5_memo.publisher.urlopen", fake_urlopen)
+    monkeypatch.setattr("v5_memo.publisher.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    response = submit_researka(
+        {"title": "ok", "author_agent_id": "v5-memo-agent"},
+        agent_key="submit-key",
+        max_retries=1,
+    )
+
+    assert response == {"submission_id": "sub-retry"}
+    assert len(calls) == 2
+    assert sleeps == [0.25]
+
+
+def test_submit_researka_does_not_retry_429_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[object] = []
+
+    def fake_urlopen(request: object, timeout: float) -> _JsonResponse:
+        del timeout
+        calls.append(request)
+        headers = Message()
+        headers["Retry-After"] = "0.25"
+        raise HTTPError("https://api.researka.org/submissions", 429, "Too Many Requests", headers, None)
+
+    monkeypatch.setattr("v5_memo.publisher.urlopen", fake_urlopen)
+
+    with pytest.raises(HTTPError):
+        submit_researka(
+            {"title": "ok", "author_agent_id": "v5-memo-agent"},
+            agent_key="submit-key",
+        )
+
+    assert len(calls) == 1
+
+
+def test_visibility_403_verifies_already_listed_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+
+    def fake_urlopen(request: object, timeout: float) -> _JsonResponse:
+        del timeout
+        calls.append(request)
+        if len(calls) == 1:
+            raise HTTPError(
+                "https://api.researka.org/ops/publications/pub-1/visibility",
+                403,
+                "Forbidden",
+                Message(),
+                None,
+            )
+        return _JsonResponse({"metadata": {"public_visibility": "listed"}})
+
+    monkeypatch.setattr("v5_memo.publisher.urlopen", fake_urlopen)
+
+    assert set_researka_public_visibility("pub-1", agent_key="agent-key") == {
+        "id": "pub-1",
+        "public_visibility": "listed",
+        "updated": False,
+        "verified": True,
+    }
+    assert len(calls) == 2
 
 
 class _StaticSearch:
@@ -126,6 +251,394 @@ def test_miner_emits_claim_cards_before_prose() -> None:
     assert "**Claim ledger:**" in memo
 
 
+def test_template_writer_replaces_auto_thesis_with_bounded_claim() -> None:
+    candidate = InsightCandidate(
+        topic="metformin resistance training",
+        thesis=(
+            "metformin resistance training may be hiding a metformin / diabetic / "
+            "not boundary condition: training modulate humoral inflammatory and "
+            "one bout training does point in different directions."
+        ),
+        bridge_terms=("metformin", "training"),
+        tension_terms=("null", "negative"),
+        receipt_ids=("glycemic", "hypertrophy"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard(
+                "glycemic",
+                "null_signal",
+                "randomized_trial",
+                "human",
+                "long/glycemic control",
+                "null",
+                "direct",
+                "high",
+                "Metformin and resistance training measured glycemic control in human adults.",
+            ),
+            ClaimCard(
+                "hypertrophy",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "hypertrophy/setting",
+                "negative",
+                "direct",
+                "high",
+                "Metformin blunted muscle hypertrophy after resistance training in human adults.",
+            ),
+        ),
+    )
+    receipts = [
+        _hit("glycemic", "Glycemic control trial", "Human glycemic control trial."),
+        _hit("hypertrophy", "Hypertrophy trial", "Human hypertrophy trial."),
+    ]
+
+    memo = render_memo(candidate, receipts)
+
+    assert "may be hiding" not in memo
+    assert "training modulate humoral inflammatory" not in memo
+    assert (
+        "**Alpha hypothesis:** In metformin resistance training, direct human "
+        "randomized trial receipts support a bounded null and negative signal"
+    ) in memo
+    assert "long/" not in memo
+    assert "/setting" not in memo
+    assert "same population and endpoint" in memo
+
+
+def test_template_writer_leads_with_synthesis_for_boundary_bundle() -> None:
+    candidate = InsightCandidate(
+        topic="metformin exercise training adaptation older adults trial",
+        thesis="Metformin evidence separates exercise adaptation from frailty boundary outcomes.",
+        bridge_terms=("metformin", "older", "diabete"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("exercise", "frailty"),
+        score=100,
+        novelty_score=53,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "exercise",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "cardiorespiratory fitness adaptation",
+                "negative",
+                "direct",
+                "high",
+                "Metformin impaired cardiorespiratory fitness adaptation during training.",
+            ),
+            ClaimCard(
+                "frailty",
+                "boundary",
+                "randomized_trial",
+                "human",
+                "frailty index",
+                "positive",
+                "direct",
+                "high",
+                "Metformin reduced frailty-index progression in a different older-adult endpoint.",
+            ),
+        ),
+    )
+    receipts = [
+        _hit(
+            "exercise",
+            "Metformin Impairs the Cardiorespiratory Fitness Adaptation to High-Intensity Power Training",
+            "Human randomized trial reported impaired cardiorespiratory fitness adaptation.",
+        ),
+        _hit(
+            "frailty",
+            "A Two-Year Trial of Metformin to Reduce Frailty in Older Adults with Glucose Intolerance",
+            "Human randomized trial reported reduced frailty-index progression.",
+        ),
+    ]
+
+    memo = render_memo(candidate, receipts)
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=memo),
+        author_agent_id="v5-memo-agent",
+        domain_slug="longevity_research",
+    )
+
+    assert memo.index("**Core signal:**") < memo.index("**Audit trail:**")
+    assert "**Receipt-level synthesis:**" in memo
+    assert "The bundle is heterogeneous" in memo
+    assert "diabetes" in memo
+    assert "diabete" not in memo.replace("diabetes", "")
+    assert payload["title"] == "Metformin: Training Adaptation With Boundary Evidence"
+    assert "Metformin Impairs the Cardiorespiratory Fitness" not in payload["title"]
+
+
+def test_template_writer_scopes_companion_analyses_to_named_study() -> None:
+    candidate = InsightCandidate(
+        topic="intervention exercise training adaptation",
+        thesis="Endpoint-specific findings within one study program.",
+        bridge_terms=("intervention", "exercise"),
+        tension_terms=("negative",),
+        receipt_ids=("a", "b"),
+        score=100,
+        novelty_score=55,
+        evidence_score=100,
+        reasons=("shape:boundary_condition", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard("a", "negative_signal", "randomized_trial", "human", "unspecified", "negative", "direct", "high", "Primary analysis."),
+            ClaimCard("b", "boundary", "randomized_trial", "human", "risk", "negative", "direct", "high", "Companion analysis."),
+        ),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="a",
+            title="Intervention attenuates metabolic adaptation after exercise training",
+            abstract="Secondary analysis of the Example Outcomes (EX-OUT) study.",
+            source="fullraw:pubmed",
+            year=2026,
+            doi="10.1000/a",
+        ),
+        CorpusHit(
+            hit_id="b",
+            title="Intervention alters vascular response in adults at elevated risk",
+            abstract="The same randomized program reported a vascular endpoint.",
+            source="fullraw:pubmed",
+            year=2025,
+            doi="10.1000/b",
+        ),
+    ]
+
+    memo = render_memo(candidate, receipts)
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=memo),
+        author_agent_id="v5-memo-agent",
+        domain_slug="performance",
+    )
+
+    assert payload["title"] == "EX-OUT Program: Endpoint-Specific Intervention and Exercise Findings"
+    body = cast(str, payload["body_markdown"])
+    assert "Within the shared EX-OUT program cohort" in body
+    assert "endpoint-dependent rather than uniformly additive" in body
+    assert "intervention-exercise interaction attenuated metabolic adaptation and altered vascular response" in body
+    assert "10.1000/a and 10.1000/b are companion analyses from the same EX-OUT trial program" in body
+    assert body.count("one evidence unit") == 1
+    assert "endpoint: metabolic adaptation; direction: attenuated" in body
+    assert "endpoint: vascular response; direction: altered" in body
+    assert "source records report 10.1000/a (2026) and 10.1000/b (2025)" in body
+    assert "`10.1000/a`" not in body
+    assert "`10.1000/b`" not in body
+    assert "Source-record years 2025 and 2026 may include electronic-first publication dates" in body
+    assert "missing protocol details are not inferred across companion articles" in body
+    assert "negative_signal" not in body
+    assert "(boundary)" not in body
+    assert "unspecified is" not in body
+
+
+def test_template_writer_extracts_reduction_endpoint_without_domain_rules() -> None:
+    candidate = InsightCandidate(
+        topic="intervention outcome",
+        thesis="Endpoint-specific finding.",
+        bridge_terms=("intervention", "outcome"),
+        tension_terms=("positive",),
+        receipt_ids=("a", "b"),
+        score=90,
+        novelty_score=60,
+        evidence_score=90,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard("a", "outcome", "randomized_trial", "human", "unspecified", "positive", "direct", "high", ""),
+            ClaimCard("b", "outcome", "randomized_trial", "human", "unspecified", "positive", "direct", "high", ""),
+        ),
+    )
+    receipts = [
+        _hit("a", "Program induces a clinically significant reduction in symptom severity: A trial", "Human randomized trial."),
+        _hit("b", "Program improves functional capacity after training", "Human randomized trial."),
+    ]
+
+    memo = render_memo(candidate, receipts)
+
+    assert "endpoint: symptom severity; direction: reduced" in memo
+    assert "endpoint: functional capacity; direction: improved" in memo
+
+
+def test_publish_quality_filter_removes_weak_candidates_before_writing() -> None:
+    weak = InsightCandidate(
+        topic="nicotinamide exercise performance",
+        thesis="Weak translational bridge.",
+        bridge_terms=("nicotinamide", "exercise"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("human", "rat"),
+        score=100,
+        novelty_score=58,
+        evidence_score=90,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard(
+                "human",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "positive",
+                "direct",
+                "high",
+                "human trial",
+            ),
+            ClaimCard(
+                "rat",
+                "boundary",
+                "mechanistic_model",
+                "animal",
+                "performance",
+                "negative",
+                "indirect",
+                "medium",
+                "rat model",
+            ),
+        ),
+    )
+    strong = InsightCandidate(
+        topic="cold immersion training",
+        thesis="Two direct human trials create a bounded contrast.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("human-a", "human-b"),
+        score=100,
+        novelty_score=58,
+        evidence_score=90,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard(
+                "human-a",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "recovery",
+                "negative",
+                "direct",
+                "high",
+                "Cold immersion training human trial.",
+            ),
+            ClaimCard(
+                "human-b",
+                "positive_signal",
+                "intervention_study",
+                "human",
+                "recovery",
+                "positive",
+                "direct",
+                "high",
+                "Cold immersion training human study.",
+            ),
+        ),
+    )
+
+    assert _publishable_candidates(
+        [weak, strong],
+        [],
+        "publishable_alpha",
+        frozenset(),
+    ) == [weak, strong]
+    assert _publishable_candidates(
+        [weak, strong],
+        [],
+        "publishable_alpha",
+        frozenset(),
+        require_publish_quality=True,
+    ) == [strong]
+
+
+def test_no_alpha_failure_reports_publish_quality_blockers() -> None:
+    weak = InsightCandidate(
+        topic="nicotinamide exercise performance",
+        thesis="Weak translational bridge.",
+        bridge_terms=("nicotinamide", "exercise"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("human", "rat"),
+        score=100,
+        novelty_score=58,
+        evidence_score=90,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard(
+                "human",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "positive",
+                "direct",
+                "high",
+                "human trial",
+            ),
+            ClaimCard(
+                "rat",
+                "boundary",
+                "mechanistic_model",
+                "animal",
+                "performance",
+                "negative",
+                "indirect",
+                "medium",
+                "rat model",
+            ),
+        ),
+    )
+
+    failure = no_alpha_failure(
+        topic="nicotinamide exercise performance",
+        hits=[],
+        candidates=[],
+        min_alpha_tier="publishable_alpha",
+        mined_candidates=[weak],
+    )
+
+    assert failure.details["publish_quality_blocked_count"] == 1
+    blockers = failure.details["top_publish_quality_blockers"]
+    assert isinstance(blockers, tuple)
+    assert blockers[0]["receipt_ids"] == ("human", "rat")
+    assert blockers[0]["blocker"] == {
+        "error": "insufficient_direct_human_receipts",
+        "direct_human_receipts": 1,
+        "strong_direct_human_receipts": 1,
+    }
+    assert "publish_quality_blocked_count=1" in str(MemoBuildError(failure))
+
+
+def test_miner_marks_human_intervention_receipts_direct() -> None:
+    hits = [
+        _hit(
+            "negative",
+            "Cold-water immersion attenuates strength training adaptation",
+            (
+                "In a randomized crossover design, 11 participants performed two 8-week "
+                "training periods with cold-water immersion after each session."
+            ),
+        ),
+        _hit(
+            "positive",
+            "Cold-water immersion supports adaptation to strength training",
+            (
+                "Seventeen trained male students volunteered for a strength training "
+                "study with repeated cold-water immersion after training sessions; "
+                "strength outcomes improved at retention."
+            ),
+        ),
+    ]
+
+    candidate = mine_insights(
+        hits,
+        topic="cold water immersion resistance training adaptation",
+        required_anchor_terms=("training",),
+    )[0]
+
+    assert {(card.design, card.population, card.support_type) for card in candidate.claim_cards} == {
+        ("randomized_trial", "human", "direct"),
+        ("intervention_study", "human", "direct"),
+    }
+
+
 def test_miner_adds_receipt_backed_evidence_graph_context() -> None:
     hits = [
         _hit(
@@ -156,6 +669,149 @@ def test_miner_adds_receipt_backed_evidence_graph_context() -> None:
     assert [node.role for node in candidate.evidence_graph] == ["primary", "counter", "consensus"]
     assert "`consensus`: consensus" in memo
     assert "Evidence graph" in memo
+
+
+def test_evidence_bundle_promotes_late_direct_rct_before_writer() -> None:
+    topic = "cold water immersion resistance training adaptation"
+    graph = (
+        EvidenceNode("proxy", "primary", "candidate evidence stream"),
+        EvidenceNode("soccer", "counter", "candidate evidence stream"),
+        EvidenceNode("review", "consensus", "consensus context"),
+        EvidenceNode("rct", "replication", "replication context"),
+    )
+    cards = (
+        ClaimCard(
+            "proxy",
+            "negative_signal",
+            "intervention_study",
+            "human",
+            "muscle swelling",
+            "negative",
+            "direct",
+            "high",
+            "Cold-water immersion attenuated muscle swelling after resistance training.",
+        ),
+        ClaimCard(
+            "soccer",
+            "null_signal",
+            "intervention_study",
+            "human",
+            "soccer performance",
+            "null",
+            "direct",
+            "high",
+            "Soccer players did not improve long-term performance adaptation.",
+        ),
+        ClaimCard(
+            "review",
+            "consensus",
+            "synthesis",
+            "human",
+            "adaptation",
+            "negative",
+            "indirect",
+            "medium",
+            "Review context only.",
+        ),
+        ClaimCard(
+            "rct",
+            "replication",
+            "randomized_trial",
+            "human",
+            "resistance training adaptation",
+            "negative",
+            "direct",
+            "high",
+            "Randomized human trial tested cold-water immersion after strength training.",
+        ),
+    )
+
+    sorted_graph, sorted_cards = _prioritize_evidence_bundle(topic, graph, cards)
+
+    assert [node.receipt_id for node in sorted_graph] == ["rct", "proxy", "soccer", "review"]
+    assert sorted_graph[0].role == "primary"
+    assert [card.receipt_id for card in sorted_cards] == ["rct", "proxy", "soccer", "review"]
+    assert sorted_cards[0].role == "negative_signal"
+
+    receipts = [
+        _hit("proxy", "Cold-water immersion muscle swelling proxy", cards[0].quote),
+        _hit("soccer", "Cold-water immersion soccer performance", cards[1].quote),
+        _hit("review", "Cold-water immersion adaptation review", cards[2].quote),
+        _hit("rct", "Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?", cards[3].quote),
+    ]
+    candidate = InsightCandidate(
+        topic=topic,
+        thesis="Cold-water immersion evidence is strongest for resistance-training adaptation.",
+        bridge_terms=("cold", "immersion", "training"),
+        tension_terms=("negative", "null"),
+        receipt_ids=tuple(node.receipt_id for node in sorted_graph),
+        score=100,
+        novelty_score=80,
+        evidence_score=96,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=sorted_cards,
+        evidence_graph=sorted_graph,
+    )
+
+    bound = bind_receipts(candidate, receipts)
+    prompt = build_minimax_prompt(candidate, bound)
+
+    assert bound[0].hit_id == "rct"
+    assert "Receipt 1\nID: 10.rct\nTitle: Does Cold-Water Immersion" in prompt
+    assert "rct: primary (strongest direct human evidence)" in prompt
+
+
+def test_evidence_bundle_does_not_promote_weak_late_context() -> None:
+    graph = (
+        EvidenceNode("primary", "primary", "candidate evidence stream"),
+        EvidenceNode("counter", "counter", "candidate evidence stream"),
+        EvidenceNode("review", "consensus", "consensus context"),
+    )
+    cards = (
+        ClaimCard("primary", "positive_signal", "intervention_study", "human", "performance", "positive", "direct", "high", "Direct trial."),
+        ClaimCard("counter", "negative_signal", "intervention_study", "human", "performance", "negative", "direct", "high", "Direct trial."),
+        ClaimCard("review", "consensus", "synthesis", "human", "performance", "negative", "indirect", "medium", "Review only."),
+    )
+
+    sorted_graph, sorted_cards = _prioritize_evidence_bundle("training adaptation", graph, cards)
+
+    assert sorted_graph == graph
+    assert sorted_cards == cards
+
+
+def test_evidence_graph_rejects_off_modality_context_receipts() -> None:
+    topic = "cold water immersion resistance training adaptation"
+    hits = [
+        _hit(
+            "null",
+            "Cold Water Immersion and Contrast Water Therapy Do Not Improve Short-Term Recovery Following Resistance Training",
+            "Participants performed resistance training. Cold water immersion did not improve short-term recovery after resistance training.",
+        ),
+        _hit(
+            "attenuate",
+            "Post-exercise cold water immersion attenuates acute anabolic signalling and long-term adaptations in muscle to strength training",
+            "Cold water immersion attenuated long-term adaptations to strength training.",
+        ),
+        _hit(
+            "cycling",
+            "Post-exercise Warm or Cold Water Immersion to Augment the Cardiometabolic Benefits of Exercise Training",
+            (
+                "Warm or cold water immersion would provide similar or greater benefits. "
+                "Long-term exercise training work trial distance increased without differences. "
+                "Substituting with cold water immersion does not."
+            ),
+        ),
+        _hit(
+            "meta",
+            "Effects of post-exercise cold-water immersion on resistance training-induced gains in muscular strength: a meta-analysis",
+            "Systematic review of cold water immersion after resistance training adaptation outcomes.",
+        ),
+    ]
+
+    candidate = mine_insights(hits, topic=topic, required_anchor_terms=query_anchor_terms([topic]))[0]
+
+    assert "cycling" not in candidate.receipt_ids
+    assert [node.receipt_id for node in candidate.evidence_graph] == ["null", "attenuate"]
 
 
 def test_two_receipts_do_not_inflate_evidence_without_support_quality() -> None:
@@ -302,7 +958,20 @@ def test_collect_seed_hits_propagates_fullraw_coverage_failure() -> None:
         collect_seed_hits(_FunctionSearch(search), ["metformin", "metformin blunts"])
 
 
-def test_collect_seed_hits_keeps_full_receipt_hits_when_late_shape_is_uncached() -> None:
+def test_collect_seed_hits_skips_stopped_no_hit_fullraw_shape() -> None:
+    def search(query: str, limit: int) -> Sequence[CorpusHit]:
+        del limit
+        if query == "dead":
+            raise RuntimeError(
+                "Full raw corpus search coverage too narrow: "
+                "{'shards_searched': 128, 'sweep_stopped_no_hits': True}"
+            )
+        return [_hit(query, f"{query} title", "full receipt evidence")]
+
+    assert [hit.hit_id for hit in collect_seed_hits(_FunctionSearch(search), ["dead", "good"])] == ["good"]
+
+
+def test_collect_seed_hits_skips_late_fullraw_coverage_failure_after_hits() -> None:
     def search(query: str, limit: int) -> Sequence[CorpusHit]:
         del limit
         if "augment" in query:
@@ -353,6 +1022,68 @@ def test_pipeline_anchors_cover_late_planned_query_angles() -> None:
     assert result.candidate.receipt_ids == ("promise", "outcome")
 
 
+def test_miner_accepts_direct_human_reversal_when_anchor_is_full_text_only() -> None:
+    hits = [
+        _hit(
+            "promise",
+            "Protocol expected augmentation",
+            (
+                "Randomized human trial protocol expected metformin to augment "
+                "resistance training adaptation."
+            ),
+        ),
+        _hit(
+            "outcome",
+            "Outcome observed null response",
+            (
+                "Randomized human trial protocol observed metformin made no difference "
+                "to resistance training adaptation."
+            ),
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="metformin resistance training adaptation",
+        required_anchor_terms=query_anchor_terms(["metformin resistance training adaptation"]),
+    )
+
+    assert candidates
+    assert candidates[0].receipt_ids == ("promise", "outcome")
+    assert tuple(role.role for role in candidates[0].receipt_roles) == ("positive_signal", "null_signal")
+    assert candidate_publish_blocker(candidates[0]) is None
+
+
+def test_miner_rejects_partial_multiword_entity_anchor() -> None:
+    topic = "beta alanine resistance training older adults trial"
+    hits = [
+        _hit(
+            "beta-alanine",
+            "Beta-Alanine protocol expected resistance training augmentation",
+            "Randomized human trial expected beta-alanine to augment resistance training performance in older adults.",
+        ),
+        _hit(
+            "hmb",
+            "Beta-hydroxy-beta-methylbutyrate resistance training trial blunted strength",
+            "Randomized human trial observed beta-hydroxy-beta-methylbutyrate blunted resistance training performance in older women.",
+        ),
+        _hit(
+            "amyloid",
+            "Amyloid beta resistance training trial negative performance",
+            "Animal intervention study resistance training reduced amyloid beta and negative performance.",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic=topic,
+        required_anchor_terms=query_anchor_terms([topic]),
+        include_discovery=True,
+    )
+
+    assert candidates == []
+
+
 def test_pipeline_stops_retrieval_once_publishable_candidate_exists() -> None:
     calls: list[str] = []
     hits = [
@@ -375,6 +1106,34 @@ def test_pipeline_stops_retrieval_once_publishable_candidate_exists() -> None:
 
     assert calls == ["metformin training"]
     assert result.candidate.receipt_ids == ("promise", "outcome")
+
+
+def test_publish_quality_pipeline_skips_incomplete_late_shape_coverage() -> None:
+    calls: list[str] = []
+
+    def search(query: str, limit: int) -> Sequence[CorpusHit]:
+        del limit
+        calls.append(query)
+        if "augment" in query:
+            raise RuntimeError("Full raw corpus search coverage too narrow: {'shards_searched': None}")
+        return [_hit("weak", "Metformin resistance training review", "Review evidence.")]
+
+    with pytest.raises(MemoBuildError, match="no receipt-bound alpha memo candidate"):
+        build_alpha_memo(
+            topic="metformin resistance training adaptation",
+            seed_queries=[
+                "metformin resistance training adaptation",
+                "metformin augment resistance training protocol",
+            ],
+            searcher=_FunctionSearch(search),
+            min_alpha_tier="publishable_alpha",
+            require_publish_quality=True,
+        )
+
+    assert calls == [
+        "metformin resistance training adaptation",
+        "metformin augment resistance training protocol",
+    ]
 
 
 def test_pipeline_anchors_to_original_seed_before_planner_drift() -> None:
@@ -696,6 +1455,12 @@ def test_query_anchor_terms_do_not_promote_context_to_anchor() -> None:
     )
 
 
+def test_query_anchor_terms_drop_broad_population_words() -> None:
+    assert query_anchor_terms(["metformin exercise training adaptation older adults trial"]) == (
+        "metformin",
+    )
+
+
 def test_query_anchor_terms_drop_alpha_shape_words() -> None:
     assert query_anchor_terms([
         "exercise adaptation intervention reversal",
@@ -897,6 +1662,29 @@ def test_title_only_augment_protocol_can_pair_with_blunted_outcome() -> None:
     assert candidate_alpha_tier(candidate) == "elite_alpha"
 
 
+def test_miner_rejects_training_pair_when_only_population_anchor_matches() -> None:
+    topic = "metformin exercise training adaptation older adults trial"
+    hits = [
+        _hit(
+            "exercise",
+            "Metformin impairs cardiorespiratory fitness adaptation to high-intensity power training in older adults",
+            "Randomized human trial in older adults with T2D observed metformin impaired VO2peak adaptation during high-intensity power training.",
+        ),
+        _hit(
+            "frailty",
+            "A two-year trial of metformin to reduce frailty in older adults with glucose intolerance",
+            "Randomized human trial in older adults with glucose intolerance found a significant reduction in frailty progression rate with metformin treatment.",
+        ),
+    ]
+
+    assert mine_insights(
+        hits,
+        topic=topic,
+        required_anchor_terms=query_anchor_terms([topic]),
+        include_discovery=True,
+    ) == []
+
+
 def test_short_single_word_bridge_is_not_enough_for_elite_shape() -> None:
     hits = [
         _hit("a", "APR improves training", "APR improved training outcomes."),
@@ -1041,6 +1829,22 @@ def test_miner_does_not_invent_timing_split_from_same_timing_word() -> None:
     assert "shape:timing_split" not in candidate.reasons
 
 
+def test_claim_card_prefers_directional_title_over_mixed_endpoint_abstract() -> None:
+    hit = CorpusHit(
+        hit_id="mixed-endpoints",
+        title="Intervention attenuates metabolic adaptation after training",
+        abstract=(
+            "Some endpoints increased, others did not change, and the intervention "
+            "attenuated the primary adaptation."
+        ),
+        source="fullraw:pubmed",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "negative_signal", "primary endpoint"))
+
+    assert card.direction == "negative"
+
+
 def test_researka_payload_preserves_memo_and_receipts() -> None:
     candidate = InsightCandidate(
         topic="resveratrol exercise adaptation",
@@ -1066,8 +1870,72 @@ def test_researka_payload_preserves_memo_and_receipts() -> None:
     )
 
     assert payload["article_type"] == "alpha_memo"
-    assert payload["body_markdown"] == markdown.strip()
+    body = cast(str, payload["body_markdown"])
+    assert "**Seed hypothesis:**" in body
+    assert "**Receipts:**" in body
+    assert "**Claim ledger:**" not in body
     assert payload["source_bundle"][0]["evidence_type"] == "primary"  # type: ignore[index]
+
+
+def test_researka_payload_binds_revision_parent() -> None:
+    candidate = InsightCandidate(
+        topic="revision topic",
+        thesis="Revised bounded signal.",
+        bridge_terms=("revision", "signal"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("a", "b"),
+        score=90,
+        novelty_score=60,
+        evidence_score=90,
+        reasons=("shape:directional_reversal",),
+    )
+    receipts = [_hit("a", "Revision trial A", "Negative result."), _hit("b", "Revision trial B", "Null result.")]
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown="# Alpha memo: Revised bounded signal"),
+        author_agent_id="v5-memo-agent",
+        domain_slug="performance",
+        parent_submission_id=" parent-submission ",
+    )
+
+    assert payload["parent_submission_id"] == "parent-submission"
+
+
+def test_researka_payload_drops_dangling_clipped_title_subtitle() -> None:
+    candidate = InsightCandidate(
+        topic="training adaptation",
+        thesis="A strong bounded adaptation signal.",
+        bridge_terms=("training", "adaptation"),
+        tension_terms=("blunted",),
+        receipt_ids=("long", "short"),
+        score=92,
+        novelty_score=90,
+        evidence_score=94,
+        reasons=("shape:directional_reversal",),
+    )
+    receipts = [
+        _hit(
+            "long",
+            "Metformin blunts muscle hypertrophy in response to progressive resistance exercise training in older adults: A randomized trial",
+            "Human trial reported a bounded adaptation signal.",
+        ),
+        _hit("short", "Training adaptation response", "Comparator adaptation receipt."),
+    ]
+    markdown = (
+        "# Alpha memo: Metformin blunts muscle hypertrophy in response to progressive resistance exercise training "
+        "in older adults: A randomized trial\n\n**Alpha hypothesis:** A strong bounded adaptation signal."
+    )
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="longevity",
+    )
+
+    assert payload["title"] == "Metformin blunts muscle hypertrophy in response to progressive resistance exercise training in older adults"
+    assert cast(str, payload["body_markdown"]).startswith(
+        "# Alpha memo: Metformin blunts muscle hypertrophy in response to progressive resistance exercise training in older adults"
+    )
 
 
 def test_researka_payload_uses_valid_doi_or_pmid_not_empty_doi() -> None:
@@ -1110,6 +1978,2179 @@ def test_researka_payload_uses_valid_doi_or_pmid_not_empty_doi() -> None:
     assert "doi" not in source_bundle[1]
     assert source_bundle[1]["pmid"] == "1798317"
     assert source_bundle[1]["id"] == "1798317"
+
+
+def test_researka_payload_submits_human_title_and_plain_doi_citations() -> None:
+    candidate = InsightCandidate(
+        topic="caffeine exercise",
+        thesis="Endpoint-gated caffeine signal.",
+        bridge_terms=("caffeine", "exercise"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("10.1000/caffeine", "10.1000/runners"),
+        score=100,
+        novelty_score=50,
+        evidence_score=85,
+        reasons=("shape:directional_reversal",),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="10.1000/caffeine",
+            title="Failure of caffeine to affect metabolism during 60 min submaximal exercise.",
+            abstract="Caffeine did not change submaximal metabolic endpoints.",
+            source="researka",
+            doi="10.1000/caffeine",
+        ),
+        CorpusHit(
+            hit_id="10.1000/runners",
+            title="Caffeine ingestion during exercise to exhaustion in elite distance runners.",
+            abstract="Caffeine improved exercise to exhaustion.",
+            source="researka",
+            doi="10.1000/runners",
+        ),
+    ]
+
+    markdown = "\n".join(
+        [
+            "# Alpha memo: caffeine / exercise",
+            "",
+            "**Alpha hypothesis:** Endpoint-gated caffeine signal.",
+            "",
+            "**Receipts:**",
+            "- `10.1000/caffeine`: Failure of caffeine to affect metabolism.",
+            "- `10.1000/runners`: Caffeine ingestion during exercise.",
+        ]
+    )
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="performance",
+    )
+    body = cast(str, payload["body_markdown"])
+
+    assert payload["title"] == "Endpoint-gated caffeine signal."
+    assert body.startswith("# Alpha memo: Endpoint-gated caffeine signal.")
+    assert "Hypothesis-level alpha signal; not clinical advice." in body
+    assert "`10.1000/caffeine`" not in body
+    assert "`10.1000/runners`" not in body
+    assert "10.1000/caffeine:" not in body
+    assert "10.1000/runners:" not in body
+    assert "10.1000/caffeine" in body
+    assert "10.1000/runners" in body
+
+
+def test_researka_payload_rejects_non_primary_receipts_before_intake() -> None:
+    candidate = InsightCandidate(
+        topic="nicotinamide riboside exercise performance",
+        thesis="Nicotinamide riboside may expose a species and endpoint boundary in exercise performance.",
+        bridge_terms=("nicotinamide", "exercise"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("supplement", "faseb", "primary"),
+        score=90,
+        novelty_score=60,
+        evidence_score=82,
+        reasons=("shape:directional_reversal",),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="supplement",
+            title="Additional file 1: of The NAD+ precursor nicotinamide riboside decreases exercise performance in rats",
+            abstract="Figshare-hosted supporting data for the nicotinamide riboside exercise study.",
+            source="fullraw:openalex",
+            doi="10.6084/m9.figshare.c.3601490_d1",
+        ),
+        CorpusHit(
+            hit_id="faseb",
+            title="Nicotinamide riboside and exercise performance in healthy volunteers",
+            abstract="Conference abstract reported human exercise performance markers.",
+            source="fullraw:openalex",
+            doi="10.1096/fasebj.2021.35.s1.05282",
+            venue="The FASEB Journal",
+        ),
+        CorpusHit(
+            hit_id="jissn-supplement",
+            title="Effects of resveratrol supplementation after eccentric exercise",
+            abstract="Abstract supplement reported inflammatory markers in runners.",
+            source="fullraw:openalex",
+            doi="10.1186/1550-2783-8-s1-p15",
+            venue="Journal of the International Society of Sports Nutrition",
+        ),
+        CorpusHit(
+            hit_id="primary",
+            title="Nicotinamide riboside supplementation and exercise performance in humans",
+            abstract="Randomized human trial measured endurance exercise performance after supplementation.",
+            source="fullraw:openalex",
+            doi="10.1000/nr-human",
+        ),
+    ]
+    markdown = "# Alpha memo: Additional file 1: of The NAD+ precursor nicotinamide riboside decreases exercise performance in rats\n\nBody."
+
+    with pytest.raises(ValueError, match=r"unsupported_source_bundle_artifact_type:.*:supplemental"):
+        build_researka_payload(
+            MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+            author_agent_id="v5-memo-agent",
+            domain_slug="longevity_research",
+        )
+
+
+def test_miner_excludes_non_primary_artifacts_before_candidate_building() -> None:
+    hits = [
+        CorpusHit(
+            hit_id="supplement",
+            title="Additional file 1: Metformin to augment muscle training adaptation",
+            abstract="Protocol designed to augment exercise training adaptation in older adults.",
+            source="fullraw:openalex",
+            doi="10.6084/m9.figshare.c.1_d1",
+        ),
+        CorpusHit(
+            hit_id="trial",
+            title="Metformin blunts muscle training adaptation",
+            abstract=(
+                "Randomized human trial found metformin blunted exercise training adaptation "
+                "in older adults."
+            ),
+            source="fullraw:pubmed",
+            doi="10.1000/trial",
+        ),
+    ]
+
+    candidates = mine_insights(
+        hits,
+        topic="metformin exercise training adaptation older adults trial",
+        required_anchor_terms=("metformin",),
+    )
+
+    assert candidates == []
+
+
+@pytest.mark.parametrize(
+    ("title", "doi", "expected"),
+    [
+        ("Randomized exercise trial", "10.1000/trial", "article"),
+        ("Additional file 1: trial checklist", "10.6084/m9.figshare.c.1_d1", "supplemental"),
+        ("Exercise trial abstract", "10.1249/01.mss.0000000000000001", "conference_abstract"),
+        ("Faculty Opinions recommendation of a trial", "10.3410/f.1", "secondary_commentary"),
+    ],
+)
+def test_source_artifact_policy_is_shared(
+    title: str,
+    doi: str,
+    expected: str,
+) -> None:
+    hit = CorpusHit(
+        hit_id=doi,
+        title=title,
+        abstract="Evidence descriptor.",
+        source="fullraw:test",
+        doi=doi,
+    )
+
+    assert source_artifact_type(hit) == expected
+
+
+def test_researka_payload_uses_receipt_title_instead_of_auto_bridge_thesis_title() -> None:
+    candidate = InsightCandidate(
+        topic="urolithin mitochondrial aging",
+        thesis=(
+            "urolithin mitochondrial aging may have a mitochondrial / improve bridge "
+            "between urolithin provide cardioprotection and muscle function."
+        ),
+        bridge_terms=("mitochondrial", "improve"),
+        tension_terms=("positive",),
+        receipt_ids=("primary", "context"),
+        score=84,
+        novelty_score=70,
+        evidence_score=80,
+        reasons=("shape:boundary_condition",),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="primary",
+            title="Urolithin A provides cardioprotection and improves human cardiovascular health biomarkers",
+            abstract="Human supplementation improved a bounded cardiovascular biomarker.",
+            source="fullraw:openalex",
+            doi="10.1016/j.isci.2025.111814",
+        ),
+        CorpusHit(
+            hit_id="context",
+            title="Urolithin A improves mitochondrial health in osteoarthritis models",
+            abstract="Mechanistic context receipt.",
+            source="fullraw:openalex",
+            doi="10.1111/acel.13662",
+        ),
+    ]
+    markdown = "# Alpha memo: mitochondrial improve\n\nBody."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-memo-agent",
+        domain_slug="longevity_research",
+    )
+
+    assert payload["title"] == "Urolithin A provides cardioprotection and improves human cardiovascular health biomarkers"
+
+
+def test_researka_payload_prefers_bundle_title_for_heterogeneous_direct_endpoints() -> None:
+    candidate = InsightCandidate(
+        topic="cold immersion training",
+        thesis=(
+            "cold immersion training may be hiding a cold / immersion / training "
+            "boundary condition: acute muscle thickness and performance point in different directions."
+        ),
+        bridge_terms=("cold", "immersion", "training"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("thickness", "performance"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            _direct_card(
+                "thickness",
+                "negative_signal",
+                "muscle thickness",
+                "negative",
+                "Cold-water immersion attenuated elbow flexor muscle thickness after strength training.",
+            ),
+            _direct_card(
+                "performance",
+                "null_signal",
+                "performance",
+                "null",
+                "Cold-water immersion training did not improve physical performance.",
+            ),
+        ),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="thickness",
+            title="Effect of Cold-Water Immersion on Elbow Flexors Muscle Thickness After Resistance Training",
+            abstract="Human randomized trial measured elbow flexor muscle thickness after resistance training.",
+            source="fullraw:semantic_scholar",
+            doi="10.1519/JSC.0000000000002322",
+        ),
+        CorpusHit(
+            hit_id="performance",
+            title="Cold-water immersion and training performance in human participants",
+            abstract="Human intervention study measured training performance.",
+            source="fullraw:openalex",
+            doi="10.performance",
+        ),
+    ]
+    markdown = "# Alpha memo: cold / immersion / training\n\nBody."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-memo-agent",
+        domain_slug="longevity_research",
+    )
+
+    assert payload["title"] == "Cold Immersion and Training Outcomes in Human Studies"
+
+
+def test_researka_payload_skips_incomplete_receipt_title() -> None:
+    candidate = InsightCandidate(
+        topic="resveratrol exercise protocol",
+        thesis="Resveratrol exercise evidence splits by timing and endpoint.",
+        bridge_terms=("resveratrol", "exercise"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("truncated", "complete"),
+        score=90,
+        novelty_score=58,
+        evidence_score=90,
+        reasons=("shape:boundary_condition", "tier:publishable_alpha"),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="truncated",
+            title="Effects of 14 days of prophylactic resveratrol supplementation in trained endurance runners upon the inflammatory",
+            abstract="Human runner intervention measured cytokine response after eccentric exercise.",
+            source="fullraw:openalex",
+            doi="10.1000/resveratrol-inflammation",
+        ),
+        CorpusHit(
+            hit_id="complete",
+            title="Combined exercise training and resveratrol supplementation in older adults with functional limitations",
+            abstract="Pilot randomized study assessed safety and feasibility.",
+            source="fullraw:openalex",
+            doi="10.1016/j.exger.2020.111111",
+        ),
+    ]
+    markdown = "# Alpha memo: Effects of 14 days of prophylactic resveratrol supplementation in trained endurance runners upon the inflammatory\n\nBody."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-memo-agent",
+        domain_slug="longevity_research",
+    )
+
+    assert payload["title"] == "Combined exercise training and resveratrol supplementation in older adults with functional limitations"
+
+
+def test_claim_card_downgrades_conference_and_supplemental_receipts() -> None:
+    conference_hit = CorpusHit(
+        hit_id="faseb",
+        title="Nicotinamide riboside and exercise performance in healthy volunteers",
+        abstract="Randomized human participants trial reported improved performance.",
+        source="fullraw:openalex",
+        doi="10.1096/fasebj.2021.35.s1.05282",
+        venue="The FASEB Journal",
+    )
+    supplement_hit = CorpusHit(
+        hit_id="supplement",
+        title="Additional file 1: supporting data for nicotinamide riboside exercise",
+        abstract="Human randomized trial supporting data reported improved performance markers.",
+        source="fullraw:openalex",
+        doi="10.6084/m9.figshare.c.3601490_d1",
+    )
+    jissn_supplement_hit = CorpusHit(
+        hit_id="jissn-supplement",
+        title="Effects of resveratrol supplementation after eccentric exercise",
+        abstract="Human randomized trial abstract supplement reported inflammatory markers.",
+        source="fullraw:openalex",
+        doi="10.1186/1550-2783-8-s1-p15",
+    )
+    faculty_opinions_hit = CorpusHit(
+        hit_id="faculty-opinions",
+        title="Faculty Opinions recommendation of metformin resistance training trial",
+        abstract="Randomized human trial was recommended by Faculty Opinions.",
+        source="fullraw:openalex",
+        doi="10.3410/f.736671936.793569870",
+    )
+    acsm_abstract_hit = CorpusHit(
+        hit_id="acsm-abstract",
+        title="One Bout Of Resistance Exercise Does Not Interfere With Metformin",
+        abstract="Randomized human trial abstract reported metabolic syndrome outcomes.",
+        source="fullraw:openalex",
+        doi="10.1249/01.mss.0000764428.80520.ab",
+    )
+    ada_abstract_hit = CorpusHit(
+        hit_id="ada-abstract",
+        title="2267-PUB: Skeletal Muscle Response to Exercise in Patients Taking Metformin",
+        abstract="Randomized human trial abstract reported metabolic syndrome outcomes.",
+        source="fullraw:openalex",
+        doi="10.2337/db19-2267-pub",
+    )
+
+    conference = _claim_card(conference_hit, ReceiptRole("faseb", "boundary", "conference abstract"))
+    supplement = _claim_card(supplement_hit, ReceiptRole("supplement", "context", "supporting data"))
+    jissn_supplement = _claim_card(
+        jissn_supplement_hit,
+        ReceiptRole("jissn-supplement", "context", "journal supplement abstract"),
+    )
+    faculty_opinions = _claim_card(
+        faculty_opinions_hit,
+        ReceiptRole("faculty-opinions", "negative_signal", "recommendation context"),
+    )
+    acsm_abstract = _claim_card(
+        acsm_abstract_hit,
+        ReceiptRole("acsm-abstract", "null_signal", "abstract context"),
+    )
+    ada_abstract = _claim_card(
+        ada_abstract_hit,
+        ReceiptRole("ada-abstract", "null_signal", "abstract context"),
+    )
+
+    assert conference.population == "human"
+    assert conference.support_type == "indirect"
+    assert conference.confidence == "medium"
+    assert supplement.support_type == "indirect"
+    assert supplement.confidence == "medium"
+    assert jissn_supplement.support_type == "indirect"
+    assert jissn_supplement.confidence == "low"
+    assert faculty_opinions.support_type == "indirect"
+    assert acsm_abstract.support_type == "indirect"
+    assert ada_abstract.support_type == "indirect"
+
+
+def test_claim_card_treats_systematic_review_as_indirect_synthesis() -> None:
+    hit = CorpusHit(
+        hit_id="10.review",
+        title="Systematic review of cold-water immersion after resistance training",
+        abstract="Systematic review summarized randomized human trials of cold-water immersion after resistance training.",
+        source="fullraw:openalex",
+        doi="10.review",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "mechanism", "review context"))
+
+    assert card.design == "synthesis"
+    assert card.support_type == "indirect"
+    assert card.confidence == "low"
+
+
+def test_claim_card_treats_human_supplementation_as_direct_intervention() -> None:
+    hit = CorpusHit(
+        hit_id="10.1016/j.isci.2025.111814",
+        title="Urolithin A improves human cardiovascular health biomarkers",
+        abstract=(
+            "Preclinically, urolithin A improved mitochondrial quality in aging models. "
+            "In humans, UA supplementation for 4 months in healthy older adults significantly "
+            "reduced plasma ceramides clinically validated to predict CVD risks."
+        ),
+        source="fullraw:openalex",
+        doi="10.1016/j.isci.2025.111814",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "tail_risk", "human supplementation biomarker"))
+
+    assert card.design == "intervention_study"
+    assert card.population == "human"
+    assert card.support_type == "direct"
+    assert card.confidence == "high"
+
+
+def test_claim_card_keeps_beneficial_reductions_positive_for_publish_gate() -> None:
+    hit = CorpusHit(
+        hit_id="urolithin-positive",
+        title="Urolithin A improves muscle endurance in older adults",
+        abstract=(
+            "A randomized human trial found that urolithin A improved muscle endurance "
+            "and reduced fatigue. Exploratory biomarkers were not different and do not "
+            "explain the endurance response."
+        ),
+        source="fullraw:openalex",
+        doi="10.1001/jamanetworkopen.2021.44279",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "positive_signal", "human trial"))
+    candidate = InsightCandidate(
+        topic="urolithin muscle strength endurance older adults trial",
+        thesis="Urolithin direct human receipts should not be blocked by beneficial reduction wording.",
+        bridge_terms=("urolithin", "muscle"),
+        tension_terms=("positive",),
+        receipt_ids=(hit.hit_id, "supporting-positive"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:boundary_condition", "tier:publishable_alpha"),
+        claim_cards=(
+            card,
+            ClaimCard(
+                "supporting-positive",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "muscle strength",
+                "positive",
+                "direct",
+                "high",
+                "Urolithin improved muscle strength in a second randomized human trial.",
+            ),
+        ),
+    )
+
+    assert card.direction == "positive"
+    assert candidate_publish_blocker(candidate) is None
+
+
+def test_claim_card_treats_reduced_frailty_progression_as_positive() -> None:
+    hit = CorpusHit(
+        hit_id="metformin-frailty",
+        title="Metformin reduces frailty progression in older adults",
+        abstract=(
+            "A randomized human trial found a significant reduction in frailty "
+            "progression rate with metformin treatment (p=0.0222)."
+        ),
+        source="fullraw:openalex",
+        doi="10.2337/db25-1998-lb",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "positive_signal", "human frailty outcome"))
+
+    assert card.role == "positive_signal"
+    assert card.direction == "positive"
+    assert "frailty" in card.outcome
+
+
+def test_claim_card_treats_noun_reduction_in_frailty_progression_as_positive() -> None:
+    hit = CorpusHit(
+        hit_id="metformin-frailty-noun",
+        title="Metformin frailty outcomes in older adults",
+        abstract=(
+            "Frailty is a major cause of morbidity and disability. A randomized human "
+            "trial found a significant reduction in frailty progression rate with "
+            "metformin treatment (p=0.0222)."
+        ),
+        source="fullraw:openalex",
+        doi="10.2337/db25-1998-lb",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "positive_signal", "human frailty outcome"))
+
+    assert card.direction == "positive"
+    assert "frailty" in card.outcome
+
+
+def test_claim_card_keeps_wistar_rat_receipt_indirect_even_with_human_context() -> None:
+    hit = CorpusHit(
+        hit_id="resveratrol-rat",
+        title="Effect of continuous exercise training on SIRT3 and OGG1 in male Wistar rats",
+        abstract=(
+            "The introduction discusses human clinical relevance, but the randomized "
+            "study used 32 male Wistar rats to measure liver SIRT3 and OGG1 protein."
+        ),
+        source="fullraw:openalex",
+        doi=None,
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "positive_signal", "direct human precheck"))
+
+    assert card.population == "animal"
+    assert card.support_type == "indirect"
+
+
+def test_claim_card_treats_players_training_as_direct_human_intervention() -> None:
+    hit = CorpusHit(
+        hit_id="10.players",
+        title="Cold- and hot-water immersion are not more effective than placebo",
+        abstract=(
+            "Compared to a placebo, cold-water immersion did not improve post-match "
+            "recovery or long-term training adaptations in national level soccer players."
+        ),
+        source="fullraw:openalex",
+        doi="10.players",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "null_signal", "player training contrast"))
+
+    assert card.design == "intervention_study"
+    assert card.population == "human"
+    assert card.support_type == "direct"
+    assert card.confidence == "high"
+
+
+def test_claim_card_demotes_acute_proxy_endpoint_signals() -> None:
+    proxy_hit = CorpusHit(
+        hit_id="10.proxy",
+        title="Cold-water immersion changes acute damage and performance markers after resistance training",
+        abstract=(
+            "Human participants completed resistance training. Cold-water immersion attenuated "
+            "acute muscle damage and performance markers after the exercise session."
+        ),
+        source="fullraw:openalex",
+        doi="10.proxy",
+    )
+    chronic_hit = CorpusHit(
+        hit_id="10.chronic",
+        title="Cold-water immersion attenuates long-term performance adaptations after resistance training",
+        abstract=(
+            "Human participants completed resistance training. Cold-water immersion attenuated "
+            "long-term performance adaptations after repeated training sessions."
+        ),
+        source="fullraw:openalex",
+        doi="10.chronic",
+    )
+
+    proxy_card = _claim_card(proxy_hit, ReceiptRole(proxy_hit.hit_id, "negative_signal", "candidate evidence stream"))
+    chronic_card = _claim_card(chronic_hit, ReceiptRole(chronic_hit.hit_id, "negative_signal", "candidate evidence stream"))
+
+    assert proxy_card.role == "boundary"
+    assert proxy_card.direction == "proxy"
+    assert proxy_card.outcome == "acute/damage/performance"
+    assert proxy_card.support_type == "direct"
+    assert proxy_card.confidence == "medium"
+    assert chronic_card.role == "negative_signal"
+    assert chronic_card.direction == "negative"
+    assert chronic_card.outcome == "long/performance"
+
+
+def test_claim_card_marks_acute_muscle_thickness_as_within_arm_context() -> None:
+    hit = CorpusHit(
+        hit_id="10.1519/JSC.0000000000002322",
+        title="Cold water immersion alters acute muscle thickness after resistance training",
+        abstract=(
+            "Human participants completed resistance training. At 48 h and 72 h, muscle "
+            "thickness was reduced with cold-water immersion and higher with passive recovery."
+        ),
+        source="fullraw:openalex",
+        doi="10.1519/JSC.0000000000002322",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "negative_signal", "candidate evidence stream"))
+
+    assert card.role == "acute_within_arm_signal"
+    assert card.direction != "proxy"
+    assert card.outcome == "muscle thickness"
+    assert card.support_type == "direct"
+    assert card.confidence == "medium"
+
+
+def test_claim_card_does_not_treat_safety_feasibility_pilot_as_positive_efficacy() -> None:
+    hit = CorpusHit(
+        hit_id="10.1016/j.exger.2020.111111",
+        title="Combined exercise training and resveratrol supplementation in older adults",
+        abstract=(
+            "This pilot randomized trial evaluated safety and feasibility of combining "
+            "exercise training with resveratrol supplementation in community-dwelling "
+            "older adults with functional limitations."
+        ),
+        source="fullraw:openalex",
+        doi="10.1016/j.exger.2020.111111",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "positive_signal", "candidate evidence stream"))
+
+    assert card.role == "safety_feasibility"
+    assert card.design == "randomized_trial"
+    assert card.population == "human"
+    assert card.direction == "unclear"
+    assert card.support_type == "direct"
+    assert card.confidence == "low"
+
+
+def test_claim_card_marks_comparator_only_benefit_as_null_mixed_direction() -> None:
+    hit = CorpusHit(
+        hit_id="10.3389/fphys.2021.759240",
+        title="Post-exercise Warm or Cold Water Immersion to Augment the Cardiometabolic Benefits of Exercise Training",
+        abstract=(
+            "Warm or cold water immersion would provide similar or greater benefits. "
+            "Work trial distance increased without differences between interventions. "
+            "Substituting the second half of exercise with warm water immersion provides "
+            "similar cardiometabolic health benefits; however, substituting with cold "
+            "water immersion does not."
+        ),
+        source="fullraw:openalex",
+        doi="10.3389/fphys.2021.759240",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "promise", "promise/outcome split"))
+
+    assert set(card.direction.split("/")) >= {"null", "positive"}
+
+
+def test_claim_card_preserves_muscle_thickness_outcome() -> None:
+    hit = CorpusHit(
+        hit_id="10.1123/ijspp.2019-0965",
+        title="Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?",
+        abstract=(
+            "Cold-water immersion attenuated elbow flexor muscle thickness after strength training, "
+            "while 1RM and countermovement jump confidence intervals crossed zero."
+        ),
+        source="fullraw:semantic_scholar",
+        doi="10.1123/ijspp.2019-0965",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "negative_signal", "candidate evidence stream"))
+
+    assert card.outcome == "muscle thickness"
+
+
+def test_claim_card_quote_keeps_title_terms_for_publish_gate() -> None:
+    hit = CorpusHit(
+        hit_id="10.hypothermia",
+        title="Prevalence of hypothermia during military cold-water immersion training",
+        abstract="Human participants completed a cold-water immersion training assessment.",
+        source="fullraw:semantic_scholar",
+        doi="10.hypothermia",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "replication", "context"))
+
+    assert "hypothermia" in card.quote.casefold()
+    assert "military" in card.quote.casefold()
+
+
+def test_publish_blocker_rejects_positive_role_with_null_direction() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Comparator-only benefit should not publish as a positive CWI signal.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("receipt-a", "receipt-b"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:promise_outcome_reversal", "tier:elite_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "receipt-a",
+                "promise",
+                "randomized_trial",
+                "human",
+                "outcome",
+                "null/positive",
+                "direct",
+                "high",
+                "Substituting with cold water immersion does not.",
+            ),
+            ClaimCard(
+                "receipt-b",
+                "outcome",
+                "randomized_trial",
+                "human",
+                "outcome",
+                "negative",
+                "direct",
+                "high",
+                "Cold water immersion attenuated adaptation.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "positive_role_direction_mismatch",
+        "receipt_ids": ("receipt-a",),
+    }
+
+
+def test_publish_blocker_allows_noisy_positive_signal_direction_when_positive_present() -> None:
+    candidate = InsightCandidate(
+        topic="urolithin muscle strength endurance older adults trial",
+        thesis="Direct positive human signals should survive incidental reduction wording.",
+        bridge_terms=("urolithin", "muscle"),
+        tension_terms=("positive",),
+        receipt_ids=("strength", "endurance"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:boundary_condition", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "strength",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "muscle strength",
+                "negative/positive",
+                "direct",
+                "high",
+                "Urolithin improved strength while lowering damage markers.",
+            ),
+            ClaimCard(
+                "endurance",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "muscle endurance",
+                "negative/positive",
+                "direct",
+                "high",
+                "Urolithin improved endurance while reducing fatigue.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) is None
+
+
+def test_publish_blocker_rejects_mixed_metabolic_muscle_axis_bundle() -> None:
+    candidate = InsightCandidate(
+        topic="metformin resistance training",
+        thesis="Glycemic and hypertrophy receipts need a tighter axis before submit.",
+        bridge_terms=("metformin", "training"),
+        tension_terms=("null", "positive"),
+        receipt_ids=("glycemic", "hypertrophy", "body-comp"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "glycemic",
+                "null_signal",
+                "randomized_trial",
+                "human",
+                "long",
+                "null",
+                "direct",
+                "high",
+                "Resistance exercise with metformin measured glycemic control and insulin sensitivity in T2DM adults.",
+            ),
+            ClaimCard(
+                "hypertrophy",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "hypertrophy",
+                "negative",
+                "direct",
+                "high",
+                "Progressive resistance training had a blunted muscle hypertrophy response with metformin.",
+            ),
+            ClaimCard(
+                "body-comp",
+                "replication",
+                "intervention_study",
+                "human",
+                "unspecified",
+                "positive",
+                "direct",
+                "high",
+                "Resistance training changed body composition compared with metformin treatment.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "mixed_outcome_axis_bundle",
+        "receipt_ids": ("glycemic", "hypertrophy", "body-comp"),
+    }
+
+
+def test_publish_blocker_rejects_weak_primary_signal_receipts() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Indirect primary signal should not leave V5 for public review.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("indirect", "direct-a", "direct-b"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "indirect",
+                "negative_signal",
+                "synthesis",
+                "human",
+                "strength",
+                "negative",
+                "indirect",
+                "medium",
+                "Review-level signal.",
+            ),
+            ClaimCard(
+                "direct-a",
+                "boundary",
+                "randomized_trial",
+                "human",
+                "strength",
+                "negative",
+                "direct",
+                "high",
+                "Direct human signal.",
+            ),
+            ClaimCard(
+                "direct-b",
+                "replication",
+                "randomized_trial",
+                "human",
+                "strength",
+                "null",
+                "direct",
+                "high",
+                "Direct human signal.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "primary_signal_not_strong_direct_human",
+        "receipt_ids": ("indirect",),
+    }
+
+
+def test_publish_blocker_rejects_off_modality_primary_signal() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Team-sport recovery evidence should not be primary strength-training evidence.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("strength", "soccer", "direct"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "strength",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "muscle thickness",
+                "negative",
+                "direct",
+                "high",
+                "Strength-training adaptation was attenuated.",
+            ),
+            ClaimCard(
+                "soccer",
+                "null_signal",
+                "intervention_study",
+                "human",
+                "long/performance",
+                "null",
+                "direct",
+                "high",
+                "Cold-water immersion recovery did not improve in highly trained soccer players.",
+            ),
+            ClaimCard(
+                "direct",
+                "replication",
+                "intervention_study",
+                "human",
+                "strength",
+                "negative",
+                "direct",
+                "high",
+                "Direct human replication.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_modality_primary_signal",
+        "receipt_ids": ("soccer",),
+    }
+
+
+def test_publish_blocker_rejects_indirect_selector_promise() -> None:
+    candidate = InsightCandidate(
+        topic="intervention training",
+        thesis="A protocol cannot carry the primary publish contrast.",
+        bridge_terms=("intervention", "training"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("protocol", "outcome", "replication"),
+        score=100,
+        novelty_score=60,
+        evidence_score=100,
+        reasons=("shape:expectation_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard("protocol", "promise", "randomized_trial", "human", "adaptation", "positive", "indirect", "medium", "Study protocol."),
+            ClaimCard("outcome", "outcome", "randomized_trial", "human", "adaptation", "negative", "direct", "high", "Direct outcome."),
+            ClaimCard("replication", "replication", "randomized_trial", "human", "adaptation", "negative", "direct", "high", "Direct replication."),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "primary_signal_not_strong_direct_human",
+        "receipt_ids": ("protocol",),
+    }
+
+
+def test_publish_blocker_rejects_training_topic_recovery_primary_signal() -> None:
+    candidate = InsightCandidate(
+        topic="cold immersion training",
+        thesis="Recovery receipts should not publish as primary training-adaptation evidence.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("strength", "soccer"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "strength",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "muscle thickness",
+                "negative",
+                "direct",
+                "high",
+                "Cold immersion training reduced strength adaptation.",
+            ),
+            ClaimCard(
+                "soccer",
+                "null_signal",
+                "intervention_study",
+                "human",
+                "performance",
+                "null",
+                "direct",
+                "high",
+                "Cold-water immersion recovery did not improve in highly trained soccer players.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_modality_primary_signal",
+        "receipt_ids": ("soccer",),
+    }
+
+
+def test_publish_blocker_rejects_off_topic_primary_signal() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Military cold exposure should not be primary resistance-training evidence.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("strength", "military", "direct"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "strength",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "muscle thickness",
+                "negative",
+                "direct",
+                "high",
+                "Strength-training adaptation was attenuated.",
+            ),
+            ClaimCard(
+                "military",
+                "negative_signal",
+                "intervention_study",
+                "human",
+                "performance/setting",
+                "negative",
+                "direct",
+                "high",
+                "Military cold-water immersion training measured hypothermia and undermined warfighter readiness.",
+            ),
+            ClaimCard(
+                "direct",
+                "replication",
+                "intervention_study",
+                "human",
+                "strength",
+                "negative",
+                "direct",
+                "high",
+                "Direct human replication.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_topic_primary_signal",
+        "receipt_ids": ("military",),
+    }
+
+
+def test_publish_blocker_requires_primary_topic_context() -> None:
+    candidate = InsightCandidate(
+        topic="caffeine cycling performance no difference",
+        thesis="Volleyball and sprint receipts should not publish as cycling evidence.",
+        bridge_terms=("caffeine", "performance"),
+        tension_terms=("positive", "null"),
+        receipt_ids=("sprint", "volleyball"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "sprint",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "positive",
+                "direct",
+                "high",
+                "Caffeine improved repeated sprint performance after napping.",
+            ),
+            ClaimCard(
+                "volleyball",
+                "null_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "null",
+                "direct",
+                "high",
+                "Caffeine mouth rinse did not improve volleyball skill accuracy.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_topic_primary_signal",
+        "receipt_ids": ("sprint", "volleyball"),
+    }
+
+
+def test_publish_blocker_allows_primary_topic_context() -> None:
+    candidate = InsightCandidate(
+        topic="urolithin muscle endurance older adults trial",
+        thesis="Aligned urolithin muscle-endurance human receipts can pass.",
+        bridge_terms=("urolithin", "muscle"),
+        tension_terms=("positive", "null"),
+        receipt_ids=("strength", "endurance"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "strength",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "muscle strength",
+                "positive",
+                "direct",
+                "high",
+                "Urolithin improved muscle strength and endurance in older adults.",
+            ),
+            ClaimCard(
+                "endurance",
+                "null_signal",
+                "randomized_trial",
+                "human",
+                "muscle endurance",
+                "null",
+                "direct",
+                "high",
+                "Urolithin muscle endurance response was null in older runners.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) is None
+
+
+def test_publish_quality_drops_off_axis_direct_context_receipts() -> None:
+    candidate = InsightCandidate(
+        topic="cold immersion training",
+        thesis="Off-axis operational safety context should not publish inside a training signal bundle.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("performance-negative", "performance-null", "10.hypothermia"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            _direct_card(
+                "performance-negative",
+                "negative_signal",
+                "performance",
+                "negative",
+                "Cold immersion training reduced performance adaptation in human participants.",
+            ),
+            _direct_card(
+                "performance-null",
+                "null_signal",
+                "performance",
+                "null",
+                "Cold immersion training did not improve performance in human participants.",
+            ),
+            _claim_card(
+                CorpusHit(
+                    hit_id="10.hypothermia",
+                    title="Prevalence of hypothermia during military cold-water immersion training",
+                    abstract="Human participants completed cold-water immersion training and reduced performance.",
+                    source="fullraw:semantic_scholar",
+                    doi="10.hypothermia",
+                ),
+                ReceiptRole("10.hypothermia", "replication", "context"),
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_axis_direct_context",
+        "receipt_ids": ("10.hypothermia",),
+    }
+
+    selected = _publishable_candidates(
+        [candidate],
+        [
+            _hit("performance-negative", "Negative", "Randomized human trial negative signal."),
+            _hit("performance-null", "Null", "Human intervention study null signal."),
+            _hit("10.hypothermia", "Hypothermia", "Military hypothermia context."),
+        ],
+        "publishable_alpha",
+        frozenset(),
+        require_publish_quality=True,
+    )
+
+    assert len(selected) == 1
+    assert selected[0].receipt_ids == ("performance-negative", "performance-null")
+    assert candidate_publish_blocker(selected[0]) is None
+
+
+def test_publish_blocker_rejects_primary_signal_without_topic_anchor() -> None:
+    candidate = InsightCandidate(
+        topic="creatine older adults function trial",
+        thesis="Off-topic direct human rows should not pass just because they are strong trials.",
+        bridge_terms=("trial", "function"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("arsenic", "creatine"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "arsenic",
+                "tail_risk",
+                "randomized_trial",
+                "human",
+                "chronic/long/outcome",
+                "negative",
+                "direct",
+                "high",
+                "Chronic arsenic exposure altered methylation outcomes in adults.",
+            ),
+            ClaimCard(
+                "creatine",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "positive",
+                "direct",
+                "high",
+                "Creatine supplementation with exercise improved function in older adults.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_topic_primary_signal",
+        "receipt_ids": ("arsenic",),
+    }
+
+
+def test_publish_blocker_rejects_weak_context_receipts() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Weak context rows should not pad a public alpha bundle.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("direct-a", "direct-b", "weak-context"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "direct-a",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "strength",
+                "negative",
+                "direct",
+                "high",
+                "Direct human signal.",
+            ),
+            ClaimCard(
+                "direct-b",
+                "null_signal",
+                "intervention_study",
+                "human",
+                "strength",
+                "null",
+                "direct",
+                "high",
+                "Direct human signal.",
+            ),
+            ClaimCard(
+                "weak-context",
+                "consensus",
+                "unspecified",
+                "unspecified",
+                "strength",
+                "unclear",
+                "indirect",
+                "low",
+                "Weak context row.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "weak_context_receipts",
+        "receipt_ids": ("weak-context",),
+    }
+
+
+def test_publish_blocker_allows_proxy_with_negative_null_directional_contrast() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="A proxy endpoint can be context when direct human receipts already differ.",
+        bridge_terms=("cold", "immersion", "training"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("rct", "proxy", "soccer"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "rct",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "negative",
+                "direct",
+                "high",
+                "Cold water immersion resistance training chronic negative signal.",
+            ),
+            ClaimCard(
+                "proxy",
+                "boundary",
+                "intervention_study",
+                "human",
+                "acute/damage/performance",
+                "proxy",
+                "direct",
+                "high",
+                "Acute thickness proxy.",
+            ),
+            ClaimCard(
+                "soccer",
+                "null_signal",
+                "intervention_study",
+                "human",
+                "long/performance",
+                "null",
+                "direct",
+                "high",
+                "Cold water immersion training adaptation null signal.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) is None
+
+
+def test_publish_blocker_rejects_directional_acute_proxy_without_independent_contrast() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Acute damage endpoint should not anchor chronic-adaptation alpha by itself.",
+        bridge_terms=("cold", "immersion", "training"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("rct", "review", "acute"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "rct",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "negative",
+                "direct",
+                "high",
+                "Cold water immersion resistance training chronic negative signal.",
+            ),
+            ClaimCard(
+                "review",
+                "mechanism",
+                "synthesis",
+                "human",
+                "acute/context/damage",
+                "negative/null/positive",
+                "indirect",
+                "medium",
+                "Review context.",
+            ),
+            ClaimCard(
+                "acute",
+                "boundary",
+                "intervention_study",
+                "human",
+                "acute/damage/performance",
+                "negative",
+                "direct",
+                "high",
+                "Acute thickness endpoint.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "proxy_without_independent_directional_contrast",
+        "receipt_ids": ("acute",),
+    }
+
+
+def test_publish_blocker_allows_proxy_with_independent_directional_contrast() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="A proxy receipt can be context when direct human receipts already contrast.",
+        bridge_terms=("cold", "immersion", "training"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("negative", "positive", "proxy"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "negative",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "negative",
+                "direct",
+                "high",
+                "Cold water immersion training negative signal.",
+            ),
+            ClaimCard(
+                "positive",
+                "positive_signal",
+                "intervention_study",
+                "human",
+                "performance",
+                "positive",
+                "direct",
+                "high",
+                "Cold water immersion training positive signal.",
+            ),
+            ClaimCard(
+                "proxy",
+                "boundary",
+                "intervention_study",
+                "human",
+                "acute/damage/performance",
+                "negative",
+                "direct",
+                "high",
+                "Proxy context.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) is None
+
+
+def test_publish_quality_candidates_drop_weak_context_receipts() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Strong direct human signals should not be blocked by weak context padding.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("direct-a", "direct-b", "weak-context"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "direct-a",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "strength",
+                "negative",
+                "direct",
+                "high",
+                "Cold water immersion direct negative human signal.",
+            ),
+            ClaimCard(
+                "direct-b",
+                "null_signal",
+                "intervention_study",
+                "human",
+                "strength",
+                "null",
+                "direct",
+                "high",
+                "Cold water immersion direct null human signal.",
+            ),
+            ClaimCard(
+                "weak-context",
+                "consensus",
+                "unspecified",
+                "unspecified",
+                "strength",
+                "unclear",
+                "indirect",
+                "low",
+                "Weak context row.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "weak_context_receipts",
+        "receipt_ids": ("weak-context",),
+    }
+
+    selected = _publishable_candidates(
+        [candidate],
+        [
+            _hit("direct-a", "Direct A", "Randomized human trial negative signal."),
+            _hit("direct-b", "Direct B", "Human intervention study null signal."),
+            _hit("weak-context", "Weak context", "Weak context row."),
+        ],
+        "publishable_alpha",
+        frozenset(),
+        require_publish_quality=True,
+    )
+
+    assert len(selected) == 1
+    assert selected[0].receipt_ids == ("direct-a", "direct-b")
+    assert candidate_publish_blocker(selected[0]) is None
+
+
+def test_publish_quality_drops_indirect_graph_context_receipts() -> None:
+    candidate = InsightCandidate(
+        topic="tool reliability",
+        thesis="Direct human signals with optional model context.",
+        bridge_terms=("intervention", "training"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("direct-a", "direct-b", "model-context"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        receipt_roles=(
+            ReceiptRole("direct-a", "negative_signal", "direct contrast"),
+            ReceiptRole("direct-b", "null_signal", "direct contrast"),
+        ),
+        claim_cards=(
+            ClaimCard("direct-a", "negative_signal", "randomized_trial", "human", "adaptation", "negative", "direct", "high", "Direct tool reliability negative signal."),
+            ClaimCard("direct-b", "null_signal", "randomized_trial", "human", "adaptation", "null", "direct", "high", "Direct tool reliability null signal."),
+            ClaimCard("model-context", "mechanism", "mechanistic_model", "animal", "adaptation", "positive", "indirect", "medium", "Optional model context."),
+        ),
+    )
+
+    selected = _publishable_candidates(
+        [candidate],
+        [
+            _hit("direct-a", "Direct A", "Randomized human trial negative signal."),
+            _hit("direct-b", "Direct B", "Randomized human trial null signal."),
+            _hit("model-context", "Model context", "Animal mechanism signal."),
+        ],
+        "publishable_alpha",
+        frozenset(),
+        require_publish_quality=True,
+    )
+
+    assert len(selected) == 1
+    assert selected[0].receipt_ids == ("direct-a", "direct-b")
+
+
+def test_researka_payload_strips_internal_diagnostic_sections() -> None:
+    candidate = InsightCandidate(
+        topic="intervention training",
+        thesis="Bounded training signal.",
+        bridge_terms=("intervention", "training"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("a", "b"),
+        score=90,
+        novelty_score=60,
+        evidence_score=90,
+        reasons=("shape:directional_reversal",),
+    )
+    receipts = [_hit("a", "Intervention trial A", "Negative signal."), _hit("b", "Intervention trial B", "Null signal.")]
+    markdown = """# Alpha memo: Intervention training signal
+
+**Core signal:**
+Public synthesis.
+
+**Audit trail:**
+- Internal score.
+
+**Claim ledger:**
+- Internal role.
+
+**Receipts:**
+1. 10.a Trial A.
+2. 10.b Trial B.
+
+**Safety note:** Internal writer instruction.
+"""
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-memo-agent",
+        domain_slug="performance",
+    )
+    body = cast(str, payload["body_markdown"])
+
+    assert "Public synthesis." in body
+    assert "**Receipts:**" in body
+    assert "Audit trail" not in body
+    assert "Claim ledger" not in body
+    assert "Safety note" not in body
+
+
+def test_publish_quality_keeps_negative_null_contrast_after_dropping_weak_context() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Strong negative/null direct signals can carry proxy context.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("negative", "null", "proxy", "weak-context"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "negative",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "performance",
+                "negative",
+                "direct",
+                "high",
+                "Cold water immersion direct negative human signal.",
+            ),
+            ClaimCard(
+                "null",
+                "null_signal",
+                "intervention_study",
+                "human",
+                "long/performance",
+                "null",
+                "direct",
+                "high",
+                "Cold water immersion direct null human signal.",
+            ),
+            ClaimCard(
+                "proxy",
+                "boundary",
+                "intervention_study",
+                "human",
+                "acute/damage/performance",
+                "negative",
+                "direct",
+                "high",
+                "Proxy context.",
+            ),
+            ClaimCard(
+                "weak-context",
+                "consensus",
+                "unspecified",
+                "unspecified",
+                "performance",
+                "unclear",
+                "indirect",
+                "low",
+                "Weak context row.",
+            ),
+        ),
+    )
+
+    selected = _publishable_candidates(
+        [candidate],
+        [
+            _hit("negative", "Negative", "Randomized human trial negative signal."),
+            _hit("null", "Null", "Human intervention study null signal."),
+            _hit("proxy", "Proxy", "Human intervention study acute damage signal."),
+            _hit("weak-context", "Weak context", "Weak context row."),
+        ],
+        "publishable_alpha",
+        frozenset(),
+        require_publish_quality=True,
+    )
+
+    assert len(selected) == 1
+    assert selected[0].receipt_ids == ("negative", "null")
+    assert candidate_publish_blocker(selected[0]) is None
+
+
+def test_publish_quality_rejects_candidate_when_context_trim_drops_all_receipts() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Proxy-only receipts should not become an empty public bundle.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("proxy",),
+        receipt_ids=("proxy-a", "proxy-b"),
+        score=100,
+        novelty_score=70,
+        evidence_score=100,
+        reasons=("shape:boundary_condition", "tier:elite_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "proxy-a",
+                "boundary",
+                "intervention_study",
+                "human",
+                "acute/damage/performance",
+                "proxy",
+                "direct",
+                "high",
+                "Cold water immersion acute damage proxy signal.",
+            ),
+            ClaimCard(
+                "proxy-b",
+                "boundary",
+                "intervention_study",
+                "human",
+                "acute/damage/performance",
+                "proxy",
+                "direct",
+                "high",
+                "Cold water immersion acute performance proxy signal.",
+            ),
+        ),
+    )
+
+    assert _publishable_candidates(
+        [candidate],
+        [
+            _hit("proxy-a", "Proxy A", "Cold water immersion acute damage proxy signal."),
+            _hit("proxy-b", "Proxy B", "Cold water immersion acute performance proxy signal."),
+        ],
+        "publishable_alpha",
+        frozenset(),
+        require_publish_quality=True,
+    ) == []
+
+
+def test_researka_payload_strips_markdown_wrapped_doi_receipt_labels() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Cold immersion adaptation signal.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("attenuated",),
+        receipt_ids=("10.1123/ijspp.2019-0965", "10.1519/jsc.0000000000000434"),
+        score=100,
+        novelty_score=70,
+        evidence_score=95,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="10.1123/ijspp.2019-0965",
+            title="Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?",
+            abstract="Cold-water immersion attenuated adaptation after strength training.",
+            source="fullraw:semantic_scholar",
+            doi="10.1123/ijspp.2019-0965",
+        ),
+        CorpusHit(
+            hit_id="10.1519/jsc.0000000000000434",
+            title="Strength Training Adaptations After Cold-Water Immersion",
+            abstract="Strength training adaptations were measured after cold-water immersion.",
+            source="fullraw:semantic_scholar",
+            doi="10.1519/jsc.0000000000000434",
+        ),
+    ]
+    markdown = """
+# Alpha memo: Cold-water immersion after strength training
+
+## Receipts
+- **10.1123/ijspp.2019-0965**: first receipt.
+- **10.1519/jsc.0000000000000434**: second receipt.
+""".strip()
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="performance",
+    )
+    body = cast(str, payload["body_markdown"])
+
+    assert "10.1123/ijspp.2019-0965**" not in body
+    assert "10.1519/jsc.0000000000000434**" not in body
+    assert "**10.1123/ijspp.2019-0965**" not in body
+    assert "10.1123/ijspp.2019-0965 -" in body
+    assert "10.1519/jsc.0000000000000434 -" in body
+
+
+def test_researka_payload_uses_receipt_title_for_bridge_only_alpha_title() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Cold immersion strength training may hide a metric-window signal.",
+        bridge_terms=("cold", "immersion", "strength", "training"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("10.1123/ijspp.2019-0965", "10.1519/jsc.0000000000000434"),
+        score=100,
+        novelty_score=58,
+        evidence_score=96,
+        reasons=("shape:directional_reversal",),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="10.1123/ijspp.2019-0965",
+            title="Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?",
+            abstract="Cold-water immersion attenuated adaptation after strength training.",
+            source="fullraw:semantic_scholar",
+            doi="10.1123/ijspp.2019-0965",
+        ),
+        CorpusHit(
+            hit_id="10.1519/jsc.0000000000000434",
+            title="Strength Training Adaptations After Cold-Water Immersion",
+            abstract="Strength training adaptations were measured after cold-water immersion.",
+            source="fullraw:semantic_scholar",
+            doi="10.1519/jsc.0000000000000434",
+        ),
+    ]
+    markdown = "# Alpha memo: cold immersion strength training\n\n**Alpha hypothesis:** bounded signal."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="performance",
+    )
+
+    assert payload["title"] == "Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?"
+    assert cast(str, payload["body_markdown"]).startswith(
+        "# Alpha memo: Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?"
+    )
+
+
+def test_researka_payload_uses_bundle_title_for_heterogeneous_bridge_title() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Cold immersion training evidence separates structural and performance outcomes.",
+        bridge_terms=("cold", "immersion", "training", "water"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("elbow", "soccer", "strength"),
+        score=100,
+        novelty_score=58,
+        evidence_score=96,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "elbow",
+                "boundary",
+                "randomized_trial",
+                "human",
+                "acute/damage/performance",
+                "proxy",
+                "direct",
+                "high",
+                "CWI attenuated elbow flexor muscle thickness.",
+            ),
+            ClaimCard(
+                "soccer",
+                "replication",
+                "intervention_study",
+                "human",
+                "repeated sprint performance",
+                "null",
+                "direct",
+                "high",
+                "CWI did not improve repeated sprint performance.",
+            ),
+            ClaimCard(
+                "strength",
+                "boundary",
+                "randomized_trial",
+                "human",
+                "strength adaptation",
+                "negative",
+                "direct",
+                "high",
+                "CWI altered strength-training adaptation.",
+            ),
+        ),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id="elbow",
+            title="Effect of Cold-Water Immersion on Elbow Flexors Muscle Thickness After Resistance Training",
+            abstract="Cold-water immersion affected elbow flexor muscle thickness after training.",
+            source="fullraw:openalex",
+            doi="10.1000/elbow",
+        ),
+        CorpusHit(
+            hit_id="soccer",
+            title="Post-training cold-water immersion in soccer players",
+            abstract="Soccer players completed a performance recovery protocol.",
+            source="fullraw:openalex",
+            doi="10.1000/soccer",
+        ),
+        CorpusHit(
+            hit_id="strength",
+            title="Strength training adaptations after cold-water immersion",
+            abstract="Strength-training adaptation endpoints were measured.",
+            source="fullraw:openalex",
+            doi="10.1000/strength",
+        ),
+    ]
+    markdown = "# Alpha memo: cold immersion training water\n\n**Alpha hypothesis:** bounded signal."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="performance",
+    )
+
+    assert payload["title"] == "Cold Water Immersion: Endpoint Heterogeneity in Acute Proxy vs Chronic Training Adaptation"
+    assert payload["title"] != receipts[0].title
+    assert cast(str, payload["body_markdown"]).startswith(
+        "# Alpha memo: Cold Water Immersion: Endpoint Heterogeneity in Acute Proxy vs Chronic Training Adaptation"
+    )
+    narrow_payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=f"# Alpha memo: {receipts[0].title}\n\nBody."),
+        author_agent_id="v5-alpha",
+        domain_slug="performance",
+    )
+    assert narrow_payload["title"] == payload["title"]
+
+
+def test_researka_payload_preserves_negative_ci_signs_in_abstract() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Cold immersion training evidence separates structural and performance outcomes.",
+        bridge_terms=("cold", "immersion", "training", "water"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("elbow", "soccer"),
+        score=100,
+        novelty_score=58,
+        evidence_score=96,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+    )
+    receipts = [
+        _hit("elbow", "Cold-water immersion muscle thickness", "Muscle thickness CI crossed zero."),
+        _hit("soccer", "Cold-water immersion soccer performance", "Performance CI crossed zero."),
+    ]
+    markdown = (
+        "# Alpha memo: Cold Water Immersion: Muscle Thickness vs Strength Training Adaptation\n\n"
+        "Hypothesis-level alpha signal; not clinical advice.\n"
+        "## Core signal\n"
+        "Muscle thickness was g = 1.20; 95% CI, -0.65 to 1.20, while 1RM was "
+        "g = 0.71; 95% CI, -0.30 to 1.72.\n"
+    )
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="performance",
+    )
+
+    assert "-0.65 to 1.20" in cast(str, payload["abstract"])
+    assert "-0.30 to 1.72" in cast(str, payload["abstract"])
+
+
+def test_researka_payload_prefers_structural_endpoint_title_over_performance() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Cold immersion training evidence separates muscle thickness and performance outcomes.",
+        bridge_terms=("cold", "immersion", "training", "water"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("thickness", "performance"),
+        score=100,
+        novelty_score=58,
+        evidence_score=96,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "thickness",
+                "negative_signal",
+                "randomized_trial",
+                "human",
+                "muscle thickness",
+                "negative",
+                "direct",
+                "high",
+                "CWI attenuated muscle thickness.",
+            ),
+            ClaimCard(
+                "performance",
+                "null_signal",
+                "intervention_study",
+                "human",
+                "long/performance",
+                "null",
+                "direct",
+                "high",
+                "CWI did not improve long-term performance.",
+            ),
+        ),
+    )
+    receipts = [
+        _hit("thickness", "Cold-water immersion muscle thickness", "CWI attenuated muscle thickness."),
+        _hit("performance", "Cold-water immersion soccer performance", "CWI did not improve performance."),
+    ]
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown="# Alpha memo: cold immersion training water\n\nBody."),
+        author_agent_id="v5-alpha",
+        domain_slug="performance",
+    )
+
+    assert payload["title"] == "Cold Water Immersion: Muscle Thickness vs Strength Training Adaptation"
+
+
+def test_researka_payload_narrows_adaptation_title_and_leads_abstract_with_alpha_scope() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion resistance training adaptation",
+        thesis="Cold immersion training evidence separates adaptation and recovery endpoints.",
+        bridge_terms=("cold", "immersion", "training", "water"),
+        tension_terms=("negative", "null"),
+        receipt_ids=("recovery", "strength"),
+        score=100,
+        novelty_score=58,
+        evidence_score=96,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "recovery",
+                "replication",
+                "intervention_study",
+                "human",
+                "recovery benefit",
+                "null",
+                "direct",
+                "high",
+                "Cold-water immersion did not improve recovery benefit.",
+            ),
+            ClaimCard(
+                "strength",
+                "boundary",
+                "randomized_trial",
+                "human",
+                "strength training adaptation",
+                "negative",
+                "direct",
+                "high",
+                "Cold-water immersion attenuated strength-training adaptation.",
+            ),
+        ),
+    )
+    receipts = [
+        _hit("recovery", "Cold-water immersion and recovery benefit", "Human trial reported no recovery benefit."),
+        _hit(
+            "strength",
+            "Strength training adaptations after cold-water immersion",
+            "Human trial measured strength-training adaptation.",
+        ),
+    ]
+    markdown = "# Alpha memo: Cold Water Immersion and Training Outcomes in Human Studies\n\nBody."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="performance",
+    )
+
+    assert payload["title"] == "Cold Water Immersion: Recovery and Strength Training Adaptation"
+    assert cast(str, payload["abstract"]).startswith("Hypothesis-level alpha signal; not clinical advice.")
+    assert cast(str, payload["body_markdown"]).startswith(
+        "# Alpha memo: Cold Water Immersion: Recovery and Strength Training Adaptation"
+    )
+
+
+def test_researka_payload_rewrites_internal_role_label_title() -> None:
+    candidate = InsightCandidate(
+        topic="resveratrol exercise training",
+        thesis="Resveratrol exercise evidence splits by model and adaptation endpoint.",
+        bridge_terms=("resveratrol", "exercise", "training"),
+        tension_terms=("null", "positive"),
+        receipt_ids=("human", "animal"),
+        score=100,
+        novelty_score=58,
+        evidence_score=90,
+        reasons=("shape:promise_outcome_reversal", "tier:publishable_alpha"),
+    )
+    receipts = [
+        _hit("human", "Resveratrol supplementation and exercise training in humans", "Human trial reported null adaptation."),
+        _hit("animal", "Resveratrol and exercise adaptation in skeletal muscle", "Animal model reported mixed adaptation."),
+    ]
+    markdown = "# Alpha memo: resveratrol aged skeletal exercise promise outcome\n\n**Alpha hypothesis:** bounded signal."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="longevity",
+    )
+
+    assert payload["title"] == "Resveratrol exercise evidence splits by model and adaptation endpoint."
+    assert cast(str, payload["body_markdown"]).startswith(
+        "# Alpha memo: Resveratrol exercise evidence splits by model and adaptation endpoint."
+    )
+
+
+def test_researka_payload_uses_receipt_title_when_thesis_title_is_still_query_like() -> None:
+    candidate = InsightCandidate(
+        topic="resveratrol exercise adaptation",
+        thesis="Resveratrol exercise adaptation.",
+        bridge_terms=("resveratrol", "exercise", "adaptation"),
+        tension_terms=("null", "positive"),
+        receipt_ids=("trial", "mechanism"),
+        score=100,
+        novelty_score=58,
+        evidence_score=90,
+        reasons=("shape:promise_outcome_reversal", "tier:publishable_alpha"),
+    )
+    receipts = [
+        _hit("trial", "Resveratrol fails to reduce exercise-training TMAO response", "Human trial reported null TMAO response."),
+        _hit("mechanism", "Resveratrol and exercise adaptation in older adults", "Mechanism receipt reported adaptation endpoints."),
+    ]
+    markdown = "# Alpha memo: resveratrol exercise adaptation promise outcome\n\n**Alpha hypothesis:** bounded signal."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="longevity",
+    )
+
+    assert payload["title"] == "Resveratrol fails to reduce exercise-training TMAO response"
+    assert "Bounded alpha signal" not in cast(str, payload["body_markdown"])
+
+
+def test_researka_payload_rewrites_slash_bridge_title() -> None:
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Comparator recovery evidence separates cold-water immersion from sports massage.",
+        bridge_terms=("cold", "immersion", "water"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("review", "trial"),
+        score=100,
+        novelty_score=58,
+        evidence_score=90,
+        reasons=("shape:promise_outcome_reversal", "tier:publishable_alpha"),
+    )
+    receipts = [
+        _hit("review", "Cold water immersion recovery review", "Cold water immersion showed mixed recovery evidence."),
+        _hit("trial", "Cold water immersion versus massage", "Comparator trial reported sports massage improved ROM."),
+    ]
+    markdown = "# Alpha memo: cold / immersion / water promise outcome\n\n**Alpha hypothesis:** bounded signal."
+
+    payload = build_researka_payload(
+        MemoResult(candidate=candidate, receipts=receipts, markdown=markdown),
+        author_agent_id="v5-alpha",
+        domain_slug="longevity",
+    )
+
+    assert payload["title"] == "Comparator recovery evidence separates cold-water immersion from sports massage."
+    assert " / " not in cast(str, payload["body_markdown"]).splitlines()[0]
+
+
+def test_minimax_memo_rejects_unsupported_ci_numbers() -> None:
+    receipts = [
+        CorpusHit(
+            hit_id="10.1123/ijspp.2019-0965",
+            title="Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?",
+            abstract="Cold-water immersion after strength training reported a control-leg advantage.",
+            source="fullraw:semantic_scholar",
+            doi="10.1123/ijspp.2019-0965",
+        ),
+        CorpusHit(
+            hit_id="10.1519/jsc.0000000000000434",
+            title="Strength Training Adaptations After Cold-Water Immersion",
+            abstract="Cold-water immersion and strength training adaptations were compared.",
+            source="fullraw:semantic_scholar",
+            doi="10.1519/jsc.0000000000000434",
+        ),
+    ]
+    markdown = """
+# Alpha memo: Cold-water immersion after strength training
+
+## Core signal
+The 1RM effect size confidence interval was -0.42 to 1.04.
+
+## The 2+2=5 angle
+The receipts imply a bounded metric-window signal.
+
+## Why this could matter
+It keeps the claim hypothesis-level.
+
+## What would break the idea
+Direct replication would break it.
+
+## Claim ledger
+- 10.1123/ijspp.2019-0965: direct support.
+- 10.1519/jsc.0000000000000434: direct support.
+
+## Receipts
+- 10.1123/ijspp.2019-0965
+- 10.1519/jsc.0000000000000434
+
+## Safety note
+Hypothesis only.
+""".strip()
+
+    with pytest.raises(MemoFormatError, match="unsupported statistical numbers"):
+        validate_minimax_memo(markdown, receipts)
 
 
 def test_researka_payload_preserves_authenticated_fullraw_coverage() -> None:

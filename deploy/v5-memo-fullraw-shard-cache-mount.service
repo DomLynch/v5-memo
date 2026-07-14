@@ -1,0 +1,16 @@
+[Unit]
+Description=V5 Memo fullraw shard cache writable 5TB mount
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/mkdir -p /mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote /mnt/HC_Volume_106011525/v5-memo/rclone-vfs-cache-shard-cache
+ExecStartPre=/bin/bash -lc 'mountpoint -q /mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote || find /mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +'
+ExecStart=/usr/bin/rclone mount sb:researka-database/index/v5/fullraw-shard-cache-5tb /mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote --vfs-cache-mode=writes --cache-dir /mnt/HC_Volume_106011525/v5-memo/rclone-vfs-cache-shard-cache --vfs-cache-max-size=8G --vfs-cache-max-age=30m --dir-cache-time=30m --poll-interval=0 --umask=022
+ExecStop=/usr/bin/fusermount3 -uz /mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

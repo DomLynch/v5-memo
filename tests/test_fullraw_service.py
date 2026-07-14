@@ -127,56 +127,158 @@ def test_iter_raw_file_hits_reads_local_pubmed_xml_fixture(tmp_path: Path) -> No
 def test_strict_5tb_service_keeps_secret_env_file() -> None:
     deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
     config = deploy_dir / "v5-memo-fullraw-index-strict-5tb.conf"
-    service_overrides = deploy_dir / "v5-memo-fullraw-service-overrides.env"
-    shard_cache_mount = deploy_dir / "researka-fullraw-shard-cache-mount.service"
     env_example = (deploy_dir / "v5-memo-fullraw-shards.env.example").read_text()
     env_files = [line for line in config.read_text().splitlines() if line.startswith("EnvironmentFile")]
 
-    assert env_files[:3] == [
+    assert env_files == [
         "EnvironmentFile=",
-        "EnvironmentFile=/etc/v5-memo/env",
-        "EnvironmentFile=/etc/v5-memo/fullraw-effective.env",
+        "EnvironmentFile=/etc/researka-fullraw.env",
+        "EnvironmentFile=-/etc/researka-fullraw-overrides.env",
     ]
-    assert env_files[-1] == "EnvironmentFile=-/etc/v5-memo/fullraw-service-overrides.env"
-    assert service_overrides.read_text() == (
-        "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=32\n"
-        "RESEARKA_FULLRAW_SWEEP_WORKERS=8\n"
-        "RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=2\n"
-        "RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0\n"
-    )
+    assert "/etc/v5-memo/" not in config.read_text()
     assert "TimeoutStopSec=120" in config.read_text()
     assert "TimeoutStopFailureMode=kill" in config.read_text()
     assert "KillMode=control-group" in config.read_text()
     assert "SendSIGKILL=yes" in config.read_text()
-    assert "Environment=RESEARKA_FULLRAW_SEARCH_ISOLATED=0" in config.read_text()
+    assert "Environment=RESEARKA_FULLRAW_SEARCH_ISOLATED=1" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=32" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKERS=8" in config.read_text()
-    assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=2" in config.read_text()
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=" not in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in config.read_text()
-    assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=16" in config.read_text()
-    assert "Environment=RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=300" in config.read_text()
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=4" in config.read_text()
+    assert "Environment=RESEARKA_FULLRAW_SEARCH_BUDGET_SECONDS=7200" in config.read_text()
+    assert "Environment=RESEARKA_FULLRAW_FOREGROUND_SWEEP_WAIT_SECONDS=7200" in config.read_text()
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=900" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=20" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SEARCH_PREFIX_SHARDS=128" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/fullraw-sweep-cache" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SHARD_CATALOG_PATH=/var/lib/v5-memo/fullraw-shard-catalog.json" in config.read_text()
-    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote" in config.read_text()
+    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/shard-cache-5tb" in config.read_text()
     assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto" in config.read_text()
-    assert "sb:researka-database/index/v5/fullraw-shard-cache-5tb" in shard_cache_mount.read_text()
-    assert "--vfs-cache-mode=full" in shard_cache_mount.read_text()
-    assert "--vfs-cache-max-size=16G" in shard_cache_mount.read_text()
-    assert "RESEARKA_FULLRAW_SEARCH_ISOLATED=0" in env_example
+    assert "RESEARKA_FULLRAW_SEARCH_ISOLATED=1" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=32" in env_example
     assert "RESEARKA_FULLRAW_INDEX_PATH=/var/lib/v5-memo/index/fullraw_index.sqlite" in env_example
     assert "RESEARKA_FULLRAW_SHARD_DIR=/var/lib/v5-memo/fullraw-fts-remote" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/fullraw-sweep-cache" in env_example
     assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto" in env_example
     assert "RESEARKA_FULLRAW_SHARD_CATALOG_PATH=/var/lib/v5-memo/fullraw-shard-catalog.json" in env_example
-    assert "RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=300" in env_example
+    assert "RESEARKA_FULLRAW_SEARCH_BUDGET_SECONDS=7200" in env_example
+    assert "RESEARKA_FULLRAW_FOREGROUND_SWEEP_WAIT_SECONDS=7200" in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=900" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=20" in env_example
-    assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote" in env_example
+    assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/shard-cache-5tb" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_WORKERS=8" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=2" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=4" in env_example
+
+
+def test_v5_isolated_fullraw_service_uses_v5_lane() -> None:
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
+    config = (deploy_dir / "v5-memo-isolated-fullraw-search.service").read_text()
+
+    assert "v5-memo-fullraw-shard-cache-mount.service" not in config
+    assert "v5-memo-fullraw-fts-root-mount.service" not in config
+    assert "v5-memo-isolated-fullraw-fts-mount.service" in config
+    assert "EnvironmentFile=/etc/v5-memo/env" in config
+    assert "EnvironmentFile=/etc/v5-memo/isolated-fullraw.env" in config
+    assert "Environment=RESEARKA_FULLRAW_INDEX_PORT=9915" in config
+    assert "Environment=V5_MEMO_FULL_RAW_INDEX_PORT=9915" in config
+    assert "Environment=RESEARKA_FULLRAW_SEARCH_ISOLATED=1" in config
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/v5-fullraw-sweep-cache" in config
+    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/v5-shard-cache-5tb" in config
+    assert "Match pass size to auto workers (3 * 4)" in config
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=12" in config
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_NO_HIT_STOP_SHARDS=128" in config
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=1" in config
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in config
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=64" in config
+    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto" in config
+    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_GB" not in config
+    assert "Auto workers = dynamic local cache budget / per-worker cache budget" in config
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES=8589934592" in config
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB" not in config
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=180" in config
+    assert "Environment=RESEARKA_FULLRAW_MAX_VARIANTS=1" in config
+    assert "Environment=RESEARKA_FULLRAW_DOI_ABSTRACT_BACKFILL_LIMIT=16" in config
+    assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKERS=" not in config
+    assert "/etc/researka-fullraw.env" not in config
+    assert "/etc/researka-fullraw-overrides.env" not in config
+
+
+def test_v5_isolated_fullraw_env_overrides_shared_shard_dir() -> None:
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
+    env_example = (deploy_dir / "v5-memo-isolated-fullraw.env.example").read_text()
+
+    assert "RESEARKA_FULLRAW_SHARD_DIR=/var/lib/v5-memo/v5-isolated-fullraw-fts-remote" in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/v5-fullraw-sweep-cache" in env_example
+    assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/v5-shard-cache-5tb" in env_example
+    assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto" in env_example
+    assert "Auto workers = dynamic local cache budget / per-worker cache budget" in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES=8589934592" in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB" not in env_example
+    assert "RESEARKA_FULLRAW_FOREGROUND_SWEEP_WAIT_SECONDS=0" in env_example
+    assert "Match pass size to auto workers (3 * 4)" in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=12" in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_NO_HIT_STOP_SHARDS=128" in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=900" in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=180" in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in env_example
+    assert "RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=64" in env_example
+    assert "RESEARKA_FULLRAW_INDEX_PORT=9915" in env_example
+
+
+def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
+    config = (deploy_dir / "v5-memo-portfolio-publish.service").read_text()
+    timer = (deploy_dir / "v5-memo-portfolio-publish.timer").read_text()
+    prepare_config = (deploy_dir / "v5-memo-portfolio-prepare.service").read_text()
+    prepare_timer = (deploy_dir / "v5-memo-portfolio-prepare.timer").read_text()
+
+    assert "TimeoutStartSec=150min" in config
+    assert "Ready leads are consumed first" in config
+    assert "One strict fullraw lead queues about five sweeps" in config
+    assert "Environment=V5_MEMO_PORTFOLIO_MAX_LEADS=3" in config
+    assert "Environment=V5_MEMO_PORTFOLIO_LEAD_TIMEOUT_SECONDS=600" in config
+    assert "Environment=V5_MEMO_PORTFOLIO_DECISION_WAIT_SECONDS=600" in config
+    assert '--max-leads "${V5_MEMO_PORTFOLIO_MAX_LEADS:-3}"' in config
+    assert '--lead-timeout-seconds "${V5_MEMO_PORTFOLIO_LEAD_TIMEOUT_SECONDS:-600}"' in config
+    assert '--decision-wait-seconds "${V5_MEMO_PORTFOLIO_DECISION_WAIT_SECONDS:-600}"' in config
+    assert "OnCalendar=*-*-* 00/8:20:00" in timer
+    assert "Environment=V5_MEMO_READY_BUFFER_SIZE=3" in prepare_config
+    assert "Environment=V5_MEMO_PREPARE_MAX_LEADS=1" in prepare_config
+    assert '--ready-buffer-size "${V5_MEMO_READY_BUFFER_SIZE:-3}"' in prepare_config
+    assert "--submit" not in prepare_config
+    assert "--state-path /var/lib/v5-memo/portfolio-runs/state.json" in prepare_config
+    assert "/usr/bin/flock -n 9" in prepare_config
+    assert "/usr/bin/flock -w 900 9" in config
+    assert "OnCalendar=*-*-* *:50:00" in prepare_timer
+    assert "Unit=v5-memo-portfolio-prepare.service" in prepare_timer
+
+
+def test_v5_isolated_fullraw_mount_uses_separate_vfs_cache() -> None:
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
+    config = (deploy_dir / "v5-memo-isolated-fullraw-fts-mount.service").read_text()
+
+    assert "sb:researka-database/index/v5/fullraw-fts" in config
+    assert "/var/lib/v5-memo/v5-isolated-fullraw-fts-remote" in config
+    assert "/var/cache/v5-memo/v5-isolated-rclone-vfs-cache" in config
+    assert "--vfs-cache-mode=minimal" in config
+    assert "--vfs-cache-max-size=2G" in config
+    assert "--vfs-cache-max-age=30m" in config
+    assert "/var/lib/v5-memo/fullraw-fts-remote" not in config
+
+
+def test_v5_writable_shard_cache_mount_caps_root_vfs_cache() -> None:
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
+    config = (deploy_dir / "v5-memo-fullraw-shard-cache-mount.service").read_text()
+
+    assert "sb:researka-database/index/v5/fullraw-shard-cache-5tb" in config
+    assert "/mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote" in config
+    assert "mountpoint -q /mnt/HC_Volume_106011525/v5-memo/fullraw-shard-cache-remote" in config
+    assert "--vfs-cache-mode=writes" in config
+    assert "--vfs-cache-max-size=8G" in config
+    assert "--vfs-cache-max-age=30m" in config
 
 
 def test_fast_shard_cache_health_skips_dynamic_budget(

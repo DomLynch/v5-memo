@@ -1,0 +1,48 @@
+[Unit]
+Description=V5 Memo isolated 5TB fullraw search service
+After=network-online.target v5-memo-isolated-fullraw-fts-mount.service
+Wants=network-online.target v5-memo-isolated-fullraw-fts-mount.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/v5-memo
+EnvironmentFile=/etc/v5-memo/env
+EnvironmentFile=/etc/v5-memo/isolated-fullraw.env
+Environment=PYTHONPATH=/opt/v5-memo/src
+Environment=RESEARKA_FULLRAW_INDEX_HOST=127.0.0.1
+Environment=RESEARKA_FULLRAW_INDEX_PORT=9915
+Environment=RESEARKA_FULLRAW_FAST_HEALTH=1
+Environment=RESEARKA_FULLRAW_SEARCH_ISOLATED=1
+Environment=RESEARKA_FULLRAW_MIN_SHARDS_SEARCHED=1525
+Environment=RESEARKA_FULLRAW_MIN_SOURCES_SEARCHED=5
+Environment=RESEARKA_FULLRAW_REQUIRE_COMPLETE_SEARCH=1
+Environment=RESEARKA_FULLRAW_SWEEP_REQUIRE_COMPLETE=1
+Environment=RESEARKA_FULLRAW_ASYNC_SWEEP=1
+Environment=RESEARKA_FULLRAW_SWEEP_SHARD_LIMIT=1525
+# Match pass size to auto workers (3 * 4) so strict sweeps persist progress frequently.
+Environment=RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=12
+Environment=RESEARKA_FULLRAW_SWEEP_NO_HIT_STOP_SHARDS=128
+Environment=RESEARKA_FULLRAW_SWEEP_MAX_PASSES=5000
+Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=1
+Environment=RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0
+Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=64
+Environment=RESEARKA_FULLRAW_SWEEP_TTL_SECONDS=604800
+Environment=RESEARKA_FULLRAW_SWEEP_CACHE_DIR=/var/lib/v5-memo/v5-fullraw-sweep-cache
+Environment=RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=900
+Environment=RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=180
+Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/v5-shard-cache-5tb
+Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto
+# Auto workers = dynamic local cache budget / per-worker cache budget.
+Environment=RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES=8589934592
+Environment=RESEARKA_FULLRAW_MAX_VARIANTS=1
+Environment=RESEARKA_FULLRAW_DOI_ABSTRACT_BACKFILL_LIMIT=16
+Environment=V5_MEMO_FULL_RAW_INDEX_HOST=127.0.0.1
+Environment=V5_MEMO_FULL_RAW_INDEX_PORT=9915
+ExecStart=/usr/bin/python3 -m v5_memo.fullraw_index serve
+Restart=always
+RestartSec=10
+TimeoutStopSec=120
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

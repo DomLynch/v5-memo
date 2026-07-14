@@ -6,6 +6,7 @@ from collections import Counter
 from collections.abc import Sequence
 from itertools import combinations
 
+from v5_memo.evidence import is_non_primary_receipt
 from v5_memo.schemas import ClaimCard, CorpusHit, EvidenceNode, InsightCandidate, ReceiptRole
 from v5_memo.scorer import score_connection
 
@@ -20,12 +21,13 @@ _STOP = frozenset({
     "summary", "systematic", "the", "their", "there", "through", "trial", "using", "with",
 })
 _BRIDGE_STOP = _STOP | frozenset({
-    "action", "compare", "compared", "comparing", "comparative", "comparison",
+    "action", "adult", "adults", "aged", "compare", "compared", "comparing", "comparative", "comparison",
+    "elderly",
     "functional", "horse", "impairment", "intermittent", "learning",
     "men", "muscle", "power", "protein", "synthesi", "women",
     "case", "cases", "disease", "disorder", "disorders", "individual",
     "individuals", "patient", "people", "per", "person", "persons", "risk",
-    "such", "syndrome", "thus", "when", "following", "matched",
+    "older", "senior", "seniors", "such", "syndrome", "thus", "when", "following", "matched",
     "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
     "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
     "eighteen", "nineteen", "twenty",
@@ -36,15 +38,30 @@ _POSITIVE = frozenset({
 })
 _NEGATIVE = frozenset({
     "attenuate", "attenuated", "blunt", "blunted", "decrease", "decreased",
-    "impair", "impaired", "lower", "lowered", "reduce", "reduced",
-    "suppress", "suppressed", "suppresses", "worse", "worsened",
+    "decreasing", "impair", "impaired", "lower", "lowered", "lowering",
+    "reduce", "reduced", "reducing", "reduction", "suppress", "suppressed",
+    "suppresses", "worse", "worsened",
 })
 _ATTENUATE = frozenset({"attenuate", "attenuated"})
+_BENEFICIAL_REDUCTION = _ATTENUATE | frozenset({
+    "decrease", "decreased", "decreasing", "lower", "lowered", "lowering",
+    "reduce", "reduced", "reducing", "reduction",
+})
 _ADVERSE_ENDPOINT = frozenset({
     "acth", "cortisol", "damage", "death", "deaths", "error", "errors",
     "fatal", "fatality", "inflammation", "mortality", "pain", "risk", "stress",
 })
+_HARM_REDUCTION_ENDPOINT = frozenset({
+    "decline", "disability", "frailty", "morbidity", "progression",
+})
+_BENEFICIAL_REDUCTION_ENDPOINT = _ADVERSE_ENDPOINT | _HARM_REDUCTION_ENDPOINT | frozenset({
+    "fatigue", "fatigability", "soreness",
+})
 _NULL = frozenset({"null", "neutral", "unchanged", "failed", "nonsignificant"})
+_NULL_PHRASE_RE = re.compile(
+    r"\b(?:does|do|did|is|are|was|were)\s+not\b|\bno\s+difference(?:s)?\b|\bwithout\s+difference(?:s)?\b"
+)
+_WEAK_NULL_PHRASE_RE = re.compile(r"\b(?:do|were)\s+not\b")
 _NEGATED = frozenset({
     "fail", "failed", "fails", "lack", "lacked", "lacks", "no", "not", "without",
 })
@@ -90,11 +107,12 @@ _WEAK_ELITE_SOURCE_TERMS = frozenset({
     "abstract", "conference", "editorial", "poster", "supplement",
 })
 _TOPIC_CONTEXT_STOP = frozenset({
-    "adapt", "adaptation", "aging", "angle", "condition", "effect", "effects",
-    "evidence", "healthspan", "human", "intervention", "longevity", "mechanism",
-    "mechanisms", "outcome", "outcomes", "pharmacology", "response", "responses",
-    "reversal", "study", "trial",
+    "adapt", "adaptation", "adult", "aged", "aging", "angle", "condition", "effect", "effects",
+    "elderly", "evidence", "healthspan", "human", "intervention", "longevity", "mechanism",
+    "mechanisms", "older", "outcome", "outcomes", "pharmacology", "response", "responses",
+    "reversal", "senior", "study", "trial", "water",
 })
+_AMBIGUOUS_ENTITY_PREFIXES = frozenset({"alpha", "beta", "delta", "gamma", "omega"})
 
 
 def mine_insights(
@@ -106,7 +124,7 @@ def mine_insights(
     max_candidates: int = 30,
 ) -> list[InsightCandidate]:
     """Return ranked alpha candidates from source-diverse hit pairs."""
-    clean_hits = _dedupe_hits(hits)
+    clean_hits = [hit for hit in _dedupe_hits(hits) if not is_non_primary_receipt(hit)]
     if len(clean_hits) < 2:
         return []
 
@@ -136,6 +154,14 @@ def mine_insights(
         )
         title_bridge = _title_bridge_terms(title_shared, doc_counts)
         bridge = (*anchor_bridge, *(term for term in title_bridge if term not in set(anchor_bridge)))[:4]
+        direct_human_pair = _direct_human_receipt(left) and _direct_human_receipt(right)
+        if not bridge and direct_human_pair:
+            bridge = _full_text_bridge_terms(
+                full_token_sets[left.hit_id],
+                full_token_sets[right.hit_id],
+                doc_counts,
+                pair_anchor_terms,
+            )
         if not bridge:
             continue
         source_keys = {left.source_key, right.source_key}
@@ -152,12 +178,18 @@ def mine_insights(
             continue
         if not _pair_has_topic_context(left, right, topic_context_terms, shape_reasons):
             continue
+        direct_human_reversal = direct_human_pair and bool(tension_terms) and len(bridge) >= 2
         incomplete_elite_context = bool(
             set(shape_reasons) & _ELITE_SHAPES
             and topic_context_terms
             and not _pair_has_full_topic_context(left, right, topic_context_terms)
         )
-        if anchor_terms and set(shape_reasons) & _ELITE_SHAPES and not anchor_bridge:
+        if (
+            anchor_terms
+            and set(shape_reasons) & _ELITE_SHAPES
+            and not anchor_bridge
+            and not direct_human_reversal
+        ):
             continue
         coupling_reasons = _coupling_reasons(
             left,
@@ -177,7 +209,7 @@ def mine_insights(
             bridge,
             doc_counts=doc_counts,
             total_docs=len(clean_hits),
-        ):
+        ) and not direct_human_reversal:
             continue
         if set(shape_reasons) == {"shape:directional_reversal"} and len(bridge) < 2:
             continue
@@ -193,16 +225,21 @@ def mine_insights(
         if tier == "discovery_seed" and not include_discovery:
             continue
         receipt_roles = _receipt_roles(left, right, shape_reasons)
+        if direct_human_reversal:
+            receipt_roles = (
+                ReceiptRole(left.hit_id, _direction_signal_role(left), "direct human reversal"),
+                ReceiptRole(right.hit_id, _direction_signal_role(right), "direct human reversal"),
+            )
         evidence_graph = _evidence_graph(
             clean_hits,
             left,
             right,
             bridge,
             pair_anchor_terms,
+            _graph_context_terms(topic, pair_anchor_terms),
             shape_reasons,
             receipt_roles,
         )
-        graph_receipt_ids = tuple(node.receipt_id for node in evidence_graph)
         hits_by_id = {hit.hit_id: hit for hit in clean_hits}
         claim_cards = _claim_cards_for_roles(hits_by_id, receipt_roles)
         context_claim_cards = _claim_cards_for_graph(
@@ -211,6 +248,12 @@ def mine_insights(
         )
         if context_claim_cards:
             claim_cards = (*claim_cards, *context_claim_cards)
+        evidence_graph, claim_cards = _prioritize_evidence_bundle(
+            topic,
+            evidence_graph,
+            claim_cards,
+        )
+        graph_receipt_ids = tuple(node.receipt_id for node in evidence_graph)
         score = score_connection(
             bridge_terms=bridge,
             bridge_doc_counts=doc_counts,
@@ -246,6 +289,110 @@ def mine_insights(
     ]
 
 
+def _prioritize_evidence_bundle(
+    topic: str,
+    evidence_graph: tuple[EvidenceNode, ...],
+    claim_cards: tuple[ClaimCard, ...],
+) -> tuple[tuple[EvidenceNode, ...], tuple[ClaimCard, ...]]:
+    card_by_id = {card.receipt_id: card for card in claim_cards}
+    node_by_id = {node.receipt_id: node for node in evidence_graph}
+    order = {node.receipt_id: index for index, node in enumerate(evidence_graph)}
+    if not any(
+        order.get(card.receipt_id, 0) >= 2 and _strong_direct_human_rct(card)
+        for card in claim_cards
+    ):
+        return evidence_graph, claim_cards
+    sorted_ids = sorted(
+        order,
+        key=lambda receipt_id: _evidence_order_key(
+            topic,
+            node_by_id[receipt_id],
+            card_by_id.get(receipt_id),
+            order[receipt_id],
+        ),
+    )
+    sorted_graph: list[EvidenceNode] = []
+    sorted_cards: list[ClaimCard] = []
+    for index, receipt_id in enumerate(sorted_ids):
+        card = card_by_id.get(receipt_id)
+        sorted_graph.append(_promoted_evidence_node(node_by_id[receipt_id], card, index))
+        if card is not None:
+            sorted_cards.append(_promoted_claim_card(card, index))
+    return tuple(sorted_graph), tuple(sorted_cards)
+
+
+def _promoted_evidence_node(node: EvidenceNode, card: ClaimCard | None, index: int) -> EvidenceNode:
+    if index == 0 and card is not None and _strong_direct_human_rct(card):
+        return EvidenceNode(node.receipt_id, "primary", "strongest direct human evidence")
+    return node
+
+
+def _promoted_claim_card(card: ClaimCard, index: int) -> ClaimCard:
+    if index != 0 or not _strong_direct_human_rct(card):
+        return card
+    return ClaimCard(
+        receipt_id=card.receipt_id,
+        role=_primary_signal_role(card.direction),
+        design=card.design,
+        population=card.population,
+        outcome=card.outcome,
+        direction=card.direction,
+        support_type=card.support_type,
+        confidence=card.confidence,
+        quote=card.quote,
+    )
+
+
+def _primary_signal_role(direction: str) -> str:
+    if "negative" in direction:
+        return "negative_signal"
+    if "null" in direction:
+        return "null_signal"
+    if "positive" in direction:
+        return "positive_signal"
+    return "evidence"
+
+
+def _strong_direct_human_rct(card: ClaimCard) -> bool:
+    return (
+        card.design == "randomized_trial"
+        and card.population == "human"
+        and card.support_type == "direct"
+        and card.confidence == "high"
+    )
+
+
+def _evidence_order_key(
+    topic: str,
+    node: EvidenceNode,
+    card: ClaimCard | None,
+    original_index: int,
+) -> tuple[int, int]:
+    score = 0
+    if card is not None:
+        score += 30 if card.support_type == "direct" else 0
+        score += 20 if card.population == "human" else 0
+        score += 10 if card.confidence == "high" else 0
+        score += {
+            "randomized_trial": 20,
+            "intervention_study": 14,
+            "cohort": 10,
+            "synthesis": 5,
+            "mechanistic_model": 3,
+        }.get(card.design, 0)
+        score += min(10, 2 * len(_topic_overlap_terms(topic, card)))
+    score += {"primary": 4, "counter": 4, "replication": 3, "boundary": 2}.get(node.role, 0)
+    return (-score, original_index)
+
+
+def _topic_overlap_terms(topic: str, card: ClaimCard) -> frozenset[str]:
+    topic_terms = _expanded_context_terms(_tokens(topic))
+    card_terms = _expanded_context_terms(
+        _tokens(" ".join((card.outcome, card.quote, card.role)))
+    )
+    return topic_terms & card_terms
+
+
 def _candidate_rank(candidate: InsightCandidate) -> tuple[bool, int, int, int, int]:
     return (
         "coupling:named_program" in candidate.reasons,
@@ -267,9 +414,25 @@ def _topic_context_terms(topic: str, anchor_terms: frozenset[str]) -> frozenset[
         ) not in _STOP
         and token not in _TOPIC_CONTEXT_STOP
     ]
-    if len(ordered) < 2:
+    context = [token for token in ordered if token not in anchor_terms]
+    if not context:
         return frozenset()
-    return frozenset(token for token in ordered if token not in anchor_terms)
+    return frozenset(context)
+
+
+def _graph_context_terms(topic: str, anchor_terms: frozenset[str]) -> frozenset[str]:
+    if not anchor_terms:
+        return frozenset()
+    ordered = [
+        token
+        for raw in _WORD.findall(topic.casefold())
+        if (
+            token := _norm_token(raw)
+        ) not in _STOP
+        and token not in _TOPIC_CONTEXT_STOP
+    ]
+    context = [token for token in ordered if token not in anchor_terms]
+    return frozenset(context) if context else _topic_context_terms(topic, anchor_terms)
 
 
 def _pair_has_topic_context(
@@ -367,6 +530,8 @@ def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 3) -> tuple[
     generic = {
         "adapt",
         "adaptation",
+        "adult",
+        "aged",
         "aging",
         "angle",
         "condition",
@@ -378,6 +543,7 @@ def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 3) -> tuple[
         "longevity",
         "mechanism",
         "mimetic",
+        "older",
         "pharmacology",
         "protocol",
         "muscle",
@@ -385,6 +551,7 @@ def query_anchor_terms(seed_queries: Sequence[str], *, limit: int = 3) -> tuple[
         "resistance",
         "response",
         "reversal",
+        "senior",
         "stress",
         "synthesi",
         "train",
@@ -415,6 +582,8 @@ def _pair_has_anchor(
     right_tokens: frozenset[str],
     anchor_terms: frozenset[str],
 ) -> bool:
+    if len(anchor_terms) > 1 and anchor_terms & _AMBIGUOUS_ENTITY_PREFIXES:
+        return anchor_terms <= left_tokens and anchor_terms <= right_tokens
     return bool(left_tokens & right_tokens & anchor_terms)
 
 
@@ -423,6 +592,17 @@ def _title_bridge_terms(
     doc_counts: Counter[str],
 ) -> tuple[str, ...]:
     shared = title_shared - _BRIDGE_STOP
+    ranked = sorted(shared, key=lambda term: (doc_counts[term], term))
+    return tuple(ranked[:4])
+
+
+def _full_text_bridge_terms(
+    left: frozenset[str],
+    right: frozenset[str],
+    doc_counts: Counter[str],
+    anchor_terms: frozenset[str],
+) -> tuple[str, ...]:
+    shared = (left & right) - _BRIDGE_STOP - anchor_terms
     ranked = sorted(shared, key=lambda term: (doc_counts[term], term))
     return tuple(ranked[:4])
 
@@ -445,16 +625,31 @@ def _polarity(text: str) -> frozenset[str]:
         out.add("positive")
     if negated_positive:
         out.add("null")
-    if tokens & _NEGATIVE:
-        if tokens & _ATTENUATE and tokens & _ADVERSE_ENDPOINT and not (tokens & (_NEGATIVE - _ATTENUATE)):
+    negative_terms = tokens & _NEGATIVE
+    if negative_terms:
+        if _has_beneficial_reduction_context(text):
             out.add("positive")
-        else:
+            negative_terms -= _BENEFICIAL_REDUCTION
+        if negative_terms:
             out.add("negative")
-    if tokens & _NULL:
+    null_phrase = _NULL_PHRASE_RE.search(text.casefold())
+    weak_null = bool(null_phrase and _WEAK_NULL_PHRASE_RE.fullmatch(null_phrase.group(0)))
+    if tokens & _NULL or (null_phrase and not (weak_null and "positive" in out)):
         out.add("null")
     if len(out) > 1:
         out.add("mixed")
     return frozenset(out)
+
+
+def _has_beneficial_reduction_context(text: str) -> bool:
+    words = [_norm_token(raw) for raw in _WORD.findall(text.casefold())]
+    for index, word in enumerate(words):
+        if (
+            word in _BENEFICIAL_REDUCTION
+            and set(words[index + 1:index + 4]) & _BENEFICIAL_REDUCTION_ENDPOINT
+        ):
+            return True
+    return False
 
 
 def _positive_context(text: str) -> tuple[bool, bool]:
@@ -491,10 +686,20 @@ def _hit_tension_terms(left: CorpusHit, right: CorpusHit) -> tuple[str, ...]:
 
 
 def _direction_polarity(hit: CorpusHit) -> frozenset[str]:
+    if _is_safety_feasibility_pilot(_raw_terms(hit.text)):
+        return frozenset()
     title_polarity = _polarity(hit.title) - {"mixed"}
-    if len(title_polarity) == 1:
+    full_polarity = _polarity(hit.text) - {"mixed"}
+    if len(title_polarity) == 1 and len(full_polarity) > 1 and title_polarity & {"negative", "null"}:
         return title_polarity
-    return _polarity(hit.text) - {"mixed"}
+    if len(title_polarity) == 1 and (not full_polarity or full_polarity <= title_polarity):
+        return title_polarity
+    return full_polarity
+
+
+def _direct_human_receipt(hit: CorpusHit) -> bool:
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "evidence", "direct-human precheck"))
+    return card.population == "human" and card.support_type == "direct" and card.confidence == "high"
 
 
 def _direction_cautions(left: str, right: str) -> tuple[str, ...]:
@@ -655,7 +860,7 @@ def _is_weak_elite_receipt(hit: CorpusHit) -> bool:
         for part in (hit.title, hit.venue or "", hit.doi or "", hit.url)
         if part
     )
-    return bool(_tokens(text) & _WEAK_ELITE_SOURCE_TERMS)
+    return bool(_tokens(text) & _WEAK_ELITE_SOURCE_TERMS) or is_non_primary_receipt(hit)
 
 
 def _receipt_roles(
@@ -712,6 +917,13 @@ def _signal_role(text: str) -> str:
     return "evidence"
 
 
+def _direction_signal_role(hit: CorpusHit) -> str:
+    polarity = _direction_polarity(hit)
+    if len(polarity) == 1:
+        return f"{next(iter(polarity))}_signal"
+    return _signal_role(hit.text)
+
+
 def _claim_cards(
     left: CorpusHit,
     right: CorpusHit,
@@ -749,6 +961,7 @@ def _evidence_graph(
     right: CorpusHit,
     bridge_terms: tuple[str, ...],
     pair_anchor_terms: frozenset[str],
+    topic_context_terms: frozenset[str],
     shape_reasons: tuple[str, ...],
     receipt_roles: tuple[ReceiptRole, ...],
 ) -> tuple[EvidenceNode, ...]:
@@ -765,6 +978,7 @@ def _evidence_graph(
             hits,
             seen=seen,
             bridge_terms=bridge_set,
+            topic_context_terms=topic_context_terms,
             shape_reasons=shape_reasons,
             role=role,
         )
@@ -788,6 +1002,7 @@ def _context_hit(
     *,
     seen: set[str],
     bridge_terms: set[str],
+    topic_context_terms: frozenset[str],
     shape_reasons: tuple[str, ...],
     role: str,
 ) -> CorpusHit | None:
@@ -798,6 +1013,8 @@ def _context_hit(
         terms = _raw_terms(hit.text)
         overlap = bridge_terms & terms
         if len(overlap) < min(2, len(bridge_terms)):
+            continue
+        if topic_context_terms and not _has_topic_context(hit, topic_context_terms):
             continue
         if not _hit_matches_graph_role(hit, terms, role, shape_reasons):
             continue
@@ -826,15 +1043,30 @@ def _claim_card(hit: CorpusHit, role: ReceiptRole) -> ClaimCard:
     terms = _raw_terms(hit.text)
     design = _design_type(terms)
     population = _population_type(terms)
-    direction = "/".join(sorted(_direction_polarity(hit))) or "unclear"
-    support_type = "direct" if design in {"randomized_trial", "cohort"} and population == "human" else "indirect"
+    safety_feasibility = _is_safety_feasibility_pilot(terms)
+    direction = "unclear" if safety_feasibility else "/".join(sorted(_direction_polarity(hit))) or "unclear"
+    direct_designs = {"randomized_trial", "cohort", "intervention_study"}
+    non_primary = is_non_primary_receipt(hit)
+    support_type = "direct" if design in direct_designs and population == "human" and not non_primary else "indirect"
+    if safety_feasibility:
+        support_type = "direct" if population == "human" and not non_primary else "indirect"
     confidence = "high" if support_type == "direct" and direction != "unclear" else "medium" if direction != "unclear" else "low"
+    role_name = "safety_feasibility" if safety_feasibility and role.role.endswith("_signal") else role.role
+    outcome = _outcome_label(terms)
+    if _is_acute_within_arm_muscle_thickness(terms, outcome, role_name):
+        role_name = "acute_within_arm_signal"
+        confidence = "medium"
+    if _is_proxy_signal(outcome, role_name):
+        role_name = "boundary"
+        direction = "proxy"
+        if support_type == "direct":
+            confidence = "medium"
     return ClaimCard(
         receipt_id=hit.hit_id,
-        role=role.role,
+        role=role_name,
         design=design,
         population=population,
-        outcome=_outcome_label(terms),
+        outcome=outcome,
         direction=direction,
         support_type=support_type,
         confidence=confidence,
@@ -842,35 +1074,81 @@ def _claim_card(hit: CorpusHit, role: ReceiptRole) -> ClaimCard:
     )
 
 
+def _is_proxy_signal(outcome: str, role_name: str) -> bool:
+    outcome_terms = frozenset(outcome.split("/"))
+    return (
+        role_name in {"negative_signal", "null_signal", "positive_signal"}
+        and bool(outcome_terms & (_ADVERSE_ENDPOINT | _TIMING))
+        and not bool(outcome_terms & {"chronic", "long"})
+    )
+
+
+def _is_acute_within_arm_muscle_thickness(
+    terms: frozenset[str],
+    outcome: str,
+    role_name: str,
+) -> bool:
+    return (
+        role_name in {"negative_signal", "null_signal", "positive_signal"}
+        and outcome == "muscle thickness"
+        and not bool(terms & {"chronic", "long"})
+        and bool(terms & {"acute", "before", "after", "pre", "post", "hour", "hours"})
+    )
+
+
 def _design_type(terms: frozenset[str]) -> str:
+    if terms & {"review", "meta", "systematic"}:
+        return "synthesis"
     if terms & {"randomized", "randomised", "rct", "trial"}:
         return "randomized_trial"
     if terms & {"cohort", "prospective", "longitudinal"}:
         return "cohort"
-    if terms & {"review", "meta", "systematic"}:
-        return "synthesis"
+    if terms & {"intervention", "protocol", "session", "sessions", "training"} and terms & {
+        "athlete", "athletes", "participant", "participants", "player", "players", "student", "students",
+        "subject", "subjects", "volunteer", "volunteered", "volunteers",
+    }:
+        return "intervention_study"
+    if terms & {"administered", "administ", "supplement", "supplemented"} and terms & {
+        "adult", "adults", "human", "humans", "men", "patient", "patients", "women",
+    }:
+        return "intervention_study"
     if terms & {"mouse", "mice", "rat", "rats", "cell", "cells"}:
         return "mechanistic_model"
     return "unspecified"
 
 
+def _is_safety_feasibility_pilot(terms: frozenset[str]) -> bool:
+    return bool(
+        terms & {"pilot", "feasibility", "feasible", "safety"}
+        and terms & {"trial", "randomized", "randomised", "rct", "study"}
+    )
+
+
 def _population_type(terms: frozenset[str]) -> str:
-    if terms & {"human", "humans", "patient", "patients", "adult", "adults", "men", "women"}:
-        return "human"
-    if terms & {"mouse", "mice", "rat", "rats", "animal", "animals"}:
+    if terms & {"mouse", "mice", "rat", "rats", "animal", "animals", "wistar"}:
         return "animal"
+    if terms & {
+        "athlete", "athletes", "human", "humans", "participant", "participants",
+        "patient", "patients", "adult", "adults", "men", "women", "player", "players", "student",
+        "students", "subject", "subjects", "volunteer", "volunteered", "volunteers",
+    }:
+        return "human"
     if terms & {"cell", "cells", "cellular"}:
         return "cell_model"
     return "unspecified"
 
 
 def _outcome_label(terms: frozenset[str]) -> str:
-    candidates = sorted(terms & (_OUTCOME | _METRIC | _ADVERSE_ENDPOINT | _BOUNDARY | _TIMING))
+    if "hypertrophy" in terms:
+        return "hypertrophy"
+    if {"muscle", "thickness"} <= terms:
+        return "muscle thickness"
+    candidates = sorted(terms & (_OUTCOME | _METRIC | _ADVERSE_ENDPOINT | _HARM_REDUCTION_ENDPOINT | _BOUNDARY | _TIMING))
     return "/".join(candidates[:3]) if candidates else "unspecified"
 
 
 def _claim_quote(hit: CorpusHit) -> str:
-    text = " ".join((hit.abstract or hit.title).split())
+    text = " ".join(f"{hit.title}. {hit.abstract}".split())
     return text[:180].rstrip()
 
 

@@ -182,7 +182,7 @@ def test_shard_search_returns_partial_hits_on_timeout(tmp_path: Path, monkeypatc
     assert timeouts == [30] * len(called)
 
 
-def test_shard_search_waits_for_running_pool_after_timeout(
+def test_shard_search_does_not_wait_for_running_pool_after_timeout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -220,7 +220,7 @@ def test_shard_search_waits_for_running_pool_after_timeout(
     )
 
     assert timed_out is True
-    assert shutdown_calls == [(True, True)]
+    assert shutdown_calls == [(False, True)]
 
 
 def test_isolated_shard_search_kills_timed_out_child(
@@ -230,7 +230,10 @@ def test_isolated_shard_search_kills_timed_out_child(
     class FakeProcess:
         returncode = None
         killed = False
-        waited = False
+        waits: list[float | None]
+
+        def __init__(self) -> None:
+            self.waits = []
 
         def communicate(self, *, timeout: float) -> tuple[str, str]:
             raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
@@ -238,10 +241,10 @@ def test_isolated_shard_search_kills_timed_out_child(
         def kill(self) -> None:
             self.killed = True
 
-        def wait(self, *, timeout: float) -> None:
-            del timeout
-            self.waited = True
-            raise subprocess.TimeoutExpired(cmd="fake", timeout=1)
+        def wait(self, timeout: float | None = None) -> None:
+            self.waits.append(timeout)
+            if timeout is not None:
+                raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
 
     fake = FakeProcess()
     monkeypatch.setattr("v5_memo.fullraw_index.subprocess.Popen", lambda *args, **kwargs: fake)
@@ -258,7 +261,7 @@ def test_isolated_shard_search_kills_timed_out_child(
         )
 
     assert fake.killed is True
-    assert fake.waited is True
+    assert fake.waits == [1.0]
 
 
 def test_write_json_ignores_disconnected_client() -> None:
@@ -449,7 +452,7 @@ def test_complete_shard_service_forces_cache_queue() -> None:
     )
 
 
-def test_sweep_cache_key_buckets_low_result_limits() -> None:
+def test_sweep_cache_key_ignores_result_limits() -> None:
     first = fullraw_index._sweep_cache_key(
         "cold water immersion",
         limit=3,
@@ -476,7 +479,28 @@ def test_sweep_cache_key_buckets_low_result_limits() -> None:
     )
 
     assert first == second
-    assert second != larger
+    assert second == larger
+
+
+def test_sweep_cache_key_ignores_term_order() -> None:
+    first = fullraw_index._sweep_cache_key(
+        "creatine trial resistance",
+        limit=25,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        sweep_shard_limit=1525,
+    )
+    second = fullraw_index._sweep_cache_key(
+        "creatine resistance trial",
+        limit=25,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        sweep_shard_limit=1525,
+    )
+
+    assert first == second
 
 
 def test_sweep_cache_key_ignores_runtime_knobs() -> None:
@@ -533,9 +557,19 @@ def test_sweep_cache_key_changes_when_research_contract_changes() -> None:
         rank_mode="relevance",
         sweep_shard_limit=512,
     )
+    different_catalog = fullraw_index._sweep_cache_key(
+        "metformin resistance training",
+        limit=10,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        sweep_shard_limit=1525,
+        sweep_catalog_scope="/var/lib/v5-memo/v5-isolated-fullraw-fts-remote",
+    )
 
     assert current != different_rank
     assert current != different_coverage
+    assert current != different_catalog
 
 
 def test_full_sweep_cache_query_uses_canonical_pass(tmp_path: Path) -> None:
@@ -560,12 +594,37 @@ def test_full_sweep_cache_query_uses_canonical_pass(tmp_path: Path) -> None:
     assert verbose == compact
 
 
+def test_full_sweep_cache_query_drops_broad_fillers(tmp_path: Path) -> None:
+    entries = [
+        replace(_entry(tmp_path, 0, "openalex"), topic_terms=("creatine", "trial", "resistance")),
+        replace(_entry(tmp_path, 1, "openalex"), topic_terms=("adults", "older", "muscle")),
+        replace(_entry(tmp_path, 2, "openalex"), topic_terms=("strength", "training", "resistance")),
+        replace(_entry(tmp_path, 3, "openalex"), topic_terms=("creatine", "resistance", "trial")),
+    ]
+
+    verbose = fullraw_index._sweep_cache_query(
+        "creatine resistance training older adults muscle strength trial",
+        entries,
+        sweep_shard_limit=4,
+        rank_mode="relevance",
+    )
+    compact = fullraw_index._sweep_cache_query(
+        "creatine resistance training trial",
+        entries,
+        sweep_shard_limit=4,
+        rank_mode="relevance",
+    )
+
+    assert verbose == compact == "creatine resistance trial"
+
+
 def test_sweep_cache_matcher_accepts_compatible_pass_query() -> None:
     entry = fullraw_index.SweepCacheEntry(
         created_at=time.time(),
         hits=[{"title": "Cold water immersion after training"}],
         receipt={
             "sweep_shard_limit": 1525,
+            "sweep_pass_shard_limit": 32,
             "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
             "sweep_original_query": "cold water immersion training adaptation",
             "sweep_search_passes": (
@@ -579,6 +638,7 @@ def test_sweep_cache_matcher_accepts_compatible_pass_query() -> None:
         query="cold immersion training",
         result_limit=1,
         sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
     )
     assert not fullraw_index._sweep_cache_entry_matches_request(
@@ -586,7 +646,214 @@ def test_sweep_cache_matcher_accepts_compatible_pass_query() -> None:
         query="resveratrol exercise adaptation",
         result_limit=1,
         sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+    assert fullraw_index._sweep_cache_entry_matches_request(
+        entry,
+        query="cold immersion training",
+        result_limit=1,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=4,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
+def test_sweep_cache_matcher_accepts_partial_with_reordered_terms() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Creatine resistance training trial"}],
+        receipt={
+            "sweep_result_limit": 25,
+            "sweep_shard_limit": 1525,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_query": "creatine trial resistance",
+            "partial_shard_search": True,
+            "sweep_remaining_shards": 437,
+        },
+    )
+
+    assert fullraw_index._sweep_cache_entry_matches_request(
+        entry,
+        query="creatine resistance trial",
+        result_limit=25,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
+def test_sweep_cache_matcher_accepts_only_completed_alias_equivalent_query() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Resveratrol and training adaptation"}],
+        receipt={
+            "sweep_result_limit": 10,
+            "sweep_shard_limit": 1525,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_query": "resveratrol training adaptation",
+            "partial_shard_search": False,
+            "sweep_remaining_shards": 0,
+        },
+    )
+    partial_entry = fullraw_index.SweepCacheEntry(
+        created_at=entry.created_at,
+        hits=entry.hits,
+        receipt={**entry.receipt, "partial_shard_search": True, "sweep_remaining_shards": 12},
+    )
+
+    assert fullraw_index._sweep_cache_entry_matches_request(
+        entry,
+        query="resveratrol exercise adaptation",
+        result_limit=10,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+    assert not fullraw_index._sweep_cache_entry_matches_request(
+        entry,
+        query="resveratrol cancer adaptation",
+        result_limit=10,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+    assert not fullraw_index._sweep_cache_entry_matches_request(
+        partial_entry,
+        query="resveratrol exercise adaptation",
+        result_limit=10,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
+def test_completed_sweep_cache_with_unsaturated_limit_answers_higher_limit() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Urolithin runner recovery"} for _ in range(2)],
+        receipt={
+            "sweep_result_limit": 10,
+            "result_count_raw": 2,
+            "sweep_shard_limit": 1525,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_query": "urolithin trained runners",
+            "partial_shard_search": False,
+            "sweep_remaining_shards": 0,
+        },
+    )
+
+    assert fullraw_index._sweep_cache_entry_matches_request(
+        entry,
+        query="urolithin trained runners",
+        result_limit=50,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
+def test_completed_sweep_cache_with_saturated_limit_rejects_higher_limit() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": f"Creatine trial {index}"} for index in range(10)],
+        receipt={
+            "sweep_result_limit": 10,
+            "result_count_raw": 10,
+            "sweep_shard_limit": 1525,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_query": "creatine resistance training",
+            "partial_shard_search": False,
+            "sweep_remaining_shards": 0,
+        },
+    )
+
+    assert not fullraw_index._sweep_cache_entry_matches_request(
+        entry,
+        query="creatine resistance training",
+        result_limit=50,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
+def test_completed_sweep_cache_matches_original_query_when_active_query_changed() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Urolithin runner recovery"} for _ in range(2)],
+        receipt={
+            "sweep_result_limit": 10,
+            "result_count_raw": 2,
+            "sweep_shard_limit": 1525,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_query": "urolithin trained runners",
+            "sweep_original_query": "urolithin muscle trained runners placebo trial",
+            "partial_shard_search": False,
+            "sweep_remaining_shards": 0,
+        },
+    )
+
+    assert fullraw_index._sweep_cache_entry_matches_active_or_completed_original_query(
+        entry,
+        active_query="urolithin runners trial",
+        original_query="urolithin muscle trained runners placebo trial",
+        result_limit=50,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
+def test_partial_sweep_cache_does_not_match_changed_original_query() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Urolithin runner recovery"}],
+        receipt={
+            "sweep_result_limit": 10,
+            "result_count_raw": 1,
+            "sweep_shard_limit": 1525,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_query": "urolithin trained runners",
+            "sweep_original_query": "urolithin muscle trained runners placebo trial",
+            "partial_shard_search": True,
+            "sweep_remaining_shards": 120,
+        },
+    )
+
+    assert not fullraw_index._sweep_cache_entry_matches_active_or_completed_original_query(
+        entry,
+        active_query="urolithin runners trial",
+        original_query="urolithin muscle trained runners placebo trial",
+        result_limit=10,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
+def test_sweep_cache_matcher_rejects_stale_catalog_scope() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Resveratrol exercise training"}],
+        receipt={
+            "sweep_result_limit": 10,
+            "sweep_shard_limit": 1525,
+            "sweep_pass_shard_limit": 32,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+            "sweep_catalog_scope": "/var/lib/v5-memo/fullraw-fts-remote",
+            "sweep_query": "resveratrol exercise training",
+        },
+    )
+
+    assert not fullraw_index._sweep_cache_entry_matches_request(
+        entry,
+        query="resveratrol exercise training",
+        result_limit=10,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+        sweep_catalog_scope="/var/lib/v5-memo/v5-isolated-fullraw-fts-remote",
     )
 
 
@@ -606,6 +873,7 @@ def test_sweep_cache_matcher_rejects_low_limit_legacy_cache() -> None:
         receipt={
             "sweep_result_limit": 10,
             "sweep_shard_limit": 1525,
+            "sweep_pass_shard_limit": 32,
             "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
             "sweep_query": "cold immersion training",
         },
@@ -616,6 +884,7 @@ def test_sweep_cache_matcher_rejects_low_limit_legacy_cache() -> None:
         query="cold immersion training",
         result_limit=10,
         sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
     )
     assert fullraw_index._sweep_cache_entry_matches_request(
@@ -623,6 +892,7 @@ def test_sweep_cache_matcher_rejects_low_limit_legacy_cache() -> None:
         query="cold immersion training",
         result_limit=10,
         sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
     )
 
@@ -658,7 +928,7 @@ def test_completed_disk_sweep_cache_beats_stale_memory_partial() -> None:
     assert selected.receipt["shards_searched"] == 1525
 
 
-def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
+def test_cache_only_completed_alias_sweep_hit_does_not_aggregate_remote_stats(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -669,8 +939,10 @@ def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
     shard_dir.mkdir()
     entries = [_entry(shard_dir, idx, "openalex" if idx else "pubmed") for idx in range(2)]
     fullraw_index.write_shard_catalog_cache(catalog_path, entries)
+    sweep_catalog_scope = str(shard_dir.absolute())
+    cached_query = "metformin training longevity"
     key = fullraw_index._sweep_cache_key(
-        "metformin longevity",
+        cached_query,
         limit=10,
         year_min=1900,
         year_max=2100,
@@ -681,6 +953,7 @@ def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
         sweep_timeout_seconds=300.0,
         sweep_shard_timeout_seconds=10.0,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+        sweep_catalog_scope=sweep_catalog_scope,
     )
     cache_path = fullraw_index._sweep_cache_path(cache_dir, key)
     assert cache_path is not None
@@ -696,6 +969,8 @@ def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
                 "sweep_remaining_shards": 0,
                 "sweep_failed_shards": 0,
                 "sweep_result_limit": 10,
+                "sweep_shard_limit": 2,
+                "sweep_query": cached_query,
                 "sources_searched": {"openalex": 1, "pubmed": 1},
                 "sweep_search_passes": (
                     {"role": "focused"},
@@ -704,6 +979,7 @@ def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
                 ),
                 "sweep_completed_pass_roles": ("focused", "citation_heavy", "recency"),
                 "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+                "sweep_catalog_scope": sweep_catalog_scope,
             },
         ),
     )
@@ -734,7 +1010,7 @@ def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
 
     payload = json.dumps(
         {
-            "query": "metformin longevity",
+            "query": "metformin exercise longevity",
             "limit": 10,
             "rank_mode": "relevance",
             "cache_only": True,
@@ -760,6 +1036,114 @@ def test_cache_only_completed_sweep_hit_does_not_aggregate_remote_stats(
     assert body["meta"]["async_sweep"]["status"] == "hit"
     assert body["meta"]["shard_receipt"]["shards_searched"] == 2
     assert body["results"][0]["title"] == "Metformin for Longevity and Sarcopenia"
+
+
+def test_cache_only_can_expose_partial_hits_for_discovery_when_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog_path = tmp_path / "catalog.json"
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    shard_dir = tmp_path / "remote-shards"
+    shard_dir.mkdir()
+    entries = [_entry(shard_dir, idx, "openalex" if idx else "pubmed") for idx in range(2)]
+    fullraw_index.write_shard_catalog_cache(catalog_path, entries)
+    sweep_catalog_scope = str(shard_dir.absolute())
+    query = "caffeine exercise null performance"
+    cached_query = fullraw_index._sweep_cache_query(
+        query,
+        entries,
+        sweep_shard_limit=2,
+        rank_mode="relevance",
+    )
+    key = fullraw_index._sweep_cache_key(
+        cached_query,
+        limit=10,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        sweep_shard_limit=2,
+        sweep_pass_shard_limit=2,
+        sweep_max_passes=1,
+        sweep_timeout_seconds=300.0,
+        sweep_shard_timeout_seconds=10.0,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+        sweep_catalog_scope=sweep_catalog_scope,
+    )
+    cache_path = fullraw_index._sweep_cache_path(cache_dir, key)
+    assert cache_path is not None
+    fullraw_index._write_sweep_cache(
+        cache_path,
+        fullraw_index.SweepCacheEntry(
+            created_at=time.time(),
+            hits=[{"title": "Caffeine exercise null performance trial"}],
+            receipt={
+                "shards_searched": 1,
+                "shards_total": 2,
+                "partial_shard_search": True,
+                "sweep_remaining_shards": 1,
+                "sweep_failed_shards": 0,
+                "sweep_result_limit": 10,
+                "sweep_shard_limit": 2,
+                "sweep_query": cached_query,
+                "sweep_original_query": query,
+                "sources_searched": {"openalex": 1},
+                "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+                "sweep_catalog_scope": sweep_catalog_scope,
+            },
+        ),
+    )
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_HOST", "127.0.0.1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_PORT", str(port))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", "test-token")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_DIR", str(shard_dir))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_CATALOG_PATH", str(catalog_path))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_ASYNC_SWEEP", "1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_REQUIRE_COMPLETE_SEARCH", "1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_REQUIRE_COMPLETE", "1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT", "2")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", "2")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", "2")
+    monkeypatch.setattr(fullraw_index, "load_or_build_manifest", lambda *_args, **_kwargs: [])
+    thread = threading.Thread(target=fullraw_index.run_server, daemon=True)
+    thread.start()
+
+    payload = json.dumps(
+        {
+            "query": query,
+            "limit": 10,
+            "rank_mode": "relevance",
+            "cache_only": True,
+            "queue_if_missing": True,
+            "allow_partial_results": True,
+        }
+    ).encode()
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/search",
+        data=payload,
+        headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+        method="POST",
+    )
+    for _ in range(50):
+        try:
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                body = json.loads(resp.read().decode())
+            break
+        except OSError:
+            time.sleep(0.05)
+    else:  # pragma: no cover - defensive test guard
+        raise AssertionError("server did not start")
+
+    assert body["meta"]["partial_results"] is True
+    assert body["meta"]["shard_receipt"]["partial_shard_search"] is True
+    assert body["results"][0]["title"] == "Caffeine exercise null performance trial"
 
 
 def test_strict_cache_only_probe_respects_no_queue(
@@ -828,6 +1212,67 @@ def test_strict_cache_only_probe_respects_no_queue(
     assert body["error"] == "coverage_too_narrow"
 
 
+def test_sweep_cache_entry_marks_no_hit_stop_without_becoming_ready() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[],
+        receipt={
+            "shards_searched": 128,
+            "shards_total": 1525,
+            "partial_shard_search": True,
+            "sweep_remaining_shards": 1397,
+            "sweep_stopped_no_hits": True,
+            "sweep_no_hit_stop_shards": 128,
+            "sweep_result_limit": 25,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+        },
+    )
+
+    assert fullraw_index.sweep_cache_entry_stopped_no_hits(entry)
+    assert fullraw_index._sweep_cache_entry_should_stop_no_hits(entry, 128)
+    assert not fullraw_index.sweep_cache_entry_is_ready(
+        entry,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        require_complete_search=True,
+        require_complete_sweep=True,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
+def test_partial_zero_hit_sweep_cache_honors_no_hit_stop_after_restart() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[],
+        receipt={
+            "shards_searched": 151,
+            "shards_total": 1525,
+            "partial_shard_search": True,
+            "sweep_remaining_shards": 1374,
+            "sweep_result_limit": 25,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+        },
+    )
+
+    assert fullraw_index._sweep_cache_entry_should_stop_no_hits(entry, 128)
+    assert not fullraw_index._sweep_cache_entry_should_stop_no_hits(entry, 200)
+
+    entry_with_hits = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "signal"}],
+        receipt={
+            "shards_searched": 151,
+            "shards_total": 1525,
+            "partial_shard_search": True,
+            "sweep_remaining_shards": 1374,
+            "sweep_result_limit": 25,
+            "sweep_strategy": fullraw_index._SWEEP_STRATEGY,
+        },
+    )
+
+    assert not fullraw_index._sweep_cache_entry_should_stop_no_hits(entry_with_hits, 128)
+
+
 def test_fast_health_reports_async_sweep_queue_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -866,12 +1311,21 @@ def test_fast_health_reports_async_sweep_queue_config(
 
     assert body is not None
     assert body["fast_health"] is True
-    assert body["shard_cache"] == {
+    shard_cache = body["shard_cache"]
+    assert isinstance(shard_cache, dict)
+    assert {
+        key: shard_cache[key]
+        for key in ("dir", "exists", "is_mount", "max_bytes", "copy_timeout_seconds", "copy_inflight")
+    } == {
         "dir": str(tmp_path / "cache"),
         "exists": False,
         "is_mount": False,
         "max_bytes": 64,
+        "copy_timeout_seconds": None,
+        "copy_inflight": 0,
     }
+    assert isinstance(shard_cache["copy_timeouts_total"], int)
+    assert isinstance(shard_cache["copy_failures_total"], int)
     assert body["async_sweep"] == {
         "enabled": True,
         "inflight_count": 0,
@@ -879,8 +1333,10 @@ def test_fast_health_reports_async_sweep_queue_config(
         "priority_queued_count": 0,
         "background_queued_count": 0,
         "max_inflight": 2,
+        "priority_max_inflight": 3,
         "max_queue": 16,
         "priority_burst": True,
+        "workers": fullraw_index._auto_sweep_workers(2),
     }
 
 
@@ -913,6 +1369,8 @@ def test_sweep_queue_summary_counts_priority_and_background_jobs() -> None:
         max_inflight=2,
         max_queue=16,
         priority_burst=True,
+        priority_max_inflight=4,
+        workers=8,
         enabled=True,
     ) == {
         "enabled": True,
@@ -921,9 +1379,53 @@ def test_sweep_queue_summary_counts_priority_and_background_jobs() -> None:
         "priority_queued_count": 1,
         "background_queued_count": 1,
         "max_inflight": 2,
+        "priority_max_inflight": 4,
         "max_queue": 16,
         "priority_burst": True,
+        "workers": 8,
     }
+
+
+def test_stale_sweep_inflight_prune_releases_only_expired_keys() -> None:
+    inflight = {"fresh", "orphan", "stale"}
+    started = {"fresh": 95.0, "stale": 10.0}
+
+    stale = fullraw_index._prune_stale_sweep_inflight(
+        inflight,
+        started,
+        now=100.0,
+        stale_after_seconds=60.0,
+    )
+
+    assert set(stale) == {"orphan", "stale"}
+    assert inflight == {"fresh"}
+    assert started == {"fresh": 95.0}
+
+
+def test_sweep_watchdog_tick_reclaims_stale_slot_and_promotes_queue() -> None:
+    inflight = {"stale"}
+    started = {"stale": 10.0}
+    queued = {"next"}
+    job = fullraw_index.SweepJob("next", "next query", 10, 1900, 2100, "relevance", [])
+    queued_jobs = {"next": job}
+
+    stale, next_jobs = fullraw_index._sweep_watchdog_tick(
+        sweep_inflight=inflight,
+        sweep_inflight_started=started,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_inflight=1,
+        allow_priority_burst=False,
+        stale_after_seconds=60.0,
+        now=100.0,
+    )
+
+    assert stale == ("stale",)
+    assert next_jobs == [job]
+    assert inflight == {"next"}
+    assert started == {"next": 100.0}
+    assert queued == set()
+    assert queued_jobs == {}
 
 
 def test_sweep_cache_write_preserves_highest_progress(tmp_path: Path) -> None:
@@ -1082,7 +1584,9 @@ def test_repolled_queued_sweep_job_gets_next_lane_without_reordering_rest() -> N
 
 def test_priority_sweep_job_gets_next_lane_before_background_queue() -> None:
     older = fullraw_index.SweepJob("older", "older query", 10, 1900, 2100, "relevance", [])
-    target = fullraw_index.SweepJob("target", "target query", 10, 1900, 2100, "relevance", [])
+    target = fullraw_index.SweepJob(
+        "target", "target query", 10, 1900, 2100, "relevance", [], priority=True
+    )
     later = fullraw_index.SweepJob("later", "later query", 10, 1900, 2100, "relevance", [])
     queued = {"older", "target", "later"}
     queued_jobs = {"older": older, "later": later}
@@ -1097,6 +1601,57 @@ def test_priority_sweep_job_gets_next_lane_before_background_queue() -> None:
 
     assert next_job == target
     assert list(queued_jobs) == ["older", "later"]
+
+
+def test_repolled_background_job_cannot_jump_ahead_of_priority_queue() -> None:
+    target = fullraw_index.SweepJob(
+        "target", "target query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    background_old = fullraw_index.SweepJob(
+        "background", "old query", 10, 1900, 2100, "relevance", []
+    )
+    background_new = fullraw_index.SweepJob(
+        "background", "fresh query", 10, 1900, 2100, "relevance", []
+    )
+    later = fullraw_index.SweepJob("later", "later query", 10, 1900, 2100, "relevance", [])
+    queued = {"target", "background", "later"}
+    queued_jobs = {"target": target, "background": background_old, "later": later}
+
+    fullraw_index._queue_sweep_job_with_priority(
+        queued_jobs,
+        "background",
+        background_new,
+        priority=False,
+    )
+    next_job = fullraw_index._take_next_queued_sweep_job(
+        sweep_inflight=set(),
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_inflight=1,
+    )
+
+    assert next_job == target
+    assert list(queued_jobs) == ["background", "later"]
+    assert queued_jobs["background"] == background_new
+
+
+def test_background_repoll_cannot_downgrade_existing_priority_job() -> None:
+    target = fullraw_index.SweepJob(
+        "target", "target query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    background_repoll = fullraw_index.SweepJob(
+        "target", "target query", 10, 1900, 2100, "relevance", []
+    )
+    queued_jobs = {"target": target}
+
+    fullraw_index._queue_sweep_job_with_priority(
+        queued_jobs,
+        "target",
+        background_repoll,
+        priority=False,
+    )
+
+    assert queued_jobs == {"target": target}
 
 
 def test_sweep_queue_cap_keeps_priority_before_background() -> None:
@@ -1218,6 +1773,46 @@ def test_priority_burst_lane_is_bounded() -> None:
     assert queued_jobs == {"target": target}
 
 
+def test_priority_sweep_job_uses_configured_priority_inflight_ceiling() -> None:
+    inflight = {"background", "first-priority"}
+    queued = {"target"}
+    target = fullraw_index.SweepJob("target", "target query", 10, 1900, 2100, "relevance", [], priority=True)
+    queued_jobs = {"target": target}
+
+    next_job = fullraw_index._take_next_queued_sweep_job(
+        sweep_inflight=inflight,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_inflight=1,
+        priority_max_inflight=3,
+    )
+
+    assert next_job == target
+    assert inflight == {"background", "first-priority", "target"}
+    assert queued == set()
+    assert queued_jobs == {}
+
+
+def test_configured_priority_inflight_ceiling_remains_bounded() -> None:
+    inflight = {"background", "first-priority", "second-priority"}
+    queued = {"target"}
+    target = fullraw_index.SweepJob("target", "target query", 10, 1900, 2100, "relevance", [], priority=True)
+    queued_jobs = {"target": target}
+
+    next_job = fullraw_index._take_next_queued_sweep_job(
+        sweep_inflight=inflight,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_inflight=1,
+        priority_max_inflight=3,
+    )
+
+    assert next_job is None
+    assert inflight == {"background", "first-priority", "second-priority"}
+    assert queued == {"target"}
+    assert queued_jobs == {"target": target}
+
+
 def test_full_sweep_order_reuses_cache_without_query_bias(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1242,7 +1837,7 @@ def test_full_sweep_order_reuses_cache_without_query_bias(
     ]
 
 
-def test_complete_sweep_retries_failed_shards() -> None:
+def test_complete_sweep_retries_failed_shards_until_coverage_is_complete() -> None:
     receipt = {
         "sweep_failed_paths": ("shard_a.sqlite", "shard_b.sqlite"),
         "sweep_remaining_shards": 4,
@@ -1270,6 +1865,47 @@ def test_complete_sweep_retries_failed_shards() -> None:
     ) == 2
 
 
+def test_complete_sweep_defers_timed_out_front_shards(tmp_path: Path) -> None:
+    entries = [_entry(tmp_path, idx, "openalex") for idx in range(4)]
+
+    first, deferred = fullraw_index._next_sweep_pass_entries(
+        entries,
+        completed_path_strings=set(),
+        failed_path_strings=set(),
+        deferred_path_strings={str(entries[0].path), str(entries[1].path)},
+        limit=2,
+    )
+    second, reset_deferred = fullraw_index._next_sweep_pass_entries(
+        entries,
+        completed_path_strings={str(entries[2].path), str(entries[3].path)},
+        failed_path_strings=set(),
+        deferred_path_strings=deferred,
+        limit=2,
+    )
+
+    assert [entry.path for entry in first] == [entries[2].path, entries[3].path]
+    assert second == entries[:2]
+    assert reset_deferred == set()
+
+
+def test_complete_sweep_does_not_poison_missed_pass_entries(tmp_path: Path) -> None:
+    pass_entries = [_entry(tmp_path, index, "openalex") for index in range(3)]
+    completed = {str(pass_entries[0].path)}
+
+    assert fullraw_index._sweep_pass_failed_path_strings(
+        pass_entries,
+        completed_path_strings=completed,
+        existing_failed_path_strings=set(),
+        require_complete_sweep=True,
+    ) == set()
+    assert fullraw_index._sweep_pass_failed_path_strings(
+        pass_entries,
+        completed_path_strings=completed,
+        existing_failed_path_strings=set(),
+        require_complete_sweep=False,
+    ) == {str(pass_entries[1].path), str(pass_entries[2].path)}
+
+
 def test_shard_search_materializes_before_isolated_worker(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1278,9 +1914,12 @@ def test_shard_search_materializes_before_isolated_worker(
     materialized = tmp_path / "local.sqlite"
     searched: list[Path] = []
 
-    def fake_materialized(path: Path, *, preserve: set[Path] | None = None) -> Path:
+    populate_seen: list[bool] = []
+
+    def fake_materialized(path: Path, *, preserve: set[Path] | None = None, populate: bool = False) -> Path:
         assert path == original
         assert preserve == set()
+        populate_seen.append(populate)
         return materialized
 
     def fake_search(path: Path, *_args: object) -> list[dict[str, object]]:
@@ -1304,6 +1943,7 @@ def test_shard_search_materializes_before_isolated_worker(
     assert searched == [materialized]
     assert completed_paths == [original]
     assert hits[0]["title"] == "Metformin longevity"
+    assert populate_seen == [True]
     assert timed_out is False
 
 
@@ -1316,18 +1956,18 @@ def test_shard_search_preserves_materialized_batch_before_worker_search(
     local_a = tmp_path / "local-a.sqlite"
     local_b = tmp_path / "local-b.sqlite"
     live_cache_paths: set[Path] = set()
-    preserve_seen_for_b: set[Path] | None = None
+    preserve_seen: list[set[Path]] = []
 
-    def fake_materialized(path: Path, *, preserve: set[Path] | None = None) -> Path:
-        nonlocal preserve_seen_for_b
+    populate_seen: list[bool] = []
+
+    def fake_materialized(path: Path, *, preserve: set[Path] | None = None, populate: bool = False) -> Path:
+        populate_seen.append(populate)
         preserve = preserve or set()
+        preserve_seen.append(set(preserve))
         if path == remote_a:
             live_cache_paths.add(local_a)
             return local_a
         if path == remote_b:
-            preserve_seen_for_b = set(preserve)
-            if local_a not in preserve:
-                live_cache_paths.discard(local_a)
             live_cache_paths.add(local_b)
             return local_b
         raise AssertionError(path)
@@ -1351,9 +1991,50 @@ def test_shard_search_preserves_materialized_batch_before_worker_search(
         timeout_seconds=5,
     )
 
-    assert preserve_seen_for_b == {local_a}
     assert completed_paths == [remote_a, remote_b]
     assert {hit["title"] for hit in hits} == {"local-a", "local-b"}
+    assert populate_seen == [True, True]
+    assert preserve_seen == [set(), set()]
+    assert timed_out is False
+
+
+def test_shard_search_materializes_batch_concurrently(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    remotes = [tmp_path / f"remote-{index}.sqlite" for index in range(3)]
+    locals_by_remote = {path: tmp_path / f"local-{path.stem}.sqlite" for path in remotes}
+    barrier = threading.Barrier(len(remotes))
+    materialized: list[Path] = []
+
+    def fake_materialized(path: Path, *, preserve: set[Path] | None = None, populate: bool = False) -> Path:
+        del preserve
+        assert populate is True
+        materialized.append(path)
+        barrier.wait(timeout=1.0)
+        return locals_by_remote[path]
+
+    monkeypatch.setattr(fullraw_index, "_materialized_shard_path", fake_materialized)
+    monkeypatch.setattr(
+        fullraw_index,
+        "_search_one_shard_for_pool",
+        lambda path, *_args: [{"title": path.stem, "score": 1.0}],
+    )
+
+    hits, completed_paths, timed_out, _metrics = fullraw_index._search_shard_paths_with_paths_and_receipt(
+        remotes,
+        "metformin longevity",
+        limit=3,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        workers=3,
+        timeout_seconds=5,
+    )
+
+    assert set(materialized) == set(remotes)
+    assert set(completed_paths) == set(remotes)
+    assert {hit["title"] for hit in hits} == {path.stem for path in locals_by_remote.values()}
     assert timed_out is False
 
 
@@ -1366,8 +2047,11 @@ def test_shard_search_caps_worker_batch_to_cache_budget(
         path.write_bytes(b"x" * 6)
     preserve_sizes: list[int] = []
 
-    def fake_materialized(path: Path, *, preserve: set[Path] | None = None) -> Path:
+    populate_seen: list[bool] = []
+
+    def fake_materialized(path: Path, *, preserve: set[Path] | None = None, populate: bool = False) -> Path:
         preserve_sizes.append(len(preserve or set()))
+        populate_seen.append(populate)
         return tmp_path / f"local-{path.stem}.sqlite"
 
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "24")
@@ -1391,6 +2075,7 @@ def test_shard_search_caps_worker_batch_to_cache_budget(
     )
 
     assert preserve_sizes == [0, 0, 0, 0]
+    assert populate_seen == [True, True, True, True]
     assert completed_paths == remotes
     assert timed_out is False
 
@@ -1408,9 +2093,107 @@ def test_shard_search_caps_worker_batch_to_cache_budget(
         timeout_seconds=5,
     )
 
-    assert preserve_sizes == [0, 0, 1, 2]
+    assert preserve_sizes == [0, 0, 0, 0]
     assert set(completed_paths) == set(remotes)
     assert timed_out is False
+
+
+def test_cache_fit_batch_only_reserves_burst_lane_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    remotes = [tmp_path / f"remote-{idx}.sqlite" for idx in range(3)]
+    for path in remotes:
+        path.write_bytes(b"x" * 5)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "20")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT", "2")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "0")
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", raising=False)
+
+    assert fullraw_index._cache_fit_path_batch(remotes, start=0, worker_count=3) == remotes[:2]
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "1")
+
+    assert fullraw_index._cache_fit_path_batch(remotes, start=0, worker_count=3) == remotes[:1]
+
+
+def test_cache_fit_batch_keeps_parallel_batch_when_cache_budget_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    remotes = [tmp_path / f"remote-{idx}.sqlite" for idx in range(3)]
+    for path in remotes:
+        path.write_bytes(b"x" * 5)
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "auto")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_BYTES", "500")
+    monkeypatch.setattr(
+        "v5_memo.fullraw_index.shutil.disk_usage",
+        lambda _path: _FakeDiskUsage(total=1000, used=800, free=200),
+    )
+
+    assert fullraw_index._cache_fit_path_batch(remotes, start=0, worker_count=3) == remotes
+
+
+def test_cache_fit_batch_uses_worker_cache_as_scheduler_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    remotes = [tmp_path / f"remote-{idx}.sqlite" for idx in range(3)]
+    for path, size in zip(remotes, (30, 6, 6), strict=True):
+        path.write_bytes(b"x" * size)
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "100")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", "6")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT", "1")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", "0")
+
+    assert fullraw_index._cache_fit_path_batch(remotes, start=0, worker_count=3) == remotes[:1]
+    assert fullraw_index._cache_fit_path_batch(remotes, start=1, worker_count=2) == remotes[1:]
+
+
+def test_cache_fit_warm_entries_defers_oversized_remote_shards(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    entries = [
+        ShardCatalogEntry(
+            tmp_path / "huge.sqlite",
+            0,
+            0,
+            ("openalex",),
+            1,
+            10,
+            20,
+            topic_terms=("platform",),
+        ),
+        *[
+            ShardCatalogEntry(
+                tmp_path / f"small-{idx}.sqlite",
+                idx + 1,
+                0,
+                ("openalex",),
+                1,
+                10,
+                6,
+                topic_terms=("platform",),
+            )
+            for idx in range(4)
+        ],
+    ]
+    for entry in entries:
+        entry.path.write_bytes(b"x" * entry.bytes_used)
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "10")
+
+    ordered = fullraw_index._cache_fit_warm_entries(
+        entries,
+        entries,
+        query="platform strategy",
+        target_ready=len(entries),
+    )
+
+    assert ordered[-1] == entries[0]
+    assert {entry.path for entry in ordered} == {entry.path for entry in entries}
 
 
 class _FakeDiskUsage(NamedTuple):
@@ -1436,6 +2219,25 @@ def test_shard_local_cache_auto_budget_uses_free_space(
     assert fullraw_index._shard_local_cache_max_bytes() == 360
 
 
+def test_shard_local_cache_auto_budget_honors_min_free_gb(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "ready.sqlite").write_bytes(b"x" * 10)
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "auto")
+    monkeypatch.delenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_BYTES", raising=False)
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_GB", "0.0000002")
+    monkeypatch.setattr(
+        "v5_memo.fullraw_index.shutil.disk_usage",
+        lambda _path: _FakeDiskUsage(total=1000, used=600, free=400),
+    )
+
+    assert fullraw_index._shard_local_cache_max_bytes() == 196
+
+
 def test_materialized_shard_path_does_not_recache_local_cache_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1448,6 +2250,91 @@ def test_materialized_shard_path_does_not_recache_local_cache_path(
 
     assert fullraw_index._shard_cache_path(cached) is None
     assert fullraw_index._materialized_shard_path(cached) == cached
+
+
+def test_shard_cache_copy_timeout_kills_stalled_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class StalledCopy:
+        def __init__(self) -> None:
+            self.killed = False
+            self.waits = 0
+
+        def wait(self, *, timeout: float) -> int:
+            self.waits += 1
+            if not self.killed:
+                raise subprocess.TimeoutExpired(cmd="copy", timeout=timeout)
+            return -9
+
+        def kill(self) -> None:
+            self.killed = True
+
+    stalled = StalledCopy()
+
+    def fake_popen(*_args: object, **_kwargs: object) -> StalledCopy:
+        return stalled
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monotonic = iter((0.0, 0.0, 0.02))
+    monkeypatch.setattr("v5_memo.fullraw_index.time.monotonic", lambda: next(monotonic))
+
+    before = fullraw_index._shard_local_cache_health()
+    before_timeouts = before["copy_timeouts_total"]
+    before_failures = before["copy_failures_total"]
+    assert isinstance(before_timeouts, int)
+    assert isinstance(before_failures, int)
+    with pytest.raises(TimeoutError, match="shard cache copy made no progress"):
+        fullraw_index._copy2_with_timeout(
+            Path("remote.sqlite"),
+            Path("local.sqlite"),
+            timeout_seconds=0.01,
+        )
+
+    assert stalled.killed
+    assert stalled.waits == 2
+    after = fullraw_index._shard_local_cache_health()
+    assert after["copy_inflight"] == 0
+    assert after["copy_timeouts_total"] == before_timeouts + 1
+    assert after["copy_failures_total"] == before_failures + 1
+
+
+def test_shard_cache_copy_timeout_resets_when_copy_progresses(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "local.sqlite"
+
+    class ProgressingCopy:
+        waits = 0
+
+        def wait(self, *, timeout: float) -> int:
+            del timeout
+            self.waits += 1
+            if self.waits < 3:
+                target.write_bytes(b"x" * self.waits)
+                raise subprocess.TimeoutExpired(cmd="copy", timeout=0.01)
+            return 0
+
+        def kill(self) -> None:
+            raise AssertionError("progressing copy must not be killed")
+
+    progressing = ProgressingCopy()
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: progressing)
+    monotonic = iter((0.0, 0.0, 0.02, 0.02, 0.04, 0.04))
+    monkeypatch.setattr("v5_memo.fullraw_index.time.monotonic", lambda: next(monotonic))
+
+    before = fullraw_index._shard_local_cache_health()
+    fullraw_index._copy2_with_timeout(
+        Path("remote.sqlite"),
+        target,
+        timeout_seconds=0.01,
+    )
+    after = fullraw_index._shard_local_cache_health()
+
+    assert progressing.waits == 3
+    assert after["copy_inflight"] == 0
+    assert after["copy_timeouts_total"] == before["copy_timeouts_total"]
+    assert after["copy_failures_total"] == before["copy_failures_total"]
 
 
 def test_materialized_shard_path_does_not_copy_missing_cache_without_populate(
@@ -1467,6 +2354,266 @@ def test_materialized_shard_path_does_not_copy_missing_cache_without_populate(
 
     assert fullraw_index._materialized_shard_path(remote) == remote
     assert fullraw_index._cached_materialized_shard_path(remote) is None
+
+
+def test_materialized_shard_path_skips_populate_when_cache_budget_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    cached = cache_dir / "old.sqlite"
+    cached.write_bytes(b"old cache")
+    remote = tmp_path / "remote" / "fullraw_shard_0001.sqlite"
+    remote.parent.mkdir()
+    remote.write_text("remote shard", encoding="utf-8")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "auto")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_BYTES", "500")
+    monkeypatch.setattr(
+        "v5_memo.fullraw_index.shutil.disk_usage",
+        lambda _path: _FakeDiskUsage(total=1000, used=800, free=200),
+    )
+
+    def fail_copy(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("cache budget is exhausted; should search remote shard directly")
+
+    monkeypatch.setattr("v5_memo.fullraw_index.shutil.copy2", fail_copy)
+
+    assert fullraw_index._materialized_shard_path(remote, populate=True) == remote
+    assert fullraw_index._cached_materialized_shard_path(remote) is None
+    assert not cached.exists()
+
+
+def test_materialized_shard_path_evicts_for_existing_reservations(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    remote = tmp_path / "remote" / "fullraw_shard_0001.sqlite"
+    remote.parent.mkdir()
+    remote.write_bytes(b"data")
+    cache_dir.mkdir()
+    old_cache = cache_dir / "old.sqlite"
+    old_cache.write_bytes(b"xxxx")
+    reserved = cache_dir / ".reserved.sqlite.tmp.1.1"
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "10")
+    with fullraw_index._SHARD_LOCAL_CACHE_LOCK:
+        fullraw_index._SHARD_LOCAL_CACHE_IN_PROGRESS.clear()
+        fullraw_index._SHARD_LOCAL_CACHE_RESERVED_BYTES.clear()
+        fullraw_index._SHARD_LOCAL_CACHE_IN_PROGRESS.add(reserved)
+        fullraw_index._SHARD_LOCAL_CACHE_RESERVED_BYTES[reserved] = 4
+    try:
+        materialized = fullraw_index._materialized_shard_path(remote, populate=True)
+    finally:
+        with fullraw_index._SHARD_LOCAL_CACHE_LOCK:
+            fullraw_index._SHARD_LOCAL_CACHE_IN_PROGRESS.clear()
+            fullraw_index._SHARD_LOCAL_CACHE_RESERVED_BYTES.clear()
+
+    assert materialized != remote
+    assert materialized.exists()
+    assert not old_cache.exists()
+
+
+def test_materialized_shard_path_avoids_remote_stat_when_cache_budget_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    remote = tmp_path / "remote" / "fullraw_shard_0001.sqlite"
+    remote.parent.mkdir()
+    remote.write_text("remote shard", encoding="utf-8")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "auto")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_BYTES", "500")
+    monkeypatch.setattr(
+        "v5_memo.fullraw_index.shutil.disk_usage",
+        lambda _path: _FakeDiskUsage(total=1000, used=800, free=200),
+    )
+    original_stat = Path.stat
+
+    def guarded_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if path == remote:
+            raise AssertionError("remote stat should be skipped when cache budget is exhausted")
+        return original_stat(path, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", guarded_stat)
+
+    assert fullraw_index._materialized_shard_path(remote, populate=True) == remote
+
+
+def test_materialized_shard_path_populates_when_worker_cache_cap_exceeded(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    remote = tmp_path / "remote" / "fullraw_shard_0001.sqlite"
+    remote.parent.mkdir()
+    remote.write_bytes(b"large")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", str(1024))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", "2")
+
+    materialized = fullraw_index._materialized_shard_path(remote, populate=True)
+
+    assert materialized != remote
+    assert materialized.exists()
+    assert materialized.read_bytes() == b"large"
+    assert fullraw_index._cached_materialized_shard_path(remote) == materialized
+
+
+def test_materialized_shard_path_skips_populate_when_available_cache_too_small(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    remote = tmp_path / "remote" / "fullraw_shard_0001.sqlite"
+    remote.parent.mkdir()
+    remote.write_bytes(b"large")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "2")
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB", raising=False)
+
+    def fail_copy(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("shard larger than cache budget should be searched remotely")
+
+    monkeypatch.setattr("v5_memo.fullraw_index.shutil.copy2", fail_copy)
+
+    assert fullraw_index._materialized_shard_path(remote, populate=True) == remote
+
+
+def test_materialized_shard_path_populates_without_worker_cache_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    remote = tmp_path / "remote" / "fullraw_shard_0001.sqlite"
+    remote.parent.mkdir()
+    remote.write_bytes(b"remote shard")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.delenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB", raising=False)
+
+    materialized = fullraw_index._materialized_shard_path(remote, populate=True)
+
+    assert materialized != remote
+    assert materialized.exists()
+    assert materialized.read_bytes() == b"remote shard"
+
+
+def test_materialized_shard_path_serializes_same_target_copy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    remote = tmp_path / "remote" / "fullraw_shard_0001.sqlite"
+    remote.parent.mkdir()
+    remote.write_bytes(b"remote shard")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    with fullraw_index._SHARD_LOCAL_CACHE_LOCK:
+        fullraw_index._SHARD_LOCAL_CACHE_IN_PROGRESS.clear()
+
+    copy_entered = threading.Event()
+    release_copy = threading.Event()
+    copied: list[Path] = []
+    errors: list[BaseException] = []
+    results: list[Path] = []
+
+    def slow_copy(source: Path, target: Path) -> None:
+        copied.append(target)
+        copy_entered.set()
+        assert release_copy.wait(timeout=2), "copy was not released"
+        target.write_bytes(source.read_bytes())
+
+    def materialize() -> None:
+        try:
+            results.append(fullraw_index._materialized_shard_path(remote, populate=True))
+        except BaseException as exc:  # pragma: no cover - reported below
+            errors.append(exc)
+
+    monkeypatch.setattr("v5_memo.fullraw_index.shutil.copy2", slow_copy)
+
+    first = threading.Thread(target=materialize)
+    second = threading.Thread(target=materialize)
+    first.start()
+    assert copy_entered.wait(timeout=2)
+    second.start()
+    time.sleep(0.05)
+    assert len(copied) == 1
+    release_copy.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert len(copied) == 1
+    assert len(results) == 2
+    assert results[0] == results[1]
+    assert results[0].read_bytes() == b"remote shard"
+
+
+def test_materialized_shard_path_respects_active_copy_reservations(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    remote_dir = tmp_path / "remote"
+    remote_dir.mkdir()
+    first_remote = remote_dir / "fullraw_shard_0001.sqlite"
+    second_remote = remote_dir / "fullraw_shard_0002.sqlite"
+    first_remote.write_bytes(b"a" * 8)
+    second_remote.write_bytes(b"b" * 8)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "10")
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_SWEEP_WORKER_CACHE_BYTES", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", raising=False)
+    with fullraw_index._SHARD_LOCAL_CACHE_LOCK:
+        fullraw_index._SHARD_LOCAL_CACHE_IN_PROGRESS.clear()
+        fullraw_index._SHARD_LOCAL_CACHE_RESERVED_BYTES.clear()
+
+    copy_entered = threading.Event()
+    release_copy = threading.Event()
+    copied: list[Path] = []
+    errors: list[BaseException] = []
+    results: list[Path] = []
+
+    def slow_copy(source: Path, target: Path) -> None:
+        copied.append(source)
+        if source == second_remote:
+            raise AssertionError("second shard should not be copied past the cache cap")
+        copy_entered.set()
+        assert release_copy.wait(timeout=2), "copy was not released"
+        target.write_bytes(source.read_bytes())
+
+    def materialize_first() -> None:
+        try:
+            results.append(fullraw_index._materialized_shard_path(first_remote, populate=True))
+        except BaseException as exc:  # pragma: no cover - reported below
+            errors.append(exc)
+
+    monkeypatch.setattr("v5_memo.fullraw_index.shutil.copy2", slow_copy)
+
+    first = threading.Thread(target=materialize_first)
+    first.start()
+    assert copy_entered.wait(timeout=2)
+
+    assert fullraw_index._materialized_shard_path(second_remote, populate=True) == second_remote
+
+    release_copy.set()
+    first.join(timeout=2)
+
+    assert not first.is_alive()
+    assert errors == []
+    assert copied == [first_remote]
+    assert len(results) == 1
+    assert results[0] != first_remote
+    assert results[0].read_bytes() == b"a" * 8
+    with fullraw_index._SHARD_LOCAL_CACHE_LOCK:
+        assert fullraw_index._SHARD_LOCAL_CACHE_RESERVED_BYTES == {}
 
 
 def test_shard_catalog_cache_round_trips_entries(tmp_path: Path) -> None:
@@ -1491,6 +2638,50 @@ def test_shard_catalog_cache_round_trips_entries(tmp_path: Path) -> None:
     loaded = fullraw_index.load_shard_catalog_cache(cache_path)
 
     assert loaded == [entry]
+
+
+def test_shard_catalog_cache_rejects_entries_outside_current_root(tmp_path: Path) -> None:
+    shared_root = tmp_path / "shared"
+    isolated_root = tmp_path / "isolated"
+    shared_entry = ShardCatalogEntry(
+        path=shared_root / "batch_00001" / "fullraw_shard_0000.sqlite",
+        batch_id=1,
+        shard_id=0,
+        sources=("openalex",),
+        files_completed=1,
+        papers_inserted=10,
+        bytes_used=1024,
+    )
+    isolated_entry = replace(shared_entry, path=isolated_root / "batch_00001" / "fullraw_shard_0000.sqlite")
+
+    assert fullraw_index._catalog_entries_match_shard_dir([isolated_entry], isolated_root)
+    assert not fullraw_index._catalog_entries_match_shard_dir([shared_entry], isolated_root)
+
+
+def test_shard_catalog_cache_remaps_entries_to_current_root(tmp_path: Path) -> None:
+    shared_root = tmp_path / "shared"
+    isolated_root = tmp_path / "isolated"
+    shared_entry = ShardCatalogEntry(
+        path=shared_root / "batch_00001" / "fullraw_shard_0002.sqlite",
+        batch_id=1,
+        shard_id=2,
+        sources=("openalex",),
+        files_completed=3,
+        papers_inserted=42,
+        bytes_used=2048,
+        year_min=2001,
+        year_max=2024,
+        cited_by_min=1,
+        cited_by_max=50,
+        cited_by_avg=8.5,
+        topic_terms=("resveratrol",),
+    )
+
+    remapped = fullraw_index._remap_catalog_entries_to_shard_dir([shared_entry], isolated_root)
+
+    assert remapped == [
+        replace(shared_entry, path=isolated_root / "batch_00001" / "fullraw_shard_0002.sqlite")
+    ]
 
 
 def test_select_search_shard_entries_balances_sources_and_rotates_by_query(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1548,6 +2739,9 @@ def test_sweep_passes_do_not_invent_side_queries(tmp_path: Path) -> None:
     assert [item.role for item in passes] == ["focused", "citation_heavy", "recency"]
     assert all("risk" not in item.query and "patients" not in item.query for item in passes)
     assert fullraw_index._sweep_search_passes("resveratrol blunts exercise training", entries, rank_mode="relevance")[0].query == "resveratrol blunts training"
+    metformin_adaptation_query = fullraw_index._sweep_search_passes("metformin resistance training adaptation", entries, rank_mode="relevance")[0].query
+    assert "resistance" in metformin_adaptation_query
+    assert metformin_adaptation_query != "metformin training adaptation"
     metformin_query = fullraw_index._sweep_search_passes("metformin blunts muscle hypertrophy progressive resistance training", entries, rank_mode="relevance")[0].query
     assert metformin_query.startswith("metformin ")
     assert "blunts" in metformin_query
@@ -1567,6 +2761,24 @@ def test_sweep_passes_do_not_invent_side_queries(tmp_path: Path) -> None:
     cwi_passes = fullraw_index._sweep_search_passes("cold water immersion resistance training", cwi_entries, rank_mode="relevance")
     assert {item.query for item in cwi_passes} == {"cold immersion training"}
     assert all(item.query != "water resistance training" for item in cwi_passes)
+    protein_entries = [
+        ShardCatalogEntry(
+            path=(tmp_path / f"protein_{idx}.sqlite"),
+            batch_id=idx,
+            shard_id=0,
+            sources=("openalex",),
+            files_completed=1,
+            papers_inserted=10,
+            bytes_used=6,
+            topic_terms=terms,
+        )
+        for idx, terms in enumerate((
+            ("protein", "distribution", "synthesis"),
+            ("timing", "muscle", "protein"),
+        ))
+    ]
+    protein_passes = fullraw_index._sweep_search_passes("protein timing distribution muscle synthesis", protein_entries, rank_mode="relevance")
+    assert {item.query for item in protein_passes} == {"protein timing muscle"}
 
 def test_materialized_shard_cache_evicts_old_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cache_dir = tmp_path / "cache"
@@ -1581,6 +2793,132 @@ def test_materialized_shard_cache_evicts_old_entries(tmp_path: Path, monkeypatch
     assert not old.exists()
     assert newer.exists()
     assert keep.exists()
+
+
+def test_materialized_shard_cache_preserves_fresh_temp_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    fresh_tmp = cache_dir / ".fresh.sqlite.tmp.1.1"
+    stale_tmp = cache_dir / ".stale.sqlite.tmp.1.1"
+    keep = cache_dir / "keep.sqlite"
+    for path in (fresh_tmp, stale_tmp, keep):
+        path.write_bytes(b"x" * 6)
+    now = time.time()
+    os.utime(fresh_tmp, (now, now))
+    os.utime(stale_tmp, (1, 1))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "6")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_TMP_TTL_SECONDS", "3600")
+
+    fullraw_index._evict_shard_cache(cache_dir, required_bytes=0, keep=keep)
+
+    assert fresh_tmp.exists()
+    assert not stale_tmp.exists()
+    assert keep.exists()
+
+
+def test_materialized_shard_cache_evicts_dead_pid_temp_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    dead_tmp = cache_dir / ".dead.sqlite.tmp.999999.1"
+    keep = cache_dir / "keep.sqlite"
+    for path in (dead_tmp, keep):
+        path.write_bytes(b"x" * 6)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "6")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_TMP_TTL_SECONDS", "3600")
+
+    def fake_kill(pid: int, sig: int) -> None:
+        del sig
+        if pid == 999999:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(os, "kill", fake_kill)
+
+    fullraw_index._evict_shard_cache(cache_dir, required_bytes=0, keep=keep)
+
+    assert not dead_tmp.exists()
+    assert keep.exists()
+
+
+def test_materialized_shard_cache_preserves_live_pid_temp_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    live_tmp = cache_dir / ".live.sqlite.tmp.123.1"
+    keep = cache_dir / "keep.sqlite"
+    for path in (live_tmp, keep):
+        path.write_bytes(b"x" * 6)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "6")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_TMP_TTL_SECONDS", "3600")
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+
+    fullraw_index._evict_shard_cache(cache_dir, required_bytes=0, keep=keep)
+
+    assert live_tmp.exists()
+    assert keep.exists()
+
+
+def test_auto_sweep_workers_scales_by_inflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(os, "cpu_count", lambda: 16)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_SWEEP_WORKER_CACHE_BYTES", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_SWEEP_WORKER_CACHE_GB", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB", raising=False)
+
+    assert fullraw_index._auto_sweep_workers(1) == 16
+    assert fullraw_index._auto_sweep_workers(2) == 8
+    assert fullraw_index._auto_sweep_workers(0) == 16
+
+
+def test_auto_sweep_workers_ignores_cache_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(os, "cpu_count", lambda: 16)
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", str(8 * 1024 * 1024 * 1024))
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", raising=False)
+    monkeypatch.delenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB", raising=False)
+
+    assert fullraw_index._auto_sweep_workers(2) == 8
+
+
+def test_auto_sweep_workers_respects_cache_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(os, "cpu_count", lambda: 16)
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", str(8 * 1024 * 1024 * 1024))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB", "1")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", "1")
+
+    assert fullraw_index._auto_sweep_workers(2) == 2
+
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", "0")
+
+    assert fullraw_index._auto_sweep_workers(2) == 4
+
+
+def test_auto_sweep_workers_uses_cpu_workers_when_cache_budget_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(os, "cpu_count", lambda: 16)
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", "auto")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_BYTES", "500")
+    monkeypatch.setattr(
+        "v5_memo.fullraw_index.shutil.disk_usage",
+        lambda _path: _FakeDiskUsage(total=1000, used=800, free=200),
+    )
+
+    assert fullraw_index._auto_sweep_workers(2) == 8
 
 
 def test_build_upload_shard_batches_keeps_all_failed_batch_fatal(

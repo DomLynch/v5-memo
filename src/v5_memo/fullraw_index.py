@@ -30,7 +30,7 @@ from concurrent.futures import (
     TimeoutError as FuturesTimeoutError,
 )
 from contextlib import suppress
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -57,7 +57,15 @@ _STOP = frozenset(
 _BACKEND = "researka-fullraw-indexed-fts5"
 _ALPHA_SWEEP_TERMS = frozenset({
     "attenuate", "attenuated", "attenuates", "blunt", "blunted", "blunts",
-    "failed", "impair", "impaired", "impairs", "null", "reduced", "reduces",
+    "endpoint", "failed", "impair", "impaired", "impairs", "null", "primary",
+    "protocol", "reduced", "reduces", "replication", "subgroup", "timing",
+})
+_SWEEP_QUERY_POPULATION_FILLER_TERMS = frozenset({
+    "adult", "adults", "aged", "elderly", "human", "humans", "older", "senior", "seniors",
+})
+_SWEEP_QUERY_FILLER_TERMS = frozenset({
+    *_SWEEP_QUERY_POPULATION_FILLER_TERMS,
+    "function", "muscle", "performance", "strength",
 })
 _FULLRAW_LEGACY_PREFIX = "V5_MEMO_FULL_RAW_"
 _FULLRAW_GENERIC_PREFIX = "RESEARKA_FULLRAW_"
@@ -109,7 +117,13 @@ def _shard_local_cache_max_bytes(cache_dir: Path | None = None) -> int | None:
             for path in target_dir.glob(pattern)
             if path.is_file()
         )
-    return max(0, cache_bytes + usage.free - (usage.total // 20))
+    min_free_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MIN_FREE_BYTES")
+    if min_free_bytes is None:
+        min_free_gb = _float_or_none(
+            _fullraw_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MIN_FREE_GB", "")
+        )
+        min_free_bytes = int(min_free_gb * 1024 * 1024 * 1024) if min_free_gb else usage.total // 20
+    return max(0, cache_bytes + usage.free - min_free_bytes)
 
 
 def _shard_local_cache_health(*, include_dynamic_budget: bool = True) -> dict[str, object]:
@@ -128,20 +142,32 @@ def _shard_local_cache_health(*, include_dynamic_budget: bool = True) -> dict[st
         max_bytes = _positive_int_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES")
         if max_bytes is not None:
             health["max_bytes"] = max_bytes
+    with _SHARD_LOCAL_CACHE_LOCK:
+        health.update({
+            "copy_timeout_seconds": _shard_cache_copy_timeout_seconds(),
+            "copy_inflight": _SHARD_LOCAL_CACHE_COPY_INFLIGHT,
+            "copy_timeouts_total": _SHARD_LOCAL_CACHE_COPY_TIMEOUTS,
+            "copy_failures_total": _SHARD_LOCAL_CACHE_COPY_FAILURES,
+        })
     return health
 
 
 _FULL_COVERAGE_PREFIX_SHARDS = max(1, int(_fullraw_env("V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS", "32")))
-_SWEEP_STRATEGY = "profile_relaxed_v9"
+_SWEEP_STRATEGY = "profile_relaxed_v11"
 _SWEEP_MIN_RESULT_LIMIT = 10
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _SHARD_LOCAL_CACHE_IN_PROGRESS: set[Path] = set()
+_SHARD_LOCAL_CACHE_RESERVED_BYTES: dict[Path, int] = {}
+_SHARD_LOCAL_CACHE_COPY_INFLIGHT = 0
+_SHARD_LOCAL_CACHE_COPY_TIMEOUTS = 0
+_SHARD_LOCAL_CACHE_COPY_FAILURES = 0
 _DEFAULT_TERM_MAP = (
     ("management", ("management", "manager", "managers", "managerial")),
     ("forecast", ("forecast", "forecasts", "forecasting", "guidance", "estimate", "estimates")),
     ("disclosure", ("disclosure", "disclosures", "disclose", "discloses", "disclosed")),
     ("earnings", ("earnings", "income", "profit", "profits")),
     ("analyst", ("analyst", "analysts", "analysis")),
+    ("exercise", ("exercise", "exercises", "training", "trained")),
 )
 
 
@@ -1210,32 +1236,27 @@ def _search_shard_paths_with_paths_and_receipt(
             break
         batch = _cache_fit_path_batch(search_paths, start=start, worker_count=worker_count)
         start += len(batch)
-        search_pairs: list[tuple[Path, Path]] = []
-        for path in batch:
-            if deadline is not None and time.monotonic() >= deadline:
-                timed_out = True
-                break
-            try:
-                preserved = {search_path for _original_path, search_path in search_pairs}
-                search_pairs.append((path, _materialized_shard_path(path, preserve=preserved)))
-            except OSError:
-                continue
-        if timed_out or not search_pairs:
-            break
-        pool = ThreadPoolExecutor(max_workers=max(1, min(worker_count, len(search_pairs))))
+        preserve_paths = {
+            cache_path
+            for path in batch
+            if (cache_path := _shard_cache_path(path)) is not None
+        }
+        pool = ThreadPoolExecutor(max_workers=max(1, min(worker_count, len(batch))))
+        timed_out_batch = False
         try:
             futures = {
                 pool.submit(
-                    _search_one_shard_for_pool,
-                    search_path,
+                    _materialize_and_search_one_shard,
+                    path,
                     query,
                     limit,
                     year_min,
                     year_max,
                     rank_mode,
                     per_shard_timeout,
-                ): original_path
-                for original_path, search_path in search_pairs
+                    preserve_paths,
+                ): path
+                for path in batch
             }
             remaining = None if deadline is None else max(0.05, deadline - time.monotonic())
             for future in as_completed(futures, timeout=remaining):
@@ -1247,22 +1268,40 @@ def _search_shard_paths_with_paths_and_receipt(
                 completed_paths.append(path)
                 hit_groups.append(hits)
         except FuturesTimeoutError:
+            timed_out_batch = True
             timed_out = True
             break
         finally:
-            pool.shutdown(wait=True, cancel_futures=True)
+            pool.shutdown(wait=not timed_out_batch, cancel_futures=True)
     hits, metrics = _merge_hit_groups_with_receipt(hit_groups, limit=limit)
     return hits, completed_paths, timed_out, metrics
+
+
+def _materialize_and_search_one_shard(
+    path: Path,
+    query: str,
+    limit: int,
+    year_min: int,
+    year_max: int,
+    rank_mode: str,
+    timeout_seconds: float | None,
+    preserve: set[Path],
+) -> list[dict[str, object]]:
+    search_path = _materialized_shard_path(path, preserve=preserve, populate=True)
+    return _search_one_shard_for_pool(search_path, query, limit, year_min, year_max, rank_mode, timeout_seconds)
 
 
 def _cache_fit_path_batch(paths: list[Path], *, start: int, worker_count: int) -> list[Path]:
     batch = paths[start:start + worker_count]
     max_cache_bytes = _shard_local_cache_max_bytes()
-    if max_cache_bytes is None or max_cache_bytes <= 0:
+    if max_cache_bytes is None:
+        return batch
+    if max_cache_bytes <= 0:
         return batch
     max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
-    max_inflight += 1
-    budget = max(1, max_cache_bytes // max(1, max_inflight))
+    budget = max(1, max_cache_bytes // _sweep_cache_inflight_lanes(max_inflight))
+    if per_worker_bytes := _sweep_worker_cache_bytes():
+        budget = min(budget, max(1, per_worker_bytes * max(1, worker_count)))
     out: list[Path] = []
     total = 0
     for path in batch:
@@ -1548,7 +1587,12 @@ def _cache_fit_warm_entries(
     if not fit_prefix:
         return selected
     ordered = list(fit_prefix)
-    _extend_unique_entries(ordered, selected, max(len(selected), len(ordered)))
+    selected_paths = {entry.path for entry in ordered}
+    remaining_selected = sorted(
+        (entry for entry in selected if entry.path not in selected_paths),
+        key=candidate_key,
+    )
+    _extend_unique_entries(ordered, remaining_selected, max(len(selected), len(ordered)))
     _extend_unique_entries(ordered, entries, max(len(selected), len(ordered)))
     return ordered
 
@@ -1572,7 +1616,12 @@ def _profile_relaxed_sweep_query(
     *,
     max_terms: int = 3,
 ) -> str:
-    terms = _fts_terms(query)
+    raw_terms = _fts_terms(query)
+    filler_terms = _SWEEP_QUERY_FILLER_TERMS
+    if any(term in _ALPHA_SWEEP_TERMS for term in raw_terms):
+        filler_terms = _SWEEP_QUERY_POPULATION_FILLER_TERMS
+    filtered_terms = tuple(term for term in raw_terms if term not in filler_terms)
+    terms = filtered_terms if len(filtered_terms) >= 2 else raw_terms
     if len(terms) <= max_terms:
         return " ".join(terms)
     profile_counts: Counter[str] = Counter()
@@ -1600,6 +1649,8 @@ def _profile_relaxed_sweep_query(
     ordered = [term for term in terms if term in candidate_terms]
     if len(ordered) > max_terms:
         alpha_terms = [term for term in terms if term in _ALPHA_SWEEP_TERMS and term in ordered]
+        if "resistance" in ordered and "training" in terms and "water" not in terms:
+            alpha_terms = ["resistance", *alpha_terms]
         if alpha_terms:
             protected = list(dict.fromkeys((first, alpha_terms[0])))
             fill = _spread_terms([term for term in ordered if term not in protected], max_terms - len(protected))
@@ -1892,6 +1943,9 @@ def _search_one_shard_isolated(
         stdout, stderr = proc.communicate(timeout=child_timeout + 1.0)
     except subprocess.TimeoutExpired as exc:
         proc.kill()
+        # FUSE-backed SQLite reads can sit in disk wait after SIGKILL. Do not
+        # let one stuck child pin the sweep lane forever; the caller records
+        # this shard as timed out/deferred and moves on.
         with suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=1.0)
         raise TimeoutError(f"isolated shard search timed out: {path}") from exc
@@ -1912,26 +1966,68 @@ def _materialized_shard_path(
     cache_path = _shard_cache_path(path)
     if cache_path is None:
         return path
-    source_stat = path.stat()
     cache_path.parent.mkdir(parents=True, exist_ok=True)
+    if populate:
+        max_cache_bytes = _shard_local_cache_max_bytes(cache_path.parent)
+        if max_cache_bytes is not None and max_cache_bytes <= 0:
+            with _SHARD_LOCAL_CACHE_LOCK:
+                _evict_shard_cache(
+                    cache_path.parent,
+                    required_bytes=0,
+                    keep=cache_path,
+                    preserve=preserve,
+                )
+            return path
+    else:
+        max_cache_bytes = None
+    source_stat = path.stat()
     with _SHARD_LOCAL_CACHE_LOCK:
         if cache_path.exists() and cache_path.stat().st_size == source_stat.st_size:
             os.utime(cache_path, None)
             return cache_path
     if not populate:
         return path
+    if max_cache_bytes is not None and source_stat.st_size > max_cache_bytes:
+        return path
+    while True:
+        with _SHARD_LOCAL_CACHE_LOCK:
+            if cache_path.exists() and cache_path.stat().st_size == source_stat.st_size:
+                os.utime(cache_path, None)
+                return cache_path
+            if cache_path not in _SHARD_LOCAL_CACHE_IN_PROGRESS:
+                _SHARD_LOCAL_CACHE_IN_PROGRESS.add(cache_path)
+                break
+        time.sleep(0.05)
     tmp_path = cache_path.with_name(f".{cache_path.name}.tmp.{os.getpid()}.{threading.get_ident()}")
     base_preserve = preserve or set()
     with _SHARD_LOCAL_CACHE_LOCK:
-        _SHARD_LOCAL_CACHE_IN_PROGRESS.add(tmp_path)
+        reserved_bytes = sum(_SHARD_LOCAL_CACHE_RESERVED_BYTES.values())
         _evict_shard_cache(
             cache_path.parent,
-            required_bytes=source_stat.st_size,
+            required_bytes=reserved_bytes + source_stat.st_size,
+            keep=cache_path,
+            preserve=base_preserve | _SHARD_LOCAL_CACHE_IN_PROGRESS,
+        )
+        if max_cache_bytes is not None:
+            cache_bytes = _shard_cache_used_bytes(cache_path.parent)
+            if cache_bytes + reserved_bytes + source_stat.st_size > max_cache_bytes:
+                _SHARD_LOCAL_CACHE_IN_PROGRESS.discard(cache_path)
+                return path
+        _SHARD_LOCAL_CACHE_RESERVED_BYTES[tmp_path] = source_stat.st_size
+        _SHARD_LOCAL_CACHE_IN_PROGRESS.add(tmp_path)
+        reserved_bytes = sum(_SHARD_LOCAL_CACHE_RESERVED_BYTES.values())
+        _evict_shard_cache(
+            cache_path.parent,
+            required_bytes=reserved_bytes,
             keep=cache_path,
             preserve=base_preserve | _SHARD_LOCAL_CACHE_IN_PROGRESS,
         )
     try:
-        shutil.copy2(path, tmp_path)
+        _copy2_with_timeout(
+            path,
+            tmp_path,
+            timeout_seconds=_shard_cache_copy_timeout_seconds(),
+        )
         with _SHARD_LOCAL_CACHE_LOCK:
             if cache_path.exists() and cache_path.stat().st_size == source_stat.st_size:
                 os.utime(cache_path, None)
@@ -1947,8 +2043,78 @@ def _materialized_shard_path(
             return cache_path
     finally:
         with _SHARD_LOCAL_CACHE_LOCK:
+            _SHARD_LOCAL_CACHE_IN_PROGRESS.discard(cache_path)
             _SHARD_LOCAL_CACHE_IN_PROGRESS.discard(tmp_path)
+            _SHARD_LOCAL_CACHE_RESERVED_BYTES.pop(tmp_path, None)
         tmp_path.unlink(missing_ok=True)
+
+
+def _shard_cache_copy_timeout_seconds() -> float | None:
+    raw = _fullraw_env(
+        "V5_MEMO_FULL_RAW_SHARD_CACHE_COPY_TIMEOUT_SECONDS",
+        _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_TIMEOUT_SECONDS", ""),
+    )
+    timeout = _float_or_none(raw)
+    return timeout if timeout is not None and timeout > 0 else None
+
+
+def _copy2_with_timeout(source: Path, target: Path, *, timeout_seconds: float | None) -> None:
+    global _SHARD_LOCAL_CACHE_COPY_FAILURES
+    global _SHARD_LOCAL_CACHE_COPY_INFLIGHT
+    global _SHARD_LOCAL_CACHE_COPY_TIMEOUTS
+    if timeout_seconds is None:
+        shutil.copy2(source, target)
+        return
+    with _SHARD_LOCAL_CACHE_LOCK:
+        _SHARD_LOCAL_CACHE_COPY_INFLIGHT += 1
+    try:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import shutil,sys; shutil.copy2(sys.argv[1], sys.argv[2])",
+                str(source),
+                str(target),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        last_size = -1
+        last_progress_at = time.monotonic()
+        while True:
+            remaining = timeout_seconds - (time.monotonic() - last_progress_at)
+            if remaining <= 0:
+                process.kill()
+                with suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=1.0)
+                raise TimeoutError(
+                    f"shard cache copy made no progress for {timeout_seconds:g}s: {source}"
+                )
+            try:
+                returncode = process.wait(timeout=min(1.0, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                try:
+                    current_size = target.stat().st_size
+                except OSError:
+                    current_size = -1
+                if current_size > last_size:
+                    last_size = current_size
+                    last_progress_at = time.monotonic()
+        if returncode != 0:
+            raise OSError(f"shard cache copy failed with exit code {returncode}: {source}")
+    except TimeoutError:
+        with _SHARD_LOCAL_CACHE_LOCK:
+            _SHARD_LOCAL_CACHE_COPY_TIMEOUTS += 1
+            _SHARD_LOCAL_CACHE_COPY_FAILURES += 1
+        raise
+    except OSError:
+        with _SHARD_LOCAL_CACHE_LOCK:
+            _SHARD_LOCAL_CACHE_COPY_FAILURES += 1
+        raise
+    finally:
+        with _SHARD_LOCAL_CACHE_LOCK:
+            _SHARD_LOCAL_CACHE_COPY_INFLIGHT -= 1
 
 
 def _shard_cache_path(path: Path) -> Path | None:
@@ -1979,6 +2145,22 @@ def _cached_materialized_shard_path(path: Path) -> Path | None:
     return None
 
 
+def _cache_tmp_owner_alive(path: Path) -> bool:
+    try:
+        pid = int(path.name.rsplit(".tmp.", 1)[1].split(".", 1)[0])
+    except (IndexError, ValueError):
+        return True
+    if pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def _evict_shard_cache(
     cache_dir: Path,
     *,
@@ -1987,15 +2169,25 @@ def _evict_shard_cache(
     preserve: set[Path] | None = None,
 ) -> None:
     max_bytes = _shard_local_cache_max_bytes(cache_dir)
-    if max_bytes is None or max_bytes <= 0:
+    if max_bytes is None:
         return
     preserved = {path.resolve() for path in (preserve or set())}
-    entries = [
-        path
-        for pattern in ("*.sqlite", "*.sqlite-wal", ".*.sqlite.tmp.*")
-        for path in cache_dir.glob(pattern)
-        if path.is_file() and path != keep and path.resolve() not in preserved
-    ]
+    tmp_ttl_seconds = _float_or_none(
+        _fullraw_env("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_TMP_TTL_SECONDS", "3600")
+    ) or 3600.0
+    now = time.time()
+    entries = []
+    for pattern in ("*.sqlite", "*.sqlite-wal", ".*.sqlite.tmp.*"):
+        for path in cache_dir.glob(pattern):
+            if not path.is_file() or path == keep or path.resolve() in preserved:
+                continue
+            if (
+                ".sqlite.tmp." in path.name
+                and now - path.stat().st_mtime < tmp_ttl_seconds
+                and _cache_tmp_owner_alive(path)
+            ):
+                continue
+            entries.append(path)
     total = sum(path.stat().st_size for path in entries)
     if keep.exists():
         total += keep.stat().st_size
@@ -2012,6 +2204,19 @@ def _evict_shard_cache(
             total -= size
         except OSError:
             continue
+
+
+def _shard_cache_used_bytes(cache_dir: Path) -> int:
+    total = 0
+    for pattern in ("*.sqlite", "*.sqlite-wal", ".*.sqlite.tmp.*"):
+        for path in cache_dir.glob(pattern):
+            if not path.is_file():
+                continue
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+    return total
 
 
 def warm_shard_cache(
@@ -2391,6 +2596,47 @@ def load_shard_catalog_cache(path: Path) -> list[ShardCatalogEntry] | None:
     return entries or None
 
 
+def _catalog_entries_match_shard_dir(entries: list[ShardCatalogEntry], shard_dir: Path) -> bool:
+    if not entries:
+        return False
+    shard_root = str(shard_dir.absolute())
+    for entry in entries:
+        try:
+            if os.path.commonpath((str(entry.path.absolute()), shard_root)) != shard_root:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def _remap_catalog_entries_to_shard_dir(
+    entries: list[ShardCatalogEntry],
+    shard_dir: Path,
+) -> list[ShardCatalogEntry] | None:
+    remapped: list[ShardCatalogEntry] = []
+    for entry in entries:
+        batch_name = entry.path.parent.name
+        shard_name = entry.path.name
+        if not batch_name.startswith("batch_") or not shard_name.startswith("fullraw_shard_"):
+            return None
+        remapped.append(ShardCatalogEntry(
+            path=shard_dir / batch_name / shard_name,
+            batch_id=entry.batch_id,
+            shard_id=entry.shard_id,
+            sources=entry.sources,
+            files_completed=entry.files_completed,
+            papers_inserted=entry.papers_inserted,
+            bytes_used=entry.bytes_used,
+            year_min=entry.year_min,
+            year_max=entry.year_max,
+            cited_by_min=entry.cited_by_min,
+            cited_by_max=entry.cited_by_max,
+            cited_by_avg=entry.cited_by_avg,
+            topic_terms=entry.topic_terms,
+        ))
+    return remapped if _catalog_entries_match_shard_dir(remapped, shard_dir) else None
+
+
 def write_shard_catalog_cache(path: Path, entries: list[ShardCatalogEntry]) -> None:
     _write_json_file(path, {
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -2467,6 +2713,16 @@ def sweep_cache_entry_is_terminal(entry: SweepCacheEntry) -> bool:
     return _int_or_none(entry.receipt.get("sweep_remaining_shards")) == 0
 
 
+def sweep_cache_entry_stopped_no_hits(entry: SweepCacheEntry) -> bool:
+    return entry.receipt.get("sweep_stopped_no_hits") is True
+
+
+def _sweep_cache_entry_should_stop_no_hits(entry: SweepCacheEntry, stop_shards: int) -> bool:
+    if sweep_cache_entry_stopped_no_hits(entry):
+        return True
+    return stop_shards > 0 and not entry.hits and _sweep_cache_entry_progress(entry) >= stop_shards
+
+
 def _sweep_cache_entry_progress(entry: SweepCacheEntry) -> int:
     return _int_or_none(entry.receipt.get("shards_searched")) or 0
 
@@ -2538,7 +2794,7 @@ def sweep_cache_entry_can_answer_request(
 
 
 def _normalize_sweep_cache_query(query: str) -> str:
-    return " ".join(_fts_terms(query))
+    return " ".join(sorted(_fts_terms(query)))
 
 
 def _sweep_cache_entry_queries(entry: SweepCacheEntry) -> set[str]:
@@ -2563,20 +2819,93 @@ def _sweep_cache_entry_matches_request(
     query: str,
     result_limit: int,
     sweep_shard_limit: int,
+    sweep_pass_shard_limit: int,
     sweep_strategy: str,
+    sweep_catalog_scope: str = "",
 ) -> bool:
     receipt = entry.receipt
     if sweep_strategy and receipt.get("sweep_strategy") != sweep_strategy:
+        return False
+    if sweep_catalog_scope and receipt.get("sweep_catalog_scope") != sweep_catalog_scope:
         return False
     if not _sweep_cache_entry_has_result_limit(entry, result_limit):
         return False
     if _int_or_none(receipt.get("sweep_shard_limit")) != sweep_shard_limit:
         return False
-    return _normalize_sweep_cache_query(query) in _sweep_cache_entry_queries(entry)
+    request_query = _normalize_sweep_cache_query(query)
+    cached_queries = _sweep_cache_entry_queries(entry)
+    if request_query in cached_queries:
+        return True
+    if not sweep_cache_entry_is_terminal(entry) or receipt.get("partial_shard_search") is True:
+        return False
+    return any(_sweep_queries_alias_equivalent(request_query, cached_query) for cached_query in cached_queries)
+
+
+def _sweep_cache_entry_matches_active_or_completed_original_query(
+    entry: SweepCacheEntry,
+    *,
+    active_query: str,
+    original_query: str,
+    result_limit: int,
+    sweep_shard_limit: int,
+    sweep_pass_shard_limit: int,
+    sweep_strategy: str,
+    sweep_catalog_scope: str = "",
+) -> bool:
+    if _sweep_cache_entry_matches_request(
+        entry,
+        query=active_query,
+        result_limit=result_limit,
+        sweep_shard_limit=sweep_shard_limit,
+        sweep_pass_shard_limit=sweep_pass_shard_limit,
+        sweep_strategy=sweep_strategy,
+        sweep_catalog_scope=sweep_catalog_scope,
+    ):
+        return True
+    return bool(
+        original_query
+        and sweep_cache_entry_is_terminal(entry)
+        and _sweep_cache_entry_matches_request(
+            entry,
+            query=original_query,
+            result_limit=result_limit,
+            sweep_shard_limit=sweep_shard_limit,
+            sweep_pass_shard_limit=sweep_pass_shard_limit,
+            sweep_strategy=sweep_strategy,
+            sweep_catalog_scope=sweep_catalog_scope,
+        )
+    )
+
+
+def _sweep_queries_alias_equivalent(request_query: str, cached_query: str) -> bool:
+    request_terms = _fts_terms(request_query)
+    cached_terms = _fts_terms(cached_query)
+    if not request_terms or not cached_terms or len(request_terms) != len(cached_terms):
+        return False
+    unmatched = list(cached_terms)
+    for request_term in request_terms:
+        aliases = _term_aliases(request_term)
+        match_index = next((index for index, cached_term in enumerate(unmatched) if cached_term in aliases), None)
+        if match_index is None:
+            return False
+        unmatched.pop(match_index)
+    return True
 
 
 def _sweep_cache_entry_has_result_limit(entry: SweepCacheEntry, result_limit: int) -> bool:
-    return (_int_or_none(entry.receipt.get("sweep_result_limit")) or len(entry.hits)) >= result_limit
+    cached_limit = _int_or_none(entry.receipt.get("sweep_result_limit")) or len(entry.hits)
+    if cached_limit >= result_limit:
+        return True
+    if not sweep_cache_entry_is_terminal(entry):
+        return False
+    returned = _int_or_none(entry.receipt.get("result_count_raw"))
+    if returned is None:
+        returned = _int_or_none(entry.receipt.get("result_count_unique"))
+    if returned is None:
+        returned = _int_or_none(entry.receipt.get("result_count_returned"))
+    if returned is None:
+        returned = len(entry.hits)
+    return returned < cached_limit
 
 
 def _should_force_cache_queue(
@@ -2596,12 +2925,18 @@ def _admit_sweep_key(
     max_inflight: int,
     priority: bool = False,
     allow_priority_burst: bool = False,
+    priority_max_inflight: int = 0,
 ) -> str:
     if key in sweep_inflight:
         return "running"
     inflight_limit = max(1, max_inflight)
     if len(sweep_inflight) >= inflight_limit:
-        if priority and allow_priority_burst and len(sweep_inflight) < inflight_limit + 1:
+        priority_limit = _priority_inflight_limit(
+            max_inflight,
+            allow_priority_burst=allow_priority_burst,
+            priority_max_inflight=priority_max_inflight,
+        )
+        if priority and len(sweep_inflight) < priority_limit:
             sweep_queued.discard(key)
             sweep_inflight.add(key)
             return "queued"
@@ -2619,14 +2954,20 @@ def _take_next_queued_sweep_job(
     sweep_queued_jobs: dict[str, SweepJob],
     max_inflight: int,
     allow_priority_burst: bool = False,
+    priority_max_inflight: int = 0,
 ) -> SweepJob | None:
     inflight_limit = max(1, max_inflight)
+    priority_limit = _priority_inflight_limit(
+        max_inflight,
+        allow_priority_burst=allow_priority_burst,
+        priority_max_inflight=priority_max_inflight,
+    )
     for key in tuple(sweep_queued_jobs):
         job = sweep_queued_jobs.pop(key)
         if key not in sweep_queued:
             continue
-        can_burst = allow_priority_burst and job.priority
-        if len(sweep_inflight) >= inflight_limit and (not can_burst or len(sweep_inflight) >= inflight_limit + 1):
+        can_burst = job.priority and priority_limit > inflight_limit
+        if len(sweep_inflight) >= inflight_limit and (not can_burst or len(sweep_inflight) >= priority_limit):
             sweep_queued_jobs[key] = job
             return None
         sweep_queued.discard(key)
@@ -2636,8 +2977,20 @@ def _take_next_queued_sweep_job(
     return None
 
 
+def _priority_inflight_limit(
+    max_inflight: int,
+    *,
+    allow_priority_burst: bool = False,
+    priority_max_inflight: int = 0,
+) -> int:
+    inflight_limit = max(1, max_inflight)
+    if priority_max_inflight > 0:
+        return max(inflight_limit, priority_max_inflight)
+    return inflight_limit + 1 if allow_priority_burst else inflight_limit
+
+
 def _queue_sweep_job(sweep_queued_jobs: dict[str, SweepJob], key: str, job: SweepJob) -> None:
-    _queue_sweep_job_with_priority(sweep_queued_jobs, key, job, priority=key in sweep_queued_jobs)
+    _queue_sweep_job_with_priority(sweep_queued_jobs, key, job, priority=False)
 
 
 def _trim_sweep_queue(
@@ -2665,14 +3018,34 @@ def _queue_sweep_job_with_priority(
     sweep_queued: set[str] | None = None,
     max_queue: int = 0,
 ) -> None:
-    if not priority and key not in sweep_queued_jobs:
+    existing_job = sweep_queued_jobs.get(key)
+    effective_priority = priority or bool(existing_job and existing_job.priority)
+    if not effective_priority and existing_job is None:
         sweep_queued_jobs[key] = job
         _trim_sweep_queue(sweep_queued_jobs, sweep_queued=sweep_queued, max_queue=max_queue)
         return
-    existing = tuple((queued_key, queued_job) for queued_key, queued_job in sweep_queued_jobs.items() if queued_key != key)
+    queued_job = (
+        existing_job
+        if existing_job is not None and existing_job.priority and not priority
+        else replace(job, priority=effective_priority)
+    )
+    existing = tuple(
+        (queued_key, existing)
+        for queued_key, existing in sweep_queued_jobs.items()
+        if queued_key != key
+    )
     sweep_queued_jobs.clear()
-    sweep_queued_jobs[key] = job
-    sweep_queued_jobs.update(existing)
+    if effective_priority:
+        sweep_queued_jobs[key] = queued_job
+        sweep_queued_jobs.update(existing)
+    else:
+        sweep_queued_jobs.update(
+            (queued_key, queued) for queued_key, queued in existing if queued.priority
+        )
+        sweep_queued_jobs[key] = queued_job
+        sweep_queued_jobs.update(
+            (queued_key, queued) for queued_key, queued in existing if not queued.priority
+        )
     _trim_sweep_queue(sweep_queued_jobs, sweep_queued=sweep_queued, max_queue=max_queue)
 
 
@@ -2681,8 +3054,10 @@ def _sweep_queue_summary(
     sweep_queued_jobs: dict[str, SweepJob],
     *,
     max_inflight: int,
+    priority_max_inflight: int = 0,
     max_queue: int,
     priority_burst: bool,
+    workers: int,
     enabled: bool,
 ) -> dict[str, object]:
     queued_count = len(sweep_queued_jobs)
@@ -2694,9 +3069,70 @@ def _sweep_queue_summary(
         "priority_queued_count": priority_queued,
         "background_queued_count": max(0, queued_count - priority_queued),
         "max_inflight": max_inflight,
+        "priority_max_inflight": _priority_inflight_limit(
+            max_inflight,
+            allow_priority_burst=priority_burst,
+            priority_max_inflight=priority_max_inflight,
+        ),
         "max_queue": max_queue,
         "priority_burst": priority_burst,
+        "workers": workers,
     }
+
+
+def _prune_stale_sweep_inflight(
+    sweep_inflight: set[str],
+    sweep_inflight_started: dict[str, float],
+    *,
+    now: float,
+    stale_after_seconds: float,
+) -> tuple[str, ...]:
+    if stale_after_seconds <= 0:
+        return ()
+    stale = tuple(
+        key
+        for key in tuple(sweep_inflight)
+        if now - sweep_inflight_started.get(key, 0.0) > stale_after_seconds
+    )
+    for key in stale:
+        sweep_inflight.discard(key)
+        sweep_inflight_started.pop(key, None)
+    return stale
+
+
+def _sweep_watchdog_tick(
+    *,
+    sweep_inflight: set[str],
+    sweep_inflight_started: dict[str, float],
+    sweep_queued: set[str],
+    sweep_queued_jobs: dict[str, SweepJob],
+    max_inflight: int,
+    allow_priority_burst: bool,
+    priority_max_inflight: int = 0,
+    stale_after_seconds: float,
+    now: float,
+) -> tuple[tuple[str, ...], list[SweepJob]]:
+    stale = _prune_stale_sweep_inflight(
+        sweep_inflight,
+        sweep_inflight_started,
+        now=now,
+        stale_after_seconds=stale_after_seconds,
+    )
+    next_jobs: list[SweepJob] = []
+    while True:
+        next_job = _take_next_queued_sweep_job(
+            sweep_inflight=sweep_inflight,
+            sweep_queued=sweep_queued,
+            sweep_queued_jobs=sweep_queued_jobs,
+            max_inflight=max_inflight,
+            allow_priority_burst=allow_priority_burst,
+            priority_max_inflight=priority_max_inflight,
+        )
+        if next_job is None:
+            break
+        sweep_inflight_started[next_job.key] = now
+        next_jobs.append(next_job)
+    return stale, next_jobs
 
 
 def shard_coverage_gate_response(
@@ -3007,18 +3443,20 @@ def run_server() -> None:
     ).casefold() in {"1", "true", "yes"}
     sweep_enabled = _fullraw_env("V5_MEMO_FULL_RAW_ASYNC_SWEEP", "").casefold() in {"1", "true", "yes"}
     sweep_ttl = _float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS", "")) or 86400.0
-    sweep_workers = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKERS") or 1
     sweep_max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
+    sweep_workers = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKERS") or _auto_sweep_workers(sweep_max_inflight)
     sweep_max_queue = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_QUEUE") or 0
     sweep_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT") or 128
     sweep_pass_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT") or sweep_shard_limit
     sweep_pass_shard_limit = max(1, min(sweep_pass_shard_limit, sweep_shard_limit))
+    sweep_no_hit_stop_shards = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_NO_HIT_STOP_SHARDS") or 0
     sweep_max_passes = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_PASSES") or 1
     sweep_max_passes = max(1, min(sweep_max_passes, sweep_shard_limit))
     sweep_priority_burst = _fullraw_env(
         "V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST",
         "true",
     ).casefold() in {"1", "true", "yes"}
+    sweep_priority_max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_MAX_INFLIGHT") or 0
     sweep_timeout_seconds = _float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_TIMEOUT_SECONDS", "")) or 300.0
     sweep_timeout_seconds = max(1.0, min(sweep_timeout_seconds, 3600.0))
     sweep_shard_timeout_seconds = _float_or_none(
@@ -3030,6 +3468,7 @@ def run_server() -> None:
     shard_catalog_path = Path(shard_catalog_path_config) if shard_catalog_path_config else None
     sweep_cache_dir_config = _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR", "").strip()
     sweep_cache_dir = Path(sweep_cache_dir_config) if sweep_cache_dir_config else None
+    sweep_catalog_scope = str(shard_dir.absolute()) if shard_dir is not None else ""
     manifest_path = Path(
         _fullraw_env("V5_MEMO_FULL_RAW_MANIFEST", "/var/lib/v5-memo/fullraw_manifest.json")
     )
@@ -3046,35 +3485,79 @@ def run_server() -> None:
     catalog_cache: tuple[float, list[ShardCatalogEntry]] = (0.0, [])
     sweep_cache: dict[str, SweepCacheEntry] = {}
     sweep_inflight: set[str] = set()
+    sweep_inflight_started: dict[str, float] = {}
     sweep_queued: set[str] = set()
     sweep_queued_jobs: dict[str, SweepJob] = {}
     sweep_lock = threading.RLock()
+    sweep_inflight_stale_seconds = (
+        _float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_INFLIGHT_STALE_SECONDS", ""))
+        or max(900.0, min(sweep_timeout_seconds + 60.0, 1800.0))
+    )
+
+    def sweep_watchdog_tick_locked(now: float) -> tuple[tuple[str, ...], list[SweepJob]]:
+        return _sweep_watchdog_tick(
+            sweep_inflight=sweep_inflight,
+            sweep_inflight_started=sweep_inflight_started,
+            sweep_queued=sweep_queued,
+            sweep_queued_jobs=sweep_queued_jobs,
+            max_inflight=sweep_max_inflight,
+            allow_priority_burst=sweep_priority_burst,
+            priority_max_inflight=sweep_priority_max_inflight,
+            stale_after_seconds=sweep_inflight_stale_seconds,
+            now=now,
+        )
+
+    def report_sweep_tick(stale: tuple[str, ...], next_jobs: list[SweepJob]) -> None:
+        for key in stale:
+            print(
+                f"fullraw sweep inflight lease expired key={key}",
+                file=sys.stderr,
+                flush=True,
+            )
+        for next_job in next_jobs:
+            start_sweep_worker(next_job)
 
     def sweep_queue_summary() -> dict[str, object]:
+        stale: tuple[str, ...] = ()
+        next_jobs: list[SweepJob] = []
         with sweep_lock:
-            return _sweep_queue_summary(
+            if sweep_enabled and shard_dir is not None:
+                stale, next_jobs = sweep_watchdog_tick_locked(time.monotonic())
+            summary = _sweep_queue_summary(
                 sweep_inflight,
                 sweep_queued_jobs,
                 max_inflight=sweep_max_inflight,
+                priority_max_inflight=sweep_priority_max_inflight,
                 max_queue=sweep_max_queue,
                 priority_burst=sweep_priority_burst,
+                workers=sweep_workers,
                 enabled=sweep_enabled and shard_dir is not None,
             )
+        report_sweep_tick(stale, next_jobs)
+        return summary
 
     def sweep_queue_state(key: str) -> dict[str, object]:
+        stale: tuple[str, ...] = ()
+        next_jobs: list[SweepJob] = []
         with sweep_lock:
-            return {
+            if sweep_enabled and shard_dir is not None:
+                stale, next_jobs = sweep_watchdog_tick_locked(time.monotonic())
+            state = {
                 **_sweep_queue_summary(
                     sweep_inflight,
                     sweep_queued_jobs,
                     max_inflight=sweep_max_inflight,
+                    priority_max_inflight=sweep_priority_max_inflight,
                     max_queue=sweep_max_queue,
                     priority_burst=sweep_priority_burst,
+                    workers=sweep_workers,
                     enabled=sweep_enabled and shard_dir is not None,
                 ),
                 "key_running": key in sweep_inflight,
                 "key_queued": key in sweep_queued_jobs,
             }
+        report_sweep_tick(stale, next_jobs)
+        return state
 
     def current_catalog() -> list[ShardCatalogEntry]:
         nonlocal catalog_cache
@@ -3085,9 +3568,15 @@ def run_server() -> None:
             return catalog_cache[1]
         if shard_catalog_path is not None and shard_catalog_path.exists():
             cached_catalog = load_shard_catalog_cache(shard_catalog_path)
-            if cached_catalog is not None:
+            if cached_catalog is not None and _catalog_entries_match_shard_dir(cached_catalog, shard_dir):
                 catalog_cache = (now, cached_catalog)
                 return cached_catalog
+            if cached_catalog is not None:
+                remapped_catalog = _remap_catalog_entries_to_shard_dir(cached_catalog, shard_dir)
+                if remapped_catalog is not None:
+                    write_shard_catalog_cache(shard_catalog_path, remapped_catalog)
+                    catalog_cache = (now, remapped_catalog)
+                    return remapped_catalog
         catalog = build_shard_catalog(shard_dir, trust_filenames=trust_shard_filenames)
         if shard_catalog_path is not None:
             write_shard_catalog_cache(shard_catalog_path, catalog)
@@ -3160,15 +3649,19 @@ def run_server() -> None:
         key: str,
         cache_query: str,
         *,
+        original_query: str = "",
         result_limit: int,
     ) -> SweepCacheEntry | None:
         entry = sweep_cache_get(key)
-        if entry is not None and _sweep_cache_entry_matches_request(
+        if entry is not None and _sweep_cache_entry_matches_active_or_completed_original_query(
             entry,
-            query=cache_query,
+            active_query=cache_query,
+            original_query=original_query,
             result_limit=result_limit,
             sweep_shard_limit=sweep_shard_limit,
+            sweep_pass_shard_limit=sweep_pass_shard_limit,
             sweep_strategy=_SWEEP_STRATEGY,
+            sweep_catalog_scope=sweep_catalog_scope,
         ):
             return entry
         if sweep_cache_dir is None:
@@ -3178,12 +3671,15 @@ def run_server() -> None:
             if path.name == f"{key}.json":
                 continue
             candidate = _load_sweep_cache(path, ttl_seconds=sweep_ttl)
-            if candidate is None or not _sweep_cache_entry_matches_request(
+            if candidate is None or not _sweep_cache_entry_matches_active_or_completed_original_query(
                 candidate,
-                query=cache_query,
+                active_query=cache_query,
+                original_query=original_query,
                 result_limit=result_limit,
                 sweep_shard_limit=sweep_shard_limit,
+                sweep_pass_shard_limit=sweep_pass_shard_limit,
                 sweep_strategy=_SWEEP_STRATEGY,
+                sweep_catalog_scope=sweep_catalog_scope,
             ):
                 continue
             best = _prefer_sweep_cache_entry(best, candidate)
@@ -3196,6 +3692,9 @@ def run_server() -> None:
             sweep_cache[key] = entry
             if final:
                 sweep_inflight.discard(key)
+                sweep_inflight_started.pop(key, None)
+            elif key in sweep_inflight:
+                sweep_inflight_started[key] = time.monotonic()
         cache_path = _sweep_cache_path(sweep_cache_dir, key)
         if cache_path is not None:
             _write_sweep_cache(cache_path, entry)
@@ -3204,7 +3703,11 @@ def run_server() -> None:
         def worker() -> None:
             try:
                 existing = sweep_cache_get(job.key)
-                if existing is not None and not _sweep_cache_entry_has_result_limit(existing, job.limit):
+                if (
+                    existing is not None
+                    and not _sweep_cache_entry_has_result_limit(existing, job.limit)
+                    and sweep_cache_entry_is_terminal(existing)
+                ):
                     existing = None
                 sweep_entries = select_sweep_shard_entries(job.catalog, query=job.query, limit=sweep_shard_limit)
                 if len(sweep_entries) >= len(job.catalog):
@@ -3228,6 +3731,9 @@ def run_server() -> None:
                     existing.receipt if existing else {},
                     require_complete_sweep=sweep_require_complete,
                 )
+                deferred_path_strings = set(_string_tuple(
+                    (existing.receipt if existing else {}).get("sweep_deferred_paths")
+                ))
                 merged_hits = list(existing.hits if existing else [])
                 previous_passes = _int_or_none((existing.receipt if existing else {}).get("sweep_passes")) or 0
                 completed_pass_roles = list(
@@ -3236,12 +3742,13 @@ def run_server() -> None:
                 receipt: dict[str, object] = existing.receipt if existing else {}
                 for pass_index in range(sweep_max_passes):
                     pass_plan = sweep_passes[(previous_passes + pass_index) % len(sweep_passes)]
-                    remaining_entries = [
-                        entry
-                        for entry in sweep_entries
-                        if str(entry.path) not in completed_path_strings | failed_path_strings
-                    ]
-                    pass_entries = remaining_entries[:sweep_pass_shard_limit]
+                    pass_entries, deferred_path_strings = _next_sweep_pass_entries(
+                        sweep_entries,
+                        completed_path_strings=completed_path_strings,
+                        failed_path_strings=failed_path_strings,
+                        deferred_path_strings=deferred_path_strings,
+                        limit=sweep_pass_shard_limit,
+                    )
                     if not pass_entries:
                         break
                     hits, completed_paths, timed_out, pass_metrics = _search_shard_paths_with_paths_and_receipt(
@@ -3257,10 +3764,20 @@ def run_server() -> None:
                     )
                     completed_pass_roles.append(pass_plan.role)
                     completed_path_strings.update(str(path) for path in completed_paths)
-                    if not timed_out and not sweep_require_complete:
-                        failed_path_strings.update(
-                            str(entry.path) for entry in pass_entries if str(entry.path) not in completed_path_strings
-                        )
+                    missed_path_strings = {
+                        str(entry.path)
+                        for entry in pass_entries
+                        if str(entry.path) not in completed_path_strings
+                    }
+                    if sweep_require_complete:
+                        deferred_path_strings.update(missed_path_strings)
+                    if not timed_out:
+                        failed_path_strings.update(_sweep_pass_failed_path_strings(
+                            pass_entries,
+                            completed_path_strings=completed_path_strings,
+                            existing_failed_path_strings=failed_path_strings,
+                            require_complete_sweep=sweep_require_complete,
+                        ))
                     searched_entries = [entry for entry in sweep_entries if str(entry.path) in completed_path_strings]
                     receipt = shard_coverage_receipt(job.catalog, searched_entries)
                     _add_planned_sweep_receipt(receipt, planned_receipt)
@@ -3273,6 +3790,7 @@ def run_server() -> None:
                     receipt["sweep_max_passes"] = sweep_max_passes
                     receipt["sweep_failed_shards"] = len(failed_path_strings)
                     receipt["sweep_failed_paths"] = sorted(failed_path_strings)
+                    receipt["sweep_deferred_paths"] = sorted(deferred_path_strings)
                     receipt["sweep_remaining_shards"] = _sweep_remaining_shard_count(
                         selected_shards=len(sweep_entries),
                         completed_shards=len(completed_path_strings),
@@ -3283,6 +3801,7 @@ def run_server() -> None:
                     receipt["sweep_timeout_seconds"] = sweep_timeout_seconds
                     receipt["sweep_shard_timeout_seconds"] = sweep_shard_timeout_seconds
                     receipt["sweep_strategy"] = _SWEEP_STRATEGY
+                    receipt["sweep_catalog_scope"] = sweep_catalog_scope
                     receipt["sweep_search_passes"] = tuple(asdict(pass_item) for pass_item in sweep_passes)
                     receipt["sweep_completed_pass_roles"] = tuple(completed_pass_roles)
                     receipt["sweep_completed_pass_role_counts"] = dict(sorted(Counter(completed_pass_roles).items()))
@@ -3299,13 +3818,22 @@ def run_server() -> None:
                     receipt.update(result_metrics)
                     required_pass_roles = min(len(sweep_passes), sweep_max_passes)
                     pass_roles_sufficient = len(set(completed_pass_roles)) >= required_pass_roles
+                    no_hit_stop = (
+                        sweep_no_hit_stop_shards > 0
+                        and not merged_hits
+                        and len(completed_path_strings) >= sweep_no_hit_stop_shards
+                    )
+                    if no_hit_stop:
+                        receipt["sweep_stopped_no_hits"] = True
+                        receipt["sweep_no_hit_stop_shards"] = sweep_no_hit_stop_shards
                     final = (
                         (bool(merged_hits) and receipt_is_sufficient(receipt) and pass_roles_sufficient)
                         or receipt["sweep_remaining_shards"] == 0
+                        or no_hit_stop
                         or pass_index + 1 >= sweep_max_passes
                     )
                     sweep_cache_put(job.key, SweepCacheEntry(time.time(), merged_hits, receipt), final=final)
-                    if final or (timed_out and not completed_paths):
+                    if final or (timed_out and not completed_paths and not sweep_require_complete):
                         break
             except Exception as exc:
                 print(f"fullraw sweep worker failed key={job.key}: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
@@ -3313,6 +3841,7 @@ def run_server() -> None:
                 next_job = None
                 with sweep_lock:
                     sweep_inflight.discard(job.key)
+                    sweep_inflight_started.pop(job.key, None)
                     sweep_queued.discard(job.key)
                     sweep_queued_jobs.pop(job.key, None)
                     next_job = _take_next_queued_sweep_job(
@@ -3321,7 +3850,10 @@ def run_server() -> None:
                         sweep_queued_jobs=sweep_queued_jobs,
                         max_inflight=sweep_max_inflight,
                         allow_priority_burst=sweep_priority_burst,
+                        priority_max_inflight=sweep_priority_max_inflight,
                     )
+                    if next_job is not None:
+                        sweep_inflight_started[next_job.key] = time.monotonic()
                 if next_job is not None:
                     start_sweep_worker(next_job)
 
@@ -3342,6 +3874,12 @@ def run_server() -> None:
             return "disabled"
         result_limit = max(limit, _SWEEP_MIN_RESULT_LIMIT)
         existing = sweep_cache_get(key)
+        if (
+            existing is not None
+            and _sweep_cache_entry_should_stop_no_hits(existing, sweep_no_hit_stop_shards)
+            and _sweep_cache_entry_has_result_limit(existing, result_limit)
+        ):
+            return "stopped_no_hits"
         if existing is not None and (
             _sweep_cache_entry_has_result_limit(existing, result_limit)
             and (
@@ -3368,6 +3906,7 @@ def run_server() -> None:
                 max_inflight=sweep_max_inflight,
                 priority=priority,
                 allow_priority_burst=sweep_priority_burst,
+                priority_max_inflight=sweep_priority_max_inflight,
             )
             if status == "queued" and key not in sweep_inflight:
                 _queue_sweep_job_with_priority(
@@ -3386,15 +3925,40 @@ def run_server() -> None:
                     sweep_queued_jobs=sweep_queued_jobs,
                     max_inflight=sweep_max_inflight,
                     allow_priority_burst=sweep_priority_burst,
+                    priority_max_inflight=sweep_priority_max_inflight,
                 )
                 if next_job is None:
                     return status
                 job = next_job
             if status != "queued":
                 return status
+            sweep_inflight_started[job.key] = time.monotonic()
             sweep_queued_jobs.pop(key, None)
         start_sweep_worker(job)
         return "queued"
+
+    def start_sweep_watchdog() -> None:
+        if not sweep_enabled or shard_dir is None:
+            return
+
+        def watchdog() -> None:
+            interval = max(5.0, min(60.0, sweep_inflight_stale_seconds / 3.0))
+            while True:
+                time.sleep(interval)
+                try:
+                    with sweep_lock:
+                        stale, next_jobs = sweep_watchdog_tick_locked(time.monotonic())
+                    report_sweep_tick(stale, next_jobs)
+                except Exception as exc:  # pragma: no cover - defensive watchdog guard
+                    print(
+                        f"fullraw sweep watchdog failed: {type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+
+        threading.Thread(target=watchdog, daemon=True).start()
+
+    start_sweep_watchdog()
 
     def auth_receipt(receipt: dict[str, object]) -> dict[str, object]:
         return {
@@ -3513,6 +4077,11 @@ def run_server() -> None:
                     isinstance(raw_priority, str)
                     and raw_priority.strip().casefold() in {"1", "true", "yes", "on"}
                 )
+                raw_allow_partial_results = payload.get("allow_partial_results")
+                allow_partial_results = raw_allow_partial_results is True or (
+                    isinstance(raw_allow_partial_results, str)
+                    and raw_allow_partial_results.strip().casefold() in {"1", "true", "yes", "on"}
+                )
                 if _should_force_cache_queue(
                     shard_dir_configured=shard_dir is not None,
                     require_complete_search=require_complete_search,
@@ -3548,9 +4117,15 @@ def run_server() -> None:
                 sweep_timeout_seconds=sweep_timeout_seconds,
                 sweep_shard_timeout_seconds=sweep_shard_timeout_seconds,
                 sweep_strategy=_SWEEP_STRATEGY,
+                sweep_catalog_scope=sweep_catalog_scope,
             )
             cached = (
-                compatible_sweep_cache_get(cache_key, cache_query, result_limit=result_limit)
+                compatible_sweep_cache_get(
+                    cache_key,
+                    cache_query,
+                    original_query=query,
+                    result_limit=result_limit,
+                )
                 if catalog
                 else None
             )
@@ -3654,7 +4229,7 @@ def run_server() -> None:
                             _write_json(self, status, body)
                             return
                         if partial_progress:
-                            hits = []
+                            hits = cached.hits[:limit] if allow_partial_results and cached is not None else []
                     _write_json(self, 200, {
                         "meta": {
                             "count": len(hits),
@@ -3663,6 +4238,7 @@ def run_server() -> None:
                             "rank_mode": rank_mode,
                             "shard_receipt": receipt,
                             "cache_only": True,
+                            "partial_results": bool(partial_progress and allow_partial_results and hits),
                             "async_sweep": {
                                 "enabled": sweep_enabled and bool(catalog),
                                 "status": sweep_status,
@@ -4147,16 +4723,18 @@ def _sweep_cache_key(
     sweep_timeout_seconds: float = 0.0,
     sweep_shard_timeout_seconds: float = 0.0,
     sweep_strategy: str = _SWEEP_STRATEGY,
+    sweep_catalog_scope: str = "",
 ) -> str:
+    _ = limit  # Result sufficiency is receipt-gated; the work key should not fragment on it.
     payload = json.dumps(
         {
-            "query": query,
-            "result_limit": max(limit, _SWEEP_MIN_RESULT_LIMIT),
+            "query": _normalize_sweep_cache_query(query),
             "year_min": year_min,
             "year_max": year_max,
             "rank_mode": _rank_mode(rank_mode),
             "sweep_shard_limit": sweep_shard_limit,
             "sweep_strategy": sweep_strategy,
+            "sweep_catalog_scope": sweep_catalog_scope,
         },
         sort_keys=True,
     )
@@ -4190,7 +4768,42 @@ def _sweep_failed_path_strings_for_mode(
     *,
     require_complete_sweep: bool,
 ) -> set[str]:
-    return set() if require_complete_sweep else _sweep_failed_path_strings(receipt)
+    if require_complete_sweep:
+        return set()
+    return _sweep_failed_path_strings(receipt)
+
+
+def _sweep_pass_failed_path_strings(
+    pass_entries: Iterable[ShardCatalogEntry],
+    *,
+    completed_path_strings: set[str],
+    existing_failed_path_strings: set[str],
+    require_complete_sweep: bool,
+) -> set[str]:
+    if require_complete_sweep:
+        return set()
+    return {
+        str(entry.path)
+        for entry in pass_entries
+        if str(entry.path) not in completed_path_strings | existing_failed_path_strings
+    }
+
+
+def _next_sweep_pass_entries(
+    sweep_entries: list[ShardCatalogEntry],
+    *,
+    completed_path_strings: set[str],
+    failed_path_strings: set[str],
+    deferred_path_strings: set[str],
+    limit: int,
+) -> tuple[list[ShardCatalogEntry], set[str]]:
+    blocked = completed_path_strings | failed_path_strings | deferred_path_strings
+    remaining_entries = [entry for entry in sweep_entries if str(entry.path) not in blocked]
+    if not remaining_entries and deferred_path_strings:
+        deferred_path_strings = set()
+        blocked = completed_path_strings | failed_path_strings
+        remaining_entries = [entry for entry in sweep_entries if str(entry.path) not in blocked]
+    return remaining_entries[:limit], deferred_path_strings
 
 
 def _sweep_remaining_shard_count(
@@ -4382,6 +4995,35 @@ def _positive_int_env(name: str) -> int | None:
     except ValueError:
         return None
     return value if value > 0 else None
+
+
+def _sweep_cache_inflight_lanes(max_inflight: int) -> int:
+    lanes = max(1, max_inflight)
+    priority_burst = _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "true").casefold()
+    if priority_burst in {"1", "true", "yes"}:
+        lanes += 1
+    return lanes
+
+
+def _auto_sweep_workers(max_inflight: int) -> int:
+    cpu_workers = max(1, (os.cpu_count() or 1) // max(1, max_inflight))
+    max_cache_bytes = _shard_local_cache_max_bytes()
+    worker_cache_bytes = _sweep_worker_cache_bytes()
+    if max_cache_bytes is None or worker_cache_bytes is None or worker_cache_bytes <= 0:
+        return cpu_workers
+    cache_workers = max(1, max_cache_bytes // (worker_cache_bytes * _sweep_cache_inflight_lanes(max_inflight)))
+    return max(1, min(cpu_workers, cache_workers))
+
+
+def _sweep_worker_cache_bytes(*, default_gb: float | None = None) -> int | None:
+    value = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKER_CACHE_BYTES")
+    if value is not None:
+        return value
+    raw_gb = _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_WORKER_CACHE_GB", "")
+    per_worker_gb = _float_or_none(raw_gb)
+    if per_worker_gb is None:
+        per_worker_gb = default_gb
+    return int(per_worker_gb * 1024 * 1024 * 1024) if per_worker_gb else None
 
 
 def _float_or_none(value: object) -> float | None:

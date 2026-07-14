@@ -1,12 +1,34 @@
 """Render V5 memo drafts from already-bound receipts."""
 from __future__ import annotations
 
-from collections.abc import Sequence
+import re
+from collections.abc import Iterable, Sequence
 
 from v5_memo.gate import candidate_alpha_tier
-from v5_memo.schemas import CorpusHit, InsightCandidate
+from v5_memo.schemas import ClaimCard, CorpusHit, InsightCandidate
 
 _TITLE_STOPWORDS = frozenset({"during", "after", "before", "following", "under", "with"})
+_NAMED_STUDY_RE = re.compile(r"\(([A-Z][A-Z0-9-]{2,15})\)\s+(?:study|trial)\b")
+_REDUCTION_TITLE_RE = re.compile(
+    r"\breduction in (?P<endpoint>.+?)(?=[:.;]|\s+(?:among|after|during|following|in (?:adults|patients|participants))\b|$)",
+    re.IGNORECASE,
+)
+_DIRECTIONAL_TITLE_RE = re.compile(
+    r"\b(?P<direction>attenuates?|blunts?|reduces?|decreases?|increases?|improves?|worsens?|alters?|modifies?)\s+"
+    r"(?P<endpoint>.+?)(?=[:.;]|\s+(?:among|after|during|following|in (?:adults|patients|participants))\b|$)",
+    re.IGNORECASE,
+)
+_DIRECTION_DISPLAY = {
+    "alter": "altered",
+    "attenuate": "attenuated",
+    "blunt": "blunted",
+    "decrease": "decreased",
+    "improve": "improved",
+    "increase": "increased",
+    "modify": "modified",
+    "reduce": "reduced",
+    "worsen": "worsened",
+}
 
 
 def render_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> str:
@@ -19,19 +41,34 @@ def render_alpha_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]
     """Render a short memo without adding claims outside the candidate receipts."""
     if not receipts:
         raise ValueError("cannot render memo without receipts")
-    bridge = ", ".join(candidate.bridge_terms) or "unspecified bridge"
-    tension = ", ".join(candidate.tension_terms) or "not detected"
+    direct_cards = _direct_human_cards(candidate)
+    study_family = _study_family_label(receipts)
+    bridge = ", ".join(_clean_labels(candidate.bridge_terms)) or "unspecified bridge"
+    tension = ", ".join(_clean_labels(candidate.tension_terms)) or "not detected"
+    hypothesis = _bounded_hypothesis(candidate, receipts=receipts, study_family=study_family)
     lines = [
-        f"# Alpha memo: {_memo_title(candidate)}",
+        f"# Alpha memo: {_memo_title(candidate, study_family=study_family)}",
         "",
-        f"**Alpha hypothesis:** {candidate.thesis}",
+        "Hypothesis-level alpha signal; not clinical advice.",
         "",
-        f"**Signal score:** `{candidate.score}` "
-        f"(novelty `{candidate.novelty_score}`, evidence `{candidate.evidence_score}`)",
+        f"**Alpha hypothesis:** {hypothesis}",
         "",
-        f"**Evidence bridge:** {bridge}.",
+        "**Core signal:**",
+        *_core_signal_lines(candidate, direct_cards, receipts=receipts, study_family=study_family),
         "",
-        f"**Tension:** {tension}.",
+        "**Receipt-level synthesis:**",
+        *_synthesis_lines(candidate, direct_cards, receipts, study_family=study_family),
+        "",
+        "**Limits:**",
+        *_limit_lines(candidate, direct_cards, receipts=receipts, study_family=study_family),
+        "",
+        "**What would falsify it:**",
+        _falsification_clause(candidate, study_family=study_family),
+        "",
+        "**Audit trail:**",
+        f"- Signal score: `{candidate.score}` (novelty `{candidate.novelty_score}`, evidence `{candidate.evidence_score}`).",
+        f"- Evidence bridge terms: {bridge}.",
+        f"- Direction/tension terms: {tension}.",
         "",
         "**Evidence graph:**",
         *_evidence_graph_lines(candidate),
@@ -41,20 +78,6 @@ def render_alpha_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]
         "",
         "**Claim ledger:**",
         *_claim_card_lines(candidate),
-        "",
-        "**Why it matters:**",
-        (
-            "This is a receipt-bound lead for investigation: two independent "
-            "search hits share a non-obvious bridge term, so the memo can test "
-            "whether that bridge explains a boundary condition or a new angle."
-        ),
-        "",
-        "**What would falsify it:**",
-        (
-            "A follow-up search fails to find direct receipts where the bridge "
-            "term and both evidence streams appear in the same source-grounded "
-            "claim, or the apparent connection collapses to one duplicated source."
-        ),
         "",
         "**Receipts:**",
     ]
@@ -96,15 +119,316 @@ def render_discovery_seed(candidate: InsightCandidate, receipts: Sequence[Corpus
 def _receipt_line(index: int, hit: CorpusHit) -> str:
     year = f", {hit.year}" if hit.year else ""
     venue = f", {hit.venue}" if hit.venue else ""
-    locator = hit.doi or hit.url or hit.hit_id
+    locator = hit.receipt_id if hit.receipt_id != hit.hit_id else hit.url or hit.hit_id
     return f"{index}. `{hit.hit_id}` {hit.title}{year}{venue}. Source: {hit.source}. ID: {locator}"
 
 
-def _memo_title(candidate: InsightCandidate) -> str:
+def _bounded_hypothesis(
+    candidate: InsightCandidate,
+    *,
+    receipts: Sequence[CorpusHit] = (),
+    study_family: str = "",
+) -> str:
+    direct_cards = _direct_human_cards(candidate)
+    if len(direct_cards) < 2:
+        return candidate.thesis
+    if study_family:
+        findings = _endpoint_findings(direct_cards, receipts)
+        endpoints = _join_labels(_non_generic_labels(endpoint for endpoint, _direction in findings)[:3])
+        return (
+            f"Within the shared {study_family} program cohort, the {_interaction_label(candidate)} is "
+            f"hypothesized to be endpoint-dependent rather than uniformly additive across {endpoints or 'the cited endpoints'}. "
+            "A matched independent trial can falsify this by showing a uniform direction across those endpoints."
+        )
+    outcomes = _non_generic_labels(card.outcome for card in direct_cards)
+    directions = _non_generic_labels(
+        direction
+        for card in direct_cards
+        for direction in card.direction.split("/")
+        if direction not in {"proxy", "unclear"}
+    )
+    designs = _non_generic_labels(card.design for card in direct_cards)
+    outcome_text = _join_labels(outcomes[:3]) or "the cited endpoints"
+    direction_text = _join_labels(directions[:3]) or "mixed"
+    design_text = _join_labels(designs[:2]) or "study"
+    scope = f"Within the {study_family} study program" if study_family else f"In {candidate.topic}"
+    evidence_noun = "analyses" if study_family else "receipts"
+    return (
+        f"{scope}, direct human {design_text} {evidence_noun} support a bounded "
+        f"{direction_text} signal across {outcome_text}; treat it as hypothesis-level "
+        "until the same population and endpoint are replicated."
+    )
+
+
+def _falsification_clause(candidate: InsightCandidate, *, study_family: str = "") -> str:
+    if len(_direct_human_cards(candidate)) < 2:
+        return (
+            "A follow-up search fails to find direct receipts where the bridge "
+            "term and both evidence streams appear in the same source-grounded "
+            "claim, or the apparent connection collapses to one duplicated source."
+        )
+    if study_family:
+        return (
+            f"A matched independent trial finds a uniform {_interaction_label(candidate)} direction across the cited "
+            "endpoint families, or no interaction in any endpoint."
+        )
+    return (
+        "A direct human replication in the same population and endpoint shows no "
+        "bounded contrast, or the apparent contrast collapses to duplicated, "
+        "precursor, or off-axis receipts."
+    )
+
+
+def _core_signal_lines(
+    candidate: InsightCandidate,
+    direct_cards: Sequence[ClaimCard],
+    *,
+    receipts: Sequence[CorpusHit] = (),
+    study_family: str = "",
+) -> list[str]:
+    thesis = candidate.thesis.strip()
+    if len(direct_cards) < 2:
+        return [thesis if thesis.endswith(".") else f"{thesis}."]
+    if study_family:
+        findings = _endpoint_findings(direct_cards, receipts)
+        pattern = _join_labels([f"{direction} {endpoint}" for endpoint, direction in findings][:3])
+        return [
+            f"Across the cited companion analyses, the {_interaction_label(candidate)} {pattern}.",
+            (
+                "Together, these receipt-bound findings form a shared-cohort, cross-endpoint heterogeneity signal; "
+                "they are not independent replications or a pooled treatment effect."
+            ),
+        ]
+    outcomes = _non_generic_labels(card.outcome for card in direct_cards)
+    directions = _non_generic_labels(
+        direction
+        for card in direct_cards
+        for direction in card.direction.split("/")
+        if direction not in {"proxy", "unclear"}
+    )
+    designs = _non_generic_labels(card.design for card in direct_cards)
+    evidence_noun = "companion analyses" if study_family else "receipts"
+    return [
+        (
+            f"The direct human {evidence_noun} are {_join_labels(designs[:2]) or 'study'} evidence "
+            f"for {_join_labels(outcomes[:3]) or 'the cited endpoints'}."
+        ),
+        (
+            f"Because the recorded directions are {_join_labels(directions[:3]) or 'mixed'}, "
+            "this memo treats the bundle as endpoint-specific evidence rather than a pooled clinical effect."
+        ),
+    ]
+
+
+def _synthesis_lines(
+    candidate: InsightCandidate,
+    direct_cards: Sequence[ClaimCard],
+    receipts: Sequence[CorpusHit],
+    *,
+    study_family: str = "",
+) -> list[str]:
+    del candidate
+    cards = list(direct_cards)
+    if not cards:
+        return ["- No direct human claim cards were assigned; keep this as a discovery lead only."]
+    hits_by_id = {
+        receipt_id: hit
+        for hit in receipts
+        for receipt_id in {hit.hit_id, hit.receipt_id}
+    }
+    lines: list[str] = []
+    dated_receipts = [f"`{hit.receipt_id}` ({hit.year})" for hit in receipts if hit.year]
+    if dated_receipts:
+        lines.append(
+            "- Publication metadata: source records report "
+            f"{_join_labels(dated_receipts)}; these are article publication years, not trial dates."
+        )
+    lines.extend(
+        _claim_summary_line(card, hit=hits_by_id.get(card.receipt_id), study_family=study_family)
+        for card in cards
+    )
+    return lines
+
+
+def _claim_summary_line(card: ClaimCard, *, hit: CorpusHit | None = None, study_family: str = "") -> str:
+    outcome, direction = _endpoint_finding(card, hit)
+    design = _display_label(card.design, fallback=card.design.replace("_", " "))
+    receipt_id = hit.receipt_id if hit else card.receipt_id
+    family = f"{study_family} companion analysis; " if study_family else ""
+    source_title = f" Source title: {hit.title.strip()}" if hit and hit.title.strip() else ""
+    return (
+        f"- `{receipt_id}`: {family}{design} in {card.population}; endpoint: {outcome}; "
+        f"direction: {direction}.{source_title}"
+    )
+
+
+def _endpoint_finding(card: ClaimCard, hit: CorpusHit | None) -> tuple[str, str]:
+    fallback_direction = _display_label(card.direction, fallback=card.direction.replace("_", " "))
+    if not hit or not hit.title.strip():
+        return _display_label(card.outcome), fallback_direction
+    title = hit.title.strip().rstrip(".")
+    if match := _REDUCTION_TITLE_RE.search(title):
+        return _clean_endpoint(match.group("endpoint")), "reduced"
+    if match := _DIRECTIONAL_TITLE_RE.search(title):
+        raw_direction = match.group("direction").casefold().removesuffix("s")
+        return _clean_endpoint(match.group("endpoint")), _DIRECTION_DISPLAY.get(raw_direction, fallback_direction)
+    return _display_label(card.outcome, fallback=title), fallback_direction
+
+
+def _clean_endpoint(value: str) -> str:
+    clean = re.sub(r"^(?:a|an|the)\s+", "", value.strip(), flags=re.IGNORECASE)
+    clean = re.sub(r"^clinically significant\s+", "", clean, flags=re.IGNORECASE)
+    return clean.rstrip(" .:;").casefold()
+
+
+def _endpoint_findings(
+    direct_cards: Sequence[ClaimCard],
+    receipts: Sequence[CorpusHit],
+) -> list[tuple[str, str]]:
+    hits_by_id = {
+        receipt_id: hit
+        for hit in receipts
+        for receipt_id in {hit.hit_id, hit.receipt_id}
+    }
+    return [_endpoint_finding(card, hits_by_id.get(card.receipt_id)) for card in direct_cards]
+
+
+def _interaction_label(candidate: InsightCandidate) -> str:
+    labels = _clean_labels(candidate.bridge_terms)[:2]
+    if len(labels) == 2:
+        return f"{labels[0]}-{labels[1]} interaction"
+    if labels:
+        return f"{labels[0]} intervention"
+    return "intervention-exposure interaction"
+
+
+def _limit_lines(
+    candidate: InsightCandidate,
+    direct_cards: Sequence[ClaimCard],
+    *,
+    receipts: Sequence[CorpusHit] = (),
+    study_family: str = "",
+) -> list[str]:
+    if len(direct_cards) < 2:
+        return [
+            "Only one direct human receipt is bound, so this should not be read as a mature evidence synthesis.",
+            "The next step is another direct receipt in the same population and endpoint family.",
+        ]
+    if study_family:
+        hits_by_id = {
+            receipt_id: hit
+            for hit in receipts
+            for receipt_id in {hit.hit_id, hit.receipt_id}
+        }
+        matched = [(card, hits_by_id.get(card.receipt_id)) for card in direct_cards]
+        receipt_labels = [f"`{hit.receipt_id if hit else card.receipt_id}`" for card, hit in matched]
+        endpoint_labels = _non_generic_labels(_endpoint_finding(card, hit)[0] for card, hit in matched)
+        source_years = [str(year) for year in sorted({hit.year for hit in receipts if hit.year})]
+        return [
+            (
+                f"Receipts {_join_labels(receipt_labels)} are companion analyses from the same {study_family} "
+                "trial program; they form one evidence unit, not independent replications."
+            ),
+            (
+                f"Those cited receipts cover distinct endpoints ({_join_labels(endpoint_labels)}); "
+                "no pooled effect is claimed."
+            ),
+            (
+                "Independent human replication matching a cited receipt's population, intervention window, "
+                "and endpoint is needed before claim-level use."
+            ),
+            (
+                f"Source-record years {_join_labels(source_years)} may include electronic-first publication dates; "
+                "they are article dates, not trial dates."
+            ),
+            (
+                "Population, eligibility, and randomization context come only from the cited abstracts and source "
+                "records; missing protocol details are not inferred across companion articles."
+            ),
+        ]
+    outcomes = _non_generic_labels(card.outcome for card in direct_cards)
+    directions = _non_generic_labels(
+        direction
+        for card in direct_cards
+        for direction in card.direction.split("/")
+        if direction not in {"proxy", "unclear"}
+    )
+    limits = [
+        "The cited receipts should not be pooled unless population, intervention window, and endpoint match.",
+        "A same-endpoint human replication would move this from alpha signal toward claim-level evidence.",
+    ]
+    if len(outcomes) > 1 or len(directions) > 1 or any(card.role == "boundary" for card in direct_cards):
+        limits.insert(
+            0,
+            "The bundle is heterogeneous, so the memo separates endpoint roles instead of presenting one merged effect.",
+        )
+    if "conference" in " ".join(card.quote.casefold() for card in direct_cards):
+        limits.append("At least one receipt appears conference-level; treat that source as boundary evidence.")
+    if not candidate.receipt_ids:
+        limits.append("No receipt IDs were assigned by the selector.")
+    return limits
+
+
+def _direct_human_cards(candidate: InsightCandidate) -> list[ClaimCard]:
+    return [
+        card
+        for card in candidate.claim_cards
+        if card.population == "human"
+        and card.support_type == "direct"
+        and card.confidence == "high"
+        and card.role != "safety_feasibility"
+    ]
+
+
+def _non_generic_labels(values: Iterable[str]) -> list[str]:
+    out: list[str] = []
+    for value in values:
+        for label in value.split("/"):
+            clean = _clean_label(label)
+            if not clean or clean in {"long", "outcome", "outcomes", "setting", "unspecified"}:
+                continue
+            if clean not in out:
+                out.append(clean)
+    return out
+
+
+def _clean_labels(values: Iterable[str]) -> list[str]:
+    return [_clean_label(value) for value in values if _clean_label(value)]
+
+
+def _clean_label(value: str) -> str:
+    clean = value.replace("_", " ").strip().casefold()
+    return {"diabete": "diabetes"}.get(clean, clean)
+
+
+def _join_labels(labels: Sequence[str]) -> str:
+    if len(labels) <= 1:
+        return labels[0] if labels else ""
+    if len(labels) == 2:
+        return f"{labels[0]} and {labels[1]}"
+    return f"{', '.join(labels[:-1])}, and {labels[-1]}"
+
+
+def _display_label(value: str, *, fallback: str = "unspecified") -> str:
+    return _join_labels(_non_generic_labels([value])) or fallback
+
+
+def _memo_title(candidate: InsightCandidate, *, study_family: str = "") -> str:
     if candidate.bridge_terms:
-        terms = [term for term in candidate.bridge_terms if term not in _TITLE_STOPWORDS]
-        return " / ".join((terms or list(candidate.bridge_terms))[:3])
+        bridge_terms = _clean_labels(candidate.bridge_terms)
+        terms = [term for term in bridge_terms if term not in _TITLE_STOPWORDS]
+        if study_family:
+            bridge = _join_labels([term.title() for term in (terms or bridge_terms)[:2]])
+            return f"{study_family} Program: Endpoint-Specific {bridge} Findings"
+        return " / ".join((terms or bridge_terms)[:3])
     return candidate.topic
+
+
+def _study_family_label(receipts: Sequence[CorpusHit]) -> str:
+    for hit in receipts:
+        if match := _NAMED_STUDY_RE.search(hit.text):
+            return match.group(1)
+    return ""
 
 
 def _receipt_role_lines(candidate: InsightCandidate) -> list[str]:
@@ -130,9 +454,11 @@ def _claim_card_lines(candidate: InsightCandidate) -> list[str]:
         return ["- no structured claim cards assigned"]
     return [
         (
-            f"- `{card.receipt_id}`: {card.role}; design={card.design}; "
-            f"population={card.population}; outcome={card.outcome}; "
-            f"direction={card.direction}; support={card.support_type}/{card.confidence}"
+            f"- `{card.receipt_id}`: {card.role}; "
+            f"design={_display_label(card.design, fallback=card.design.replace('_', ' '))}; "
+            f"population={card.population}; outcome={_display_label(card.outcome)}; "
+            f"direction={_display_label(card.direction, fallback=card.direction.replace('_', ' '))}; "
+            f"support={card.support_type}/{card.confidence}"
         )
         for card in candidate.claim_cards
     ]

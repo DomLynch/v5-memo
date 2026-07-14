@@ -16,6 +16,7 @@ from v5_memo.client import (
     OpenAlexFullCorpusSearchClient,
     ResearkaSearchClient,
     SearchBackendError,
+    _backfill_missing_openalex_abstracts,
     _fullraw_search_passes,
     _parse_corpus_search_response,
     _parse_full_raw_search_response,
@@ -209,6 +210,15 @@ def test_fullraw_search_passes_try_concise_exact_query_before_core_variant() -> 
     ]
 
 
+def test_fullraw_search_passes_try_six_term_exact_query_before_core_variant() -> None:
+    passes = _fullraw_search_passes("cold water immersion resistance training adaptation", limit=4)
+
+    assert [(item.name, item.query) for item in passes[:2]] == [
+        ("focused", "cold water immersion resistance training adaptation"),
+        ("core", "cold water immersion resistance training"),
+    ]
+
+
 def test_fullraw_search_passes_prefer_topic_anchor_pairs() -> None:
     queries = [
         item.query
@@ -217,6 +227,17 @@ def test_fullraw_search_passes_prefer_topic_anchor_pairs() -> None:
 
     assert "water resistance" not in queries
     assert any(query.startswith("cold ") for query in queries)
+
+
+def test_fullraw_search_passes_keep_trial_when_single_variant_drops_fillers() -> None:
+    passes = _fullraw_search_passes(
+        "creatine resistance training older adults muscle strength trial",
+        limit=1,
+    )
+
+    assert [(item.name, item.query) for item in passes] == [
+        ("core", "creatine resistance training muscle strength trial"),
+    ]
 
 
 def test_full_raw_client_from_env_prefers_generic_researka_fullraw_names(monkeypatch: MonkeyPatch) -> None:
@@ -237,6 +258,26 @@ def test_full_raw_client_from_env_prefers_generic_researka_fullraw_names(monkeyp
     assert client._min_shards_searched == 1525
     assert client._min_sources_searched == 5
     assert client._max_variants == 3
+
+
+def test_full_raw_client_from_env_prefers_v5_over_generic_overrides(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("RESEARKA_FULLRAW_SEARCH_URL", "http://127.0.0.1:9903/search")
+    monkeypatch.setenv("RESEARKA_FULLRAW_TOKEN", "generic-token")
+    monkeypatch.setenv("RESEARKA_FULLRAW_FOREGROUND_SWEEP_WAIT_SECONDS", "7200")
+    monkeypatch.setenv("RESEARKA_FULLRAW_QUERY_TIMEOUT", "240")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9915/search")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", "v5-token")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS", "0")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_QUERY_TIMEOUT", "20")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_ALLOW_COMPLETED_LOW_LIMIT_FALLBACK", "1")
+
+    client = FullRawCorpusSearchClient.from_env(strict=True)
+
+    assert client._search_url == "http://127.0.0.1:9915/search"
+    assert client._token == "v5-token"
+    assert client._sweep_wait_seconds == 0.0
+    assert client._timeout == 20.0
+    assert client._allow_completed_low_limit_fallback is True
 
 
 def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
@@ -266,6 +307,119 @@ def test_full_raw_client_preserves_shard_receipt(monkeypatch: object) -> None:
     hits = client.search("management forecast disclosure", limit=3)
 
     assert hits[0].metadata["shard_receipt"] == receipt
+
+
+def test_full_raw_client_retries_without_search_pass_when_cache_receipt_is_empty(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        payloads.append(payload)
+        if "search_pass" in payload:
+            return FakeResponse({"meta": {"count": 0, "shard_receipt": {"authenticated": True}, "async_sweep": {"status": "hit"}}, "results": []})
+        return FakeResponse({
+            "meta": {
+                "count": 1,
+                "shard_receipt": {
+                    "authenticated": True,
+                    "shards_searched": 1525,
+                    "shards_total": 1525,
+                    "partial_shard_search": False,
+                    "sweep_failed_shards": 0,
+                    "sources_searched": {
+                        "biorxiv": 1,
+                        "openalex": 1,
+                        "pubmed": 1,
+                        "semantic_scholar": 1,
+                        "semantic_scholar_abstracts": 1,
+                    },
+                },
+            },
+            "results": [{
+                "doi": "10.1113/jp270570",
+                "title": "Post-exercise cold water immersion attenuates adaptations",
+                "abstract": "Cold water immersion attenuated resistance training adaptations.",
+                "year": 2015,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="token",
+        max_variants=1,
+        allow_completed_low_limit_fallback=True,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        require_auth=True,
+        strict=True,
+    )
+
+    hits = client.search("cold water immersion", limit=50)
+
+    assert len(hits) == 1
+    assert "search_pass" in payloads[0]
+    assert "search_pass" not in payloads[1]
+
+
+def test_full_raw_client_retries_low_limit_when_completed_cache_is_limit_scoped(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        payloads.append(payload)
+        if payload["limit"] > 10:
+            return FakeResponse({"meta": {"count": 0, "shard_receipt": {"authenticated": True}, "async_sweep": {"status": "hit"}}, "results": []})
+        return FakeResponse({
+            "meta": {
+                "count": 1,
+                "shard_receipt": {
+                    "authenticated": True,
+                    "shards_searched": 1525,
+                    "shards_total": 1525,
+                    "partial_shard_search": False,
+                    "sweep_failed_shards": 0,
+                    "sources_searched": {
+                        "biorxiv": 1,
+                        "openalex": 1,
+                        "pubmed": 1,
+                        "semantic_scholar": 1,
+                        "semantic_scholar_abstracts": 1,
+                    },
+                },
+            },
+            "results": [{
+                "doi": "10.1113/jp270570",
+                "title": "Post-exercise cold water immersion attenuates adaptations",
+                "abstract": "Cold water immersion attenuated resistance training adaptations.",
+                "year": 2015,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="token",
+        max_variants=1,
+        allow_completed_low_limit_fallback=True,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        require_auth=True,
+        strict=True,
+    )
+
+    hits = client.search("cold water immersion", limit=50)
+
+    assert len(hits) == 1
+    assert [payload["limit"] for payload in payloads] == [50, 50, 10]
 
 
 def test_full_raw_client_requires_auth_receipt_when_token_configured(monkeypatch: object) -> None:
@@ -408,6 +562,144 @@ def test_full_raw_client_waits_for_async_sweep_cache_hit(monkeypatch: object) ->
     }
 
 
+def test_full_raw_client_uses_completed_low_limit_cache_for_pending_publish_sized_recall(
+    monkeypatch: object,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        payloads.append(payload)
+        if payload["limit"] == 25:
+            return FakeResponse({
+                "meta": {
+                    "shard_receipt": {
+                        "authenticated": True,
+                        "partial_shard_search": True,
+                        "shards_searched": 291,
+                        "shards_total": 1525,
+                        "sweep_failed_shards": 0,
+                        "sources_searched": {"openalex": 291},
+                    },
+                    "async_sweep": {"status": "queued"},
+                },
+                "results": [],
+            })
+        return FakeResponse({
+            "meta": {
+                "count": 10,
+                "shard_receipt": {
+                    "authenticated": True,
+                    "partial_shard_search": False,
+                    "shards_searched": 1525,
+                    "shards_total": 1525,
+                    "sweep_failed_shards": 0,
+                    "sources_searched": {
+                        "biorxiv": 1,
+                        "openalex": 1,
+                        "pubmed": 1,
+                        "semantic_scholar": 1,
+                        "semantic_scholar_abstracts": 1,
+                    },
+                },
+                "async_sweep": {"status": "hit"},
+            },
+            "results": [{
+                "doi": "10.123/metformin",
+                "title": "Metformin impairs resistance training adaptation",
+                "abstract": "Metformin blunted resistance training adaptation.",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="token",
+        max_variants=1,
+        allow_completed_low_limit_fallback=True,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        strict=True,
+    )
+
+    hits = client.search("metformin resistance training adaptation", limit=25)
+
+    assert hits[0].doi == "10.123/metformin"
+    assert [payload["limit"] for payload in payloads] == [25, 25, 10]
+    assert [payload["top_k"] for payload in payloads] == [25, 25, 10]
+
+
+def test_full_raw_client_skips_cold_variant_for_later_trusted_variant(monkeypatch: object) -> None:
+    queries: list[str] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        query = cast(str, payload["query"])
+        queries.append(query)
+        if query == "cold water immersion resistance training":
+            return FakeResponse({
+                "meta": {
+                    "shard_receipt": {
+                        "authenticated": True,
+                        "partial_shard_search": True,
+                        "shards_searched": 63,
+                        "shards_total": 1525,
+                        "sources_searched": {"openalex": 63},
+                        "sweep_failed_shards": 0,
+                    },
+                    "async_sweep": {"status": "running"},
+                },
+                "results": [],
+            })
+        return FakeResponse({
+            "meta": {
+                "count": 10,
+                "shard_receipt": {
+                    "authenticated": True,
+                    "partial_shard_search": False,
+                    "shards_searched": 1525,
+                    "shards_total": 1525,
+                    "sweep_failed_shards": 0,
+                    "sources_searched": {
+                        "biorxiv": 1,
+                        "openalex": 1,
+                        "pubmed": 1,
+                        "semantic_scholar": 1,
+                        "semantic_scholar_abstracts": 1,
+                    },
+                },
+                "async_sweep": {"status": "hit"},
+            },
+            "results": [{
+                "doi": "10.123/cwi",
+                "title": "Cold water immersion training adaptation",
+                "abstract": "Cold water immersion blunted resistance training adaptation.",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="token",
+        max_variants=2,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        strict=True,
+    )
+
+    hits = client.search("cold water immersion resistance training adaptation", limit=25)
+
+    assert "cold water immersion resistance training" in queries
+    assert "cold water immersion resistance training adaptation" in queries
+    assert hits[0].doi == "10.123/cwi"
+
+
 def test_full_raw_client_waits_for_zero_hit_foreground_sweep(monkeypatch: object) -> None:
     payloads: list[dict[str, object]] = []
 
@@ -471,7 +763,106 @@ def test_full_raw_client_bounds_wait_on_queued_sweep(monkeypatch: MonkeyPatch) -
 
     assert [payload.get("cache_only") for payload in payloads] == [True, True, True, True]
     assert {payload.get("queue_if_missing") for payload in payloads} == {True}
+    assert {payload.get("min_shards_searched") for payload in payloads} == {1}
+    assert {payload.get("require_complete_search") for payload in payloads} == {True}
     assert now == pytest.approx(0.15)
+
+
+def test_full_raw_client_stops_waiting_on_no_hit_sweep_stop(monkeypatch: MonkeyPatch) -> None:
+    payloads: list[dict[str, object]] = []
+    sleeps: list[float] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payloads.append(json.loads(cast(bytes, request.data).decode("utf-8")))
+        status = "running" if len(payloads) == 1 else "stopped_no_hits"
+        return FakeResponse({
+            "meta": {
+                "shard_receipt": {
+                    "authenticated": True,
+                    "partial_shard_search": True,
+                    "shards_searched": 137,
+                    "shards_total": 1525,
+                    "sweep_failed_shards": 0,
+                    "sweep_remaining_shards": 1388,
+                    "sweep_stopped_no_hits": status == "stopped_no_hits",
+                },
+                "async_sweep": {"status": status},
+            },
+            "results": [],
+        })
+
+    def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    monkeypatch.setattr("v5_memo.client.time.sleep", fake_sleep)
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="raw-token",
+        max_variants=1,
+        sweep_wait_seconds=60.0,
+        sweep_poll_seconds=0.05,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        strict=True,
+    )
+
+    with pytest.raises(SearchBackendError, match="coverage too narrow"):
+        client.search("glyNAC older adults trial", limit=25)
+
+    assert [payload.get("cache_only") for payload in payloads] == [True, True]
+    assert sleeps == []
+
+
+def test_full_raw_client_does_not_wait_on_no_hit_coverage_error(monkeypatch: MonkeyPatch) -> None:
+    payloads: list[dict[str, object]] = []
+    sleeps: list[float] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payloads.append(json.loads(cast(bytes, request.data).decode("utf-8")))
+        body = json.dumps({
+            "error": "coverage_too_narrow",
+            "shard_receipt": {
+                "authenticated": True,
+                "partial_shard_search": True,
+                "shards_searched": 137,
+                "shards_total": 1525,
+                "sweep_failed_shards": 0,
+                "sweep_remaining_shards": 1388,
+                "sweep_stopped_no_hits": True,
+            },
+        }).encode("utf-8")
+        raise HTTPError(
+            url="https://search.example/full-raw",
+            code=422,
+            msg="coverage_too_narrow",
+            hdrs=Message(),
+            fp=BytesIO(body),
+        )
+
+    def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    monkeypatch.setattr("v5_memo.client.time.sleep", fake_sleep)
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="raw-token",
+        max_variants=1,
+        sweep_wait_seconds=60.0,
+        sweep_poll_seconds=0.05,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        strict=True,
+    )
+
+    with pytest.raises(SearchBackendError, match="coverage too narrow"):
+        client.search("glyNAC older adults trial", limit=25)
+
+    assert [payload.get("cache_only") for payload in payloads] == [True]
+    assert sleeps == []
 
 
 def test_full_raw_client_keeps_sufficient_foreground_hit(monkeypatch: object) -> None:
@@ -480,6 +871,9 @@ def test_full_raw_client_keeps_sufficient_foreground_hit(monkeypatch: object) ->
         payload = json.loads(cast(bytes, request.data).decode("utf-8"))
         assert payload.get("cache_only") is True
         assert payload.get("queue_if_missing") is True
+        assert payload.get("min_shards_searched") == 48
+        assert payload.get("min_sources_searched") == 2
+        assert payload.get("require_complete_search") is True
         return FakeResponse({
             "meta": {
                 "count": 1,
@@ -689,6 +1083,64 @@ def test_full_raw_client_tries_next_strict_variant_after_failure(monkeypatch: ob
     assert queries == ["metformin longevity", "metformin"]
 
 
+def test_full_raw_client_does_not_downgrade_requested_recall_to_low_limit_cache(
+    monkeypatch: object,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        payloads.append(payload)
+        if payload.get("limit") == 10:
+            return FakeResponse({
+                "meta": {
+                    "shard_receipt": {
+                        "authenticated": True,
+                        "shards_searched": 1525,
+                        "partial_shard_search": False,
+                        "sweep_failed_shards": 0,
+                        "sources_searched": {
+                            "biorxiv": 1,
+                            "openalex": 1,
+                            "pubmed": 1,
+                            "semantic_scholar": 1,
+                            "semantic_scholar_abstracts": 1,
+                        },
+                    },
+                },
+                "results": [{"doi": "10.123/low", "title": "Low recall hit", "source": "openalex"}],
+            })
+        return FakeResponse({
+            "meta": {
+                "shard_receipt": {
+                    "authenticated": True,
+                    "shards_searched": 128,
+                    "partial_shard_search": True,
+                    "sweep_failed_shards": 0,
+                    "sources_searched": {"openalex": 128},
+                },
+                "async_sweep": {"status": "queued"},
+            },
+            "results": [],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="raw-token",
+        max_variants=1,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        strict=True,
+    )
+
+    with pytest.raises(SearchBackendError, match="coverage too narrow"):
+        client.search("metformin resistance training adaptation", limit=25)
+
+    assert [payload["limit"] for payload in payloads] == [25]
+
+
 def test_full_raw_client_uses_cache_only_after_strict_foreground_timeout(
     monkeypatch: object,
 ) -> None:
@@ -854,7 +1306,7 @@ def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: objec
     assert receipt["rank_modes"] == ("relevance",)
 
 
-def test_full_raw_client_tries_compact_pass_after_complete_sweep_has_hits(
+def test_full_raw_client_stops_after_complete_sweep_has_enough_hits(
     monkeypatch: object,
 ) -> None:
     requested: list[dict[str, object]] = []
@@ -895,8 +1347,53 @@ def test_full_raw_client_tries_compact_pass_after_complete_sweep_has_hits(
     hits = client.search("management forecast disclosure", limit=10)
 
     assert len(hits) == 10
-    assert [payload["search_pass"] for payload in requested] == ["focused", "broad"]
+    assert [payload["search_pass"] for payload in requested] == ["focused"]
     assert requested[0]["priority"] is True
+
+
+def test_full_raw_client_skips_broad_after_trusted_focused_cache_floor(
+    monkeypatch: object,
+) -> None:
+    requested: list[dict[str, object]] = []
+    receipt = {
+        "shards_total": 1525,
+        "shards_searched": 1525,
+        "partial_shard_search": False,
+        "sweep_failed_shards": 0,
+        "sources_searched": {str(index): 1 for index in range(5)},
+    }
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        requested.append(payload)
+        return FakeResponse({
+            "meta": {"count": 10, "shard_receipt": receipt},
+            "results": [
+                {
+                    "doi": f"10.123/focused-{index}",
+                    "title": f"Management forecast disclosure focused hit {index}",
+                    "abstract": "Management forecast disclosure evidence.",
+                    "year": 2024,
+                    "source": "openalex",
+                }
+                for index in range(10)
+            ],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)  # type: ignore[attr-defined]
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=4,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        strict=True,
+    )
+
+    hits = client.search("management forecast disclosure", limit=25)
+
+    assert len(hits) == 10
+    assert [payload["search_pass"] for payload in requested] == ["focused"]
 
 
 def test_full_raw_client_keeps_trusted_hits_when_auxiliary_variant_is_unverified(
@@ -1008,7 +1505,7 @@ def test_full_raw_client_from_env_requires_only_url(monkeypatch: MonkeyPatch) ->
     assert client._require_auth is True
 
 
-def test_full_raw_client_from_env_uses_index_token_fullraw_defaults(
+def test_full_raw_client_from_env_requires_explicit_url_with_index_token(
     monkeypatch: MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", raising=False)
@@ -1017,12 +1514,66 @@ def test_full_raw_client_from_env_uses_index_token_fullraw_defaults(
 
     client = FullRawCorpusSearchClient.from_env()
 
-    assert client.configured is True
-    assert client._search_url == "http://127.0.0.1:9903/search"
+    assert client.configured is False
+    assert client._search_url == ""
     assert client._token == "index-secret"
     assert client._min_shards_searched == 1525
     assert client._min_sources_searched == 5
     assert client._require_auth is True
+
+
+def test_full_raw_client_strict_full_coverage_defaults_to_one_variant(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_TOKEN", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_MAX_VARIANTS", raising=False)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", "index-secret")
+
+    client = FullRawCorpusSearchClient.from_env(strict=True)
+
+    assert client._min_shards_searched == 1525
+    assert client._min_sources_searched == 5
+    assert client._max_variants == 1
+
+
+def test_full_raw_client_strict_full_coverage_raises_backfill_default(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_TOKEN", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT", raising=False)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", "index-secret")
+
+    strict_client = FullRawCorpusSearchClient.from_env(strict=True)
+    loose_client = FullRawCorpusSearchClient.from_env(strict=False)
+
+    assert strict_client._doi_abstract_backfill_limit == 16
+    assert strict_client._doi_abstract_backfill_budget_seconds == 24.0
+    assert loose_client._doi_abstract_backfill_limit == 6
+    assert loose_client._doi_abstract_backfill_budget_seconds == 12.0
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT", "3")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_BUDGET_SECONDS", "5")
+
+    explicit_client = FullRawCorpusSearchClient.from_env(strict=True)
+
+    assert explicit_client._doi_abstract_backfill_limit == 3
+    assert explicit_client._doi_abstract_backfill_budget_seconds == 5.0
+
+
+def test_full_raw_client_explicit_max_variants_overrides_strict_default(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_CORPUS_TOKEN", raising=False)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", "index-secret")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MAX_VARIANTS", "3")
+
+    client = FullRawCorpusSearchClient.from_env(strict=True)
+
+    assert client._max_variants == 3
+
 
 def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
@@ -1037,10 +1588,21 @@ def test_full_raw_client_loads_timeout_from_env(monkeypatch: MonkeyPatch) -> Non
 
     assert client._timeout == 240.0
     assert client._max_variants == 4
-    assert client._search_budget_seconds == 900.0
-    assert client._sweep_wait_seconds == 900.0
+    assert client._search_budget_seconds == 7200.0
+    assert client._sweep_wait_seconds == 7200.0
     assert client._sweep_poll_seconds == 2.0
     assert client._progress is True
+
+
+def test_full_raw_client_does_not_cap_operator_search_budget(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS", "8640")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS", "8640")
+
+    client = FullRawCorpusSearchClient.from_env()
+
+    assert client._search_budget_seconds == 8640.0
+    assert client._sweep_wait_seconds == 8640.0
 
 def test_full_raw_client_budget_stops_variant_fanout(
     monkeypatch: MonkeyPatch,
@@ -1501,6 +2063,37 @@ def test_fullraw_search_backfills_missing_doi_abstracts(monkeypatch: MonkeyPatch
     assert hits[0].metadata["abstract_backfill"] == "openalex_doi"
     assert any("api.openalex.org/works/doi:" in url for url in seen_urls)
 
+
+def test_fullraw_openalex_backfill_stops_at_total_budget(monkeypatch: MonkeyPatch) -> None:
+    calls: list[str] = []
+    monotonic_values = iter([0.0, 0.0, 99.0])
+
+    def fake_monotonic() -> float:
+        return next(monotonic_values)
+
+    def fake_fetch(doi: str) -> CorpusHit:
+        calls.append(doi)
+        return CorpusHit(
+            hit_id=doi,
+            title=f"Study {doi}",
+            abstract=f"Backfilled {doi}",
+            source="openalex:full-corpus",
+            doi=doi,
+        )
+
+    monkeypatch.setattr("v5_memo.client.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("v5_memo.client._fetch_openalex_work_by_doi", fake_fetch)
+    hits = [
+        CorpusHit(hit_id=str(index), title=f"Study 10.1/test{index}", abstract="", source="fullraw", doi=f"10.1/test{index}")
+        for index in range(3)
+    ]
+
+    out = _backfill_missing_openalex_abstracts(hits, limit=3, budget_seconds=1.0)
+
+    assert calls == ["10.1/test0"]
+    assert out[0].abstract == "Backfilled 10.1/test0"
+    assert out[1].abstract == ""
+
 def test_fullraw_search_drops_doi_title_mismatch(monkeypatch: MonkeyPatch) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del timeout
@@ -1643,6 +2236,30 @@ def test_parse_full_raw_search_keeps_valid_doi_article_codes_that_look_like_year
 
     assert [hit.doi for hit in hits] == ["10.1093/GERONI/IGY023.2009"]
     assert hits[0].year == 2018
+
+
+def test_parse_full_raw_search_drops_unsafe_bracketed_doi_identifier() -> None:
+    hits = _parse_full_raw_search_response({
+        "results": [
+            {
+                "doi": "10.31435/ijitss.1(49).2026.4693",
+                "title": "Cold-water immersion protocol review",
+                "abstract": "Cold-water immersion protocol parameters were reviewed.",
+                "year": 2026,
+                "provider": "openalex",
+                "openalex_id": "https://openalex.org/W4693",
+                "url": "https://openalex.org/W4693",
+            },
+        ],
+    })
+
+    hit = hits[0]
+    assert hit.doi is None
+    assert hit.receipt_id == "https://openalex.org/W4693"
+    assert "10.31435/ijitss.1(49).2026.4693" not in hit.source_key
+    assert hit.url == "https://openalex.org/W4693"
+    assert hit.metadata["raw_doi"] == "10.31435/ijitss.1(49).2026.4693"
+
 
 def test_parse_full_corpus_paper_hit() -> None:
     hits = _parse_corpus_search_response([

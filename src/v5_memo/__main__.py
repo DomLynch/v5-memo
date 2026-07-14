@@ -6,9 +6,11 @@ import json
 import os
 import re
 import sys
+import time
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.error import HTTPError
 
 from v5_memo.client import (
     FullRawCorpusSearchClient,
@@ -18,6 +20,7 @@ from v5_memo.client import (
     SearchBackendError,
 )
 from v5_memo.coverage import current_search_coverage, require_full_raw_corpus
+from v5_memo.gate import candidate_publish_blocker
 from v5_memo.miner import query_anchor_terms
 from v5_memo.minimax_writer import (
     MiniMaxM3CandidateSelector,
@@ -25,7 +28,15 @@ from v5_memo.minimax_writer import (
     MiniMaxM3SearchPlanner,
 )
 from v5_memo.pipeline import build_alpha_memo
-from v5_memo.publisher import build_researka_payload, load_researka_submit_config, submit_researka
+from v5_memo.publisher import (
+    build_researka_payload,
+    load_researka_submit_config,
+    researka_publication_id,
+    researka_submission_id,
+    set_researka_public_visibility,
+    submit_researka,
+    wait_researka_decision,
+)
 from v5_memo.retriever import CorpusSearcher, _seed_query_key
 from v5_memo.schemas import CorpusHit, MemoBuildError, MemoResult
 from v5_memo.writer import render_memo
@@ -57,6 +68,8 @@ _DIRECT_EVIDENCE_QUERY_TERMS = frozenset({
     "patient", "patients", "randomized", "trial",
 })
 _MODEL_ONLY_QUERY_TERMS = frozenset({"germ", "mice", "mouse", "murine"})
+_UNSAFE_DOI_CHARS = frozenset("()")
+_DEFAULT_FULLRAW_RECALL_LIMIT = 25
 
 
 class DemoSearch:
@@ -116,10 +129,30 @@ def main() -> None:
     parser.add_argument("--publish", action="store_true")
     parser.add_argument("--submit-researka", action="store_true")
     parser.add_argument("--publish-receipt-path", default="")
+    parser.add_argument(
+        "--researka-decision-wait-seconds",
+        type=float,
+        default=float(os.environ.get("V5_MEMO_RESEARKA_DECISION_WAIT_SECONDS", "0") or 0),
+    )
+    parser.add_argument(
+        "--researka-decision-poll-seconds",
+        type=float,
+        default=float(os.environ.get("V5_MEMO_RESEARKA_DECISION_POLL_SECONDS", "5") or 5),
+    )
+    parser.add_argument("--researka-list-if-accepted", action="store_true")
     parser.add_argument("--researka-agent-id", default=os.environ.get("V5_MEMO_RESEARKA_AGENT_ID", ""))
     parser.add_argument("--researka-domain-slug", default=os.environ.get("V5_MEMO_RESEARKA_DOMAIN_SLUG", ""))
+    parser.add_argument(
+        "--researka-parent-submission-id",
+        default=os.environ.get("V5_MEMO_RESEARKA_PARENT_SUBMISSION_ID", ""),
+    )
     parser.add_argument("--researka-api-base", default=os.environ.get("V5_MEMO_RESEARKA_API_BASE", "https://api.researka.org"))
     parser.add_argument("--researka-submit-url", default=os.environ.get("V5_MEMO_RESEARKA_SUBMIT_URL", ""))
+    parser.add_argument(
+        "--researka-submit-wait-seconds",
+        type=float,
+        default=float(os.environ.get("V5_MEMO_RESEARKA_SUBMIT_WAIT_SECONDS", "0") or 0),
+    )
     args = parser.parse_args()
     fullraw_backed = args.searcher in {"fullraw", "hybrid", "smart"}
     args.min_shards_searched = _coverage_threshold(
@@ -148,7 +181,11 @@ def main() -> None:
     searcher_mode = "hybrid" if args.searcher == "smart" else args.searcher
     planner_mode = args.planner or ("minimax" if args.searcher == "smart" else "seed")
     writer_mode = args.writer or ("minimax" if args.searcher == "smart" else "template")
-    selector_mode = args.selector or ("minimax" if writer_mode == "minimax" else "deterministic")
+    selector_mode = args.selector or (
+        "deterministic" if args.submit_researka or args.publish
+        else "minimax" if writer_mode == "minimax"
+        else "deterministic"
+    )
     alpha_tier = args.min_alpha_tier or "publishable"
     min_alpha_tier = "discovery_seed" if alpha_tier == "discovery" else f"{alpha_tier}_alpha"
 
@@ -224,8 +261,22 @@ def main() -> None:
     if not explicit_queries and not query_anchor_terms(base_queries):
         anchor_queries = queries
     wider_recall = planner_mode == "minimax" or selector_mode == "minimax"
-    per_query_limit = 10 if fullraw_backed else (50 if wider_recall else 25)
-    max_hits = 20 if fullraw_backed else (500 if wider_recall else 100)
+    if fullraw_backed:
+        wider_fullraw_recall = wider_recall or args.submit_researka or args.publish
+        default_recall_limit = 50 if wider_fullraw_recall else _DEFAULT_FULLRAW_RECALL_LIMIT
+        per_query_limit = (
+            _int_env("V5_MEMO_FULL_RAW_PER_QUERY_LIMIT")
+            or _int_env("V5_MEMO_FULL_RAW_RECALL_LIMIT")
+            or default_recall_limit
+        )
+        max_query_multiplier = 4 if wider_fullraw_recall else 3
+        max_hits = _int_env("V5_MEMO_FULL_RAW_MAX_HITS") or per_query_limit * max(
+            2,
+            min(max_query_multiplier, len(queries)),
+        )
+    else:
+        per_query_limit = 50 if wider_recall else 25
+        max_hits = 500 if wider_recall else 100
     build_kwargs = {
         "topic": args.topic,
         "seed_queries": queries,
@@ -239,27 +290,43 @@ def main() -> None:
         "min_shards_searched": args.min_shards_searched,
         "min_sources_searched": args.min_sources_searched,
         "min_search_passes": args.min_search_passes,
+        "require_publish_quality": args.submit_researka or args.publish,
     }
     try:
         result = build_alpha_memo(**build_kwargs)
-    except MemoBuildError:
-        if not args.emit_discovery_on_fail:
+    except MemoBuildError as exc:
+        if args.emit_discovery_on_fail:
+            result = build_alpha_memo(
+                topic=args.topic,
+                seed_queries=queries,
+                searcher=searcher,
+                memo_writer=render_memo,
+                memo_selector=None,
+                anchor_queries=anchor_queries,
+                min_alpha_tier="discovery_seed",
+                per_query_limit=per_query_limit,
+                max_hits=max_hits,
+                min_shards_searched=args.min_shards_searched,
+                min_sources_searched=args.min_sources_searched,
+                min_search_passes=args.min_search_passes,
+            )
+        elif not (args.publish_receipt_path or args.submit_researka or args.publish):
             raise
-        result = build_alpha_memo(
-            topic=args.topic,
-            seed_queries=queries,
-            searcher=searcher,
-            memo_writer=render_memo,
-            memo_selector=None,
-            anchor_queries=anchor_queries,
-            min_alpha_tier="discovery_seed",
-            per_query_limit=per_query_limit,
-            max_hits=max_hits,
-            min_shards_searched=args.min_shards_searched,
-            min_sources_searched=args.min_sources_searched,
-            min_search_passes=args.min_search_passes,
-        )
+        else:
+            error: dict[str, object] = {
+                "error": exc.failure.code,
+                "message": exc.failure.message,
+                "details": exc.failure.details,
+            }
+            _write_json(args.publish_receipt_path, error)
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(1) from exc
     except SearchBackendError as exc:
+        error = {
+            "error": "search_backend_error",
+            "message": str(exc),
+        }
+        _write_json(args.publish_receipt_path, error)
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from exc
     memo_path = _write_memo(args.output_dir, result) if args.output_dir else None
@@ -280,19 +347,66 @@ def main() -> None:
             _write_json(args.publish_receipt_path, error)
             print("Discovery seed output was not submitted to Researka", file=sys.stderr)
             raise SystemExit(4)
-        payload = build_researka_payload(
-            result,
-            author_agent_id=config.agent_id,
-            domain_slug=config.domain_slug,
-        )
-        response = submit_researka(
+        if blocker := _publish_blocker(result):
+            _write_json(args.publish_receipt_path, blocker)
+            print(f"Publish blocked: {blocker['error']}", file=sys.stderr)
+            raise SystemExit(5)
+        if args.researka_parent_submission_id.strip():
+            payload = build_researka_payload(
+                result,
+                author_agent_id=config.agent_id,
+                domain_slug=config.domain_slug,
+                parent_submission_id=args.researka_parent_submission_id,
+            )
+        else:
+            payload = build_researka_payload(
+                result,
+                author_agent_id=config.agent_id,
+                domain_slug=config.domain_slug,
+            )
+        response, fail_receipt = _submit_researka_with_cooldown(
             payload,
             agent_key=config.agent_key,
             api_base=config.api_base,
             submit_url=config.submit_url,
+            wait_seconds=args.researka_submit_wait_seconds,
         )
-        _write_json(args.publish_receipt_path, response)
-        print(json.dumps(response, sort_keys=True), file=sys.stderr)
+        if fail_receipt:
+            _write_json(args.publish_receipt_path, fail_receipt)
+            if fail_receipt.get("error") == "researka_submit_deferred":
+                print(f"Researka submit deferred for {fail_receipt['retry_after']}s", file=sys.stderr)
+            else:
+                print(f"Researka submit failed: HTTP {fail_receipt['status']} {fail_receipt['reason']}", file=sys.stderr)
+            raise SystemExit(6)
+        receipt: dict[str, object] = dict(response)
+        should_wait = args.researka_decision_wait_seconds > 0 or args.researka_list_if_accepted
+        submission_id = researka_submission_id(response)
+        if should_wait and submission_id:
+            decision = wait_researka_decision(
+                submission_id,
+                api_base=config.api_base,
+                timeout_seconds=max(args.researka_decision_wait_seconds, 1.0),
+                poll_seconds=args.researka_decision_poll_seconds,
+            )
+            receipt["decision"] = decision
+            publication_id = researka_publication_id(decision)
+            if args.researka_list_if_accepted and decision.get("decision") == "accept" and publication_id:
+                try:
+                    receipt["visibility"] = set_researka_public_visibility(
+                        publication_id,
+                        agent_key=config.agent_key,
+                        api_base=config.api_base,
+                        visibility="listed",
+                    )
+                except HTTPError as exc:
+                    receipt["visibility_error"] = {
+                        "error": "researka_visibility_update_failed",
+                        "status": exc.code,
+                        "reason": exc.reason,
+                        "publication_id": publication_id,
+                    }
+        _write_json(args.publish_receipt_path, receipt)
+        print(json.dumps(receipt, sort_keys=True), file=sys.stderr)
     print(memo_path if memo_path is not None else result.markdown)
 
 
@@ -302,6 +416,222 @@ def _require_full_raw_or_exit() -> None:
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(2) from exc
+
+
+def _researka_submit_cooldown() -> tuple[float, Mapping[str, object]] | None:
+    path = _researka_submit_cooldown_path()
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, Mapping):
+        return None
+    until = _float_value(raw.get("until"))
+    remaining = until - time.time()
+    return (remaining, raw) if remaining > 0 else None
+
+
+def _submit_researka_with_cooldown(
+    payload: dict[str, object],
+    *,
+    agent_key: str,
+    api_base: str,
+    submit_url: str,
+    wait_seconds: float,
+) -> tuple[dict[str, object], dict[str, object]]:
+    deadline = time.time() + max(0.0, wait_seconds)
+    transient_attempts = 0
+    while True:
+        if cooldown := _researka_submit_cooldown():
+            remaining, state = cooldown
+            if time.time() + remaining > deadline:
+                return {}, _submit_defer_receipt(remaining, state)
+            print(f"Researka submit waiting for cooldown: {int(remaining + 0.999)}s", file=sys.stderr)
+            time.sleep(max(0.0, remaining))
+        try:
+            return submit_researka(
+                payload,
+                agent_key=agent_key,
+                api_base=api_base,
+                submit_url=submit_url,
+            ), {}
+        except HTTPError as exc:
+            response_body = _http_error_body(exc)
+            if duplicate_response := _duplicate_submission_response(exc, response_body):
+                return duplicate_response, {}
+            response_headers = _rate_limit_headers(exc)
+            cooldown_state = _record_researka_submit_cooldown(exc, response_body=response_body)
+            fail_receipt = _submit_failed_receipt(
+                exc,
+                cooldown_state,
+                response_body=response_body,
+                response_headers=response_headers,
+            )
+            if exc.code in {500, 502, 503, 504}:
+                transient_attempts += 1
+                retry_after = _float_value(
+                    exc.headers.get("Retry-After", "") if exc.headers is not None else ""
+                )
+                delay = retry_after or min(2 ** (transient_attempts - 1), 8.0)
+                if time.time() + delay > deadline:
+                    return {}, fail_receipt
+                print(
+                    f"Researka submit retrying transient HTTP {exc.code} after {delay:g}s",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+                continue
+            if exc.code != 429:
+                return {}, fail_receipt
+            cooldown = _researka_submit_cooldown()
+            if not cooldown:
+                return {}, fail_receipt
+            remaining, state = cooldown
+            if time.time() + remaining > deadline:
+                return {}, fail_receipt
+            print(f"Researka submit retrying after cooldown: {int(remaining + 0.999)}s", file=sys.stderr)
+            time.sleep(max(0.0, remaining))
+
+
+def _duplicate_submission_response(exc: HTTPError, response_body: str) -> dict[str, object]:
+    if exc.code != 409 or not response_body:
+        return {}
+    try:
+        payload = json.loads(response_body)
+    except json.JSONDecodeError:
+        return {}
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if not isinstance(detail, dict) or detail.get("error") != "duplicate_submission":
+        return {}
+    submission_id = detail.get("submission_id")
+    if not isinstance(submission_id, str) or not submission_id.strip():
+        return {}
+    return {"submission": {"id": submission_id.strip()}, "duplicate_submission": True}
+
+
+def _submit_defer_receipt(remaining: float, state: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "error": "researka_submit_deferred",
+        "retry_after": int(remaining + 0.999),
+        "cooldown_until": state.get("until_iso", ""),
+        "previous_status": state.get("status", ""),
+        "previous_reason": state.get("reason", ""),
+        "attempts": state.get("attempts", ""),
+    }
+
+
+def _submit_failed_receipt(
+    exc: HTTPError,
+    cooldown_state: Mapping[str, object],
+    *,
+    response_body: str | None = None,
+    response_headers: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    receipt: dict[str, object] = {
+        "error": "researka_submit_failed",
+        "status": exc.code,
+        "reason": exc.reason,
+        "retry_after": exc.headers.get("Retry-After", "") if exc.headers is not None else "",
+        "cooldown_until": cooldown_state.get("until_iso", "") if cooldown_state else "",
+        "attempts": cooldown_state.get("attempts", "") if cooldown_state else "",
+    }
+    if limit_kind := cooldown_state.get("limit_kind"):
+        receipt["limit_kind"] = limit_kind
+    body = _http_error_body(exc) if response_body is None else response_body
+    if body:
+        receipt["response_body"] = body
+    headers = _rate_limit_headers(exc) if response_headers is None else dict(response_headers)
+    if headers:
+        receipt["response_headers"] = headers
+    return receipt
+
+
+def _http_error_body(exc: HTTPError, *, limit: int = 1000) -> str:
+    try:
+        raw = exc.read(limit + 1)
+    except (OSError, ValueError):
+        return ""
+    if not raw:
+        return ""
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+    return text[:limit]
+
+
+def _rate_limit_headers(exc: HTTPError) -> dict[str, str]:
+    if exc.headers is None:
+        return {}
+    out: dict[str, str] = {}
+    for key in ("Retry-After", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"):
+        if value := exc.headers.get(key):
+            out[key] = value
+    return out
+
+
+def _record_researka_submit_cooldown(exc: HTTPError, *, response_body: str = "") -> Mapping[str, object]:
+    if exc.code != 429:
+        return {}
+    retry_after = _float_value(exc.headers.get("Retry-After", "") if exc.headers is not None else "")
+    path = _researka_submit_cooldown_path()
+    previous = _read_json_mapping(path)
+    attempts = int(_float_value(previous.get("attempts"))) + 1 if previous else 1
+    limit_kind = "daily" if _is_daily_limit_response(response_body) else "rate"
+    if retry_after <= 0:
+        if limit_kind == "daily":
+            retry_after = _daily_limit_retry_after_seconds()
+        else:
+            base = _float_value(os.environ.get("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_SECONDS", "300")) or 300.0
+            retry_after = base * (2 ** min(attempts - 1, 4))
+    max_cooldown = 86400.0 if limit_kind == "daily" else 3600.0
+    until = time.time() + max(1.0, min(retry_after, max_cooldown))
+    payload: dict[str, object] = {
+        "attempts": attempts,
+        "limit_kind": limit_kind,
+        "until": until,
+        "until_iso": datetime.fromtimestamp(until, UTC).isoformat(),
+        "status": exc.code,
+        "reason": exc.reason,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, sort_keys=True))
+    return payload
+
+
+def _is_daily_limit_response(response_body: str) -> bool:
+    return "daily_limit_exceeded" in response_body.casefold()
+
+
+def _daily_limit_retry_after_seconds() -> float:
+    override = _float_value(os.environ.get("V5_MEMO_RESEARKA_DAILY_LIMIT_COOLDOWN_SECONDS", ""))
+    if override > 0:
+        return override
+    now = time.time()
+    today = datetime.fromtimestamp(now, UTC).date()
+    reset_day = today + timedelta(days=1)
+    reset = datetime(reset_day.year, reset_day.month, reset_day.day, tzinfo=UTC) + timedelta(minutes=5)
+    return max(300.0, reset.timestamp() - now)
+
+
+def _researka_submit_cooldown_path() -> Path:
+    return Path(os.environ.get("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_PATH", "/tmp/v5-memo-researka-submit-cooldown.json"))
+
+
+def _read_json_mapping(path: Path) -> Mapping[str, object]:
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return raw if isinstance(raw, Mapping) else {}
+
+
+def _float_value(value: object) -> float:
+    if not isinstance(value, (int, float, str)):
+        return 0.0
+    try:
+        return float(value) if value not in (None, "") else 0.0
+    except ValueError:
+        return 0.0
 
 
 def _topic_anchored_queries(queries: Sequence[str], topic: str) -> list[str]:
@@ -349,7 +679,9 @@ def _alpha_shape_queries(topic: str) -> list[str]:
     )
     anchor = " ".join(terms[:split_at])
     rest = " ".join(terms[split_at:])
+    direct_rest = " ".join(terms[split_at:split_at + 2])
     queries = [
+        f"{anchor} human trial {direct_rest}".strip(),
         f"{anchor} augment {rest} protocol",
         f"{anchor} blunts {rest}",
     ]
@@ -435,6 +767,22 @@ def _is_discovery_seed(result: object) -> bool:
     candidate = getattr(result, "candidate", None)
     reasons = getattr(candidate, "reasons", ())
     return any(reason == "tier:discovery_seed" for reason in reasons)
+
+
+def _publish_blocker(result: object) -> dict[str, object] | None:
+    markdown = getattr(result, "markdown", "")
+    receipts = tuple(getattr(result, "receipts", ()) or ())
+    unsafe_dois = sorted(
+        doi
+        for hit in receipts
+        if (doi := str(getattr(hit, "doi", "") or "").strip())
+        and any(char in doi for char in _UNSAFE_DOI_CHARS)
+        and doi in markdown
+    )
+    if unsafe_dois:
+        return {"error": "unbundled_doi_citation", "dois": unsafe_dois}
+    candidate = getattr(result, "candidate", None)
+    return candidate_publish_blocker(candidate) if candidate is not None else None
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from urllib.request import Request
 import pytest
 
 from v5_memo.minimax_writer import (
+    MemoScopeError,
     MiniMaxM3CandidateSelector,
     MiniMaxM3MemoWriter,
     MiniMaxM3SearchPlanner,
@@ -183,6 +184,109 @@ Hypothesis only."""
     assert body["thinking"] == {"type": "disabled"}
 
 
+def test_minimax_writer_retries_once_after_invalid_doi_reference() -> None:
+    bad_text = """# Alpha memo: NAD mitochondrial sleep exercise bridge
+## Core signal
+NAD and mitochondrial repair may connect the receipts plus `10.9999/bad`.
+## The 2+2=5 angle
+Sleep fragmentation and exercise response share the same receipt-bound bridge.
+## Why this could matter
+The bridge gives a testable resilience hypothesis.
+## What would break the idea
+The idea breaks if follow-up receipts do not connect the bridge terms.
+## Claim ledger
+- receipt-bound claim: 10.1/sleep-nad support=direct
+## Receipts
+- 10.1/sleep-nad
+- 10.2/exercise-nad
+## Safety note
+Hypothesis only."""
+    good_text = bad_text.replace(" plus `10.9999/bad`", "")
+    opener = FakeOpener([bad_text, good_text])
+    writer = MiniMaxM3MemoWriter(api_key="test-key", opener=opener)
+
+    memo = writer.render(_candidate(), _receipts())
+
+    assert "10.9999/bad" not in memo
+    assert len(opener.requests) == 2
+    request_data = opener.requests[1].data
+    assert isinstance(request_data, bytes)
+    body = json.loads(request_data.decode("utf-8"))
+    retry_prompt = body["messages"][0]["content"][0]["text"]
+    assert "Previous draft failed validation" in retry_prompt
+    assert "10.9999/bad" in retry_prompt
+
+
+def test_minimax_writer_retries_once_after_advice_action_framing() -> None:
+    bad_text = """# Alpha memo: NAD mitochondrial sleep exercise bridge
+## Core signal
+NAD and mitochondrial repair may connect the receipts.
+## The 2+2=5 angle
+Sleep fragmentation and exercise response share the same receipt-bound bridge.
+## Why this could matter
+Athletes should use this exposure to prioritize recovery.
+## What would break the idea
+The idea breaks if follow-up receipts do not connect the bridge terms.
+## Claim ledger
+- receipt-bound claim: 10.1/sleep-nad support=direct
+## Receipts
+- 10.1/sleep-nad
+- 10.2/exercise-nad
+## Safety note
+Hypothesis only."""
+    good_text = bad_text.replace(
+        "Athletes should use this exposure to prioritize recovery.",
+        "The receipt-bound bridge gives one hypothesis about recovery context.",
+    )
+    opener = FakeOpener([bad_text, good_text])
+    writer = MiniMaxM3MemoWriter(api_key="test-key", opener=opener)
+
+    memo = writer.render(_candidate(), _receipts())
+
+    assert "should use" not in memo
+    assert len(opener.requests) == 2
+    request_data = opener.requests[1].data
+    assert isinstance(request_data, bytes)
+    body = json.loads(request_data.decode("utf-8"))
+    retry_prompt = body["messages"][0]["content"][0]["text"]
+    assert "advice/action framing" in retry_prompt
+    assert "do not tell athletes" in retry_prompt
+
+
+def test_minimax_writer_retries_once_after_unsupported_statistics() -> None:
+    bad_text = """# Alpha memo: NAD mitochondrial sleep exercise bridge
+## Core signal
+NAD and mitochondrial repair may connect the receipts with effect sizes 0.30 and 0.36.
+## The 2+2=5 angle
+Sleep fragmentation and exercise response share the same receipt-bound bridge.
+## Why this could matter
+The bridge gives a testable resilience hypothesis.
+## What would break the idea
+The idea breaks if follow-up receipts do not connect the bridge terms.
+## Claim ledger
+- receipt-bound claim: 10.1/sleep-nad support=direct
+## Receipts
+- 10.1/sleep-nad
+- 10.2/exercise-nad
+## Safety note
+Hypothesis only."""
+    good_text = bad_text.replace(" with effect sizes 0.30 and 0.36", "")
+    opener = FakeOpener([bad_text, good_text])
+    writer = MiniMaxM3MemoWriter(api_key="test-key", opener=opener)
+
+    memo = writer.render(_candidate(), _receipts())
+
+    assert "0.30" not in memo
+    assert "0.36" not in memo
+    assert len(opener.requests) == 2
+    request_data = opener.requests[1].data
+    assert isinstance(request_data, bytes)
+    body = json.loads(request_data.decode("utf-8"))
+    retry_prompt = body["messages"][0]["content"][0]["text"]
+    assert "unsupported statistical numbers" in retry_prompt
+    assert "Remove unsupported statistical numbers" in retry_prompt
+
+
 def test_minimax_prompt_includes_structured_claim_ledger() -> None:
     candidate = InsightCandidate(
         topic="longevity resilience",
@@ -224,6 +328,23 @@ def test_minimax_prompt_includes_structured_claim_ledger() -> None:
     assert "- novelty_vs_corpus: 67" in prompt
     assert "design=randomized_trial" in prompt
     assert "support=direct/high" in prompt
+    assert "safety_feasibility" in prompt
+    assert "do not call it positive efficacy" in prompt
+    assert 'Never call a receipt "feasibility/safety-adjacent"' in prompt
+    assert "not directly contradictory" in prompt
+    assert "strongest direct human evidence" in prompt
+    assert "Do not equate acute swelling, soreness, thickness, or damage proxies" in prompt
+    assert "sample size/statistical context for the strongest receipt" in prompt
+    assert "not settled consensus" in prompt
+    assert "frame the core signal as endpoint heterogeneity" in prompt
+    assert "do not make them co-equal anchors" in prompt
+    assert "systematic review or synthesis receipt has its own negative/null/positive direction" in prompt
+    assert "different modalities/populations" in prompt
+    assert "unresolved endpoint heterogeneity" in prompt
+    assert "do not claim one protocol condition converts one result into another" in prompt
+    assert "one falsifiable hypothesis" in prompt
+    assert "sample size, sex" in prompt
+    assert 'sex if stated or "sex not stated"' in prompt
 
 
 def test_minimax_writer_from_env_uses_v5_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -325,6 +446,136 @@ def test_build_minimax_prompt_bounds_long_abstracts() -> None:
     assert len(prompt) < 5000
 
 
+def test_build_minimax_prompt_surfaces_late_receipt_statistics() -> None:
+    abstract = (
+        "Participants completed a randomized crossover training protocol. "
+        + "Background sentence. " * 30
+        + "A significant condition x time effect (P = .01, F = 10.00) and a large "
+        "negative effect of cooling (g = 1.20; 95% CI, -0.65 to 1.20) were observed "
+        "for muscle thickness."
+    )
+    receipt = CorpusHit(
+        hit_id="10.1123/ijspp.2019-0965",
+        title="Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?",
+        abstract=abstract,
+        source="fullraw:openalex",
+        doi="10.1123/ijspp.2019-0965",
+    )
+
+    prompt = build_minimax_prompt(_candidate(), [receipt, _receipts()[1]])
+
+    assert "... [truncated]" in prompt
+    assert "Statistics/context:" in prompt
+    assert "P = .01" in prompt
+    assert "g = 1.20" in prompt
+    assert "muscle thickness" in prompt
+
+
+def test_build_minimax_prompt_surfaces_comparator_direction_context() -> None:
+    receipt = CorpusHit(
+        hit_id="cwi",
+        title="Cold-water immersion acute muscle thickness study",
+        abstract=(
+            "Human participants completed resistance training. At 48 h and 72 h, "
+            "muscle thickness was higher with passive recovery than cold-water immersion."
+        ),
+        source="fullraw",
+        doi="10.1519/JSC.0000000000002322",
+    )
+
+    prompt = build_minimax_prompt(_candidate(), [receipt, _receipts()[1]])
+
+    assert "Statistics/context:" in prompt
+    assert "higher with passive recovery than cold-water immersion" in prompt
+
+
+def test_minimax_stat_validator_ignores_doi_decimal_prefixes() -> None:
+    receipts = [
+        CorpusHit(
+            hit_id="doi",
+            title="Cold-water immersion confidence interval study",
+            abstract="The receipt reports a 95% confidence interval and no unsupported effect size.",
+            source="fullraw:openalex",
+            doi="10.1007/s00421-025-05835-w",
+        ),
+        _receipts()[1],
+    ]
+    memo = """# Alpha memo: confidence interval cold water
+## Core signal
+The confidence interval framing is receipt-bound.
+## The 2+2=5 angle
+The DOI 10.1007/s00421-025-05835-w is a receipt locator, not a statistic.
+## Why this could matter
+It keeps DOI references separate from numeric effect claims.
+## What would break the idea
+A direct unsupported effect size would break it.
+## Claim ledger
+- receipt-bound claim: 10.1007/s00421-025-05835-w support=direct
+## Receipts
+- 10.1007/s00421-025-05835-w
+- 10.2/exercise-nad
+## Safety note
+Hypothesis only."""
+
+    assert validate_minimax_memo(memo, receipts).startswith("# Alpha memo:")
+
+
+def test_minimax_memo_rejects_unreceipted_body_site_terms() -> None:
+    receipts = [
+        CorpusHit(
+            hit_id="10.1123/ijspp.2019-0965",
+            title="Does Cold-Water Immersion After Strength Training Attenuate Training Adaptation?",
+            abstract="Leg circumference and muscle thickness of the vastus medialis were measured.",
+            source="fullraw:openalex",
+            doi="10.1123/ijspp.2019-0965",
+        ),
+        CorpusHit(
+            hit_id="10.1007/s00421-025-05835-w",
+            title="Cold- and hot-water immersion are not more effective than placebo",
+            abstract="Physical performance and long-term training adaptations were measured.",
+            source="fullraw:openalex",
+            doi="10.1007/s00421-025-05835-w",
+        ),
+    ]
+    memo = """# Alpha memo: cold water immersion training
+## Core signal
+The receipt shows elbow flexor muscle thickness changed after training.
+## The 2+2=5 angle
+The receipts are heterogeneous.
+## Why this could matter
+It is a bounded hypothesis.
+## What would break the idea
+A matched trial would test it.
+## Claim ledger
+- receipt-bound claim: 10.1123/ijspp.2019-0965 support=direct
+## Receipts
+- 10.1123/ijspp.2019-0965
+- 10.1007/s00421-025-05835-w
+## Safety note
+Hypothesis only."""
+
+    with pytest.raises(ValueError, match="body-site terms"):
+        validate_minimax_memo(memo, receipts)
+
+
+def test_build_minimax_prompt_omits_unsafe_receipt_doi() -> None:
+    unsafe = CorpusHit(
+        hit_id="https://openalex.org/W4693",
+        title="Cold-water immersion protocol review",
+        abstract="Cold-water immersion protocol parameters were reviewed.",
+        source="openalex",
+        doi="10.31435/ijitss.1(49).2026.4693",
+        url="https://openalex.org/W4693",
+    )
+
+    prompt = build_minimax_prompt(_candidate(), [unsafe, _receipts()[1]])
+
+    assert unsafe.receipt_id == "https://openalex.org/W4693"
+    assert "10.31435/ijitss.1(49).2026.4693" not in prompt
+    assert "ID: W4693" in prompt
+    assert "Locator: https://openalex.org/W4693" in prompt
+
+
 def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
     prompt = build_minimax_prompt(_candidate(), _receipts())
 
@@ -336,11 +587,13 @@ def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
     assert "Scope every implication to the receipts" in prompt
     assert "State the receipt-owned timing exactly" in prompt
     assert "not a direct contradiction" in prompt
+    assert 'Do not say "opposite directions"' in prompt
+    assert "quantify the protocol/design gap" in prompt
+    assert "label the" in prompt and "mixed/comparator-favored" in prompt
     assert "one concrete next-step uncertainty" in prompt
     assert "Respect receipt roles" in prompt
     assert "observed result or confirmed endpoint" in prompt
-    assert "population, market" in prompt
-    assert "company, channel, model, benchmark" in prompt
+    assert "population, market/company/channel/model/benchmark" in prompt
     assert "Use source-appropriate descriptors from the receipts" in prompt
     assert "filing/report" in prompt
     assert "case study, market study, campaign" in prompt
@@ -350,6 +603,80 @@ def test_build_minimax_prompt_contains_domain_agnostic_scope_rules() -> None:
     assert "Evidence graph:" in prompt
     assert "metric mismatch" in prompt
     assert "cross-domain transfer" in prompt
+    assert "Never recommend actions" in prompt
+    assert "should-use/avoid" in prompt
+
+
+def test_minimax_memo_validation_rejects_unreceipted_action_or_market_framing() -> None:
+    memo = """# Alpha memo: NAD mitochondrial
+## Core signal
+NAD and mitochondrial repair may connect the receipts.
+## The 2+2=5 angle
+The receipt-bound bridge is hypothesis-level.
+## Why this could matter
+Practitioners prioritizing resilience should use this exposure, which could reframe the market for recovery products.
+## What would break the idea
+A direct receipt could resolve the split.
+## Claim ledger
+- receipt-bound claim: 10.1/sleep-nad support=direct
+## Receipts
+- 10.1/sleep-nad
+- 10.2/exercise-nad
+## Safety note
+Research only."""
+
+    with pytest.raises(ValueError, match="advice/action framing"):
+        validate_minimax_memo(memo, _receipts(), candidate=_candidate())
+
+
+def test_minimax_memo_validation_allows_receipted_market_terms() -> None:
+    receipts = [
+        CorpusHit(
+            hit_id="h1",
+            title="Market study of AI pricing",
+            abstract="The market for AI tools changed after pricing experiments.",
+            source="fullraw",
+            doi="10.1/market-ai",
+        ),
+        CorpusHit(
+            hit_id="h2",
+            title="AI pricing adoption benchmark",
+            abstract="Pricing adoption moved with benchmark quality.",
+            source="fullraw",
+            doi="10.2/pricing-ai",
+        ),
+    ]
+    candidate = InsightCandidate(
+        topic="AI pricing",
+        thesis="Market receipt signal.",
+        bridge_terms=("market", "pricing"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("h1", "h2"),
+        score=80,
+        novelty_score=50,
+        evidence_score=80,
+        reasons=("tier:publishable_alpha",),
+    )
+    memo = """# Alpha memo: market pricing
+## Core signal
+Market and pricing receipts point to a bounded signal.
+## The 2+2=5 angle
+The bridge is receipt-bound.
+## Why this could matter
+The market for AI tools is the measured context in the receipts.
+## What would break the idea
+A direct receipt could resolve the split.
+## Claim ledger
+- receipt-bound claim: 10.1/market-ai support=direct
+## Receipts
+- 10.1/market-ai
+- 10.2/pricing-ai
+## Safety note
+Research only."""
+
+    assert validate_minimax_memo(memo, receipts, candidate=candidate).startswith(
+        "# Alpha memo: market pricing"
+    )
 
 
 def test_build_minimax_prompt_uses_role_verbs_in_safe_title() -> None:
@@ -639,6 +966,31 @@ Hypothesis only.""",
     assert memo.startswith("# Alpha memo: resveratrol blunting")
 
 
+def test_minimax_memo_validation_rejects_conversion_overclaim() -> None:
+    with pytest.raises(MemoScopeError, match="converts"):
+        validate_minimax_memo(
+            """# Alpha memo: NAD mitochondrial
+## Core signal
+NAD and mitochondrial repair may connect the receipts.
+## The 2+2=5 angle
+The receipts are heterogeneous.
+## Why this could matter
+The protocol condition converts the first result into the second endpoint.
+## What would break the idea
+A same-protocol receipt would break it.
+## Claim ledger
+- receipt-bound claim: 10.1/sleep-nad support=direct
+- receipt-bound claim: 10.2/exercise-nad support=direct
+## Receipts
+- 10.1/sleep-nad
+- 10.2/exercise-nad
+## Safety note
+Hypothesis only.""",
+            _receipts(),
+            candidate=_candidate(),
+        )
+
+
 def test_minimax_memo_validation_accepts_displayed_openalex_work_id() -> None:
     receipt = CorpusHit(
         hit_id="https://openalex.org/W7070693264",
@@ -754,6 +1106,7 @@ def test_minimax_selector_picks_existing_alpha_candidate() -> None:
     assert isinstance(request_data, bytes)
     body = json.loads(request_data.decode("utf-8"))
     assert "strict research alpha selector" in body["system"]
+    assert body["temperature"] == 0.0
     assert "Select the strongest alpha memo bridge" in body["messages"][0]["content"][0]["text"]
 
 

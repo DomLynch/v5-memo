@@ -1,8 +1,13 @@
 import json
 import sys
+import time
 from collections.abc import Sequence
+from datetime import UTC, datetime
+from email.message import Message
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import HTTPError
 
 import pytest
 from pytest import MonkeyPatch
@@ -11,11 +16,22 @@ from v5_memo.__main__ import (
     _alpha_shape_queries,
     _alpha_shaped_planned_queries,
     _dedupe_queries,
+    _publish_blocker,
+    _record_researka_submit_cooldown,
+    _submit_failed_receipt,
+    _submit_researka_with_cooldown,
     _topic_anchored_queries,
     main,
 )
 from v5_memo.client import ResearkaSearchClient, SearchBackendError
-from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, SearchFailure
+from v5_memo.schemas import (
+    ClaimCard,
+    CorpusHit,
+    InsightCandidate,
+    MemoBuildError,
+    MemoResult,
+    SearchFailure,
+)
 
 _COVERAGE_THRESHOLD_ENV = (
     "V5_MEMO_MEMO_MIN_SHARDS_SEARCHED",
@@ -30,6 +46,95 @@ _COVERAGE_THRESHOLD_ENV = (
 def _isolate_cli_coverage_threshold_env(monkeypatch: MonkeyPatch) -> None:
     for name in _COVERAGE_THRESHOLD_ENV:
         monkeypatch.delenv(name, raising=False)
+
+
+def test_submit_researka_with_cooldown_retries_transient_server_error(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    now = 1000.0
+    calls: list[int] = []
+    sleeps: list[float] = []
+
+    def fake_time() -> float:
+        return now
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        sleeps.append(seconds)
+        now += seconds
+
+    def fake_submit(
+        payload: dict[str, object],
+        *,
+        agent_key: str,
+        api_base: str,
+        submit_url: str = "",
+    ) -> dict[str, object]:
+        del payload, agent_key, api_base, submit_url
+        calls.append(1)
+        if len(calls) == 1:
+            raise HTTPError(
+                "https://api.researka.org/submissions",
+                500,
+                "Internal Server Error",
+                Message(),
+                BytesIO(b"nginx"),
+            )
+        return {"submission_id": "sub-after-retry"}
+
+    monkeypatch.setattr("v5_memo.__main__.time.time", fake_time)
+    monkeypatch.setattr("v5_memo.__main__.time.sleep", fake_sleep)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+
+    response, failure = _submit_researka_with_cooldown(
+        {"title": "bounded alpha"},
+        agent_key="agent-key",
+        api_base="https://api.researka.org",
+        submit_url="",
+        wait_seconds=5,
+    )
+
+    assert response == {"submission_id": "sub-after-retry"}
+    assert failure == {}
+    assert len(calls) == 2
+    assert sleeps == [1.0]
+
+
+def test_submit_researka_with_cooldown_respects_zero_retry_budget(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+
+    def fake_submit(
+        payload: dict[str, object],
+        *,
+        agent_key: str,
+        api_base: str,
+        submit_url: str = "",
+    ) -> dict[str, object]:
+        del payload, agent_key, api_base, submit_url
+        calls.append(1)
+        raise HTTPError(
+            "https://api.researka.org/submissions",
+            500,
+            "Internal Server Error",
+            Message(),
+            BytesIO(b"nginx"),
+        )
+
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+
+    response, failure = _submit_researka_with_cooldown(
+        {"title": "bounded alpha"},
+        agent_key="agent-key",
+        api_base="https://api.researka.org",
+        submit_url="",
+        wait_seconds=0,
+    )
+
+    assert response == {}
+    assert failure["status"] == 500
+    assert len(calls) == 1
 
 
 class EmptyFullRaw:
@@ -132,14 +237,19 @@ def test_topic_anchored_queries_reject_planner_drift_for_specific_topics() -> No
 
 def test_alpha_shape_queries_add_universal_promise_and_outcome_probes() -> None:
     assert _alpha_shape_queries("metformin resistance training adaptation") == [
+        "metformin human trial resistance training",
         "metformin augment resistance training protocol",
         "metformin blunts resistance training",
     ]
     assert _alpha_shape_queries("resveratrol blunts exercise training") == [
         "resveratrol mimics exercise training",
+        "resveratrol human trial exercise training",
         "resveratrol augment exercise training protocol",
         "resveratrol blunts exercise training",
     ]
+    assert _alpha_shape_queries("protein timing distribution muscle synthesis")[0] == (
+        "protein human trial timing distribution"
+    )
 
 
 def test_alpha_shaped_planner_queries_prefer_direct_evidence_language() -> None:
@@ -228,10 +338,135 @@ def test_fullraw_cli_inherits_search_service_coverage_thresholds(
     assert "Alpha memo" in capsys.readouterr().out
     assert seen["seed_queries"] == [
         "metformin resistance training adaptation",
+        "metformin human trial resistance training",
         "metformin augment resistance training protocol",
         "metformin blunts resistance training",
     ]
-    assert (seen["per_query_limit"], seen["max_hits"], seen["min_shards_searched"], seen["min_sources_searched"]) == (10, 20, 50, 2)
+    assert (
+        seen["per_query_limit"],
+        seen["max_hits"],
+        seen["min_shards_searched"],
+        seen["min_sources_searched"],
+    ) == (25, 75, 50, 2)
+
+
+def test_fullraw_cli_allows_recall_depth_env_override(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_PER_QUERY_LIMIT", "40")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MAX_HITS", "80")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "seed",
+            "--writer",
+            "template",
+            "--topic",
+            "metformin resistance training adaptation",
+        ],
+    )
+
+    main()
+
+    assert "Alpha memo" in capsys.readouterr().out
+    assert (seen["per_query_limit"], seen["max_hits"]) == (40, 80)
+
+
+def test_fullraw_cli_allows_single_recall_limit_env_override(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9902/search")
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_PER_QUERY_LIMIT", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_MAX_HITS", raising=False)
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_RECALL_LIMIT", "30")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "seed",
+            "--writer",
+            "template",
+            "--topic",
+            "metformin resistance training adaptation",
+        ],
+    )
+
+    main()
+
+    assert "Alpha memo" in capsys.readouterr().out
+    assert (seen["per_query_limit"], seen["max_hits"]) == (30, 90)
+
+
+def test_fullraw_cli_uses_wider_recall_for_minimax_planner(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: dict[str, object] = {}
+
+    class FakeFullRaw:
+        configured = True
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9915/search")
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_PER_QUERY_LIMIT", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_RECALL_LIMIT", raising=False)
+    monkeypatch.delenv("V5_MEMO_FULL_RAW_MAX_HITS", raising=False)
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr("v5_memo.__main__.FullRawCorpusSearchClient.from_env", lambda strict=False: FakeFullRaw())
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "minimax",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+            "--topic",
+            "metformin resistance training adaptation",
+        ],
+    )
+
+    main()
+
+    assert "Alpha memo" in capsys.readouterr().out
+    assert (seen["per_query_limit"], seen["max_hits"]) == (50, 200)
 
 
 def test_cli_prints_search_backend_error_without_traceback(
@@ -254,6 +489,87 @@ def test_cli_prints_search_backend_error_without_traceback(
     assert "Traceback" not in captured.err
 
 
+def test_cli_writes_build_failure_receipt_without_traceback(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "build-error.json"
+
+    def fail_build_alpha_memo(**_kwargs: object) -> object:
+        raise MemoBuildError(
+            SearchFailure(
+                code="no_receipt_bound_alpha_candidate",
+                message="no receipt-bound alpha memo candidate found",
+                details={"hit_count": 14, "candidate_count": 0},
+            )
+        )
+
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fail_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--topic",
+            "metformin",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    captured = capsys.readouterr()
+    receipt = json.loads(receipt_path.read_text())
+    assert exc.value.code == 1
+    assert receipt == {
+        "details": {"candidate_count": 0, "hit_count": 14},
+        "error": "no_receipt_bound_alpha_candidate",
+        "message": "no receipt-bound alpha memo candidate found",
+    }
+    assert "no receipt-bound alpha memo candidate found" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_writes_search_backend_error_receipt(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "search-error.json"
+
+    def fail_build_alpha_memo(**_kwargs: object) -> object:
+        raise SearchBackendError("Full raw corpus search coverage too narrow: {'shards_searched': 32}")
+
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fail_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--topic",
+            "metformin",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    receipt = json.loads(receipt_path.read_text())
+    assert exc.value.code == 1
+    assert receipt["error"] == "search_backend_error"
+    assert "coverage too narrow" in receipt["message"]
+
+
 def test_cli_submit_researka_uses_generated_memo(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -262,13 +578,21 @@ def test_cli_submit_researka_uses_generated_memo(
     seen: dict[str, object] = {}
     receipt_path = tmp_path / "submit-receipt.json"
 
-    def fake_build_alpha_memo(**_kwargs: object) -> SimpleNamespace:
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen["require_publish_quality"] = kwargs["require_publish_quality"]
         return SimpleNamespace(markdown="# Alpha memo: ok\n")
 
-    def fake_build_payload(result: SimpleNamespace, *, author_agent_id: str, domain_slug: str) -> dict[str, object]:
+    def fake_build_payload(
+        result: SimpleNamespace,
+        *,
+        author_agent_id: str,
+        domain_slug: str,
+        parent_submission_id: str = "",
+    ) -> dict[str, object]:
         seen["markdown"] = result.markdown
         seen["author_agent_id"] = author_agent_id
         seen["domain_slug"] = domain_slug
+        seen["parent_submission_id"] = parent_submission_id
         return {"title": "ok"}
 
     def fake_submit(
@@ -299,6 +623,8 @@ def test_cli_submit_researka_uses_generated_memo(
             "v5_memo",
             "--demo",
             "--submit-researka",
+            "--researka-parent-submission-id",
+            "parent-submission",
             "--publish-receipt-path",
             str(receipt_path),
         ],
@@ -313,13 +639,403 @@ def test_cli_submit_researka_uses_generated_memo(
         "markdown": "# Alpha memo: ok\n",
         "author_agent_id": "v5-memo-agent",
         "domain_slug": "longevity_research",
+        "parent_submission_id": "parent-submission",
         "payload": {"title": "ok"},
         "agent_key": "submit-key",
         "api_base": "https://api.researka.org",
         "submit_url": "",
         "timeout": 60.0,
+        "require_publish_quality": True,
     }
     assert json.loads(receipt_path.read_text()) == {"submission_id": "sub-1"}
+
+
+def test_cli_submit_researka_writes_receipt_on_submit_rate_limit(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "submit-receipt.json"
+    cooldown_path = tmp_path / "submit-cooldown.json"
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        del kwargs
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    def fake_build_payload(
+        _result: SimpleNamespace,
+        *,
+        author_agent_id: str,
+        domain_slug: str,
+    ) -> dict[str, object]:
+        return {"author_agent_id": author_agent_id, "domain_slug": domain_slug}
+
+    def fake_submit(
+        payload: dict[str, object],
+        *,
+        agent_key: str,
+        api_base: str,
+        submit_url: str = "",
+        timeout: float = 60.0,
+    ) -> dict[str, object]:
+        del payload, agent_key, api_base, submit_url, timeout
+        headers = Message()
+        headers["Retry-After"] = "60"
+        raise HTTPError("https://api.researka.org/submissions", 429, "Too Many Requests", headers, None)
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_PATH", str(cooldown_path))
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.build_researka_payload", fake_build_payload)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--submit-researka",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 6
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt == {
+        "error": "researka_submit_failed",
+        "status": 429,
+        "reason": "Too Many Requests",
+        "retry_after": "60",
+        "cooldown_until": receipt["cooldown_until"],
+        "attempts": 1,
+        "limit_kind": "rate",
+        "response_headers": {"Retry-After": "60"},
+    }
+    cooldown = json.loads(cooldown_path.read_text())
+    assert cooldown["status"] == 429
+    assert cooldown["reason"] == "Too Many Requests"
+    assert receipt["cooldown_until"] == cooldown["until_iso"]
+    assert 0 < cooldown["until"] - time.time() <= 60
+
+
+def test_cli_submit_researka_defers_during_submit_cooldown(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "submit-receipt.json"
+    cooldown_path = tmp_path / "submit-cooldown.json"
+    until = time.time() + 120
+    cooldown_path.write_text(json.dumps({
+        "until": until,
+        "until_iso": "2026-06-30T19:30:00+00:00",
+        "status": 429,
+        "reason": "Too Many Requests",
+    }))
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        del kwargs
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    def fake_build_payload(
+        _result: SimpleNamespace,
+        *,
+        author_agent_id: str,
+        domain_slug: str,
+    ) -> dict[str, object]:
+        return {"author_agent_id": author_agent_id, "domain_slug": domain_slug}
+
+    def fail_submit(**_kwargs: object) -> dict[str, object]:
+        raise AssertionError("submit should not be called during cooldown")
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_PATH", str(cooldown_path))
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.build_researka_payload", fake_build_payload)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fail_submit)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--submit-researka",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    receipt = json.loads(receipt_path.read_text())
+    assert exc.value.code == 6
+    assert receipt["error"] == "researka_submit_deferred"
+    assert receipt["previous_status"] == 429
+    assert receipt["previous_reason"] == "Too Many Requests"
+    assert 0 < receipt["retry_after"] <= 120
+
+
+def test_submit_failed_receipt_preserves_rate_limit_details() -> None:
+    headers = Message()
+    headers["Retry-After"] = "30"
+    headers["X-RateLimit-Remaining"] = "0"
+    exc = HTTPError(
+        "https://api.researka.org/submissions",
+        429,
+        "Too Many Requests",
+        headers,
+        BytesIO(b'{"error":"rate_limit","detail":"slow down"}'),
+    )
+
+    receipt = _submit_failed_receipt(exc, {"until_iso": "2026-06-30T22:36:41+00:00", "attempts": 7})
+
+    assert receipt["response_body"] == '{"error":"rate_limit","detail":"slow down"}'
+    assert receipt["response_headers"] == {"Retry-After": "30", "X-RateLimit-Remaining": "0"}
+
+
+def test_record_submit_cooldown_uses_daily_reset_for_daily_limit(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cooldown_path = tmp_path / "submit-cooldown.json"
+    fixed_now = datetime(2026, 6, 30, 23, 50, tzinfo=UTC).timestamp()
+    exc = HTTPError("https://api.researka.org/submissions", 429, "Too Many Requests", Message(), None)
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_PATH", str(cooldown_path))
+    monkeypatch.delenv("V5_MEMO_RESEARKA_DAILY_LIMIT_COOLDOWN_SECONDS", raising=False)
+    monkeypatch.setattr("v5_memo.__main__.time.time", lambda: fixed_now)
+
+    cooldown = _record_researka_submit_cooldown(exc, response_body='{"detail":"daily_limit_exceeded"}')
+
+    assert cooldown["limit_kind"] == "daily"
+    assert cooldown["attempts"] == 1
+    assert cooldown["until"] == datetime(2026, 7, 1, 0, 5, tzinfo=UTC).timestamp()
+
+
+def test_cli_submit_researka_waits_through_submit_cooldown(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "submit-receipt.json"
+    cooldown_path = tmp_path / "submit-cooldown.json"
+    now = 1000.0
+    sleeps: list[float] = []
+    cooldown_path.write_text(json.dumps({
+        "until": now + 5,
+        "until_iso": "1970-01-01T00:16:45+00:00",
+        "status": 429,
+        "reason": "Too Many Requests",
+        "attempts": 1,
+    }))
+
+    def fake_time() -> float:
+        return now
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        sleeps.append(seconds)
+        now += seconds
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        del kwargs
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    def fake_build_payload(
+        _result: SimpleNamespace,
+        *,
+        author_agent_id: str,
+        domain_slug: str,
+    ) -> dict[str, object]:
+        return {"author_agent_id": author_agent_id, "domain_slug": domain_slug}
+
+    def fake_submit(
+        payload: dict[str, object],
+        *,
+        agent_key: str,
+        api_base: str,
+        submit_url: str = "",
+        timeout: float = 60.0,
+    ) -> dict[str, object]:
+        del payload, agent_key, api_base, submit_url, timeout
+        return {"submission_id": "sub-after-cooldown"}
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_PATH", str(cooldown_path))
+    monkeypatch.setenv("V5_MEMO_RESEARKA_SUBMIT_WAIT_SECONDS", "10")
+    monkeypatch.setattr("v5_memo.__main__.time.time", fake_time)
+    monkeypatch.setattr("v5_memo.__main__.time.sleep", fake_sleep)
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.build_researka_payload", fake_build_payload)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--submit-researka",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    main()
+
+    assert sleeps == [5.0]
+    assert json.loads(receipt_path.read_text()) == {"submission_id": "sub-after-cooldown"}
+
+
+def test_cli_submit_researka_extends_cooldown_after_repeated_rate_limit(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "submit-receipt.json"
+    cooldown_path = tmp_path / "submit-cooldown.json"
+    cooldown_path.write_text(json.dumps({
+        "attempts": 1,
+        "until": time.time() - 1,
+        "until_iso": "2026-06-30T19:30:00+00:00",
+        "status": 429,
+        "reason": "Too Many Requests",
+    }))
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        del kwargs
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    def fake_build_payload(
+        _result: SimpleNamespace,
+        *,
+        author_agent_id: str,
+        domain_slug: str,
+    ) -> dict[str, object]:
+        return {"author_agent_id": author_agent_id, "domain_slug": domain_slug}
+
+    def fake_submit(
+        payload: dict[str, object],
+        *,
+        agent_key: str,
+        api_base: str,
+        submit_url: str = "",
+        timeout: float = 60.0,
+    ) -> dict[str, object]:
+        del payload, agent_key, api_base, submit_url, timeout
+        raise HTTPError("https://api.researka.org/submissions", 429, "Too Many Requests", Message(), None)
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_PATH", str(cooldown_path))
+    monkeypatch.setenv("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_SECONDS", "10")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.build_researka_payload", fake_build_payload)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--submit-researka",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    receipt = json.loads(receipt_path.read_text())
+    cooldown = json.loads(cooldown_path.read_text())
+    assert exc.value.code == 6
+    assert receipt["error"] == "researka_submit_failed"
+    assert receipt["attempts"] == 2
+    assert cooldown["attempts"] == 2
+    assert 10 < cooldown["until"] - time.time() <= 20
+
+
+def test_cli_submit_researka_retries_429_within_wait_budget(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "submit-receipt.json"
+    cooldown_path = tmp_path / "submit-cooldown.json"
+    now = 1000.0
+    sleeps: list[float] = []
+    calls = 0
+
+    def fake_time() -> float:
+        return now
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        sleeps.append(seconds)
+        now += seconds
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        del kwargs
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    def fake_build_payload(
+        _result: SimpleNamespace,
+        *,
+        author_agent_id: str,
+        domain_slug: str,
+    ) -> dict[str, object]:
+        return {"author_agent_id": author_agent_id, "domain_slug": domain_slug}
+
+    def fake_submit(
+        payload: dict[str, object],
+        *,
+        agent_key: str,
+        api_base: str,
+        submit_url: str = "",
+        timeout: float = 60.0,
+    ) -> dict[str, object]:
+        nonlocal calls
+        del payload, agent_key, api_base, submit_url, timeout
+        calls += 1
+        if calls == 1:
+            raise HTTPError("https://api.researka.org/submissions", 429, "Too Many Requests", Message(), None)
+        return {"submission_id": "sub-after-rate-limit"}
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_PATH", str(cooldown_path))
+    monkeypatch.setenv("V5_MEMO_RESEARKA_SUBMIT_COOLDOWN_SECONDS", "5")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_SUBMIT_WAIT_SECONDS", "10")
+    monkeypatch.setattr("v5_memo.__main__.time.time", fake_time)
+    monkeypatch.setattr("v5_memo.__main__.time.sleep", fake_sleep)
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.build_researka_payload", fake_build_payload)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--submit-researka",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    main()
+
+    assert calls == 2
+    assert sleeps == [5.0]
+    assert json.loads(receipt_path.read_text()) == {"submission_id": "sub-after-rate-limit"}
 
 
 def test_cli_submit_researka_fails_closed_without_agent_key(
@@ -438,6 +1154,358 @@ def test_cli_submit_accepts_v5_versioned_key_and_submit_url(
         "api_base": "https://api.researka.org",
         "submit_url": "https://api.researka.org/custom-submit",
     }
+
+
+def test_cli_publish_waits_for_accept_and_lists_publication(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen: dict[str, object] = {}
+    receipt_path = tmp_path / "publish-receipt.json"
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen["require_publish_quality"] = kwargs["require_publish_quality"]
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    def fake_build_payload(
+        _result: SimpleNamespace,
+        *,
+        author_agent_id: str,
+        domain_slug: str,
+    ) -> dict[str, object]:
+        return {"author_agent_id": author_agent_id, "domain_slug": domain_slug}
+
+    def fake_submit(
+        payload: dict[str, object],
+        *,
+        agent_key: str,
+        api_base: str,
+        submit_url: str = "",
+        timeout: float = 60.0,
+    ) -> dict[str, object]:
+        del submit_url, timeout
+        seen["submit"] = (payload, agent_key, api_base)
+        return {"submission": {"id": "sub-1"}}
+
+    def fake_wait(
+        submission_id: str,
+        *,
+        api_base: str,
+        timeout_seconds: float,
+        poll_seconds: float,
+    ) -> dict[str, object]:
+        seen["wait"] = (submission_id, api_base, timeout_seconds, poll_seconds)
+        return {
+            "status": "complete",
+            "decision": "accept",
+            "publication": {"publication_id": "pub-1"},
+        }
+
+    def fake_list(
+        publication_id: str,
+        *,
+        agent_key: str,
+        api_base: str,
+        visibility: str = "listed",
+    ) -> dict[str, object]:
+        seen["list"] = (publication_id, agent_key, api_base, visibility)
+        return {"id": publication_id, "public_visibility": visibility, "updated": True}
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.build_researka_payload", fake_build_payload)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr("v5_memo.__main__.wait_researka_decision", fake_wait)
+    monkeypatch.setattr("v5_memo.__main__.set_researka_public_visibility", fake_list)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--publish",
+            "--researka-decision-wait-seconds",
+            "20",
+            "--researka-decision-poll-seconds",
+            "2",
+            "--researka-list-if-accepted",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    main()
+
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["decision"]["decision"] == "accept"
+    assert receipt["visibility"] == {
+        "id": "pub-1",
+        "public_visibility": "listed",
+        "updated": True,
+    }
+    assert seen == {
+        "submit": (
+            {"author_agent_id": "v5-memo-agent", "domain_slug": "longevity_research"},
+            "submit-key",
+            "https://api.researka.org",
+        ),
+        "wait": ("sub-1", "https://api.researka.org", 20.0, 2.0),
+        "list": ("pub-1", "submit-key", "https://api.researka.org", "listed"),
+        "require_publish_quality": True,
+    }
+
+
+def test_cli_publish_treats_duplicate_submission_as_existing_submission(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen: dict[str, object] = {}
+    receipt_path = tmp_path / "publish-receipt.json"
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen["require_publish_quality"] = kwargs["require_publish_quality"]
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    def fake_build_payload(
+        _result: SimpleNamespace,
+        *,
+        author_agent_id: str,
+        domain_slug: str,
+    ) -> dict[str, object]:
+        return {"author_agent_id": author_agent_id, "domain_slug": domain_slug}
+
+    def fake_submit(
+        payload: dict[str, object],
+        *,
+        agent_key: str,
+        api_base: str,
+        submit_url: str = "",
+        timeout: float = 60.0,
+    ) -> dict[str, object]:
+        del payload, agent_key, api_base, submit_url, timeout
+        body = b'{"detail":{"error":"duplicate_submission","submission_id":"sub-dupe"}}'
+        raise HTTPError("https://api.researka.org/submissions", 409, "Conflict", Message(), BytesIO(body))
+
+    def fake_wait(
+        submission_id: str,
+        *,
+        api_base: str,
+        timeout_seconds: float,
+        poll_seconds: float,
+    ) -> dict[str, object]:
+        seen["wait"] = (submission_id, api_base, timeout_seconds, poll_seconds)
+        return {
+            "status": "complete",
+            "decision": "accept",
+            "publication": {"publication_id": "pub-dupe"},
+        }
+
+    def fake_list(
+        publication_id: str,
+        *,
+        agent_key: str,
+        api_base: str,
+        visibility: str = "listed",
+    ) -> dict[str, object]:
+        seen["list"] = (publication_id, agent_key, api_base, visibility)
+        return {"id": publication_id, "public_visibility": visibility, "updated": True}
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.build_researka_payload", fake_build_payload)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr("v5_memo.__main__.wait_researka_decision", fake_wait)
+    monkeypatch.setattr("v5_memo.__main__.set_researka_public_visibility", fake_list)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--publish",
+            "--researka-decision-wait-seconds",
+            "20",
+            "--researka-decision-poll-seconds",
+            "2",
+            "--researka-list-if-accepted",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    main()
+
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["duplicate_submission"] is True
+    assert receipt["submission"]["id"] == "sub-dupe"
+    assert receipt["decision"]["decision"] == "accept"
+    assert receipt["visibility"]["id"] == "pub-dupe"
+    assert seen == {
+        "wait": ("sub-dupe", "https://api.researka.org", 20.0, 2.0),
+        "list": ("pub-dupe", "submit-key", "https://api.researka.org", "listed"),
+        "require_publish_quality": True,
+    }
+
+
+def test_cli_publish_records_accept_when_visibility_listing_is_forbidden(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen: dict[str, object] = {}
+    receipt_path = tmp_path / "publish-receipt.json"
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen["require_publish_quality"] = kwargs["require_publish_quality"]
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    def fake_build_payload(
+        _result: SimpleNamespace,
+        *,
+        author_agent_id: str,
+        domain_slug: str,
+    ) -> dict[str, object]:
+        return {"author_agent_id": author_agent_id, "domain_slug": domain_slug}
+
+    def fake_submit(
+        payload: dict[str, object],
+        *,
+        agent_key: str,
+        api_base: str,
+        submit_url: str = "",
+        timeout: float = 60.0,
+    ) -> dict[str, object]:
+        del payload, agent_key, api_base, submit_url, timeout
+        return {"submission": {"id": "sub-2"}}
+
+    def fake_wait(
+        submission_id: str,
+        *,
+        api_base: str,
+        timeout_seconds: float,
+        poll_seconds: float,
+    ) -> dict[str, object]:
+        del submission_id, api_base, timeout_seconds, poll_seconds
+        return {
+            "status": "complete",
+            "decision": "accept",
+            "publication": {"publication_id": "pub-2"},
+        }
+
+    def fake_list(
+        publication_id: str,
+        *,
+        agent_key: str,
+        api_base: str,
+        visibility: str = "listed",
+    ) -> dict[str, object]:
+        del publication_id, agent_key, api_base, visibility
+        raise HTTPError("https://api.researka.org/ops/publications/pub-2/visibility", 403, "Forbidden", Message(), None)
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.build_researka_payload", fake_build_payload)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr("v5_memo.__main__.wait_researka_decision", fake_wait)
+    monkeypatch.setattr("v5_memo.__main__.set_researka_public_visibility", fake_list)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--publish",
+            "--researka-decision-wait-seconds",
+            "20",
+            "--researka-list-if-accepted",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    main()
+
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["decision"]["decision"] == "accept"
+    assert receipt["visibility_error"] == {
+        "error": "researka_visibility_update_failed",
+        "status": 403,
+        "reason": "Forbidden",
+        "publication_id": "pub-2",
+    }
+    assert seen == {"require_publish_quality": True}
+
+
+def test_cli_publish_defaults_to_deterministic_selector_with_minimax_writer(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(
+            markdown="# Alpha memo: ok\n",
+            candidate=InsightCandidate(
+                topic="longevity resilience",
+                thesis="ok",
+                bridge_terms=("nad",),
+                tension_terms=("negative", "null"),
+                receipt_ids=("a", "b"),
+                score=90,
+                novelty_score=60,
+                evidence_score=90,
+                reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+            ),
+            receipts=[],
+        )
+
+    def fail_selector_from_env(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("publish default should not instantiate MiniMax selector")
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(
+        "v5_memo.__main__.MiniMaxM3MemoWriter.from_env",
+        lambda: SimpleNamespace(render=lambda *_args: "# Alpha memo: ok\n"),
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.MiniMaxM3CandidateSelector.from_env",
+        fail_selector_from_env,
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.build_researka_payload",
+        lambda *_args, **_kwargs: {"author_agent_id": "v5-memo-agent"},
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.submit_researka",
+        lambda *_args, **_kwargs: {"submission": {"id": "sub-1"}},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--writer",
+            "minimax",
+            "--publish",
+            "--publish-receipt-path",
+            str(tmp_path / "receipt.json"),
+        ],
+    )
+
+    main()
+
+    assert seen["memo_selector"] is None
+    assert seen["require_publish_quality"] is True
 
 
 def test_cli_smart_defaults_to_publishable_tier(monkeypatch: MonkeyPatch) -> None:
@@ -565,6 +1633,195 @@ def test_cli_publish_does_not_submit_discovery_seed(
     assert json.loads(receipt_path.read_text()) == {
         "error": "discovery_seed_not_submitted",
         "tier": "discovery_seed",
+    }
+
+
+def test_cli_publish_blocks_zero_human_translational_memo(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "submit-error.json"
+    candidate = InsightCandidate(
+        topic="resveratrol exercise training",
+        thesis="Animal model signal is not enough for a public human alpha claim.",
+        bridge_terms=("resveratrol", "training"),
+        tension_terms=("null", "positive"),
+        receipt_ids=("human", "rat"),
+        score=90,
+        novelty_score=50,
+        evidence_score=80,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard("human", "promise", "mechanistic_model", "animal", "stress", "null", "indirect", "medium", "mouse model"),
+            ClaimCard("rat", "outcome", "mechanistic_model", "animal", "strength", "positive", "indirect", "medium", "rat model"),
+        ),
+    )
+
+    def fake_build_alpha_memo(**_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(markdown="# Alpha memo: animal-heavy\n", candidate=candidate)
+
+    def fake_submit(**_kwargs: object) -> dict[str, object]:
+        raise AssertionError("animal-heavy translational memo should not submit")
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--publish",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 5
+    assert "Publish blocked: translational_evidence_too_indirect" in capsys.readouterr().err
+    assert json.loads(receipt_path.read_text()) == {
+        "direct_human_receipts": 0,
+        "error": "translational_evidence_too_indirect",
+        "indirect_model_receipts": 2,
+    }
+
+
+def test_publish_blocker_allows_direct_human_plus_context() -> None:
+    candidate = InsightCandidate(
+        topic="nicotinamide riboside exercise performance",
+        thesis="Human signal with mechanistic context should go to Researka review.",
+        bridge_terms=("nicotinamide", "exercise"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("human-a", "human-b", "rat"),
+        score=90,
+        novelty_score=50,
+        evidence_score=80,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard("human-a", "positive_signal", "randomized_trial", "human", "performance", "positive", "direct", "high", "Nicotinamide riboside exercise performance human trial."),
+            ClaimCard("human-b", "negative_signal", "intervention_study", "human", "performance", "negative", "direct", "high", "Nicotinamide riboside exercise performance human trial."),
+            ClaimCard("rat", "boundary", "mechanistic_model", "animal", "performance", "negative", "indirect", "medium", "rat model"),
+        ),
+    )
+
+    assert _publish_blocker(SimpleNamespace(markdown="# Alpha memo: ok", candidate=candidate, receipts=())) is None
+
+
+def test_publish_blocker_requires_two_strong_direct_human_receipts() -> None:
+    candidate = InsightCandidate(
+        topic="nicotinamide riboside exercise performance",
+        thesis="One human receipt plus animal context is not enough for publish.",
+        bridge_terms=("nicotinamide", "exercise"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=("human", "rat"),
+        score=90,
+        novelty_score=50,
+        evidence_score=80,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard("human", "positive_signal", "randomized_trial", "human", "performance", "positive", "direct", "high", "human trial"),
+            ClaimCard("rat", "boundary", "mechanistic_model", "animal", "performance", "negative", "indirect", "medium", "rat model"),
+        ),
+    )
+
+    assert _publish_blocker(SimpleNamespace(markdown="# Alpha memo: ok", candidate=candidate, receipts=())) == {
+        "direct_human_receipts": 1,
+        "error": "insufficient_direct_human_receipts",
+        "strong_direct_human_receipts": 1,
+    }
+
+
+def test_cli_publish_blocks_unbundled_invalid_doi_citation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "submit-error.json"
+    bad_doi = "10.31435/ijitss.1(49).2026.4693"
+    candidate = InsightCandidate(
+        topic="cold water immersion",
+        thesis="Comparator evidence must keep source IDs bundle-safe.",
+        bridge_terms=("cold", "immersion"),
+        tension_terms=("negative", "positive"),
+        receipt_ids=(bad_doi, "10.1136/bjsports-2013-092433"),
+        score=90,
+        novelty_score=50,
+        evidence_score=80,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=(
+            ClaimCard(bad_doi, "promise", "cohort", "human", "recovery", "positive", "direct", "high", "human cohort"),
+            ClaimCard(
+                "10.1136/bjsports-2013-092433",
+                "outcome",
+                "randomized_trial",
+                "human",
+                "recovery",
+                "negative",
+                "direct",
+                "high",
+                "human trial",
+            ),
+        ),
+    )
+    receipts = [
+        CorpusHit(
+            hit_id=bad_doi,
+            title="Cold water immersion teaching and performance",
+            abstract="Human cohort context.",
+            source="fullraw:openalex",
+            doi=bad_doi,
+        ),
+        CorpusHit(
+            hit_id="10.1136/bjsports-2013-092433",
+            title="Cold water immersion recovery review",
+            abstract="Human trial context.",
+            source="fullraw:openalex",
+            doi="10.1136/bjsports-2013-092433",
+        ),
+    ]
+
+    def fake_build_alpha_memo(**_kwargs: object) -> MemoResult:
+        return MemoResult(
+            candidate=candidate,
+            receipts=receipts,
+            markdown=f"# Alpha memo: cold water\n\nReceipts: {bad_doi} and 10.1136/bjsports-2013-092433.",
+        )
+
+    def fake_submit(**_kwargs: object) -> dict[str, object]:
+        raise AssertionError("invalid DOI citations must not submit")
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--publish",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 5
+    assert "Publish blocked: unbundled_doi_citation" in capsys.readouterr().err
+    assert json.loads(receipt_path.read_text()) == {
+        "dois": [bad_doi],
+        "error": "unbundled_doi_citation",
     }
 
 
@@ -802,6 +2059,56 @@ def test_explicit_query_skips_minimax_planner(monkeypatch: MonkeyPatch) -> None:
     assert seen == {"seed_queries": ["metformin resistance training adaptation"]}
 
 
+def test_explicit_fullraw_publish_preserves_query_slate(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    seen: dict[str, list[str]] = {}
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seed_queries = kwargs["seed_queries"]
+        assert isinstance(seed_queries, list)
+        seen["seed_queries"] = seed_queries
+        return SimpleNamespace(markdown="# Alpha memo: ok\n")
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9915/search")
+    for name in (
+        "V5_MEMO_RESEARKA_AGENT_KEY",
+        "V5_MEMO_RESEARKA_AGENT_ID",
+        "V5_MEMO_RESEARKA_DOMAIN_SLUG",
+        "RESEARKA_AGENT_KEY",
+        "RESEARKA_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", lambda: None)
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--planner",
+            "seed",
+            "--writer",
+            "template",
+            "--selector",
+            "deterministic",
+            "--topic",
+            "resveratrol exercise training adaptation",
+            "--query",
+            "resveratrol exercise training adaptation",
+            "--publish",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 3
+    assert seen == {"seed_queries": ["resveratrol exercise training adaptation"]}
+
+
 def test_planned_cli_without_user_query_anchors_to_planned_queries(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -976,6 +2283,7 @@ def test_planned_cli_drops_queries_that_lose_specific_topic_anchor(
     assert seen == {
         "seed_queries": [
             "cold water immersion resistance training adaptation",
+            "cold water immersion human trial resistance training",
             "cold water immersion augment resistance training protocol",
             "cold water immersion blunts resistance training",
         ],
@@ -1227,6 +2535,7 @@ def test_strict_fullraw_uses_specific_seed_before_planner_sweeps(
     assert "Alpha memo" in capsys.readouterr().out
     assert seen == {"seed_queries": [
         "metformin resistance training adaptation",
+        "metformin human trial resistance training",
         "metformin augment resistance training protocol",
         "metformin blunts resistance training",
     ]}

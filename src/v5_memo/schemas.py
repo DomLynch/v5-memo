@@ -4,6 +4,13 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+_UNSAFE_DOI_CHARS = frozenset("()[]{}")
+
+
+def _usable_doi(value: str | None) -> str:
+    doi = (value or "").strip()
+    return "" if not doi or any(char in doi for char in _UNSAFE_DOI_CHARS) else doi
+
 
 @dataclass(frozen=True, slots=True)
 class CorpusHit:
@@ -21,12 +28,12 @@ class CorpusHit:
 
     @property
     def receipt_id(self) -> str:
-        return self.doi or self.hit_id
+        return _usable_doi(self.doi) or self.hit_id
 
     @property
     def source_key(self) -> str:
-        if self.doi:
-            return f"doi:{self.doi.casefold()}"
+        if doi := _usable_doi(self.doi):
+            return f"doi:{doi.casefold()}"
         pmid = self.metadata.get("pmid")
         if isinstance(pmid, str) and pmid:
             return f"pmid:{pmid}"
@@ -115,6 +122,14 @@ class MemoBuildError(ValueError):
         detail = ", ".join(
             f"{key}={value}"
             for key, value in failure.details.items()
-            if key in {"hit_count", "candidate_count", "mined_candidate_count", "best_mined_score", "best_mined_novelty", "min_alpha_tier"}
+            if key in {
+                "hit_count",
+                "candidate_count",
+                "mined_candidate_count",
+                "best_mined_score",
+                "best_mined_novelty",
+                "publish_quality_blocked_count",
+                "min_alpha_tier",
+            }
         )
         super().__init__(f"{failure.message} ({detail})" if detail else failure.message)

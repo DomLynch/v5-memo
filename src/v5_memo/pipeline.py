@@ -2,9 +2,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 
 from v5_memo.binder import bind_receipts
-from v5_memo.gate import meets_publish_bar, memo_coverage_failure, no_alpha_failure
+from v5_memo.gate import (
+    candidate_publish_blocker,
+    meets_publish_bar,
+    memo_coverage_failure,
+    no_alpha_failure,
+)
 from v5_memo.miner import _tokens, mine_insights, query_anchor_terms
 from v5_memo.retriever import CorpusSearcher, collect_seed_hits
 from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult
@@ -14,6 +20,17 @@ MemoWriter = Callable[[InsightCandidate, Sequence[CorpusHit]], str]
 MemoSelector = Callable[
     [Sequence[InsightCandidate], Sequence[CorpusHit]], Sequence[InsightCandidate]
 ]
+_PROXY_CONTEXT_OUTCOME_TERMS = frozenset({
+    "acute",
+    "damage",
+    "delayed",
+    "early",
+    "immediate",
+    "inflammation",
+    "pain",
+    "short",
+    "stress",
+})
 def build_alpha_memo(
     *,
     topic: str,
@@ -28,6 +45,7 @@ def build_alpha_memo(
     min_shards_searched: int = 0,
     min_sources_searched: int = 0,
     min_search_passes: int = 0,
+    require_publish_quality: bool = False,
 ) -> MemoResult:
     """Build the best receipt-bound memo from seed queries."""
     if anchor_queries is None:
@@ -45,7 +63,13 @@ def build_alpha_memo(
             include_discovery=min_alpha_tier == "discovery_seed",
             max_candidates=30 if memo_selector is not None else 12,
         )
-        return bool(_publishable_candidates(mined, partial_hits, min_alpha_tier, primary_anchor_terms))
+        return bool(_publishable_candidates(
+            mined,
+            partial_hits,
+            min_alpha_tier,
+            primary_anchor_terms,
+            require_publish_quality=require_publish_quality,
+        ))
 
     hits = collect_seed_hits(
         searcher,
@@ -66,6 +90,7 @@ def build_alpha_memo(
         hits,
         min_alpha_tier,
         primary_anchor_terms,
+        require_publish_quality=require_publish_quality,
     )
     candidates = _apply_selector(publishable_candidates, hits, memo_selector)
     coverage_failures: list[MemoBuildError] = []
@@ -108,14 +133,97 @@ def _publishable_candidates(
     hits: Sequence[CorpusHit],
     min_alpha_tier: str,
     primary_anchor_terms: frozenset[str],
+    *,
+    require_publish_quality: bool = False,
 ) -> list[InsightCandidate]:
     hits_by_id = {hit.hit_id: hit for hit in hits}
-    return [
-        candidate
-        for candidate in mined_candidates
-        if meets_publish_bar(candidate, min_alpha_tier)
-        and _candidate_preserves_primary_anchor(candidate, hits_by_id, primary_anchor_terms)
-    ]
+    out: list[InsightCandidate] = []
+    for candidate in mined_candidates:
+        if not meets_publish_bar(candidate, min_alpha_tier):
+            continue
+        if not _candidate_preserves_primary_anchor(candidate, hits_by_id, primary_anchor_terms):
+            continue
+        if require_publish_quality:
+            candidate = _drop_publish_context_receipts(candidate)
+            if len(candidate.receipt_ids) < 2 or len(candidate.claim_cards) < 2:
+                continue
+            if candidate_publish_blocker(candidate) is not None:
+                continue
+        out.append(candidate)
+    return out
+
+
+def _drop_publish_context_receipts(candidate: InsightCandidate) -> InsightCandidate:
+    candidate = _drop_weak_context_receipts(candidate)
+    candidate = _drop_off_axis_context_receipts(candidate)
+    candidate = _drop_optional_proxy_context_receipts(candidate)
+    return _drop_indirect_graph_context_receipts(candidate)
+
+
+def _drop_indirect_graph_context_receipts(candidate: InsightCandidate) -> InsightCandidate:
+    selected_ids = {role.receipt_id for role in candidate.receipt_roles}
+    drop_ids = {
+        card.receipt_id
+        for card in candidate.claim_cards
+        if card.receipt_id not in selected_ids and card.support_type == "indirect"
+    }
+    if not drop_ids:
+        return candidate
+    trimmed = _drop_receipts(candidate, drop_ids)
+    return trimmed if len(trimmed.receipt_ids) >= 2 and candidate_publish_blocker(trimmed) is None else candidate
+
+
+def _drop_weak_context_receipts(candidate: InsightCandidate) -> InsightCandidate:
+    blocker = candidate_publish_blocker(candidate)
+    if not blocker or blocker.get("error") != "weak_context_receipts":
+        return candidate
+    raw_receipt_ids = blocker.get("receipt_ids", ())
+    if not isinstance(raw_receipt_ids, Sequence) or isinstance(raw_receipt_ids, str):
+        return candidate
+    drop_ids = {receipt_id for receipt_id in raw_receipt_ids if isinstance(receipt_id, str)}
+    if not drop_ids:
+        return candidate
+    return _drop_receipts(candidate, drop_ids)
+
+
+def _drop_off_axis_context_receipts(candidate: InsightCandidate) -> InsightCandidate:
+    blocker = candidate_publish_blocker(candidate)
+    if not blocker or blocker.get("error") != "off_axis_direct_context":
+        return candidate
+    raw_receipt_ids = blocker.get("receipt_ids", ())
+    if not isinstance(raw_receipt_ids, Sequence) or isinstance(raw_receipt_ids, str):
+        return candidate
+    drop_ids = {receipt_id for receipt_id in raw_receipt_ids if isinstance(receipt_id, str)}
+    if not drop_ids:
+        return candidate
+    trimmed = _drop_receipts(candidate, drop_ids)
+    return trimmed if len(trimmed.receipt_ids) >= 2 and candidate_publish_blocker(trimmed) is None else candidate
+
+
+def _drop_optional_proxy_context_receipts(candidate: InsightCandidate) -> InsightCandidate:
+    drop_ids = {
+        card.receipt_id
+        for card in candidate.claim_cards
+        if card.role == "boundary"
+        and (
+            card.direction == "proxy"
+            or bool(set(card.outcome.split("/")) & _PROXY_CONTEXT_OUTCOME_TERMS)
+        )
+    }
+    if not drop_ids:
+        return candidate
+    trimmed = _drop_receipts(candidate, drop_ids)
+    return trimmed if candidate_publish_blocker(trimmed) is None else candidate
+
+
+def _drop_receipts(candidate: InsightCandidate, receipt_ids: set[str]) -> InsightCandidate:
+    return replace(
+        candidate,
+        receipt_ids=tuple(receipt_id for receipt_id in candidate.receipt_ids if receipt_id not in receipt_ids),
+        receipt_roles=tuple(role for role in candidate.receipt_roles if role.receipt_id not in receipt_ids),
+        claim_cards=tuple(card for card in candidate.claim_cards if card.receipt_id not in receipt_ids),
+        evidence_graph=tuple(node for node in candidate.evidence_graph if node.receipt_id not in receipt_ids),
+    )
 
 
 def _apply_selector(
