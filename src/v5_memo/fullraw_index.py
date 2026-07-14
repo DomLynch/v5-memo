@@ -30,7 +30,7 @@ from concurrent.futures import (
     TimeoutError as FuturesTimeoutError,
 )
 from contextlib import suppress
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -2977,7 +2977,7 @@ def _priority_inflight_limit(
 
 
 def _queue_sweep_job(sweep_queued_jobs: dict[str, SweepJob], key: str, job: SweepJob) -> None:
-    _queue_sweep_job_with_priority(sweep_queued_jobs, key, job, priority=key in sweep_queued_jobs)
+    _queue_sweep_job_with_priority(sweep_queued_jobs, key, job, priority=False)
 
 
 def _trim_sweep_queue(
@@ -3005,14 +3005,34 @@ def _queue_sweep_job_with_priority(
     sweep_queued: set[str] | None = None,
     max_queue: int = 0,
 ) -> None:
-    if not priority and key not in sweep_queued_jobs:
+    existing_job = sweep_queued_jobs.get(key)
+    effective_priority = priority or bool(existing_job and existing_job.priority)
+    if not effective_priority and existing_job is None:
         sweep_queued_jobs[key] = job
         _trim_sweep_queue(sweep_queued_jobs, sweep_queued=sweep_queued, max_queue=max_queue)
         return
-    existing = tuple((queued_key, queued_job) for queued_key, queued_job in sweep_queued_jobs.items() if queued_key != key)
+    queued_job = (
+        existing_job
+        if existing_job is not None and existing_job.priority and not priority
+        else replace(job, priority=effective_priority)
+    )
+    existing = tuple(
+        (queued_key, existing)
+        for queued_key, existing in sweep_queued_jobs.items()
+        if queued_key != key
+    )
     sweep_queued_jobs.clear()
-    sweep_queued_jobs[key] = job
-    sweep_queued_jobs.update(existing)
+    if effective_priority:
+        sweep_queued_jobs[key] = queued_job
+        sweep_queued_jobs.update(existing)
+    else:
+        sweep_queued_jobs.update(
+            (queued_key, queued) for queued_key, queued in existing if queued.priority
+        )
+        sweep_queued_jobs[key] = queued_job
+        sweep_queued_jobs.update(
+            (queued_key, queued) for queued_key, queued in existing if not queued.priority
+        )
     _trim_sweep_queue(sweep_queued_jobs, sweep_queued=sweep_queued, max_queue=max_queue)
 
 

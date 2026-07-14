@@ -1584,7 +1584,9 @@ def test_repolled_queued_sweep_job_gets_next_lane_without_reordering_rest() -> N
 
 def test_priority_sweep_job_gets_next_lane_before_background_queue() -> None:
     older = fullraw_index.SweepJob("older", "older query", 10, 1900, 2100, "relevance", [])
-    target = fullraw_index.SweepJob("target", "target query", 10, 1900, 2100, "relevance", [])
+    target = fullraw_index.SweepJob(
+        "target", "target query", 10, 1900, 2100, "relevance", [], priority=True
+    )
     later = fullraw_index.SweepJob("later", "later query", 10, 1900, 2100, "relevance", [])
     queued = {"older", "target", "later"}
     queued_jobs = {"older": older, "later": later}
@@ -1599,6 +1601,57 @@ def test_priority_sweep_job_gets_next_lane_before_background_queue() -> None:
 
     assert next_job == target
     assert list(queued_jobs) == ["older", "later"]
+
+
+def test_repolled_background_job_cannot_jump_ahead_of_priority_queue() -> None:
+    target = fullraw_index.SweepJob(
+        "target", "target query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    background_old = fullraw_index.SweepJob(
+        "background", "old query", 10, 1900, 2100, "relevance", []
+    )
+    background_new = fullraw_index.SweepJob(
+        "background", "fresh query", 10, 1900, 2100, "relevance", []
+    )
+    later = fullraw_index.SweepJob("later", "later query", 10, 1900, 2100, "relevance", [])
+    queued = {"target", "background", "later"}
+    queued_jobs = {"target": target, "background": background_old, "later": later}
+
+    fullraw_index._queue_sweep_job_with_priority(
+        queued_jobs,
+        "background",
+        background_new,
+        priority=False,
+    )
+    next_job = fullraw_index._take_next_queued_sweep_job(
+        sweep_inflight=set(),
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_inflight=1,
+    )
+
+    assert next_job == target
+    assert list(queued_jobs) == ["background", "later"]
+    assert queued_jobs["background"] == background_new
+
+
+def test_background_repoll_cannot_downgrade_existing_priority_job() -> None:
+    target = fullraw_index.SweepJob(
+        "target", "target query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    background_repoll = fullraw_index.SweepJob(
+        "target", "target query", 10, 1900, 2100, "relevance", []
+    )
+    queued_jobs = {"target": target}
+
+    fullraw_index._queue_sweep_job_with_priority(
+        queued_jobs,
+        "target",
+        background_repoll,
+        priority=False,
+    )
+
+    assert queued_jobs == {"target": target}
 
 
 def test_sweep_queue_cap_keeps_priority_before_background() -> None:
