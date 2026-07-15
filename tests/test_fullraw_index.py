@@ -1,6 +1,7 @@
 import gzip
 import json
 import os
+import signal
 import socket
 import subprocess
 import threading
@@ -234,7 +235,84 @@ def test_shard_search_cancels_and_drains_running_pool_after_timeout(
     assert shutdown_calls == [(True, True)]
 
 
-def test_isolated_shard_search_kills_timed_out_child(
+def test_shard_search_unexpected_failure_cancels_siblings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sibling_started = threading.Event()
+    sibling_cancelled = threading.Event()
+    bad = tmp_path / "bad.sqlite"
+    sibling = tmp_path / "sibling.sqlite"
+
+    def fake_worker(path: Path, *args: object, **_kwargs: object) -> list[dict[str, object]]:
+        cancel_event = args[-1]
+        assert isinstance(cancel_event, threading.Event)
+        if path == bad:
+            assert sibling_started.wait(1)
+            raise ValueError("unexpected worker failure")
+        sibling_started.set()
+        assert cancel_event.wait(1)
+        sibling_cancelled.set()
+        raise CancelledError()
+
+    monkeypatch.setattr(fullraw_index, "_materialize_and_search_one_shard", fake_worker)
+
+    with pytest.raises(ValueError, match="unexpected worker failure"):
+        fullraw_index._search_shard_paths_with_paths_and_receipt(
+            [bad, sibling],
+            "metformin",
+            limit=5,
+            year_min=1900,
+            year_max=2100,
+            rank_mode="relevance",
+            workers=2,
+            timeout_seconds=5,
+        )
+
+    assert sibling_cancelled.is_set()
+
+
+def test_shard_search_propagates_progress_heartbeat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shard = tmp_path / "one.sqlite"
+    heartbeats: list[None] = []
+
+    def fake_materialized(
+        path: Path,
+        *,
+        preserve: set[Path] | None = None,
+        populate: bool = False,
+        cancel_event: threading.Event | None = None,
+        progress_callback: object = None,
+    ) -> Path:
+        del preserve, populate, cancel_event
+        assert callable(progress_callback)
+        progress_callback()
+        return path
+
+    monkeypatch.setattr(fullraw_index, "_materialized_shard_path", fake_materialized)
+    monkeypatch.setattr(fullraw_index, "_search_one_shard_for_pool", lambda *_args: [])
+
+    _hits, completed, timed_out, _metrics = fullraw_index._search_shard_paths_with_paths_and_receipt(
+        [shard],
+        "metformin",
+        limit=5,
+        year_min=1900,
+        year_max=2100,
+        rank_mode="relevance",
+        workers=1,
+        timeout_seconds=5,
+        progress_callback=lambda: heartbeats.append(None),
+    )
+
+    assert completed == [shard]
+    assert timed_out is False
+    assert len(heartbeats) >= 4
+
+
+def test_isolated_shard_search_requests_restart_when_child_cannot_be_reaped(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -258,9 +336,11 @@ def test_isolated_shard_search_kills_timed_out_child(
                 raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
 
     fake = FakeProcess()
+    restart_reasons: list[str] = []
     monkeypatch.setattr("v5_memo.fullraw_index.subprocess.Popen", lambda *args, **kwargs: fake)
+    monkeypatch.setattr(fullraw_index, "_request_process_restart", restart_reasons.append)
 
-    with pytest.raises(TimeoutError):
+    with pytest.raises(OSError, match="could not be reaped"):
         fullraw_index._search_one_shard_isolated(
             tmp_path / "stuck.sqlite",
             "metformin",
@@ -273,6 +353,20 @@ def test_isolated_shard_search_kills_timed_out_child(
 
     assert fake.killed is True
     assert fake.waits == [1.0]
+    assert restart_reasons == ["isolated search child remained alive after SIGKILL"]
+
+
+def test_process_restart_request_targets_current_process(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: signals.append((pid, sig)))
+
+    fullraw_index._request_process_restart("stalled test worker")
+
+    assert signals == [(os.getpid(), signal.SIGTERM)]
+    assert "stalled test worker" in capsys.readouterr().err
 
 
 def test_write_json_ignores_disconnected_client() -> None:
@@ -1326,14 +1420,25 @@ def test_fast_health_reports_async_sweep_queue_config(
     assert isinstance(shard_cache, dict)
     assert {
         key: shard_cache[key]
-        for key in ("dir", "exists", "is_mount", "max_bytes", "copy_timeout_seconds", "copy_inflight")
+        for key in (
+            "dir",
+            "exists",
+            "is_mount",
+            "max_bytes",
+            "copy_timeout_seconds",
+            "copy_max_inflight",
+            "copy_inflight",
+            "copy_waiting",
+        )
     } == {
         "dir": str(tmp_path / "cache"),
         "exists": False,
         "is_mount": False,
         "max_bytes": 64,
-        "copy_timeout_seconds": None,
+        "copy_timeout_seconds": 180.0,
+        "copy_max_inflight": 2,
         "copy_inflight": 0,
+        "copy_waiting": 0,
     }
     assert isinstance(shard_cache["copy_timeouts_total"], int)
     assert isinstance(shard_cache["copy_failures_total"], int)
@@ -1348,7 +1453,9 @@ def test_fast_health_reports_async_sweep_queue_config(
         "max_queue": 16,
         "priority_burst": True,
         "workers": fullraw_index._auto_sweep_workers(2),
+        "worker_thread_count": 0,
     }
+    fullraw_index._set_shard_cache_copy_max_inflight(None)
 
 
 def test_sweep_queue_summary_counts_priority_and_background_jobs() -> None:
@@ -1398,19 +1505,20 @@ def test_sweep_queue_summary_counts_priority_and_background_jobs() -> None:
 
 
 def test_stale_sweep_inflight_prune_releases_only_expired_keys() -> None:
-    inflight = {"fresh", "orphan", "stale"}
-    started = {"fresh": 95.0, "stale": 10.0}
+    inflight = {"fresh", "live", "orphan", "stale"}
+    started = {"fresh": 95.0, "live": 10.0, "stale": 10.0}
 
     stale = fullraw_index._prune_stale_sweep_inflight(
         inflight,
         started,
         now=100.0,
         stale_after_seconds=60.0,
+        live_keys={"live"},
     )
 
     assert set(stale) == {"orphan", "stale"}
-    assert inflight == {"fresh"}
-    assert started == {"fresh": 95.0}
+    assert inflight == {"fresh", "live"}
+    assert started == {"fresh": 95.0, "live": 10.0}
 
 
 def test_sweep_watchdog_tick_reclaims_stale_slot_and_promotes_queue() -> None:
@@ -1439,6 +1547,142 @@ def test_sweep_watchdog_tick_reclaims_stale_slot_and_promotes_queue() -> None:
     assert queued_jobs == {}
 
 
+def test_sweep_watchdog_does_not_replace_live_stale_worker() -> None:
+    inflight = {"live"}
+    started = {"live": 10.0}
+    queued = {"next"}
+    job = fullraw_index.SweepJob("next", "next query", 10, 1900, 2100, "relevance", [])
+    queued_jobs = {"next": job}
+
+    stale, next_jobs = fullraw_index._sweep_watchdog_tick(
+        sweep_inflight=inflight,
+        sweep_inflight_started=started,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_inflight=1,
+        allow_priority_burst=False,
+        stale_after_seconds=60.0,
+        now=100.0,
+        live_keys={"live"},
+    )
+
+    assert stale == ()
+    assert next_jobs == []
+    assert inflight == {"live"}
+    assert started == {"live": 10.0}
+    assert queued == {"next"}
+    assert queued_jobs == {"next": job}
+
+
+def test_sweep_watchdog_classifies_only_live_workers_without_heartbeats() -> None:
+    release = threading.Event()
+    stale_owner = threading.Thread(target=release.wait)
+    fresh_owner = threading.Thread(target=release.wait)
+    dead_owner = threading.Thread(target=lambda: None)
+    stale_owner.start()
+    fresh_owner.start()
+    dead_owner.start()
+    dead_owner.join(1)
+    try:
+        expired = fullraw_index._expired_live_sweep_workers(
+            {"stale", "fresh", "dead", "orphan"},
+            {"stale": 10.0, "fresh": 95.0, "dead": 10.0},
+            {"stale": stale_owner, "fresh": fresh_owner, "dead": dead_owner},
+            now=100.0,
+            stale_after_seconds=60.0,
+        )
+        assert expired == (("stale", stale_owner),)
+        assert fullraw_index._revalidate_expired_live_sweep_workers(
+            expired,
+            {"stale": 10.0},
+            {"stale": stale_owner},
+            now=100.0,
+            stale_after_seconds=60.0,
+        ) == ("stale",)
+
+        assert fullraw_index._revalidate_expired_live_sweep_workers(
+            expired,
+            {"stale": 95.0},
+            {"stale": stale_owner},
+            now=100.0,
+            stale_after_seconds=60.0,
+        ) == ()
+        assert fullraw_index._revalidate_expired_live_sweep_workers(
+            expired,
+            {"stale": 10.0},
+            {"stale": threading.Thread(target=lambda: None)},
+            now=100.0,
+            stale_after_seconds=60.0,
+        ) == ()
+    finally:
+        release.set()
+        stale_owner.join(1)
+        fresh_owner.join(1)
+
+
+def test_registered_unstarted_sweep_generation_keeps_inflight_ownership() -> None:
+    owner = threading.Thread(target=lambda: None)
+    inflight = {"job"}
+    last_progress = {"job": 10.0}
+
+    released = fullraw_index._release_sweep_inflight_if_unowned(
+        "job",
+        sweep_inflight=inflight,
+        sweep_inflight_started=last_progress,
+        sweep_worker_threads={"job": owner},
+    )
+
+    assert released is False
+    assert inflight == {"job"}
+    assert last_progress == {"job": 10.0}
+
+
+def test_failed_sweep_thread_start_restores_job_at_front_without_clobbering_owner() -> None:
+    failed_job = fullraw_index.SweepJob(
+        "failed", "failed query", 10, 1900, 2100, "relevance", [], priority=False
+    )
+    priority_job = fullraw_index.SweepJob(
+        "priority", "priority query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    background_job = fullraw_index.SweepJob(
+        "background", "background query", 10, 1900, 2100, "relevance", []
+    )
+    failed_owner = threading.Thread(target=lambda: None)
+    workers = {"failed": failed_owner}
+    inflight = {"failed"}
+    started = {"failed": 10.0}
+    queued = {"priority", "background"}
+    queued_jobs = {"priority": priority_job, "background": background_job}
+
+    assert fullraw_index._requeue_sweep_after_start_failure(
+        job=failed_job,
+        failed_owner=failed_owner,
+        sweep_worker_threads=workers,
+        sweep_inflight=inflight,
+        sweep_inflight_started=started,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_queue=2,
+    ) is True
+    assert workers == {}
+    assert inflight == set()
+    assert started == {}
+    assert queued == {"priority", "failed"}
+    assert list(queued_jobs) == ["priority", "failed"]
+
+    newer_owner = threading.Thread(target=lambda: None)
+    workers["failed"] = newer_owner
+    assert fullraw_index._requeue_sweep_after_start_failure(
+        job=failed_job,
+        failed_owner=failed_owner,
+        sweep_worker_threads=workers,
+        sweep_inflight={"failed"},
+        sweep_inflight_started={"failed": 20.0},
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_queue=2,
+    ) is False
+    assert workers == {"failed": newer_owner}
 def test_sweep_cache_write_preserves_highest_progress(tmp_path: Path) -> None:
     cache_path = tmp_path / "sweeps" / "metformin.json"
     older_partial = fullraw_index.SweepCacheEntry(
@@ -2471,7 +2715,7 @@ def test_shard_cache_copy_retries_transient_stall_without_failure(
     assert after["copy_failures_total"] == before_failures
 
 
-def test_shard_cache_copy_reaps_stuck_writer_before_retry(
+def test_shard_cache_copy_requests_restart_instead_of_overlapping_stuck_writer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class CopyAttempt:
@@ -2492,32 +2736,36 @@ def test_shard_cache_copy_reaps_stuck_writer_before_retry(
             self.killed = True
 
     stalled = CopyAttempt(stalls=True)
-    successful = CopyAttempt(stalls=False)
-    copies = iter((stalled, successful))
-    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: next(copies))
-    monotonic = iter((0.0, 0.0, 0.02, 0.03, 0.03))
+    restart_reasons: list[str] = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: stalled)
+    monkeypatch.setattr(fullraw_index, "_request_process_restart", restart_reasons.append)
+    monotonic = iter((0.0, 0.0, 0.02))
     monkeypatch.setattr("v5_memo.fullraw_index.time.monotonic", lambda: next(monotonic))
 
-    fullraw_index._copy2_with_timeout(
-        Path("remote.sqlite"),
-        Path("local.sqlite"),
-        timeout_seconds=0.01,
-        attempts=2,
-    )
+    with pytest.raises(OSError, match="could not be reaped"):
+        fullraw_index._copy2_with_timeout(
+            Path("remote.sqlite"),
+            Path("local.sqlite"),
+            timeout_seconds=0.01,
+            attempts=2,
+        )
 
     assert stalled.killed
-    assert stalled.wait_timeouts[-2:] == [1.0, None]
-    assert successful.wait_timeouts == [0.01]
+    assert stalled.wait_timeouts[-1:] == [1.0]
+    assert restart_reasons == ["copy child remained alive after SIGKILL"]
 
 
 def test_shard_cache_copy_cancellation_kills_copy_without_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    cancel_event = threading.Event()
+
     class ActiveCopy:
         killed = False
 
         def wait(self, *, timeout: float) -> int:
             if not self.killed:
+                cancel_event.set()
                 raise subprocess.TimeoutExpired(cmd="copy", timeout=timeout)
             return -9
 
@@ -2526,8 +2774,6 @@ def test_shard_cache_copy_cancellation_kills_copy_without_failure(
 
     active = ActiveCopy()
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: active)
-    cancel_event = threading.Event()
-    cancel_event.set()
     before = fullraw_index._shard_local_cache_health()
 
     with pytest.raises(CancelledError, match="shard cache copy cancelled"):
@@ -2543,6 +2789,393 @@ def test_shard_cache_copy_cancellation_kills_copy_without_failure(
     assert after["copy_inflight"] == 0
     assert after["copy_timeouts_total"] == before["copy_timeouts_total"]
     assert after["copy_failures_total"] == before["copy_failures_total"]
+
+
+def test_shard_cache_copy_prestart_cancellation_spawns_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    def fail_spawn(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("pre-cancelled copy must not spawn")
+
+    monkeypatch.setattr(subprocess, "Popen", fail_spawn)
+    with pytest.raises(CancelledError, match="cancelled before start"):
+        fullraw_index._copy2_with_timeout(
+            Path("remote.sqlite"),
+            Path("local.sqlite"),
+            timeout_seconds=180,
+            cancel_event=cancel_event,
+        )
+
+    health = fullraw_index._shard_local_cache_health()
+    assert health["copy_inflight"] == 0
+    assert health["copy_waiting"] == 0
+
+
+def test_shard_cache_copy_limit_serializes_all_copy_callers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    errors: list[BaseException] = []
+    created = 0
+
+    class CopyAttempt:
+        def __init__(self, *, first: bool) -> None:
+            self.first = first
+
+        def wait(self, *, timeout: float) -> int:
+            if not self.first:
+                second_started.set()
+                return 0
+            first_started.set()
+            if not release_first.wait(timeout):
+                raise subprocess.TimeoutExpired(cmd="copy", timeout=timeout)
+            return 0
+
+        def kill(self) -> None:
+            raise AssertionError("healthy bounded copy must not be killed")
+
+    def create_copy(*_args: object, **_kwargs: object) -> CopyAttempt:
+        nonlocal created
+        created += 1
+        return CopyAttempt(first=created == 1)
+
+    def copy(source: str) -> None:
+        try:
+            fullraw_index._copy2_with_timeout(
+                Path(source),
+                Path(f"{source}.local"),
+                timeout_seconds=10,
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    monkeypatch.setattr(fullraw_index, "_SHARD_LOCAL_CACHE_COPY_MAX_INFLIGHT", 1)
+    monkeypatch.setattr(subprocess, "Popen", create_copy)
+    first = threading.Thread(target=copy, args=("first.sqlite",))
+    second = threading.Thread(target=copy, args=("second.sqlite",))
+
+    first.start()
+    assert first_started.wait(1)
+    second.start()
+    assert not second_started.wait(0.1)
+    assert fullraw_index._shard_local_cache_health()["copy_inflight"] == 1
+    assert fullraw_index._shard_local_cache_health()["copy_waiting"] == 1
+
+    release_first.set()
+    first.join(1)
+    second.join(1)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert not errors
+    assert second_started.is_set()
+    assert fullraw_index._shard_local_cache_health()["copy_inflight"] == 0
+    assert fullraw_index._shard_local_cache_health()["copy_waiting"] == 0
+
+
+def test_shard_cache_copy_limit_also_bounds_copy_without_explicit_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    errors: list[BaseException] = []
+
+    created = 0
+
+    class CopyAttempt:
+        def __init__(self, *, first: bool) -> None:
+            self.first = first
+
+        def wait(self, *, timeout: float) -> int:
+            if self.first:
+                first_started.set()
+                assert release_first.wait(timeout)
+            else:
+                second_started.set()
+            return 0
+
+        def kill(self) -> None:
+            raise AssertionError("healthy copy must not be killed")
+
+    def create_copy(*_args: object, **_kwargs: object) -> CopyAttempt:
+        nonlocal created
+        created += 1
+        return CopyAttempt(first=created == 1)
+
+    def copy(source: str) -> None:
+        try:
+            fullraw_index._copy2_with_timeout(
+                Path(source),
+                Path(f"{source}.local"),
+                timeout_seconds=None,
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    monkeypatch.setattr(fullraw_index, "_SHARD_LOCAL_CACHE_COPY_MAX_INFLIGHT", 1)
+    monkeypatch.setattr(subprocess, "Popen", create_copy)
+    first = threading.Thread(target=copy, args=("first.sqlite",))
+    second = threading.Thread(target=copy, args=("second.sqlite",))
+
+    first.start()
+    assert first_started.wait(1)
+    second.start()
+    assert not second_started.wait(0.1)
+    release_first.set()
+    first.join(1)
+    second.join(1)
+
+    assert not errors
+    assert second_started.is_set()
+    assert fullraw_index._shard_local_cache_health()["copy_inflight"] == 0
+
+
+def test_shard_cache_copy_limit_holds_four_callers_to_three(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = threading.Event()
+    three_started = threading.Event()
+    created = 0
+    created_lock = threading.Lock()
+    errors: list[BaseException] = []
+
+    class CopyAttempt:
+        def wait(self, *, timeout: float) -> int:
+            if not release.wait(timeout):
+                raise subprocess.TimeoutExpired(cmd="copy", timeout=timeout)
+            return 0
+
+        def kill(self) -> None:
+            raise AssertionError("healthy bounded copy must not be killed")
+
+    def create_copy(*_args: object, **_kwargs: object) -> CopyAttempt:
+        nonlocal created
+        with created_lock:
+            created += 1
+            if created == 3:
+                three_started.set()
+        return CopyAttempt()
+
+    def copy(index: int) -> None:
+        try:
+            fullraw_index._copy2_with_timeout(
+                Path(f"remote-{index}.sqlite"),
+                Path(f"local-{index}.sqlite"),
+                timeout_seconds=10,
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    monkeypatch.setattr(fullraw_index, "_SHARD_LOCAL_CACHE_COPY_MAX_INFLIGHT", 3)
+    monkeypatch.setattr(subprocess, "Popen", create_copy)
+    threads = [threading.Thread(target=copy, args=(index,)) for index in range(4)]
+    for thread in threads:
+        thread.start()
+
+    assert three_started.wait(1)
+    time.sleep(0.1)
+    health = fullraw_index._shard_local_cache_health()
+    assert created == 3
+    assert health["copy_max_inflight"] == 3
+    assert health["copy_inflight"] == 3
+    assert health["copy_waiting"] == 1
+
+    release.set()
+    for thread in threads:
+        thread.join(1)
+
+    assert not errors
+    assert created == 4
+    assert fullraw_index._shard_local_cache_health()["copy_inflight"] == 0
+
+
+def test_shard_cache_copy_waiter_cancels_without_taking_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_started = threading.Event()
+    release_first = threading.Event()
+    cancel_waiter = threading.Event()
+    errors: list[BaseException] = []
+    created = 0
+
+    class ActiveCopy:
+        def wait(self, *, timeout: float) -> int:
+            first_started.set()
+            if not release_first.wait(timeout):
+                raise subprocess.TimeoutExpired(cmd="copy", timeout=timeout)
+            return 0
+
+        def kill(self) -> None:
+            raise AssertionError("healthy copy must not be killed")
+
+    def create_copy(*_args: object, **_kwargs: object) -> ActiveCopy:
+        nonlocal created
+        created += 1
+        return ActiveCopy()
+
+    def first_copy() -> None:
+        fullraw_index._copy2_with_timeout(
+            Path("first.sqlite"),
+            Path("first.local.sqlite"),
+            timeout_seconds=10,
+        )
+
+    def waiting_copy() -> None:
+        try:
+            fullraw_index._copy2_with_timeout(
+                Path("waiting.sqlite"),
+                Path("waiting.local.sqlite"),
+                timeout_seconds=10,
+                cancel_event=cancel_waiter,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    monkeypatch.setattr(fullraw_index, "_SHARD_LOCAL_CACHE_COPY_MAX_INFLIGHT", 1)
+    monkeypatch.setattr(subprocess, "Popen", create_copy)
+    first = threading.Thread(target=first_copy)
+    waiter = threading.Thread(target=waiting_copy)
+    first.start()
+    assert first_started.wait(1)
+    waiter.start()
+    for _ in range(20):
+        if fullraw_index._shard_local_cache_health()["copy_waiting"] == 1:
+            break
+        time.sleep(0.01)
+    else:  # pragma: no cover - defensive test guard
+        raise AssertionError("copy waiter did not block")
+
+    cancel_waiter.set()
+    waiter.join(1)
+    assert len(errors) == 1
+    assert isinstance(errors[0], CancelledError)
+    assert created == 1
+    assert fullraw_index._shard_local_cache_health()["copy_inflight"] == 1
+    assert fullraw_index._shard_local_cache_health()["copy_waiting"] == 0
+
+    release_first.set()
+    first.join(1)
+    assert fullraw_index._shard_local_cache_health()["copy_inflight"] == 0
+
+
+def test_shard_cache_copy_waiters_start_fifo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_first = threading.Event()
+    first_started = threading.Event()
+    start_order: list[str] = []
+    errors: list[BaseException] = []
+
+    class CopyAttempt:
+        def __init__(self, source: str) -> None:
+            self.source = source
+
+        def wait(self, *, timeout: float) -> int:
+            if self.source == "first.sqlite":
+                first_started.set()
+                assert release_first.wait(timeout)
+            return 0
+
+        def kill(self) -> None:
+            raise AssertionError("healthy FIFO copy must not be killed")
+
+    def create_copy(*args: object, **_kwargs: object) -> CopyAttempt:
+        command = args[0]
+        assert isinstance(command, list)
+        source = Path(str(command[-2])).name
+        start_order.append(source)
+        return CopyAttempt(source)
+
+    def copy(source: str) -> None:
+        try:
+            fullraw_index._copy2_with_timeout(
+                Path(source),
+                Path(f"{source}.local"),
+                timeout_seconds=10,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    monkeypatch.setattr(fullraw_index, "_SHARD_LOCAL_CACHE_COPY_MAX_INFLIGHT", 1)
+    monkeypatch.setattr(subprocess, "Popen", create_copy)
+    first = threading.Thread(target=copy, args=("first.sqlite",))
+    older = threading.Thread(target=copy, args=("older.sqlite",))
+    newer = threading.Thread(target=copy, args=("newer.sqlite",))
+    first.start()
+    assert first_started.wait(1)
+    older.start()
+    for _ in range(50):
+        if fullraw_index._shard_local_cache_health()["copy_waiting"] == 1:
+            break
+        time.sleep(0.01)
+    newer.start()
+    for _ in range(50):
+        if fullraw_index._shard_local_cache_health()["copy_waiting"] == 2:
+            break
+        time.sleep(0.01)
+    release_first.set()
+    for thread in (first, older, newer):
+        thread.join(1)
+
+    assert errors == []
+    assert start_order == ["first.sqlite", "older.sqlite", "newer.sqlite"]
+    assert fullraw_index._shard_local_cache_health()["copy_waiting"] == 0
+
+
+def test_materialized_shard_waiter_cancels_without_touching_owner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    remote = tmp_path / "remote" / "fullraw_shard_0001.sqlite"
+    remote.parent.mkdir()
+    remote.write_bytes(b"remote shard")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "1024")
+    cache_path = fullraw_index._shard_cache_path(remote)
+    assert cache_path is not None
+    cancel_event = threading.Event()
+    errors: list[BaseException] = []
+
+    def fail_copy(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("cancelled same-path waiter must not copy")
+
+    def wait_for_owner() -> None:
+        try:
+            fullraw_index._materialized_shard_path(
+                remote,
+                populate=True,
+                cancel_event=cancel_event,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    monkeypatch.setattr(fullraw_index, "_copy2_with_timeout", fail_copy)
+    with fullraw_index._SHARD_LOCAL_CACHE_LOCK:
+        fullraw_index._SHARD_LOCAL_CACHE_IN_PROGRESS.add(cache_path)
+    waiter = threading.Thread(target=wait_for_owner)
+    try:
+        waiter.start()
+        time.sleep(0.05)
+        assert waiter.is_alive()
+        cancel_event.set()
+        waiter.join(1)
+        assert not waiter.is_alive()
+        assert len(errors) == 1
+        assert isinstance(errors[0], CancelledError)
+        with fullraw_index._SHARD_LOCAL_CACHE_LOCK:
+            assert cache_path in fullraw_index._SHARD_LOCAL_CACHE_IN_PROGRESS
+            assert fullraw_index._SHARD_LOCAL_CACHE_RESERVED_BYTES == {}
+        assert fullraw_index._shard_local_cache_health()["copy_inflight"] == 0
+    finally:
+        with fullraw_index._SHARD_LOCAL_CACHE_LOCK:
+            fullraw_index._SHARD_LOCAL_CACHE_IN_PROGRESS.discard(cache_path)
 
 
 def test_materialized_shard_path_does_not_copy_missing_cache_without_populate(
@@ -2730,7 +3363,7 @@ def test_materialized_shard_path_serializes_same_target_copy(
     errors: list[BaseException] = []
     results: list[Path] = []
 
-    def slow_copy(source: Path, target: Path) -> None:
+    def slow_copy(source: Path, target: Path, **_kwargs: object) -> None:
         copied.append(target)
         copy_entered.set()
         assert release_copy.wait(timeout=2), "copy was not released"
@@ -2742,7 +3375,7 @@ def test_materialized_shard_path_serializes_same_target_copy(
         except BaseException as exc:  # pragma: no cover - reported below
             errors.append(exc)
 
-    monkeypatch.setattr("v5_memo.fullraw_index.shutil.copy2", slow_copy)
+    monkeypatch.setattr(fullraw_index, "_copy2_with_timeout", slow_copy)
 
     first = threading.Thread(target=materialize)
     second = threading.Thread(target=materialize)
@@ -2789,7 +3422,7 @@ def test_materialized_shard_path_respects_active_copy_reservations(
     errors: list[BaseException] = []
     results: list[Path] = []
 
-    def slow_copy(source: Path, target: Path) -> None:
+    def slow_copy(source: Path, target: Path, **_kwargs: object) -> None:
         copied.append(source)
         if source == second_remote:
             raise AssertionError("second shard should not be copied past the cache cap")
@@ -2803,7 +3436,7 @@ def test_materialized_shard_path_respects_active_copy_reservations(
         except BaseException as exc:  # pragma: no cover - reported below
             errors.append(exc)
 
-    monkeypatch.setattr("v5_memo.fullraw_index.shutil.copy2", slow_copy)
+    monkeypatch.setattr(fullraw_index, "_copy2_with_timeout", slow_copy)
 
     first = threading.Thread(target=materialize_first)
     first.start()

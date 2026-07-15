@@ -13,14 +13,15 @@ import json
 import os
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-from collections import Counter
-from collections.abc import Iterable
+from collections import Counter, deque
+from collections.abc import Callable, Iterable
 from concurrent.futures import (
     CancelledError,
     ProcessPoolExecutor,
@@ -147,7 +148,9 @@ def _shard_local_cache_health(*, include_dynamic_budget: bool = True) -> dict[st
         health.update({
             "copy_timeout_seconds": _shard_cache_copy_timeout_seconds(),
             "copy_attempts": _shard_cache_copy_attempts(),
+            "copy_max_inflight": _shard_cache_copy_max_inflight(),
             "copy_inflight": _SHARD_LOCAL_CACHE_COPY_INFLIGHT,
+            "copy_waiting": _SHARD_LOCAL_CACHE_COPY_WAITING,
             "copy_timeouts_total": _SHARD_LOCAL_CACHE_COPY_TIMEOUTS,
             "copy_failures_total": _SHARD_LOCAL_CACHE_COPY_FAILURES,
         })
@@ -157,10 +160,15 @@ def _shard_local_cache_health(*, include_dynamic_budget: bool = True) -> dict[st
 _FULL_COVERAGE_PREFIX_SHARDS = max(1, int(_fullraw_env("V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS", "32")))
 _SWEEP_STRATEGY = "profile_relaxed_v11"
 _SWEEP_MIN_RESULT_LIMIT = 10
+_DEFAULT_SHARD_CACHE_COPY_TIMEOUT_SECONDS = 180.0
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
 _SHARD_LOCAL_CACHE_IN_PROGRESS: set[Path] = set()
 _SHARD_LOCAL_CACHE_RESERVED_BYTES: dict[Path, int] = {}
+_SHARD_LOCAL_CACHE_COPY_CONDITION = threading.Condition(_SHARD_LOCAL_CACHE_LOCK)
+_SHARD_LOCAL_CACHE_COPY_MAX_INFLIGHT: int | None = None
+_SHARD_LOCAL_CACHE_COPY_WAITERS: deque[object] = deque()
 _SHARD_LOCAL_CACHE_COPY_INFLIGHT = 0
+_SHARD_LOCAL_CACHE_COPY_WAITING = 0
 _SHARD_LOCAL_CACHE_COPY_TIMEOUTS = 0
 _SHARD_LOCAL_CACHE_COPY_FAILURES = 0
 _DEFAULT_TERM_MAP = (
@@ -1218,6 +1226,7 @@ def _search_shard_paths_with_paths_and_receipt(
     workers: int | None = None,
     timeout_seconds: float | None = None,
     shard_timeout_seconds: float | None = None,
+    progress_callback: Callable[[], None] | None = None,
 ) -> tuple[list[dict[str, object]], list[Path], bool, dict[str, object]]:
     hit_groups: list[list[dict[str, object]]] = []
     completed_paths: list[Path] = []
@@ -1233,6 +1242,8 @@ def _search_shard_paths_with_paths_and_receipt(
     per_shard_timeout = shard_timeout_seconds
     start = 0
     while start < len(search_paths):
+        if progress_callback is not None:
+            progress_callback()
         if deadline is not None and time.monotonic() >= deadline:
             timed_out = True
             break
@@ -1258,11 +1269,18 @@ def _search_shard_paths_with_paths_and_receipt(
                     per_shard_timeout,
                     preserve_paths,
                     cancel_event,
+                    **(
+                        {"progress_callback": progress_callback}
+                        if progress_callback is not None
+                        else {}
+                    ),
                 ): path
                 for path in batch
             }
             remaining = None if deadline is None else max(0.05, deadline - time.monotonic())
             for future in as_completed(futures, timeout=remaining):
+                if progress_callback is not None:
+                    progress_callback()
                 path = futures[future]
                 try:
                     hits = future.result()
@@ -1280,6 +1298,9 @@ def _search_shard_paths_with_paths_and_receipt(
             timed_out = True
             cancel_event.set()
             break
+        except BaseException:
+            cancel_event.set()
+            raise
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
     hits, metrics = _merge_hit_groups_with_receipt(hit_groups, limit=limit)
@@ -1296,16 +1317,39 @@ def _materialize_and_search_one_shard(
     timeout_seconds: float | None,
     preserve: set[Path],
     cancel_event: threading.Event | None = None,
+    progress_callback: Callable[[], None] | None = None,
 ) -> list[dict[str, object]]:
-    search_path = _materialized_shard_path(
-        path,
-        preserve=preserve,
-        populate=True,
-        cancel_event=cancel_event,
-    )
+    if progress_callback is not None:
+        progress_callback()
+    if progress_callback is None:
+        search_path = _materialized_shard_path(
+            path,
+            preserve=preserve,
+            populate=True,
+            cancel_event=cancel_event,
+        )
+    else:
+        search_path = _materialized_shard_path(
+            path,
+            preserve=preserve,
+            populate=True,
+            cancel_event=cancel_event,
+            progress_callback=progress_callback,
+        )
     if cancel_event is not None and cancel_event.is_set():
         raise CancelledError(f"shard search cancelled: {path}")
-    return _search_one_shard_for_pool(search_path, query, limit, year_min, year_max, rank_mode, timeout_seconds)
+    hits = _search_one_shard_for_pool(
+        search_path,
+        query,
+        limit,
+        year_min,
+        year_max,
+        rank_mode,
+        timeout_seconds,
+    )
+    if progress_callback is not None:
+        progress_callback()
+    return hits
 
 
 def _cache_fit_path_batch(paths: list[Path], *, start: int, worker_count: int) -> list[Path]:
@@ -1960,11 +2004,11 @@ def _search_one_shard_isolated(
         stdout, stderr = proc.communicate(timeout=child_timeout + 1.0)
     except subprocess.TimeoutExpired as exc:
         proc.kill()
-        # FUSE-backed SQLite reads can sit in disk wait after SIGKILL. Do not
-        # let one stuck child pin the sweep lane forever; the caller records
-        # this shard as timed out/deferred and moves on.
-        with suppress(subprocess.TimeoutExpired):
+        try:
             proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired as reap_exc:
+            _request_process_restart("isolated search child remained alive after SIGKILL")
+            raise OSError("isolated search child could not be reaped after SIGKILL") from reap_exc
         raise TimeoutError(f"isolated shard search timed out: {path}") from exc
     if proc.returncode != 0:
         raise sqlite3.Error((stderr or stdout or "isolated shard search failed").strip()[:500])
@@ -1980,6 +2024,7 @@ def _materialized_shard_path(
     preserve: set[Path] | None = None,
     populate: bool = False,
     cancel_event: threading.Event | None = None,
+    progress_callback: Callable[[], None] | None = None,
 ) -> Path:
     cache_path = _shard_cache_path(path)
     if cache_path is None:
@@ -2008,6 +2053,8 @@ def _materialized_shard_path(
     if max_cache_bytes is not None and source_stat.st_size > max_cache_bytes:
         return path
     while True:
+        if cancel_event is not None and cancel_event.is_set():
+            raise CancelledError(f"shard cache materialization cancelled: {path}")
         with _SHARD_LOCAL_CACHE_LOCK:
             if cache_path.exists() and cache_path.stat().st_size == source_stat.st_size:
                 os.utime(cache_path, None)
@@ -2015,7 +2062,13 @@ def _materialized_shard_path(
             if cache_path not in _SHARD_LOCAL_CACHE_IN_PROGRESS:
                 _SHARD_LOCAL_CACHE_IN_PROGRESS.add(cache_path)
                 break
-        time.sleep(0.05)
+        if progress_callback is not None:
+            progress_callback()
+        if cancel_event is not None:
+            if cancel_event.wait(0.05):
+                raise CancelledError(f"shard cache materialization cancelled: {path}")
+        else:
+            time.sleep(0.05)
     tmp_path = cache_path.with_name(f".{cache_path.name}.tmp.{os.getpid()}.{threading.get_ident()}")
     base_preserve = preserve or set()
     with _SHARD_LOCAL_CACHE_LOCK:
@@ -2046,6 +2099,7 @@ def _materialized_shard_path(
             tmp_path,
             timeout_seconds=_shard_cache_copy_timeout_seconds(),
             cancel_event=cancel_event,
+            progress_callback=progress_callback,
         )
         with _SHARD_LOCAL_CACHE_LOCK:
             if cache_path.exists() and cache_path.stat().st_size == source_stat.st_size:
@@ -2068,28 +2122,99 @@ def _materialized_shard_path(
         tmp_path.unlink(missing_ok=True)
 
 
-def _shard_cache_copy_timeout_seconds() -> float | None:
+def _shard_cache_copy_timeout_seconds() -> float:
     raw = _fullraw_env(
         "V5_MEMO_FULL_RAW_SHARD_CACHE_COPY_TIMEOUT_SECONDS",
         _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_TIMEOUT_SECONDS", ""),
     )
     timeout = _float_or_none(raw)
-    return timeout if timeout is not None and timeout > 0 else None
+    return (
+        timeout
+        if timeout is not None and timeout > 0
+        else _DEFAULT_SHARD_CACHE_COPY_TIMEOUT_SECONDS
+    )
 
 
 def _shard_cache_copy_attempts() -> int:
     return _positive_int_env("V5_MEMO_FULL_RAW_SHARD_CACHE_COPY_ATTEMPTS") or 2
 
 
+def _set_shard_cache_copy_max_inflight(value: int | None) -> None:
+    global _SHARD_LOCAL_CACHE_COPY_MAX_INFLIGHT
+    with _SHARD_LOCAL_CACHE_COPY_CONDITION:
+        _SHARD_LOCAL_CACHE_COPY_MAX_INFLIGHT = max(1, value) if value is not None else None
+        _SHARD_LOCAL_CACHE_COPY_CONDITION.notify_all()
+
+
+def _shard_cache_copy_max_inflight() -> int:
+    with _SHARD_LOCAL_CACHE_LOCK:
+        active_limit = _SHARD_LOCAL_CACHE_COPY_MAX_INFLIGHT
+    return active_limit or _configured_sweep_max_inflight()
+
+
+def _acquire_shard_cache_copy_slot(
+    source: Path,
+    *,
+    cancel_event: threading.Event | None,
+    progress_callback: Callable[[], None] | None = None,
+) -> None:
+    global _SHARD_LOCAL_CACHE_COPY_INFLIGHT
+    global _SHARD_LOCAL_CACHE_COPY_WAITING
+    waiter = object()
+    with _SHARD_LOCAL_CACHE_COPY_CONDITION:
+        if cancel_event is not None and cancel_event.is_set():
+            raise CancelledError(f"shard cache copy cancelled before start: {source}")
+        _SHARD_LOCAL_CACHE_COPY_WAITERS.append(waiter)
+        _SHARD_LOCAL_CACHE_COPY_WAITING += 1
+        queued = True
+        try:
+            while (
+                _SHARD_LOCAL_CACHE_COPY_WAITERS[0] is not waiter
+                or _shard_cache_copy_max_inflight() <= _SHARD_LOCAL_CACHE_COPY_INFLIGHT
+            ):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise CancelledError(f"shard cache copy cancelled before start: {source}")
+                _SHARD_LOCAL_CACHE_COPY_CONDITION.wait(timeout=0.1)
+                if progress_callback is not None:
+                    progress_callback()
+            _SHARD_LOCAL_CACHE_COPY_WAITERS.popleft()
+            _SHARD_LOCAL_CACHE_COPY_WAITING -= 1
+            queued = False
+            _SHARD_LOCAL_CACHE_COPY_INFLIGHT += 1
+            _SHARD_LOCAL_CACHE_COPY_CONDITION.notify_all()
+        finally:
+            if queued:
+                _SHARD_LOCAL_CACHE_COPY_WAITERS.remove(waiter)
+                _SHARD_LOCAL_CACHE_COPY_WAITING -= 1
+                _SHARD_LOCAL_CACHE_COPY_CONDITION.notify_all()
+
+
+def _release_shard_cache_copy_slot() -> None:
+    global _SHARD_LOCAL_CACHE_COPY_INFLIGHT
+    with _SHARD_LOCAL_CACHE_COPY_CONDITION:
+        _SHARD_LOCAL_CACHE_COPY_INFLIGHT -= 1
+        _SHARD_LOCAL_CACHE_COPY_CONDITION.notify()
+
+
+def _request_process_restart(reason: str) -> None:
+    print(
+        f"fullraw process restart requested: {reason}",
+        file=sys.stderr,
+        flush=True,
+    )
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
 def _kill_and_reap_copy(process: subprocess.Popen[bytes]) -> None:
     process.kill()
     try:
         process.wait(timeout=1.0)
-    except subprocess.TimeoutExpired:
-        # A FUSE-backed read can remain in uninterruptible disk wait after
-        # SIGKILL. Reap it before cleanup or retry so the old writer cannot
-        # keep consuming an unlinked temp file alongside a replacement copy.
-        process.wait()
+    except subprocess.TimeoutExpired as exc:
+        # Starting a replacement beside an unkillable FUSE writer can exceed
+        # the physical copy ceiling. Let systemd tear down the whole cgroup and
+        # restart the service instead.
+        _request_process_restart("copy child remained alive after SIGKILL")
+        raise OSError("copy child could not be reaped after SIGKILL") from exc
 
 
 def _copy2_with_timeout(
@@ -2099,16 +2224,19 @@ def _copy2_with_timeout(
     timeout_seconds: float | None,
     cancel_event: threading.Event | None = None,
     attempts: int | None = None,
+    progress_callback: Callable[[], None] | None = None,
 ) -> None:
     global _SHARD_LOCAL_CACHE_COPY_FAILURES
-    global _SHARD_LOCAL_CACHE_COPY_INFLIGHT
     global _SHARD_LOCAL_CACHE_COPY_TIMEOUTS
-    if timeout_seconds is None:
-        shutil.copy2(source, target)
-        return
-    with _SHARD_LOCAL_CACHE_LOCK:
-        _SHARD_LOCAL_CACHE_COPY_INFLIGHT += 1
+    _acquire_shard_cache_copy_slot(
+        source,
+        cancel_event=cancel_event,
+        progress_callback=progress_callback,
+    )
     try:
+        if progress_callback is not None:
+            progress_callback()
+        effective_timeout = timeout_seconds or _shard_cache_copy_timeout_seconds()
         attempt_limit = max(1, attempts or _shard_cache_copy_attempts())
         for attempt in range(attempt_limit):
             process = subprocess.Popen(
@@ -2129,16 +2257,18 @@ def _copy2_with_timeout(
                     if cancel_event is not None and cancel_event.is_set():
                         _kill_and_reap_copy(process)
                         raise CancelledError(f"shard cache copy cancelled: {source}")
-                    remaining = timeout_seconds - (time.monotonic() - last_progress_at)
+                    remaining = effective_timeout - (time.monotonic() - last_progress_at)
                     if remaining <= 0:
                         _kill_and_reap_copy(process)
                         raise TimeoutError(
-                            f"shard cache copy made no progress for {timeout_seconds:g}s: {source}"
+                            f"shard cache copy made no progress for {effective_timeout:g}s: {source}"
                         )
                     try:
                         returncode = process.wait(timeout=min(1.0, remaining))
                         break
                     except subprocess.TimeoutExpired:
+                        if progress_callback is not None:
+                            progress_callback()
                         try:
                             current_size = target.stat().st_size
                         except OSError:
@@ -2164,8 +2294,7 @@ def _copy2_with_timeout(
             _SHARD_LOCAL_CACHE_COPY_FAILURES += 1
         raise
     finally:
-        with _SHARD_LOCAL_CACHE_LOCK:
-            _SHARD_LOCAL_CACHE_COPY_INFLIGHT -= 1
+        _release_shard_cache_copy_slot()
 
 
 def _shard_cache_path(path: Path) -> Path | None:
@@ -3138,18 +3267,125 @@ def _sweep_queue_summary(
     }
 
 
+def _expired_live_sweep_workers(
+    sweep_inflight: set[str],
+    sweep_last_progress: dict[str, float],
+    sweep_worker_threads: dict[str, threading.Thread],
+    *,
+    now: float,
+    stale_after_seconds: float,
+) -> tuple[tuple[str, threading.Thread], ...]:
+    if stale_after_seconds <= 0:
+        return ()
+    return tuple(
+        (key, owner)
+        for key in sorted(sweep_inflight)
+        if (owner := sweep_worker_threads.get(key)) is not None
+        if owner.is_alive()
+        if now - sweep_last_progress.get(key, 0.0) > stale_after_seconds
+    )
+
+
+def _revalidate_expired_live_sweep_workers(
+    candidates: tuple[tuple[str, threading.Thread], ...],
+    sweep_last_progress: dict[str, float],
+    sweep_worker_threads: dict[str, threading.Thread],
+    *,
+    now: float,
+    stale_after_seconds: float,
+) -> tuple[str, ...]:
+    return tuple(
+        key
+        for key, owner in candidates
+        if sweep_worker_threads.get(key) is owner
+        and owner.is_alive()
+        and now - sweep_last_progress.get(key, 0.0) > stale_after_seconds
+    )
+
+
+def _release_sweep_inflight_if_unowned(
+    key: str,
+    *,
+    sweep_inflight: set[str],
+    sweep_inflight_started: dict[str, float],
+    sweep_worker_threads: dict[str, threading.Thread],
+) -> bool:
+    if key in sweep_worker_threads:
+        return False
+    sweep_inflight.discard(key)
+    sweep_inflight_started.pop(key, None)
+    return True
+
+
+def _requeue_sweep_after_start_failure(
+    *,
+    job: SweepJob,
+    failed_owner: threading.Thread,
+    sweep_worker_threads: dict[str, threading.Thread],
+    sweep_inflight: set[str],
+    sweep_inflight_started: dict[str, float],
+    sweep_queued: set[str],
+    sweep_queued_jobs: dict[str, SweepJob],
+    max_queue: int,
+) -> bool:
+    if sweep_worker_threads.get(job.key) is not failed_owner:
+        return False
+    sweep_worker_threads.pop(job.key, None)
+    sweep_inflight.discard(job.key)
+    sweep_inflight_started.pop(job.key, None)
+    sweep_queued.add(job.key)
+
+    restored = replace(job, priority=job.priority)
+    priority_jobs = [
+        (key, queued_job)
+        for key, queued_job in sweep_queued_jobs.items()
+        if key != job.key and queued_job.priority
+    ]
+    background_jobs = [
+        (key, queued_job)
+        for key, queued_job in sweep_queued_jobs.items()
+        if key != job.key and not queued_job.priority
+    ]
+    sweep_queued_jobs.clear()
+    if restored.priority:
+        sweep_queued_jobs[job.key] = restored
+        sweep_queued_jobs.update(priority_jobs)
+        sweep_queued_jobs.update(background_jobs)
+    else:
+        sweep_queued_jobs.update(priority_jobs)
+        sweep_queued_jobs[job.key] = restored
+        sweep_queued_jobs.update(background_jobs)
+
+    while max_queue > 0 and len(sweep_queued_jobs) > max_queue:
+        drop_key = next(
+            (
+                key
+                for key in reversed(sweep_queued_jobs)
+                if key != job.key and not sweep_queued_jobs[key].priority
+            ),
+            next((key for key in reversed(sweep_queued_jobs) if key != job.key), ""),
+        )
+        if not drop_key:
+            break
+        sweep_queued_jobs.pop(drop_key, None)
+        sweep_queued.discard(drop_key)
+    return True
+
+
 def _prune_stale_sweep_inflight(
     sweep_inflight: set[str],
     sweep_inflight_started: dict[str, float],
     *,
     now: float,
     stale_after_seconds: float,
+    live_keys: set[str] | None = None,
 ) -> tuple[str, ...]:
     if stale_after_seconds <= 0:
         return ()
     stale = tuple(
         key
         for key in tuple(sweep_inflight)
+        if key not in (live_keys or set())
         if now - sweep_inflight_started.get(key, 0.0) > stale_after_seconds
     )
     for key in stale:
@@ -3169,12 +3405,14 @@ def _sweep_watchdog_tick(
     priority_max_inflight: int = 0,
     stale_after_seconds: float,
     now: float,
+    live_keys: set[str] | None = None,
 ) -> tuple[tuple[str, ...], list[SweepJob]]:
     stale = _prune_stale_sweep_inflight(
         sweep_inflight,
         sweep_inflight_started,
         now=now,
         stale_after_seconds=stale_after_seconds,
+        live_keys=live_keys,
     )
     next_jobs: list[SweepJob] = []
     while True:
@@ -3502,6 +3740,7 @@ def run_server() -> None:
     sweep_enabled = _fullraw_env("V5_MEMO_FULL_RAW_ASYNC_SWEEP", "").casefold() in {"1", "true", "yes"}
     sweep_ttl = _float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS", "")) or 86400.0
     sweep_max_inflight = _configured_sweep_max_inflight()
+    _set_shard_cache_copy_max_inflight(sweep_max_inflight)
     sweep_workers = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKERS") or _auto_sweep_workers(sweep_max_inflight)
     sweep_max_queue = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_QUEUE") or 0
     sweep_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT") or 128
@@ -3546,14 +3785,31 @@ def run_server() -> None:
     sweep_inflight_started: dict[str, float] = {}
     sweep_queued: set[str] = set()
     sweep_queued_jobs: dict[str, SweepJob] = {}
+    sweep_worker_threads: dict[str, threading.Thread] = {}
     sweep_lock = threading.RLock()
     sweep_inflight_stale_seconds = (
         _float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_INFLIGHT_STALE_SECONDS", ""))
         or max(900.0, min(sweep_timeout_seconds + 60.0, 1800.0))
     )
 
-    def sweep_watchdog_tick_locked(now: float) -> tuple[tuple[str, ...], list[SweepJob]]:
-        return _sweep_watchdog_tick(
+    def sweep_watchdog_tick_locked(
+        now: float,
+    ) -> tuple[tuple[str, ...], list[SweepJob], tuple[tuple[str, threading.Thread], ...]]:
+        live_keys = {
+            key
+            for key, worker_thread in sweep_worker_threads.items()
+            if worker_thread.is_alive()
+        }
+        expired_workers = _expired_live_sweep_workers(
+            sweep_inflight,
+            sweep_inflight_started,
+            sweep_worker_threads,
+            now=now,
+            stale_after_seconds=sweep_inflight_stale_seconds,
+        )
+        if expired_workers:
+            return (), [], expired_workers
+        stale, next_jobs = _sweep_watchdog_tick(
             sweep_inflight=sweep_inflight,
             sweep_inflight_started=sweep_inflight_started,
             sweep_queued=sweep_queued,
@@ -3563,9 +3819,30 @@ def run_server() -> None:
             priority_max_inflight=sweep_priority_max_inflight,
             stale_after_seconds=sweep_inflight_stale_seconds,
             now=now,
+            live_keys=live_keys,
         )
+        return stale, next_jobs, ()
 
-    def report_sweep_tick(stale: tuple[str, ...], next_jobs: list[SweepJob]) -> None:
+    def report_sweep_tick(
+        stale: tuple[str, ...],
+        next_jobs: list[SweepJob],
+        expired_workers: tuple[tuple[str, threading.Thread], ...],
+    ) -> None:
+        if expired_workers:
+            now = time.monotonic()
+            with sweep_lock:
+                restart_keys = _revalidate_expired_live_sweep_workers(
+                    expired_workers,
+                    sweep_inflight_started,
+                    sweep_worker_threads,
+                    now=now,
+                    stale_after_seconds=sweep_inflight_stale_seconds,
+                )
+                if restart_keys:
+                    _request_process_restart(
+                        f"stalled sweep worker heartbeat keys={','.join(sorted(restart_keys))}"
+                    )
+                    return
         for key in stale:
             print(
                 f"fullraw sweep inflight lease expired key={key}",
@@ -3578,9 +3855,10 @@ def run_server() -> None:
     def sweep_queue_summary() -> dict[str, object]:
         stale: tuple[str, ...] = ()
         next_jobs: list[SweepJob] = []
+        expired_workers: tuple[tuple[str, threading.Thread], ...] = ()
         with sweep_lock:
             if sweep_enabled and shard_dir is not None:
-                stale, next_jobs = sweep_watchdog_tick_locked(time.monotonic())
+                stale, next_jobs, expired_workers = sweep_watchdog_tick_locked(time.monotonic())
             summary = _sweep_queue_summary(
                 sweep_inflight,
                 sweep_queued_jobs,
@@ -3591,15 +3869,19 @@ def run_server() -> None:
                 workers=sweep_workers,
                 enabled=sweep_enabled and shard_dir is not None,
             )
-        report_sweep_tick(stale, next_jobs)
+            summary["worker_thread_count"] = sum(
+                worker_thread.is_alive() for worker_thread in sweep_worker_threads.values()
+            )
+        report_sweep_tick(stale, next_jobs, expired_workers)
         return summary
 
     def sweep_queue_state(key: str) -> dict[str, object]:
         stale: tuple[str, ...] = ()
         next_jobs: list[SweepJob] = []
+        expired_workers: tuple[tuple[str, threading.Thread], ...] = ()
         with sweep_lock:
             if sweep_enabled and shard_dir is not None:
-                stale, next_jobs = sweep_watchdog_tick_locked(time.monotonic())
+                stale, next_jobs, expired_workers = sweep_watchdog_tick_locked(time.monotonic())
             state = {
                 **_sweep_queue_summary(
                     sweep_inflight,
@@ -3613,8 +3895,11 @@ def run_server() -> None:
                 ),
                 "key_running": key in sweep_inflight,
                 "key_queued": key in sweep_queued_jobs,
+                "worker_thread_count": sum(
+                    worker_thread.is_alive() for worker_thread in sweep_worker_threads.values()
+                ),
             }
-        report_sweep_tick(stale, next_jobs)
+        report_sweep_tick(stale, next_jobs, expired_workers)
         return state
 
     def current_catalog() -> list[ShardCatalogEntry]:
@@ -3748,18 +4033,33 @@ def run_server() -> None:
     def sweep_cache_put(key: str, entry: SweepCacheEntry, *, final: bool = True) -> None:
         with sweep_lock:
             sweep_cache[key] = entry
-            if final:
-                sweep_inflight.discard(key)
-                sweep_inflight_started.pop(key, None)
-            elif key in sweep_inflight:
+            if key in sweep_inflight:
                 sweep_inflight_started[key] = time.monotonic()
+            if final:
+                _release_sweep_inflight_if_unowned(
+                    key,
+                    sweep_inflight=sweep_inflight,
+                    sweep_inflight_started=sweep_inflight_started,
+                    sweep_worker_threads=sweep_worker_threads,
+                )
         cache_path = _sweep_cache_path(sweep_cache_dir, key)
         if cache_path is not None:
             _write_sweep_cache(cache_path, entry)
 
     def start_sweep_worker(job: SweepJob) -> None:
         def worker() -> None:
+            owner_thread = threading.current_thread()
+
+            def progress_heartbeat() -> None:
+                with sweep_lock:
+                    if (
+                        sweep_worker_threads.get(job.key) is owner_thread
+                        and job.key in sweep_inflight
+                    ):
+                        sweep_inflight_started[job.key] = time.monotonic()
+
             try:
+                progress_heartbeat()
                 existing = sweep_cache_get(job.key)
                 if (
                     existing is not None
@@ -3819,6 +4119,7 @@ def run_server() -> None:
                         workers=sweep_workers,
                         timeout_seconds=sweep_timeout_seconds,
                         shard_timeout_seconds=sweep_shard_timeout_seconds,
+                        progress_callback=progress_heartbeat,
                     )
                     completed_pass_roles.append(pass_plan.role)
                     completed_path_strings.update(str(path) for path in completed_paths)
@@ -3898,24 +4199,49 @@ def run_server() -> None:
             finally:
                 next_job = None
                 with sweep_lock:
-                    sweep_inflight.discard(job.key)
-                    sweep_inflight_started.pop(job.key, None)
-                    sweep_queued.discard(job.key)
-                    sweep_queued_jobs.pop(job.key, None)
-                    next_job = _take_next_queued_sweep_job(
-                        sweep_inflight=sweep_inflight,
-                        sweep_queued=sweep_queued,
-                        sweep_queued_jobs=sweep_queued_jobs,
-                        max_inflight=sweep_max_inflight,
-                        allow_priority_burst=sweep_priority_burst,
-                        priority_max_inflight=sweep_priority_max_inflight,
-                    )
-                    if next_job is not None:
-                        sweep_inflight_started[next_job.key] = time.monotonic()
+                    if sweep_worker_threads.get(job.key) is owner_thread:
+                        sweep_worker_threads.pop(job.key, None)
+                        sweep_inflight.discard(job.key)
+                        sweep_inflight_started.pop(job.key, None)
+                        sweep_queued.discard(job.key)
+                        sweep_queued_jobs.pop(job.key, None)
+                        next_job = _take_next_queued_sweep_job(
+                            sweep_inflight=sweep_inflight,
+                            sweep_queued=sweep_queued,
+                            sweep_queued_jobs=sweep_queued_jobs,
+                            max_inflight=sweep_max_inflight,
+                            allow_priority_burst=sweep_priority_burst,
+                            priority_max_inflight=sweep_priority_max_inflight,
+                        )
+                        if next_job is not None:
+                            sweep_inflight_started[next_job.key] = time.monotonic()
                 if next_job is not None:
                     start_sweep_worker(next_job)
 
-        threading.Thread(target=worker, daemon=True).start()
+        worker_thread = threading.Thread(target=worker, daemon=True)
+        with sweep_lock:
+            existing_thread = sweep_worker_threads.get(job.key)
+            if existing_thread is not None and existing_thread.is_alive():
+                return
+            sweep_worker_threads[job.key] = worker_thread
+            try:
+                worker_thread.start()
+            except RuntimeError as exc:
+                _requeue_sweep_after_start_failure(
+                    job=job,
+                    failed_owner=worker_thread,
+                    sweep_worker_threads=sweep_worker_threads,
+                    sweep_inflight=sweep_inflight,
+                    sweep_inflight_started=sweep_inflight_started,
+                    sweep_queued=sweep_queued,
+                    sweep_queued_jobs=sweep_queued_jobs,
+                    max_queue=sweep_max_queue,
+                )
+                print(
+                    f"fullraw sweep worker start failed key={job.key}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
     def enqueue_sweep(
         *,
@@ -4005,8 +4331,8 @@ def run_server() -> None:
                 time.sleep(interval)
                 try:
                     with sweep_lock:
-                        stale, next_jobs = sweep_watchdog_tick_locked(time.monotonic())
-                    report_sweep_tick(stale, next_jobs)
+                        stale, next_jobs, expired_workers = sweep_watchdog_tick_locked(time.monotonic())
+                    report_sweep_tick(stale, next_jobs, expired_workers)
                 except Exception as exc:  # pragma: no cover - defensive watchdog guard
                     print(
                         f"fullraw sweep watchdog failed: {type(exc).__name__}: {exc}",
