@@ -1,9 +1,9 @@
 [Unit]
-Description=Maintain the V5 Memo ready buffer hourly
+Description=Maintain the V5 Memo ready buffer every 15 minutes
 
 [Timer]
-OnCalendar=*-*-* *:50:00
-RandomizedDelaySec=5min
+OnCalendar=*-*-* *:00,15,30,45:00
+RandomizedDelaySec=2min
 Persistent=true
 Unit=v5-memo-portfolio-prepare.service
 
