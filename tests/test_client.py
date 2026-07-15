@@ -12,6 +12,7 @@ from pytest import MonkeyPatch
 
 from v5_memo.client import (
     FullRawCorpusSearchClient,
+    FullRawSearchPass,
     HybridCorpusSearchClient,
     OpenAlexFullCorpusSearchClient,
     ResearkaSearchClient,
@@ -766,6 +767,38 @@ def test_full_raw_client_bounds_wait_on_queued_sweep(monkeypatch: MonkeyPatch) -
     assert {payload.get("min_shards_searched") for payload in payloads} == {1}
     assert {payload.get("require_complete_search") for payload in payloads} == {True}
     assert now == pytest.approx(0.15)
+
+
+def test_full_raw_client_does_not_fan_out_incomplete_strict_sweeps(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    queries: list[str] = []
+
+    def fake_search_variant(
+        _self: FullRawCorpusSearchClient,
+        search_pass: FullRawSearchPass,
+        *,
+        limit: int,
+    ) -> list[CorpusHit]:
+        del limit
+        queries.append(search_pass.query)
+        raise SearchBackendError(
+            "Full raw corpus search coverage too narrow: {'shards_searched': 12}"
+        )
+
+    monkeypatch.setattr(FullRawCorpusSearchClient, "_search_variant", fake_search_variant)
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="raw-token",
+        max_variants=4,
+        min_shards_searched=1525,
+        strict=True,
+    )
+
+    with pytest.raises(SearchBackendError, match="coverage too narrow"):
+        client.search("urolithin muscle strength endurance older adults trial", limit=25)
+
+    assert len(queries) == 1
 
 
 def test_full_raw_client_stops_waiting_on_no_hit_sweep_stop(monkeypatch: MonkeyPatch) -> None:
