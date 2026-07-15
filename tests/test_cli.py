@@ -1231,6 +1231,7 @@ def test_cli_publish_waits_for_accept_and_lists_publication(
         poll_seconds: float,
     ) -> dict[str, object]:
         seen["wait"] = (submission_id, api_base, timeout_seconds, poll_seconds)
+        seen["pre_wait_receipt"] = json.loads(receipt_path.read_text())
         return {
             "status": "complete",
             "decision": "accept",
@@ -1288,6 +1289,7 @@ def test_cli_publish_waits_for_accept_and_lists_publication(
             "https://api.researka.org",
         ),
         "wait": ("sub-1", "https://api.researka.org", 20.0, 2.0),
+        "pre_wait_receipt": {"submission": {"id": "sub-1"}},
         "list": ("pub-1", "submit-key", "https://api.researka.org", "listed"),
         "require_publish_quality": True,
     }

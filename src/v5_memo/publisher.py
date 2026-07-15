@@ -660,11 +660,19 @@ def wait_researka_decision(
             if exc.code != 404:
                 raise
             last = {"status": "pending", "http_status": 404}
-        if last.get("status") == "complete" or last.get("decision") in {"accept", "reject", "revise"}:
+        decision = str(last.get("decision") or "")
+        if decision in {"reject", "revise"}:
+            return last
+        if decision == "accept" and researka_publication_is_minted(last):
+            return last
+        if last.get("status") == "complete" and not decision:
             return last
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return {**last, "status": "timeout"}
+            timed_out = {**last, "status": "timeout"}
+            if decision == "accept":
+                timed_out["publication_pending"] = True
+            return timed_out
         time.sleep(min(max(0.1, poll_seconds), remaining))
 
 
@@ -781,3 +789,17 @@ def researka_publication_id(decision: Mapping[str, object]) -> str:
         if isinstance(raw_id, str):
             return raw_id
     return ""
+
+
+def researka_publication_is_minted(decision: Mapping[str, object]) -> bool:
+    raw_publication = decision.get("publication")
+    if not isinstance(raw_publication, Mapping):
+        return False
+    doi = raw_publication.get("doi")
+    doi_status = raw_publication.get("doi_status") or raw_publication.get("doiStatus")
+    return bool(
+        researka_publication_id(decision)
+        and isinstance(doi, str)
+        and doi.strip()
+        and str(doi_status or "").casefold() == "minted"
+    )

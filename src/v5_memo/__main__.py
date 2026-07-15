@@ -390,6 +390,10 @@ def main() -> None:
                 print(f"Researka submit failed: HTTP {fail_receipt['status']} {fail_receipt['reason']}", file=sys.stderr)
             raise SystemExit(6)
         receipt: dict[str, object] = dict(response)
+        # Persist the submission identifier before polling. If the process is
+        # interrupted during decision/DOI minting, the durable receipt prevents
+        # an ambiguous retry from silently creating a duplicate submission.
+        _write_json(args.publish_receipt_path, receipt)
         should_wait = args.researka_decision_wait_seconds > 0 or args.researka_list_if_accepted
         submission_id = researka_submission_id(response)
         if should_wait and submission_id:

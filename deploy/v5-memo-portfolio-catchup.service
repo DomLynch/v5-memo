@@ -4,7 +4,7 @@ Wants=network-online.target v5-memo-isolated-fullraw-search.service
 After=network-online.target v5-memo-isolated-fullraw-search.service
 
 [Service]
-TimeoutStartSec=30min
+TimeoutStartSec=45min
 Type=oneshot
 WorkingDirectory=/opt/v5-memo
 EnvironmentFile=/etc/v5-memo/env
@@ -12,4 +12,4 @@ EnvironmentFile=/etc/v5-memo/isolated-fullraw.env
 EnvironmentFile=/etc/v5-memo/researka-submit.env
 Environment=PYTHONPATH=/opt/v5-memo/src
 # Consume one prequalified generic lead; never start cold discovery or coverage work.
-ExecStart=/bin/bash -lc 'set -e; exec 9>/run/v5-memo-portfolio.lock; if ! /usr/bin/flock -n 9; then exit 0; fi; run_dir=/var/lib/v5-memo/portfolio-catchup-runs/$(date -u +%%Y%%m%%dT%%H%%M%%SZ); mkdir -p "$run_dir"; exec /usr/bin/python3 scripts/v5_publish_portfolio.py --submit --ready-only --lead-file /etc/v5-memo/v5-portfolio-leads.txt --output-dir "$run_dir" --state-path /var/lib/v5-memo/portfolio-runs/state.json --max-leads 1 --lead-timeout-seconds 600 --decision-wait-seconds 600 --decision-poll-seconds 5 --submit-wait-seconds 30'
+ExecStart=/bin/bash -lc 'set -e; run_dir=/var/lib/v5-memo/portfolio-catchup-runs/$(date -u +%%Y%%m%%dT%%H%%M%%SZ); mkdir -p "$run_dir"; exec 9>/run/v5-memo-portfolio.lock; if ! /usr/bin/flock -w 900 9; then exec /usr/bin/python3 scripts/v5_publish_portfolio.py --output-dir "$run_dir" --state-path /var/lib/v5-memo/portfolio-runs/state.json --record-noop-status lock_busy; fi; exec /usr/bin/python3 scripts/v5_publish_portfolio.py --submit --ready-only --lead-file /etc/v5-memo/v5-portfolio-leads.txt --output-dir "$run_dir" --state-path /var/lib/v5-memo/portfolio-runs/state.json --max-leads 1 --lead-timeout-seconds 1200 --decision-wait-seconds 600 --decision-poll-seconds 5 --submit-wait-seconds 30'

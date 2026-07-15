@@ -20,6 +20,24 @@ def _load_portfolio() -> ModuleType:
     return module
 
 
+def _ready_receipt() -> dict[str, object]:
+    return {"ready": True, "validation": "publish_quality"}
+
+
+def _accepted_receipt() -> dict[str, object]:
+    return {
+        "decision": {
+            "decision": "accept",
+            "publication": {
+                "publication_id": "pub-1",
+                "doi": "10.17605/OSF.IO/TEST1",
+                "doi_status": "minted",
+            },
+        },
+        "visibility": {"id": "pub-1", "public_visibility": "listed"},
+    }
+
+
 def test_build_command_preserves_strict_submit_gate(tmp_path: Path) -> None:
     portfolio = _load_portfolio()
     config = portfolio.RunConfig(
@@ -98,7 +116,7 @@ def test_build_command_preparation_uses_submit_equivalent_quality_gate(tmp_path:
     assert "--submit-researka" not in command
 
 
-def test_accept_decision_wins_even_when_visibility_update_warns() -> None:
+def test_accept_decision_is_pending_when_visibility_update_warns() -> None:
     portfolio = _load_portfolio()
 
     status = portfolio.classify_run(
@@ -110,7 +128,159 @@ def test_accept_decision_wins_even_when_visibility_update_warns() -> None:
         submit=True,
     )
 
+    assert status == "accepted_pending_publication"
+
+
+def test_accept_decision_requires_minted_listed_publication() -> None:
+    portfolio = _load_portfolio()
+
+    status = portfolio.classify_run(0, _accepted_receipt(), submit=True)
+
     assert status == "accepted"
+
+
+def test_accept_decision_supports_camel_case_public_visibility() -> None:
+    portfolio = _load_portfolio()
+    receipt = _accepted_receipt()
+    receipt["visibility"] = {"id": "pub-1", "publicVisible": True}
+
+    status = portfolio.classify_run(0, receipt, submit=True)
+
+    assert status == "accepted"
+
+
+def test_empty_prepare_receipt_does_not_create_false_ready_supply() -> None:
+    portfolio = _load_portfolio()
+
+    status = portfolio.classify_run(0, {}, submit=False)
+
+    assert status == "blocked:invalid_publish_quality_receipt"
+
+
+def test_durable_submission_receipt_wins_even_if_outer_process_times_out() -> None:
+    portfolio = _load_portfolio()
+
+    status = portfolio.classify_run(
+        124,
+        {"submission": {"id": "sub-durable"}},
+        submit=True,
+    )
+
+    assert status == "submitted"
+
+
+def test_empty_submission_shape_is_not_misclassified_as_submitted() -> None:
+    portfolio = _load_portfolio()
+
+    status = portfolio.classify_run(124, {"submission": None}, submit=True)
+
+    assert status == "failed_no_receipt"
+
+
+def test_retryable_submit_failure_preserves_prequalified_ready_lead(
+    tmp_path: Path,
+) -> None:
+    portfolio = _load_portfolio()
+    state_path = tmp_path / "state.json"
+    ready_receipt = tmp_path / "ready.json"
+    state: dict[str, object] = {
+        "attempted_leads": {
+            "ready lead": {
+                "receipt_path": str(ready_receipt),
+                "status": "ready",
+                "updated_at": portfolio._timestamp(),
+            }
+        }
+    }
+
+    portfolio._save_attempted_lead(
+        state_path,
+        state,
+        {
+            "lead": "ready lead",
+            "receipt_path": str(tmp_path / "deferred.json"),
+            "status": "deferred",
+        },
+        preserve_ready=True,
+    )
+
+    saved = json.loads(state_path.read_text())["attempted_leads"]["ready lead"]
+    assert saved["status"] == "ready"
+    assert saved["last_attempt_status"] == "deferred"
+    assert saved["ready_receipt_path"] == str(ready_receipt)
+
+    portfolio._save_attempted_lead(
+        state_path,
+        state,
+        {
+            "lead": "ready lead",
+            "receipt_path": str(tmp_path / "pending.json"),
+            "status": "accepted_pending_publication",
+        },
+        preserve_ready=True,
+    )
+
+    saved = json.loads(state_path.read_text())["attempted_leads"]["ready lead"]
+    assert saved["status"] == "ready"
+    assert saved["last_attempt_status"] == "accepted_pending_publication"
+
+
+def test_known_submission_remains_ready_for_idempotent_decision_retry(
+    tmp_path: Path,
+) -> None:
+    portfolio = _load_portfolio()
+    state_path = tmp_path / "state.json"
+    state: dict[str, object] = {
+        "attempted_leads": {
+            "ready lead": {
+                "receipt_path": str(tmp_path / "ready.json"),
+                "status": "ready",
+                "updated_at": portfolio._timestamp(),
+            }
+        }
+    }
+
+    portfolio._save_attempted_lead(
+        state_path,
+        state,
+        {
+            "lead": "ready lead",
+            "receipt_path": str(tmp_path / "submitted.json"),
+            "status": "submitted",
+        },
+        preserve_ready=True,
+    )
+
+    saved = json.loads(state_path.read_text())["attempted_leads"]["ready lead"]
+    assert saved["status"] == "ready"
+    assert saved["last_attempt_status"] == "submitted"
+
+
+def test_noop_status_writes_auditable_lock_receipt(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "attempted_leads": {
+            "ready lead": {"status": "ready"},
+            "warming lead": {"status": "warming:search_coverage"},
+        }
+    }))
+
+    code = portfolio.main([
+        "--output-dir",
+        str(tmp_path / "run"),
+        "--state-path",
+        str(state_path),
+        "--record-noop-status",
+        "lock_busy",
+    ])
+
+    receipt = json.loads((tmp_path / "run" / "portfolio.json").read_text())
+    assert code == 0
+    assert receipt["final_status"] == "lock_busy"
+    assert receipt["ready_buffer_count_before"] == 1
+    assert receipt["ready_buffer_count_after"] == 1
+    assert receipt["records"] == []
 
 
 def test_run_portfolio_continues_after_blocker_until_ready(tmp_path: Path) -> None:
@@ -149,7 +319,7 @@ def test_run_portfolio_continues_after_blocker_until_ready(tmp_path: Path) -> No
         if len(calls) == 1:
             receipt.write_text(json.dumps({"error": "candidate_publish_blocker"}))
             return subprocess.CompletedProcess(command, 5, stdout="", stderr="blocked")
-        receipt.write_text(json.dumps({"memo": "ready"}))
+        receipt.write_text(json.dumps(_ready_receipt()))
         return subprocess.CompletedProcess(command, 0, stdout="ready", stderr="")
 
     code = portfolio.run_portfolio(
@@ -204,7 +374,7 @@ def test_run_portfolio_times_out_stuck_lead_and_continues(tmp_path: Path) -> Non
         receipt.parent.mkdir(parents=True, exist_ok=True)
         if len(calls) == 1:
             raise subprocess.TimeoutExpired(command, timeout=3, output="partial", stderr="stuck")
-        receipt.write_text(json.dumps({"decision": {"decision": "accept"}}))
+        receipt.write_text(json.dumps(_accepted_receipt()))
         return subprocess.CompletedProcess(command, 0, stdout="accepted", stderr="")
 
     code = portfolio.run_portfolio(
@@ -267,7 +437,7 @@ def test_recent_lead_timeout_remains_retryable(tmp_path: Path) -> None:
         calls.append(command)
         receipt = Path(command[command.index("--publish-receipt-path") + 1])
         receipt.parent.mkdir(parents=True, exist_ok=True)
-        receipt.write_text(json.dumps({"decision": {"decision": "accept"}}))
+        receipt.write_text(json.dumps(_accepted_receipt()))
         return subprocess.CompletedProcess(command, 0, stdout="accepted", stderr="")
 
     code = portfolio.run_portfolio(
@@ -377,7 +547,7 @@ def test_ready_only_submit_consumes_ready_supply_without_cold_fallback(tmp_path:
         calls.append(command)
         receipt = Path(command[command.index("--publish-receipt-path") + 1])
         receipt.parent.mkdir(parents=True, exist_ok=True)
-        receipt.write_text(json.dumps({"decision": {"decision": "accept"}}))
+        receipt.write_text(json.dumps(_accepted_receipt()))
         return subprocess.CompletedProcess(command, 0, stdout="accepted", stderr="")
 
     code = portfolio.run_portfolio(
@@ -481,7 +651,7 @@ def test_prepare_run_fills_only_missing_ready_capacity(tmp_path: Path) -> None:
         calls.append(command)
         receipt = Path(command[command.index("--publish-receipt-path") + 1])
         receipt.parent.mkdir(parents=True, exist_ok=True)
-        receipt.write_text(json.dumps({"memo": "ready"}))
+        receipt.write_text(json.dumps(_ready_receipt()))
         return subprocess.CompletedProcess(command, 0, stdout="ready", stderr="")
 
     code = portfolio.run_portfolio(
@@ -590,7 +760,7 @@ def test_run_portfolio_skips_completed_leads_and_saves_success(tmp_path: Path) -
         calls.append(command)
         receipt = Path(command[command.index("--publish-receipt-path") + 1])
         receipt.parent.mkdir(parents=True, exist_ok=True)
-        receipt.write_text(json.dumps({"decision": {"decision": "accept"}}))
+        receipt.write_text(json.dumps(_accepted_receipt()))
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     code = portfolio.run_portfolio(
@@ -696,7 +866,7 @@ def test_auto_discovery_appends_unique_leads_when_open_queue_is_low(tmp_path: Pa
     ) -> subprocess.CompletedProcess[str]:
         receipt = Path(command[command.index("--publish-receipt-path") + 1])
         receipt.parent.mkdir(parents=True, exist_ok=True)
-        receipt.write_text(json.dumps({"memo": "ready"}))
+        receipt.write_text(json.dumps(_ready_receipt()))
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     code = portfolio.run_portfolio(
@@ -757,7 +927,7 @@ def test_recent_blocked_leads_cool_down_so_later_leads_can_run(tmp_path: Path) -
         calls.append(command)
         receipt = Path(command[command.index("--publish-receipt-path") + 1])
         receipt.parent.mkdir(parents=True, exist_ok=True)
-        receipt.write_text(json.dumps({"memo": "ready"}))
+        receipt.write_text(json.dumps(_ready_receipt()))
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     code = portfolio.run_portfolio(
@@ -816,7 +986,7 @@ def test_recent_submitted_leads_cool_down_so_later_leads_can_run(tmp_path: Path)
         calls.append(command)
         receipt = Path(command[command.index("--publish-receipt-path") + 1])
         receipt.parent.mkdir(parents=True, exist_ok=True)
-        receipt.write_text(json.dumps({"memo": "ready"}))
+        receipt.write_text(json.dumps(_ready_receipt()))
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     code = portfolio.run_portfolio(
@@ -875,7 +1045,7 @@ def test_recent_revise_decision_remains_retryable(tmp_path: Path) -> None:
         calls.append(command)
         receipt = Path(command[command.index("--publish-receipt-path") + 1])
         receipt.parent.mkdir(parents=True, exist_ok=True)
-        receipt.write_text(json.dumps({"memo": "ready"}))
+        receipt.write_text(json.dumps(_ready_receipt()))
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     code = portfolio.run_portfolio(
