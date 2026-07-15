@@ -285,6 +285,9 @@ def test_v5_isolated_fullraw_mount_uses_separate_vfs_cache() -> None:
     assert "--vfs-cache-mode=minimal" in config
     assert "--vfs-cache-max-size=2G" in config
     assert "--vfs-cache-max-age=30m" in config
+    assert "--vfs-read-chunk-streams=4" in config
+    assert "--vfs-read-chunk-size=16Mi" in config
+    assert "--vfs-read-chunk-size-limit=off" in config
     assert "/var/lib/v5-memo/fullraw-fts-remote" not in config
 
 
