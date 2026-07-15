@@ -111,6 +111,7 @@ class RunConfig:
     blocked_retry_hours: float
     lead_timeout_seconds: float = 0.0
     ready_buffer_size: int = 0
+    ready_only: bool = False
 
 
 def _repo_root() -> Path:
@@ -545,8 +546,18 @@ def run_portfolio(
         now=now,
         prefer_ready=config.submit,
     )
+    eligible_keys = {_lead_key(lead) for lead in expanded_leads}
+    ready_keys = _ready_lead_keys(state) & eligible_keys
+    if config.ready_only:
+        available_leads = [
+            lead for lead in available_leads if _lead_key(lead) in ready_keys
+        ]
     discovered: list[str] = []
-    if config.auto_discover_leads and len(available_leads) < config.min_open_leads:
+    if (
+        config.auto_discover_leads
+        and not config.ready_only
+        and len(available_leads) < config.min_open_leads
+    ):
         needed = max(config.discover_count, config.min_open_leads - len(available_leads))
         discovered = discover_leads(expanded_leads, state, count=needed)
         _append_leads(config.lead_file, discovered)
@@ -558,8 +569,8 @@ def run_portfolio(
             now=now,
             prefer_ready=config.submit,
         )
-    eligible_keys = {_lead_key(lead) for lead in expanded_leads}
-    ready_keys = _ready_lead_keys(state) & eligible_keys
+        eligible_keys = {_lead_key(lead) for lead in expanded_leads}
+        ready_keys = _ready_lead_keys(state) & eligible_keys
     ready_before = len(ready_keys)
     preparing = not config.submit and config.ready_buffer_size > 0
     if preparing:
@@ -629,6 +640,8 @@ def run_portfolio(
     no_attempt_status = (
         "ready_buffer_full"
         if preparing and ready_before >= config.ready_buffer_size
+        else "ready_buffer_empty"
+        if config.ready_only
         else "no_new_leads"
     )
 
@@ -638,6 +651,7 @@ def run_portfolio(
         "available_leads": len(available_leads),
         "discovered_leads": discovered,
         "submit": config.submit,
+        "ready_only": config.ready_only,
         "preparing": preparing,
         "ready_buffer_size": config.ready_buffer_size,
         "ready_buffer_count_before": ready_before,
@@ -656,6 +670,7 @@ def run_portfolio(
         "submitted",
         "ready",
         "ready_buffer_full",
+        "ready_buffer_empty",
         "no_new_leads",
     } or final_status.startswith("warming:"):
         return 0
@@ -690,6 +705,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--blocked-retry-hours", type=float, default=0.0)
     parser.add_argument("--lead-timeout-seconds", type=float, default=0.0)
     parser.add_argument("--ready-buffer-size", type=int, default=0)
+    parser.add_argument("--ready-only", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -710,6 +726,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--lead-timeout-seconds must be >= 0")
     if args.ready_buffer_size < 0:
         raise SystemExit("--ready-buffer-size must be >= 0")
+    if args.ready_only and not args.submit:
+        raise SystemExit("--ready-only requires --submit")
     config = RunConfig(
         output_dir=args.output_dir,
         python=args.python,
@@ -732,6 +750,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         blocked_retry_hours=args.blocked_retry_hours,
         lead_timeout_seconds=args.lead_timeout_seconds,
         ready_buffer_size=args.ready_buffer_size,
+        ready_only=args.ready_only,
     )
     return run_portfolio(leads, config)
 

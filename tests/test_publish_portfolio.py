@@ -297,6 +297,113 @@ def test_available_leads_prioritizes_ready_supply_for_submit() -> None:
     assert available == ["ready lead", "warming lead", "fresh lead"]
 
 
+def test_ready_only_submit_consumes_ready_supply_without_cold_fallback(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "attempted_leads": {
+            "ready lead": {"status": "ready", "updated_at": portfolio._timestamp()},
+            "warming lead": {
+                "status": "warming:search_coverage",
+                "updated_at": portfolio._timestamp(),
+            },
+        }
+    }))
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=True,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=state_path,
+        lead_file=None,
+        auto_discover_leads=True,
+        min_open_leads=40,
+        discover_count=20,
+        blocked_retry_hours=24,
+        ready_only=True,
+    )
+    calls: list[list[str]] = []
+
+    def fake_runner(
+        command: list[str],
+        _env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps({"decision": {"decision": "accept"}}))
+        return subprocess.CompletedProcess(command, 0, stdout="accepted", stderr="")
+
+    code = portfolio.run_portfolio(
+        ["warming lead", "cold lead", "ready lead"],
+        config,
+        runner=fake_runner,
+        env={},
+        cwd=Path.cwd(),
+    )
+
+    summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
+    assert code == 0
+    assert len(calls) == 1
+    assert calls[0][calls[0].index("--topic") + 1] == "ready lead"
+    assert summary["discovered_leads"] == []
+    assert summary["ready_only"] is True
+    assert summary["final_status"] == "accepted"
+
+
+def test_ready_only_submit_is_clean_noop_without_ready_supply(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=True,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=None,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=0,
+        ready_only=True,
+    )
+
+    def fail_runner(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("cold leads must not run in ready-only mode")
+
+    code = portfolio.run_portfolio(
+        ["cold lead"],
+        config,
+        runner=fail_runner,
+        env={},
+        cwd=Path.cwd(),
+    )
+
+    summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
+    assert code == 0
+    assert summary["selected_leads"] == 0
+    assert summary["attempted_leads"] == 0
+    assert summary["final_status"] == "ready_buffer_empty"
+
+
 def test_prepare_run_fills_only_missing_ready_capacity(tmp_path: Path) -> None:
     portfolio = _load_portfolio()
     state_path = tmp_path / "state.json"

@@ -234,6 +234,8 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     timer = (deploy_dir / "v5-memo-portfolio-publish.timer").read_text()
     prepare_config = (deploy_dir / "v5-memo-portfolio-prepare.service").read_text()
     prepare_timer = (deploy_dir / "v5-memo-portfolio-prepare.timer").read_text()
+    catchup_config = (deploy_dir / "v5-memo-portfolio-catchup.service").read_text()
+    catchup_timer = (deploy_dir / "v5-memo-portfolio-catchup.timer").read_text()
 
     assert "TimeoutStartSec=150min" in config
     assert "Ready leads are consumed first" in config
@@ -254,6 +256,12 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "/usr/bin/flock -w 900 9" in config
     assert "OnCalendar=*-*-* *:50:00" in prepare_timer
     assert "Unit=v5-memo-portfolio-prepare.service" in prepare_timer
+    assert "--submit --ready-only" in catchup_config
+    assert "--max-leads 1" in catchup_config
+    assert "--auto-discover-leads" not in catchup_config
+    assert "/usr/bin/flock -n 9" in catchup_config
+    assert "OnCalendar=*-*-* *:10,25,40,55:00" in catchup_timer
+    assert "Unit=v5-memo-portfolio-catchup.service" in catchup_timer
 
 
 def test_v5_isolated_fullraw_mount_uses_separate_vfs_cache() -> None:
