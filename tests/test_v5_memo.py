@@ -1030,12 +1030,17 @@ def test_collect_seed_hits_skips_late_seed_failure_after_hits() -> None:
 
 
 def test_collect_seed_hits_propagates_fullraw_coverage_failure() -> None:
+    searched: list[str] = []
+
     def search(query: str, limit: int) -> Sequence[CorpusHit]:
-        del query, limit
+        del limit
+        searched.append(query)
         raise RuntimeError("Full raw corpus search coverage too narrow: {'shards_searched': 32}")
 
     with pytest.raises(RuntimeError, match="coverage too narrow"):
         collect_seed_hits(_FunctionSearch(search), ["metformin", "metformin blunts"])
+
+    assert searched == ["metformin"]
 
 
 def test_collect_seed_hits_skips_stopped_no_hit_fullraw_shape() -> None:
@@ -1052,18 +1057,29 @@ def test_collect_seed_hits_skips_stopped_no_hit_fullraw_shape() -> None:
 
 
 def test_collect_seed_hits_skips_late_fullraw_coverage_failure_after_hits() -> None:
+    searched: list[str] = []
+
     def search(query: str, limit: int) -> Sequence[CorpusHit]:
         del limit
+        searched.append(query)
         if "augment" in query:
             raise RuntimeError("Full raw corpus search coverage too narrow: {'shards_searched': None}")
         return [_hit(query, f"{query} title", "full receipt evidence")]
 
     hits = collect_seed_hits(
         _FunctionSearch(search),
-        ["metformin exercise training adaptation", "metformin augment exercise training protocol"],
+        [
+            "metformin exercise training adaptation",
+            "metformin augment exercise training protocol",
+            "metformin blunts exercise training",
+        ],
     )
 
     assert [hit.hit_id for hit in hits] == ["metformin exercise training adaptation"]
+    assert searched == [
+        "metformin exercise training adaptation",
+        "metformin augment exercise training protocol",
+    ]
 
 
 def test_pipeline_builds_best_memo() -> None:
