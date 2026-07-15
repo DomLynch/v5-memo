@@ -113,6 +113,66 @@ _TOPIC_CONTEXT_STOP = frozenset({
     "reversal", "senior", "study", "trial", "water",
 })
 _AMBIGUOUS_ENTITY_PREFIXES = frozenset({"alpha", "beta", "delta", "gamma", "omega"})
+_ANIMAL_POPULATION_TERMS = frozenset({"mouse", "mice", "rat", "rats", "animal", "animals", "wistar"})
+_CELL_POPULATION_TERMS = frozenset({"cell", "cells", "cellular"})
+_HUMAN_POPULATION_TERMS = frozenset({
+    "athlete", "athletes", "human", "humans", "participant", "participants",
+    "patient", "patients", "adult", "adults", "men", "women", "player", "players", "student",
+    "students", "subject", "subjects", "volunteer", "volunteered", "volunteers",
+})
+_EXPLICIT_HUMAN_STUDY_RE = re.compile(
+    r"\b(?:randomi[sz]ed|assigned|enrolled|recruited|included|treated)\b[^.;:\n]{0,100}"
+    r"\b(?:human\s+)?(?:participants?|patients?|adults?|men|women|volunteers?|athletes?|players?|students?)\b"
+    r"|\b(?:human\s+)?(?:participants?|patients?|adults?|men|women|volunteers?|athletes?|players?|students?)\b"
+    r"[^.;:\n]{0,100}\b(?:randomi[sz]ed|assigned|enrolled|recruited|received|completed|treated)\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_ANIMAL_STUDY_RE = re.compile(
+    r"\b(?:mice|mouse|rats?|animals?|wistar)\b[^.;:\n]{0,80}"
+    r"\b(?:randomi[sz]ed|assigned|received|treated|administered|underwent|used|studied|included)\b"
+    r"|\b(?:randomi[sz]ed|assigned|used|studied|included|treated|administered)\b[^.;:\n]{0,80}"
+    r"\b(?:\d+\s+)?(?:mice|mouse|rats?|animals?|wistar)\b",
+    re.IGNORECASE,
+)
+_BACKGROUND_STUDY_RE = re.compile(
+    r"\b(?:background|preclinical)\b"
+    r"|\b(?:earlier|previous|prior)\s+"
+    r"(?:animals?|evidence|experiments?|findings|humans?|mice|models?|rats?|research|results?|studies|study|trials?|work)\b"
+    r"|\bpreviously\s+(?:demonstrated|found|observed|reported|shown|studied)\b",
+    re.IGNORECASE,
+)
+_CLAUSE_SPLIT_RE = re.compile(r"[.;!?]+|\b(?:but|however|whereas|while)\b", re.IGNORECASE)
+_DIRECTION_SIGNAL_RE = re.compile(
+    r"\b(?:"
+    + "|".join(sorted((re.escape(term) for term in (_POSITIVE | _NEGATIVE | _NULL)), key=len, reverse=True))
+    + r"|(?:no|without)\s+difference(?:s)?)\b",
+    re.IGNORECASE,
+)
+_ENDPOINT_BOUNDARY_RE = re.compile(
+    r"[,;:]|\b(?:after|among|before|between|by|compared|during|following|for|from|in|over|than|under|versus|with|without)\b",
+    re.IGNORECASE,
+)
+_ENDPOINT_CONTEXT_TERMS = frozenset({
+    "a", "an", "and", "are", "arm", "been", "being", "did", "does", "group", "had", "has", "have",
+    "found", "intervention", "is", "observed", "participant", "participants", "patient", "patients", "remained",
+    "remains", "reported", "showed", "supplement", "that", "the", "there", "these", "this", "those",
+    "treatment", "trial", "was", "were",
+})
+_ENDPOINT_ANCHOR_TERMS = (
+    _OUTCOME | _METRIC | _ADVERSE_ENDPOINT | _HARM_REDUCTION_ENDPOINT | _BOUNDARY
+    | frozenset({
+        "capacity", "composition", "endurance", "fatigue", "fitness", "function", "hypertrophy", "mass",
+        "mobility", "power", "strength", "thickness",
+    })
+)
+_NO_DIFFERENCE_ENDPOINT_RE = re.compile(
+    r"\b(?:no|without)\s+difference(?:s)?\s+(?:in|for)\s+(?P<endpoint>.+)$",
+    re.IGNORECASE,
+)
+_NOMINAL_DIRECTION_ENDPOINT_RE = re.compile(
+    r"\b(?:decreases?|improvements?|increases?|reductions?)\s+(?:in|of)\s+(?P<endpoint>.+)$",
+    re.IGNORECASE,
+)
 
 
 def mine_insights(
@@ -1042,7 +1102,7 @@ def _hit_matches_graph_role(
 def _claim_card(hit: CorpusHit, role: ReceiptRole) -> ClaimCard:
     terms = _raw_terms(hit.text)
     design = _design_type(terms)
-    population = _population_type(terms)
+    population = _population_type(hit, terms)
     safety_feasibility = _is_safety_feasibility_pilot(terms)
     direction = "unclear" if safety_feasibility else "/".join(sorted(_direction_polarity(hit))) or "unclear"
     direct_designs = {"randomized_trial", "cohort", "intervention_study"}
@@ -1061,6 +1121,8 @@ def _claim_card(hit: CorpusHit, role: ReceiptRole) -> ClaimCard:
         direction = "proxy"
         if support_type == "direct":
             confidence = "medium"
+    elif mapping := _endpoint_direction_mapping(hit, direction):
+        outcome = "/".join(f"{endpoint}={mapped_direction}" for endpoint, mapped_direction in mapping)
     return ClaimCard(
         receipt_id=hit.hit_id,
         role=role_name,
@@ -1124,18 +1186,108 @@ def _is_safety_feasibility_pilot(terms: frozenset[str]) -> bool:
     )
 
 
-def _population_type(terms: frozenset[str]) -> str:
-    if terms & {"mouse", "mice", "rat", "rats", "animal", "animals", "wistar"}:
+def _population_type(hit: CorpusHit, terms: frozenset[str]) -> str:
+    title_terms = _raw_terms(hit.title)
+    title_has_animal = bool(title_terms & _ANIMAL_POPULATION_TERMS)
+    title_has_cell = bool(title_terms & _CELL_POPULATION_TERMS)
+    title_has_human = bool(title_terms & _HUMAN_POPULATION_TERMS)
+
+    # The study title is the strongest population declaration. This keeps a
+    # rat/cell experiment indirect even when its abstract mentions clinical
+    # relevance, while a named human trial is not demoted by background animal work.
+    if title_has_animal:
         return "animal"
-    if terms & {
-        "athlete", "athletes", "human", "humans", "participant", "participants",
-        "patient", "patients", "adult", "adults", "men", "women", "player", "players", "student",
-        "students", "subject", "subjects", "volunteer", "volunteered", "volunteers",
-    }:
-        return "human"
-    if terms & {"cell", "cells", "cellular"}:
+    if title_has_cell:
         return "cell_model"
+    if title_has_human:
+        return "human"
+
+    has_animal = bool(terms & _ANIMAL_POPULATION_TERMS)
+    has_cell = bool(terms & _CELL_POPULATION_TERMS)
+    has_human = bool(terms & _HUMAN_POPULATION_TERMS)
+    current_animal = _has_current_study_population(hit.abstract, _EXPLICIT_ANIMAL_STUDY_RE)
+    current_human = _has_current_study_population(hit.abstract, _EXPLICIT_HUMAN_STUDY_RE)
+    if current_animal:
+        return "animal"
+    if current_human:
+        return "human"
+    if has_animal:
+        return "animal"
+    if has_cell:
+        return "cell_model"
+    if has_human:
+        return "human"
     return "unspecified"
+
+
+def _has_current_study_population(text: str, pattern: re.Pattern[str]) -> bool:
+    return any(
+        pattern.search(clause) and not _BACKGROUND_STUDY_RE.search(clause)
+        for clause in _CLAUSE_SPLIT_RE.split(text)
+    )
+
+
+def _endpoint_direction_mapping(hit: CorpusHit, direction: str) -> tuple[tuple[str, str], ...]:
+    recorded = {
+        part.strip().casefold()
+        for part in direction.split("/")
+        if part.strip().casefold() in {"negative", "null", "positive"}
+    }
+    if len(recorded) < 2:
+        return ()
+
+    mapped: dict[str, str] = {}
+    for text in (hit.title, hit.abstract):
+        for raw_clause in _CLAUSE_SPLIT_RE.split(text):
+            clause = raw_clause.strip()
+            if not clause or _BACKGROUND_STUDY_RE.search(clause):
+                continue
+            clause_directions = _polarity(clause) - {"mixed"}
+            signals = tuple(_DIRECTION_SIGNAL_RE.finditer(clause))
+            if len(clause_directions) != 1 or len(signals) != 1:
+                continue
+            endpoint = _endpoint_bound_to_signal(clause, signals[0])
+            if not endpoint:
+                continue
+            clause_direction = next(iter(clause_directions))
+            if existing := mapped.get(endpoint):
+                if existing != clause_direction:
+                    return ()
+                continue
+            mapped[endpoint] = clause_direction
+    if len(mapped) < 2 or set(mapped.values()) != recorded:
+        return ()
+    return tuple(mapped.items())
+
+
+def _endpoint_bound_to_signal(clause: str, signal: re.Match[str]) -> str:
+    if match := _NO_DIFFERENCE_ENDPOINT_RE.search(clause[signal.start():]):
+        explicit = _ENDPOINT_BOUNDARY_RE.split(match.group("endpoint"), maxsplit=1)[0]
+        explicit_words = _endpoint_words(explicit)
+        if explicit_words:
+            return " ".join(explicit_words[:6])
+    if match := _NOMINAL_DIRECTION_ENDPOINT_RE.search(clause[signal.start():]):
+        explicit = _ENDPOINT_BOUNDARY_RE.split(match.group("endpoint"), maxsplit=1)[0]
+        explicit_words = _endpoint_words(explicit)
+        if explicit_words:
+            return " ".join(explicit_words[:6])
+    after = _ENDPOINT_BOUNDARY_RE.split(clause[signal.end():], maxsplit=1)[0]
+    after_words = _endpoint_words(after)
+    if after_words:
+        return " ".join(after_words[:6])
+
+    before = re.split(r"[,;:]", clause[:signal.start()])[-1]
+    before_words = _endpoint_words(before)
+    return " ".join(before_words[-6:]) if before_words else ""
+
+
+def _endpoint_words(text: str) -> list[str]:
+    words = [_norm_token(raw) for raw in _WORD.findall(text.casefold())]
+    while words and words[0] in _ENDPOINT_CONTEXT_TERMS:
+        words.pop(0)
+    while words and words[-1] in _ENDPOINT_CONTEXT_TERMS:
+        words.pop()
+    return words if set(words) & _ENDPOINT_ANCHOR_TERMS else []
 
 
 def _outcome_label(terms: frozenset[str]) -> str:

@@ -458,7 +458,7 @@ def test_recent_lead_timeout_remains_retryable(tmp_path: Path) -> None:
     assert summary["skipped_recent_attempts"] == 0
 
 
-def test_available_leads_prioritizes_warming_retries_before_untried() -> None:
+def test_available_leads_prioritizes_warming_and_parks_terminal_revision() -> None:
     portfolio = _load_portfolio()
     state = {
         "attempted_leads": {
@@ -480,7 +480,7 @@ def test_available_leads_prioritizes_warming_retries_before_untried() -> None:
         now=portfolio.datetime.now(portfolio.UTC),
     )
 
-    assert available == ["warming lead", "fresh lead", "revision lead"]
+    assert available == ["warming lead", "fresh lead"]
 
 
 def test_prepare_prioritizes_closest_warming_lead_with_resource_limit(
@@ -1216,7 +1216,7 @@ def test_recent_submitted_leads_cool_down_so_later_leads_can_run(tmp_path: Path)
     assert summary["skipped_recent_attempts"] == 1
 
 
-def test_recent_revise_decision_remains_retryable(tmp_path: Path) -> None:
+def test_recent_revise_decision_is_parked_while_fresh_lead_runs(tmp_path: Path) -> None:
     portfolio = _load_portfolio()
     state_path = tmp_path / "state.json"
     state_path.write_text(json.dumps({
@@ -1262,7 +1262,7 @@ def test_recent_revise_decision_remains_retryable(tmp_path: Path) -> None:
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     code = portfolio.run_portfolio(
-        ["revision lead"],
+        ["revision lead", "fresh lead"],
         config,
         runner=fake_runner,
         env={},
@@ -1271,8 +1271,104 @@ def test_recent_revise_decision_remains_retryable(tmp_path: Path) -> None:
 
     summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
     assert code == 0
-    assert calls[0][calls[0].index("--topic") + 1] == "revision lead"
-    assert summary["skipped_recent_attempts"] == 0
+    assert calls[0][calls[0].index("--topic") + 1] == "fresh lead"
+    assert summary["selected_leads"] == 1
+
+
+def test_terminal_revision_receipt_is_persisted_without_automatic_resubmit(
+    tmp_path: Path,
+) -> None:
+    portfolio = _load_portfolio()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "attempted_leads": {
+            "revision lead": {
+                "status": "ready",
+                "updated_at": portfolio._timestamp(),
+            },
+        },
+    }))
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "submit",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=True,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=state_path,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=24,
+        ready_only=True,
+    )
+    calls: list[list[str]] = []
+
+    def fake_runner(
+        command: list[str],
+        _env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps({
+            "submission": {"id": "parent-submission"},
+            "decision": {
+                "decision": "revise",
+                "required_revisions": ["Narrow the population.", "Deduplicate sources."],
+                "review_summary": "The synthesis must be rebuilt.",
+                "resubmission": {
+                    "allowed": True,
+                    "parent_submission_id": "parent-submission",
+                },
+            },
+        }))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    assert portfolio.run_portfolio(
+        ["revision lead"],
+        config,
+        runner=fake_runner,
+        env={},
+        cwd=Path.cwd(),
+    ) == 1
+
+    state = json.loads(state_path.read_text())
+    saved = state["attempted_leads"]["revision lead"]
+    assert saved["status"] == "decision:revise"
+    assert saved["revision"] == {
+        "parent_submission_id": "parent-submission",
+        "required_revisions": ["Narrow the population.", "Deduplicate sources."],
+        "resubmission_allowed": True,
+        "review_summary": "The synthesis must be rebuilt.",
+    }
+
+    prepare = replace(
+        config,
+        output_dir=tmp_path / "prepare",
+        submit=False,
+        ready_only=False,
+        ready_buffer_size=1,
+    )
+    assert portfolio.run_portfolio(
+        ["revision lead"],
+        prepare,
+        runner=fake_runner,
+        env={},
+        cwd=Path.cwd(),
+    ) == 0
+    assert len(calls) == 1
+    summary = json.loads((tmp_path / "prepare" / "portfolio.json").read_text())
+    assert summary["selected_leads"] == 0
 
 
 def test_search_coverage_warming_continues_past_generic_zero_wait(tmp_path: Path) -> None:

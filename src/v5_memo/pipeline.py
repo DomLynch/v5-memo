@@ -97,6 +97,12 @@ def build_alpha_memo(
     for candidate in candidates:
         receipts = bind_receipts(candidate, hits)
         if receipts:
+            candidate = _prune_to_bound_receipts(candidate, receipts)
+            if require_publish_quality and (
+                len(candidate.claim_cards) < 2
+                or candidate_publish_blocker(candidate) is not None
+            ):
+                continue
             coverage_failure = memo_coverage_failure(
                 topic=topic,
                 receipts=receipts,
@@ -141,6 +147,11 @@ def _publishable_candidates(
     for candidate in mined_candidates:
         if not meets_publish_bar(candidate, min_alpha_tier):
             continue
+        if all(receipt_id in hits_by_id for receipt_id in candidate.receipt_ids):
+            receipts = bind_receipts(candidate, hits)
+            if not receipts:
+                continue
+            candidate = _prune_to_bound_receipts(candidate, receipts)
         if not _candidate_preserves_primary_anchor(candidate, hits_by_id, primary_anchor_terms):
             continue
         if require_publish_quality:
@@ -223,6 +234,17 @@ def _drop_receipts(candidate: InsightCandidate, receipt_ids: set[str]) -> Insigh
         receipt_roles=tuple(role for role in candidate.receipt_roles if role.receipt_id not in receipt_ids),
         claim_cards=tuple(card for card in candidate.claim_cards if card.receipt_id not in receipt_ids),
         evidence_graph=tuple(node for node in candidate.evidence_graph if node.receipt_id not in receipt_ids),
+    )
+
+
+def _prune_to_bound_receipts(
+    candidate: InsightCandidate,
+    receipts: Sequence[CorpusHit],
+) -> InsightCandidate:
+    bound_receipt_ids = {receipt.hit_id for receipt in receipts}
+    return _drop_receipts(
+        candidate,
+        set(candidate.receipt_ids) - bound_receipt_ids,
     )
 
 

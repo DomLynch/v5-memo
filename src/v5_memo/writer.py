@@ -29,6 +29,29 @@ _DIRECTION_DISPLAY = {
     "reduce": "reduced",
     "worsen": "worsened",
 }
+_DOSE_RE = re.compile(
+    r"\b\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?\s*"
+    r"(?:µg|μg|mcg|mg|g)(?:\s*/\s*(?:kg|day|d))?"
+    r"(?:\s+(?:once|twice)\s+daily|\s+(?:daily|per\s+day))?\b",
+    re.IGNORECASE,
+)
+_DURATION_RE = re.compile(
+    r"\b(?:for|over|during)\s+"
+    r"\d+(?:\.\d+)?(?:\s*(?:-|to)\s*\d+(?:\.\d+)?)?\s*"
+    r"(?:days?|weeks?|months?|years?)\b"
+    r"|\b\d+(?:\.\d+)?(?:\s*(?:-|to)\s*\d+(?:\.\d+)?)?[- ]"
+    r"(?:day|week|month|year)s?[- ](?:trial|intervention|treatment|supplementation|training|follow-up)\b",
+    re.IGNORECASE,
+)
+_REGIMEN_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+")
+_BACKGROUND_REGIMEN_RE = re.compile(
+    r"\b(?:background|earlier|previous|previously|prior|preclinical)\b",
+    re.IGNORECASE,
+)
+_REGIMEN_CONTEXT_RE = re.compile(
+    r"\b(?:administered|assigned|dose|dosed|intervention|participants?|patients?|received|regimen|supplemented|took|treated|treatment|trial)\b",
+    re.IGNORECASE,
+)
 
 
 def render_memo(candidate: InsightCandidate, receipts: Sequence[CorpusHit]) -> str:
@@ -252,14 +275,41 @@ def _synthesis_lines(
 
 def _claim_summary_line(card: ClaimCard, *, hit: CorpusHit | None = None, study_family: str = "") -> str:
     outcome, direction = _endpoint_finding(card, hit)
+    dose, duration = _intervention_context(hit)
     design = _display_label(card.design, fallback=card.design.replace("_", " "))
     receipt_id = hit.receipt_id if hit else card.receipt_id
     family = f"{study_family} companion analysis; " if study_family else ""
     source_title = f" Source title: {hit.title.strip()}" if hit and hit.title.strip() else ""
     return (
         f"- `{receipt_id}`: {family}{design} in {card.population}; endpoint: {outcome}; "
-        f"direction: {direction}.{source_title}"
+        f"direction: {direction}; dose: {dose}; duration: {duration}.{source_title}"
     )
+
+
+def _intervention_context(hit: CorpusHit | None) -> tuple[str, str]:
+    if hit is None:
+        return "not stated", "not stated"
+    segments = [hit.title, *_REGIMEN_SPLIT_RE.split(hit.abstract)]
+    regimens: set[tuple[str, str]] = set()
+    for raw_segment in segments:
+        segment = " ".join(raw_segment.split())
+        if not segment or _BACKGROUND_REGIMEN_RE.search(segment):
+            continue
+        doses = {match.group(0) for match in _DOSE_RE.finditer(segment)}
+        durations = {match.group(0) for match in _DURATION_RE.finditer(segment)}
+        if not doses and not durations:
+            continue
+        if len(doses) > 1 or len(durations) > 1:
+            return "not stated", "not stated"
+        if not _REGIMEN_CONTEXT_RE.search(segment) and not (doses and durations):
+            continue
+        regimens.add((
+            next(iter(doses)) if doses else "not stated",
+            next(iter(durations)) if durations else "not stated",
+        ))
+    if len(regimens) != 1:
+        return "not stated", "not stated"
+    return next(iter(regimens))
 
 
 def _endpoint_finding(card: ClaimCard, hit: CorpusHit | None) -> tuple[str, str]:

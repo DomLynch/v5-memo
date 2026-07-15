@@ -239,6 +239,15 @@ def _state_keys(values: Mapping[str, object]) -> set[str]:
     return {_lead_key(str(value)) for value in values}
 
 
+def _terminal_decision_lead_keys(state: Mapping[str, object]) -> set[str]:
+    return {
+        _lead_key(str(lead))
+        for lead, meta in _attempted_leads(state).items()
+        if isinstance(meta, Mapping)
+        and str(meta.get("status") or "") in {"decision:reject", "decision:revise"}
+    }
+
+
 def _parse_state_time(value: object) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -391,7 +400,6 @@ def _attempt_on_cooldown(
             "ready",
             "blocked:search_backend_error",
             "blocked:lead_timeout",
-            "decision:revise",
         }:
             return False
         updated_at = _parse_state_time(raw_meta.get("updated_at"))
@@ -411,10 +419,12 @@ def _available_leads(
     retry_post_quality: bool = False,
 ) -> list[str]:
     completed_keys = _state_keys(_completed_leads(state))
+    terminal_decision_keys = _terminal_decision_lead_keys(state)
     available = [
         lead
         for lead in leads
         if _lead_key(lead) not in completed_keys
+        and _lead_key(lead) not in terminal_decision_keys
         and not _attempt_on_cooldown(
             lead,
             state,
@@ -560,6 +570,9 @@ def _save_attempted_lead(
             "ready_receipt_path",
             previous_meta.get("receipt_path"),
         )
+    revision = record.get("revision")
+    if isinstance(revision, Mapping):
+        entry["revision"] = dict(revision)
     raw[lead] = entry
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2, sort_keys=True))
@@ -647,6 +660,43 @@ def _submission_id(receipt: Mapping[str, object]) -> str:
             if isinstance(raw_id, str) and raw_id.strip():
                 return raw_id.strip()
     return ""
+
+
+def _revision_context(receipt: Mapping[str, object]) -> dict[str, object]:
+    raw_decision = receipt.get("decision")
+    if not isinstance(raw_decision, Mapping):
+        return {}
+    if str(raw_decision.get("decision") or "") != "revise":
+        return {}
+
+    raw_resubmission = raw_decision.get("resubmission")
+    resubmission = raw_resubmission if isinstance(raw_resubmission, Mapping) else {}
+    raw_parent_id = resubmission.get("parent_submission_id")
+    parent_id = (
+        raw_parent_id.strip()
+        if isinstance(raw_parent_id, str) and raw_parent_id.strip()
+        else _submission_id(receipt)
+    )
+    raw_required = raw_decision.get("required_revisions")
+    required_revisions = (
+        [
+            revision.strip()
+            for revision in raw_required
+            if isinstance(revision, str) and revision.strip()
+        ]
+        if isinstance(raw_required, list)
+        else []
+    )
+    context: dict[str, object] = {
+        "required_revisions": required_revisions,
+        "resubmission_allowed": resubmission.get("allowed") is True,
+    }
+    if parent_id:
+        context["parent_submission_id"] = parent_id
+    review_summary = raw_decision.get("review_summary")
+    if isinstance(review_summary, str) and review_summary.strip():
+        context["review_summary"] = review_summary.strip()
+    return context
 
 
 def write_noop_portfolio(
@@ -891,6 +941,9 @@ def run_portfolio(
         visibility_error = receipt.get("visibility_error")
         if visibility_error:
             record["visibility_error"] = visibility_error
+        revision = _revision_context(receipt)
+        if revision:
+            record["revision"] = revision
         records.append(record)
         _save_attempted_lead(
             config.state_path,
