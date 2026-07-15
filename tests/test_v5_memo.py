@@ -961,6 +961,141 @@ def test_binder_rejects_duplicate_titles_with_different_ids() -> None:
     assert bind_receipts(candidate, hits) == ()
 
 
+def test_binder_dedupes_duplicate_titles_and_preserves_distinct_sources() -> None:
+    hits = [
+        CorpusHit(
+            hit_id="a",
+            title="Review Bot: Automatic Code Review Tool",
+            abstract="Developers accepted automated review comments.",
+            source="openalex",
+            doi="10.1109/icse.2013.6606642",
+        ),
+        CorpusHit(
+            hit_id="b",
+            title="Review Bot Automatic Code Review Tool",
+            abstract="ACM index for the same automatic review comments paper.",
+            source="acm",
+            doi="10.5555/2486788.2486915",
+        ),
+        CorpusHit(
+            hit_id="c",
+            title="Human Oversight of Automated Review Comments",
+            abstract="A distinct study measured human oversight of automated comments.",
+            source="pubmed",
+            doi="10.1000/distinct",
+        ),
+    ]
+    candidate = InsightCandidate(
+        topic="AI review",
+        thesis="AI review may have a trust bridge.",
+        bridge_terms=("review", "comments"),
+        tension_terms=("positive", "negative"),
+        receipt_ids=("a", "b", "c"),
+        score=80,
+        novelty_score=80,
+        evidence_score=80,
+        reasons=("source_diverse",),
+    )
+
+    assert [hit.hit_id for hit in bind_receipts(candidate, hits)] == ["a", "c"]
+
+
+def test_pipeline_prunes_title_duplicates_from_candidate_and_public_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hits = [
+        CorpusHit(
+            hit_id="a",
+            title="Review Bot: Automatic Code Review Tool",
+            abstract="Developers accepted automated review comments.",
+            source="openalex",
+            doi="10.1109/icse.2013.6606642",
+        ),
+        CorpusHit(
+            hit_id="b",
+            title="Review Bot Automatic Code Review Tool",
+            abstract="A second index entry for the same review-comments paper.",
+            source="acm",
+            doi="10.5555/2486788.2486915",
+        ),
+        CorpusHit(
+            hit_id="c",
+            title="Human Oversight of Automated Review Comments",
+            abstract="Human oversight reduced incorrect automated review comments.",
+            source="pubmed",
+            doi="10.1000/distinct",
+        ),
+    ]
+    candidate = InsightCandidate(
+        topic="AI review",
+        thesis="Automated review may benefit from human oversight.",
+        bridge_terms=("review", "comments"),
+        tension_terms=("accepted", "incorrect"),
+        receipt_ids=("a", "b", "c"),
+        score=90,
+        novelty_score=90,
+        evidence_score=90,
+        reasons=("tier:publishable_alpha",),
+        receipt_roles=(
+            ReceiptRole("a", "primary", "direct evidence"),
+            ReceiptRole("b", "context", "duplicate index entry"),
+            ReceiptRole("c", "counter", "distinct boundary evidence"),
+        ),
+        claim_cards=(
+            ClaimCard("a", "positive_signal", "intervention_study", "human", "review", "positive", "direct", "high", "Accepted comments."),
+            ClaimCard("b", "positive_signal", "intervention_study", "human", "review", "positive", "direct", "high", "Duplicate entry."),
+            ClaimCard("c", "negative_signal", "intervention_study", "human", "review", "negative", "direct", "high", "Incorrect comments."),
+        ),
+        evidence_graph=(
+            EvidenceNode("a", "primary", "direct evidence"),
+            EvidenceNode("b", "context", "duplicate index entry"),
+            EvidenceNode("c", "counter", "distinct boundary evidence"),
+        ),
+    )
+    gated_candidates: list[InsightCandidate] = []
+
+    def allow_publish_quality(candidate: InsightCandidate) -> None:
+        gated_candidates.append(candidate)
+        return None
+
+    monkeypatch.setattr(
+        "v5_memo.pipeline.candidate_publish_blocker",
+        allow_publish_quality,
+    )
+    monkeypatch.setattr(
+        "v5_memo.pipeline.mine_insights",
+        lambda *_args, **_kwargs: [candidate],
+    )
+
+    result = build_alpha_memo(
+        topic=candidate.topic,
+        seed_queries=["AI review"],
+        anchor_queries=(),
+        searcher=_StaticSearch(hits),
+        require_publish_quality=True,
+    )
+    payload = build_researka_payload(
+        result,
+        author_agent_id="v5-memo-agent",
+        domain_slug="technology",
+    )
+
+    assert result.candidate.receipt_ids == ("a", "c")
+    assert [card.receipt_id for card in result.candidate.claim_cards] == ["a", "c"]
+    assert [role.receipt_id for role in result.candidate.receipt_roles] == ["a", "c"]
+    assert [node.receipt_id for node in result.candidate.evidence_graph] == ["a", "c"]
+    assert gated_candidates
+    assert all(gated.receipt_ids == ("a", "c") for gated in gated_candidates)
+    assert all(
+        [card.receipt_id for card in gated.claim_cards] == ["a", "c"]
+        for gated in gated_candidates
+    )
+    assert "`b`:" not in result.markdown
+    assert "10.5555/2486788.2486915" not in result.markdown
+    assert cast(dict[str, object], payload["metadata"])["receipt_ids"] == ["a", "c"]
+    assert "10.5555/2486788.2486915" not in json.dumps(payload, sort_keys=True)
+
+
 def test_collect_seed_hits_dedupes_across_seed_queries() -> None:
     def search(query: str, limit: int) -> Sequence[CorpusHit]:
         del limit
@@ -2790,7 +2925,7 @@ def test_publish_blocker_rejects_positive_role_with_null_direction() -> None:
     }
 
 
-def test_publish_blocker_allows_noisy_positive_signal_direction_when_positive_present() -> None:
+def test_publish_blocker_rejects_unmapped_noisy_positive_signal_direction() -> None:
     candidate = InsightCandidate(
         topic="urolithin muscle strength endurance older adults trial",
         thesis="Direct positive human signals should survive incidental reduction wording.",
@@ -2827,7 +2962,10 @@ def test_publish_blocker_allows_noisy_positive_signal_direction_when_positive_pr
         ),
     )
 
-    assert candidate_publish_blocker(candidate) is None
+    assert candidate_publish_blocker(candidate) == {
+        "error": "ambiguous_direction_without_endpoint_mapping",
+        "receipt_ids": ("strength", "endurance"),
+    }
 
 
 def test_publish_blocker_rejects_mixed_metabolic_muscle_axis_bundle() -> None:

@@ -22,9 +22,13 @@ def bind_receipts(
     )
     if len(receipts) != len(candidate.receipt_ids):
         return ()
+    deduped_by_evidence_unit: dict[str, CorpusHit] = {}
+    for hit in receipts:
+        deduped_by_evidence_unit.setdefault(_evidence_unit_key(hit), hit)
+    receipts = tuple(deduped_by_evidence_unit.values())
     if len({hit.source_key for hit in receipts}) < min_unique_sources:
         return ()
-    if len({_evidence_unit_key(hit) for hit in receipts}) < min_unique_sources:
+    if len(receipts) < min_unique_sources:
         return ()
     return receipts
 

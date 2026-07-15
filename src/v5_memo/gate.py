@@ -175,6 +175,18 @@ def candidate_publish_blocker(candidate: InsightCandidate) -> dict[str, object] 
             "error": "positive_role_direction_mismatch",
             "receipt_ids": direction_mismatch,
         }
+    ambiguous_direction = tuple(
+        card.receipt_id
+        for card in claim_cards
+        if card.role in _PRIMARY_SIGNAL_ROLES
+        and _has_ambiguous_direction(card)
+        and not _has_endpoint_direction_mapping(card)
+    )
+    if ambiguous_direction:
+        return {
+            "error": "ambiguous_direction_without_endpoint_mapping",
+            "receipt_ids": ambiguous_direction,
+        }
     mixed_axis = _mixed_metabolic_muscle_axis_receipts(claim_cards)
     if mixed_axis:
         return {
@@ -213,6 +225,29 @@ def _positive_role_direction_mismatch(card: ClaimCard) -> bool:
     if not directions & {"negative", "null"}:
         return False
     return card.role == "promise" or "positive" not in directions
+
+
+def _has_ambiguous_direction(card: ClaimCard) -> bool:
+    directions = {part.strip().casefold() for part in card.direction.split("/") if part.strip()}
+    return "mixed" in directions or len(directions & {"negative", "null", "positive"}) > 1
+
+
+def _has_endpoint_direction_mapping(card: ClaimCard) -> bool:
+    """Accept an explicit ``endpoint=direction`` mapping without changing the card schema."""
+    mapped: dict[str, str] = {}
+    for raw_mapping in card.outcome.split("/"):
+        if "=" not in raw_mapping:
+            return False
+        endpoint, direction = (part.strip().casefold() for part in raw_mapping.rsplit("=", 1))
+        if not endpoint or direction not in {"negative", "null", "positive"}:
+            return False
+        mapped[endpoint] = direction
+    recorded = {
+        part.strip().casefold()
+        for part in card.direction.split("/")
+        if part.strip().casefold() in {"negative", "null", "positive"}
+    }
+    return len(mapped) > 1 and set(mapped.values()) == recorded
 
 
 def _proxy_boundary_receipts(claim_cards: Sequence[ClaimCard]) -> tuple[str, ...]:
