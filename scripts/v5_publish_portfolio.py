@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib import parse, request
 
 DEFAULT_LEADS = (
     "urolithin muscle strength endurance older adults trial",
@@ -112,6 +113,7 @@ class RunConfig:
     lead_timeout_seconds: float = 0.0
     ready_buffer_size: int = 0
     ready_only: bool = False
+    resource_aware_max_leads: bool = False
 
 
 def _repo_root() -> Path:
@@ -288,6 +290,84 @@ def _portfolio_run_env(config: RunConfig, base_env: Mapping[str, str]) -> dict[s
     return run_env
 
 
+def _fullraw_health_url(env: Mapping[str, str]) -> str:
+    search_url = next(
+        (
+            str(env.get(name, "")).strip()
+            for name in (
+                "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL",
+                "RESEARKA_FULLRAW_SEARCH_URL",
+            )
+            if str(env.get(name, "")).strip()
+        ),
+        "",
+    )
+    if not search_url:
+        return ""
+    parsed = parse.urlsplit(search_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return parse.urlunsplit((parsed.scheme, parsed.netloc, "/health", "", ""))
+
+
+def _fullraw_health_headers(env: Mapping[str, str]) -> dict[str, str]:
+    headers = {"User-Agent": "v5-memo/0.1"}
+    token = next(
+        (
+            str(env.get(name, "")).strip()
+            for name in (
+                "RESEARKA_FULLRAW_INDEX_TOKEN",
+                "RESEARKA_FULLRAW_TOKEN",
+                "V5_MEMO_FULL_RAW_INDEX_TOKEN",
+                "V5_MEMO_FULL_RAW_CORPUS_TOKEN",
+            )
+            if str(env.get(name, "")).strip()
+        ),
+        "",
+    )
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _fullraw_max_inflight(env: Mapping[str, str]) -> int | None:
+    health_url = _fullraw_health_url(env)
+    if not health_url:
+        return None
+    try:
+        health_request = request.Request(
+            health_url,
+            headers=_fullraw_health_headers(env),
+            method="GET",
+        )
+        with request.urlopen(health_request, timeout=2.0) as response:
+            payload = json.loads(response.read())
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    if payload.get("ok") is not True:
+        return None
+    sweep = payload.get("async_sweep")
+    if not isinstance(sweep, Mapping):
+        return None
+    raw_limit = sweep.get("max_inflight")
+    return raw_limit if type(raw_limit) is int and raw_limit > 0 else None
+
+
+def _preparation_lead_limit(
+    config: RunConfig,
+    env: Mapping[str, str],
+) -> tuple[int, int | None]:
+    if not config.resource_aware_max_leads or config.searcher != "fullraw":
+        return config.max_leads, None
+    probed_limit = _fullraw_max_inflight(env)
+    resource_limit = probed_limit or 1
+    if config.max_leads <= 0:
+        return resource_limit, probed_limit
+    return min(config.max_leads, resource_limit), probed_limit
+
+
 def _attempt_on_cooldown(
     lead: str,
     state: Mapping[str, object],
@@ -339,27 +419,54 @@ def _available_leads(
     )
 
 
+def _receipt_remaining_shards(meta: Mapping[str, object]) -> int | None:
+    raw_remaining = meta.get("sweep_remaining_shards")
+    if isinstance(raw_remaining, int) and raw_remaining >= 0:
+        return raw_remaining
+    raw_path = meta.get("receipt_path")
+    if not isinstance(raw_path, str) or not raw_path:
+        return None
+    receipt = _read_json(Path(raw_path))
+    details = receipt.get("details")
+    detail_coverage = details.get("coverage") if isinstance(details, Mapping) else None
+    for container in (
+        receipt,
+        details,
+        detail_coverage,
+        receipt.get("coverage"),
+    ):
+        if not isinstance(container, Mapping):
+            continue
+        raw_remaining = container.get("sweep_remaining_shards")
+        if isinstance(raw_remaining, int) and raw_remaining >= 0:
+            return raw_remaining
+    message = str(receipt.get("message") or "")
+    match = re.search(r"['\"]sweep_remaining_shards['\"]\s*:\s*(\d+)", message)
+    return int(match.group(1)) if match else None
+
+
 def _attempt_priority(
     lead: str,
     state: Mapping[str, object],
     *,
     prefer_ready: bool = False,
-) -> int:
+) -> tuple[int, int]:
     lead_key = _lead_key(lead)
     for raw_lead, raw_meta in _attempted_leads(state).items():
         if _lead_key(str(raw_lead)) != lead_key or not isinstance(raw_meta, Mapping):
             continue
         status = str(raw_meta.get("status") or "")
         if status == "ready":
-            return -1 if prefer_ready else 4
+            return (-1 if prefer_ready else 4, 0)
         if status.startswith("warming:") or status == "blocked:search_backend_error":
-            return 0
+            remaining = _receipt_remaining_shards(raw_meta)
+            return (0, remaining if remaining is not None else sys.maxsize)
         if status in {"blocked:lead_timeout", "blocked:researka_submit_failed"}:
-            return 1
+            return (1, 0)
         if status.startswith("decision:"):
-            return 3
-        return 4
-    return 2
+            return (3, 0)
+        return (4, 0)
+    return (2, 0)
 
 
 def discover_leads(
@@ -424,6 +531,9 @@ def _save_attempted_lead(
         "status": "ready" if keep_ready else record_status,
         "updated_at": _timestamp(),
     }
+    remaining = record.get("sweep_remaining_shards")
+    if isinstance(remaining, int) and remaining >= 0:
+        entry["sweep_remaining_shards"] = remaining
     if keep_ready:
         entry["last_attempt_status"] = record_status
         entry["ready_receipt_path"] = previous_meta.get(
@@ -695,7 +805,14 @@ def run_portfolio(
         available_leads = [
             lead for lead in available_leads if _lead_key(lead) not in ready_keys
         ]
-    lead_limit = config.max_leads if config.max_leads > 0 else len(available_leads)
+    if preparing:
+        configured_lead_limit, resource_max_inflight = _preparation_lead_limit(
+            config,
+            run_env,
+        )
+    else:
+        configured_lead_limit, resource_max_inflight = config.max_leads, None
+    lead_limit = configured_lead_limit if configured_lead_limit > 0 else len(available_leads)
     if preparing:
         lead_limit = min(lead_limit, max(0, config.ready_buffer_size - ready_before))
     selected = list(available_leads[:lead_limit])
@@ -745,6 +862,9 @@ def run_portfolio(
         error = receipt.get("error")
         if error:
             record["error"] = error
+        remaining = _receipt_remaining_shards({"receipt_path": str(receipt_path)})
+        if remaining is not None:
+            record["sweep_remaining_shards"] = remaining
         visibility_error = receipt.get("visibility_error")
         if visibility_error:
             record["visibility_error"] = visibility_error
@@ -778,6 +898,15 @@ def run_portfolio(
         "ready_only": config.ready_only,
         "preparing": preparing,
         "publish_quality_validation": preparing,
+        "resource_aware_max_leads": config.resource_aware_max_leads,
+        "resource_max_inflight": resource_max_inflight,
+        "resource_limit_fallback": bool(
+            preparing
+            and config.resource_aware_max_leads
+            and config.searcher == "fullraw"
+            and resource_max_inflight is None
+        ),
+        "effective_max_leads": lead_limit,
         "ready_buffer_size": config.ready_buffer_size,
         "ready_buffer_count_before": ready_before,
         "ready_buffer_count_after": ready_after,
@@ -832,6 +961,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--lead-timeout-seconds", type=float, default=0.0)
     parser.add_argument("--ready-buffer-size", type=int, default=0)
     parser.add_argument("--ready-only", action="store_true")
+    parser.add_argument("--resource-aware-max-leads", action="store_true")
     parser.add_argument("--record-noop-status", choices=["lock_busy"])
     return parser.parse_args(argv)
 
@@ -884,6 +1014,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         lead_timeout_seconds=args.lead_timeout_seconds,
         ready_buffer_size=args.ready_buffer_size,
         ready_only=args.ready_only,
+        resource_aware_max_leads=args.resource_aware_max_leads,
     )
     return run_portfolio(leads, config)
 

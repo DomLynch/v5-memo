@@ -252,6 +252,7 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "Environment=V5_MEMO_READY_BUFFER_SIZE=3" in prepare_config
     assert "Environment=V5_MEMO_PREPARE_MAX_LEADS=3" in prepare_config
     assert '--ready-buffer-size "${V5_MEMO_READY_BUFFER_SIZE:-3}"' in prepare_config
+    assert "--resource-aware-max-leads" in prepare_config
     assert "--validate-publish-quality" not in prepare_config
     assert "--submit" not in prepare_config
     assert "--state-path /var/lib/v5-memo/portfolio-runs/state.json" in prepare_config
