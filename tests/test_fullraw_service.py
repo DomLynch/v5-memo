@@ -194,7 +194,7 @@ def test_v5_isolated_fullraw_service_uses_v5_lane() -> None:
     assert "Environment=RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=64" in config
     assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto" in config
-    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_GB" not in config
+    assert "Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_GB=20" in config
     assert "Auto workers = dynamic local cache budget / per-worker cache budget" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES=8589934592" in config
     assert "Environment=RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB" not in config
