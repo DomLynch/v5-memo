@@ -33,6 +33,8 @@ Environment=RESEARKA_FULLRAW_SWEEP_TIMEOUT_SECONDS=900
 Environment=RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=180
 Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_DIR=/var/lib/v5-memo/v5-shard-cache-5tb
 Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto
+# Preserve enough physical headroom for three 8 GiB cache lanes.
+Environment=RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_GB=20
 # Auto workers = dynamic local cache budget / per-worker cache budget.
 Environment=RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES=8589934592
 Environment=RESEARKA_FULLRAW_MAX_VARIANTS=1
