@@ -387,6 +387,42 @@ def test_fullraw_cli_allows_recall_depth_env_override(
     assert (seen["per_query_limit"], seen["max_hits"]) == (40, 80)
 
 
+def test_cli_publish_validation_uses_submit_quality_without_submitting(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    seen: dict[str, object] = {}
+    receipt_path = tmp_path / "validation.json"
+
+    def fake_build_alpha_memo(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(markdown="# Alpha memo: ready\n")
+
+    monkeypatch.setattr("v5_memo.__main__.build_alpha_memo", fake_build_alpha_memo)
+    monkeypatch.setattr("v5_memo.__main__._publish_blocker", lambda _result: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--validate-publish-quality",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    main()
+
+    assert seen["require_publish_quality"] is True
+    assert json.loads(receipt_path.read_text()) == {
+        "ready": True,
+        "validation": "publish_quality",
+    }
+    assert "Alpha memo: ready" in capsys.readouterr().out
+
+
 def test_fullraw_cli_allows_single_recall_limit_env_override(
     monkeypatch: MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

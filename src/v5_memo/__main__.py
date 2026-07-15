@@ -127,6 +127,7 @@ def main() -> None:
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--emit-discovery-on-fail", action="store_true")
     parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--validate-publish-quality", action="store_true")
     parser.add_argument("--submit-researka", action="store_true")
     parser.add_argument("--publish-receipt-path", default="")
     parser.add_argument(
@@ -260,9 +261,10 @@ def main() -> None:
     anchor_queries = base_queries
     if not explicit_queries and not query_anchor_terms(base_queries):
         anchor_queries = queries
+    publish_quality = args.submit_researka or args.publish or args.validate_publish_quality
     wider_recall = planner_mode == "minimax" or selector_mode == "minimax"
     if fullraw_backed:
-        wider_fullraw_recall = wider_recall or args.submit_researka or args.publish
+        wider_fullraw_recall = wider_recall or publish_quality
         default_recall_limit = 50 if wider_fullraw_recall else _DEFAULT_FULLRAW_RECALL_LIMIT
         per_query_limit = (
             _int_env("V5_MEMO_FULL_RAW_PER_QUERY_LIMIT")
@@ -290,7 +292,7 @@ def main() -> None:
         "min_shards_searched": args.min_shards_searched,
         "min_sources_searched": args.min_sources_searched,
         "min_search_passes": args.min_search_passes,
-        "require_publish_quality": args.submit_researka or args.publish,
+        "require_publish_quality": publish_quality,
     }
     try:
         result = build_alpha_memo(**build_kwargs)
@@ -330,6 +332,15 @@ def main() -> None:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from exc
     memo_path = _write_memo(args.output_dir, result) if args.output_dir else None
+    if args.validate_publish_quality:
+        if blocker := _publish_blocker(result):
+            _write_json(args.publish_receipt_path, blocker)
+            print(f"Publish validation blocked: {blocker['error']}", file=sys.stderr)
+            raise SystemExit(5)
+        _write_json(args.publish_receipt_path, {
+            "ready": True,
+            "validation": "publish_quality",
+        })
     if args.submit_researka or args.publish:
         config = load_researka_submit_config(
             agent_id=args.researka_agent_id,

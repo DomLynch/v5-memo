@@ -3495,7 +3495,7 @@ def run_server() -> None:
     ).casefold() in {"1", "true", "yes"}
     sweep_enabled = _fullraw_env("V5_MEMO_FULL_RAW_ASYNC_SWEEP", "").casefold() in {"1", "true", "yes"}
     sweep_ttl = _float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS", "")) or 86400.0
-    sweep_max_inflight = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
+    sweep_max_inflight = _configured_sweep_max_inflight()
     sweep_workers = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_WORKERS") or _auto_sweep_workers(sweep_max_inflight)
     sweep_max_queue = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_QUEUE") or 0
     sweep_shard_limit = _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT") or 128
@@ -5055,6 +5055,25 @@ def _sweep_cache_inflight_lanes(max_inflight: int) -> int:
     if priority_burst in {"1", "true", "yes"}:
         lanes += 1
     return lanes
+
+
+def _configured_sweep_max_inflight() -> int:
+    raw = _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT", "").strip().casefold()
+    if raw in {"auto", "dynamic"}:
+        return _auto_sweep_max_inflight()
+    return _positive_int_env("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT") or 1
+
+
+def _auto_sweep_max_inflight() -> int:
+    max_cache_bytes = _shard_local_cache_max_bytes()
+    worker_cache_bytes = _sweep_worker_cache_bytes()
+    if max_cache_bytes is None or worker_cache_bytes is None or worker_cache_bytes <= 0:
+        return 1
+    cache_lanes = max_cache_bytes // worker_cache_bytes
+    priority_burst = _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "true").casefold()
+    if priority_burst in {"1", "true", "yes"}:
+        cache_lanes -= 1
+    return max(1, min(os.cpu_count() or 1, cache_lanes))
 
 
 def _auto_sweep_workers(max_inflight: int) -> int:

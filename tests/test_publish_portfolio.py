@@ -62,6 +62,42 @@ def test_build_command_preserves_strict_submit_gate(tmp_path: Path) -> None:
     assert command[command.index("--researka-submit-wait-seconds") + 1] == "10"
 
 
+def test_build_command_preparation_uses_submit_equivalent_quality_gate(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    config = portfolio.RunConfig(
+        output_dir=tmp_path,
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=None,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=0,
+        ready_buffer_size=3,
+    )
+
+    command = portfolio.build_command(
+        "generic lead",
+        tmp_path,
+        tmp_path / "r.json",
+        config,
+    )
+
+    assert "--validate-publish-quality" in command
+    assert "--submit-researka" not in command
+
+
 def test_accept_decision_wins_even_when_visibility_update_warns() -> None:
     portfolio = _load_portfolio()
 

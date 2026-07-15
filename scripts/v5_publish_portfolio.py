@@ -176,6 +176,8 @@ def build_command(lead: str, lead_dir: Path, receipt_path: Path, config: RunConf
         command.extend(["--writer", config.writer])
     if config.selector:
         command.extend(["--selector", config.selector])
+    if not config.submit and config.ready_buffer_size > 0:
+        command.append("--validate-publish-quality")
     if config.submit:
         command.extend([
             "--submit-researka",

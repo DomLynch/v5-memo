@@ -19,11 +19,12 @@ Environment=RESEARKA_FULLRAW_REQUIRE_COMPLETE_SEARCH=1
 Environment=RESEARKA_FULLRAW_SWEEP_REQUIRE_COMPLETE=1
 Environment=RESEARKA_FULLRAW_ASYNC_SWEEP=1
 Environment=RESEARKA_FULLRAW_SWEEP_SHARD_LIMIT=1525
-# Match pass size to auto workers (3 * 4) so strict sweeps persist progress frequently.
+# Three one-worker lanes keep the same three-copy resource ceiling while
+# completing a lead's independent strict queries concurrently.
 Environment=RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT=12
 Environment=RESEARKA_FULLRAW_SWEEP_NO_HIT_STOP_SHARDS=128
 Environment=RESEARKA_FULLRAW_SWEEP_MAX_PASSES=5000
-Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=1
+Environment=RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=auto
 Environment=RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0
 Environment=RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=64
 Environment=RESEARKA_FULLRAW_SWEEP_TTL_SECONDS=604800
