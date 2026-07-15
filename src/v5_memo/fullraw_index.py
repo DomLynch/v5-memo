@@ -22,6 +22,7 @@ import time
 from collections import Counter
 from collections.abc import Iterable
 from concurrent.futures import (
+    CancelledError,
     ProcessPoolExecutor,
     ThreadPoolExecutor,
     as_completed,
@@ -1242,7 +1243,7 @@ def _search_shard_paths_with_paths_and_receipt(
             if (cache_path := _shard_cache_path(path)) is not None
         }
         pool = ThreadPoolExecutor(max_workers=max(1, min(worker_count, len(batch))))
-        timed_out_batch = False
+        cancel_event = threading.Event()
         try:
             futures = {
                 pool.submit(
@@ -1255,6 +1256,7 @@ def _search_shard_paths_with_paths_and_receipt(
                     rank_mode,
                     per_shard_timeout,
                     preserve_paths,
+                    cancel_event,
                 ): path
                 for path in batch
             }
@@ -1263,16 +1265,22 @@ def _search_shard_paths_with_paths_and_receipt(
                 path = futures[future]
                 try:
                     hits = future.result()
-                except (OSError, TimeoutError, sqlite3.Error, subprocess.SubprocessError):
+                except (
+                    CancelledError,
+                    OSError,
+                    TimeoutError,
+                    sqlite3.Error,
+                    subprocess.SubprocessError,
+                ):
                     continue
                 completed_paths.append(path)
                 hit_groups.append(hits)
         except FuturesTimeoutError:
-            timed_out_batch = True
             timed_out = True
+            cancel_event.set()
             break
         finally:
-            pool.shutdown(wait=not timed_out_batch, cancel_futures=True)
+            pool.shutdown(wait=True, cancel_futures=True)
     hits, metrics = _merge_hit_groups_with_receipt(hit_groups, limit=limit)
     return hits, completed_paths, timed_out, metrics
 
@@ -1286,8 +1294,16 @@ def _materialize_and_search_one_shard(
     rank_mode: str,
     timeout_seconds: float | None,
     preserve: set[Path],
+    cancel_event: threading.Event | None = None,
 ) -> list[dict[str, object]]:
-    search_path = _materialized_shard_path(path, preserve=preserve, populate=True)
+    search_path = _materialized_shard_path(
+        path,
+        preserve=preserve,
+        populate=True,
+        cancel_event=cancel_event,
+    )
+    if cancel_event is not None and cancel_event.is_set():
+        raise CancelledError(f"shard search cancelled: {path}")
     return _search_one_shard_for_pool(search_path, query, limit, year_min, year_max, rank_mode, timeout_seconds)
 
 
@@ -1962,6 +1978,7 @@ def _materialized_shard_path(
     *,
     preserve: set[Path] | None = None,
     populate: bool = False,
+    cancel_event: threading.Event | None = None,
 ) -> Path:
     cache_path = _shard_cache_path(path)
     if cache_path is None:
@@ -2027,6 +2044,7 @@ def _materialized_shard_path(
             path,
             tmp_path,
             timeout_seconds=_shard_cache_copy_timeout_seconds(),
+            cancel_event=cancel_event,
         )
         with _SHARD_LOCAL_CACHE_LOCK:
             if cache_path.exists() and cache_path.stat().st_size == source_stat.st_size:
@@ -2058,7 +2076,13 @@ def _shard_cache_copy_timeout_seconds() -> float | None:
     return timeout if timeout is not None and timeout > 0 else None
 
 
-def _copy2_with_timeout(source: Path, target: Path, *, timeout_seconds: float | None) -> None:
+def _copy2_with_timeout(
+    source: Path,
+    target: Path,
+    *,
+    timeout_seconds: float | None,
+    cancel_event: threading.Event | None = None,
+) -> None:
     global _SHARD_LOCAL_CACHE_COPY_FAILURES
     global _SHARD_LOCAL_CACHE_COPY_INFLIGHT
     global _SHARD_LOCAL_CACHE_COPY_TIMEOUTS
@@ -2082,6 +2106,11 @@ def _copy2_with_timeout(source: Path, target: Path, *, timeout_seconds: float | 
         last_size = -1
         last_progress_at = time.monotonic()
         while True:
+            if cancel_event is not None and cancel_event.is_set():
+                process.kill()
+                with suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=1.0)
+                raise CancelledError(f"shard cache copy cancelled: {source}")
             remaining = timeout_seconds - (time.monotonic() - last_progress_at)
             if remaining <= 0:
                 process.kill()
