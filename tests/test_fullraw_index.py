@@ -2419,6 +2419,45 @@ def test_shard_cache_copy_retries_transient_stall_without_failure(
     assert after["copy_failures_total"] == before_failures
 
 
+def test_shard_cache_copy_reaps_stuck_writer_before_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CopyAttempt:
+        def __init__(self, *, stalls: bool) -> None:
+            self.stalls = stalls
+            self.killed = False
+            self.wait_timeouts: list[float | None] = []
+
+        def wait(self, *, timeout: float | None = None) -> int:
+            self.wait_timeouts.append(timeout)
+            if self.stalls and not self.killed:
+                raise subprocess.TimeoutExpired(cmd="copy", timeout=timeout or 0.0)
+            if self.stalls and timeout is not None:
+                raise subprocess.TimeoutExpired(cmd="copy", timeout=timeout)
+            return -9 if self.killed else 0
+
+        def kill(self) -> None:
+            self.killed = True
+
+    stalled = CopyAttempt(stalls=True)
+    successful = CopyAttempt(stalls=False)
+    copies = iter((stalled, successful))
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: next(copies))
+    monotonic = iter((0.0, 0.0, 0.02, 0.03, 0.03))
+    monkeypatch.setattr("v5_memo.fullraw_index.time.monotonic", lambda: next(monotonic))
+
+    fullraw_index._copy2_with_timeout(
+        Path("remote.sqlite"),
+        Path("local.sqlite"),
+        timeout_seconds=0.01,
+        attempts=2,
+    )
+
+    assert stalled.killed
+    assert stalled.wait_timeouts[-2:] == [1.0, None]
+    assert successful.wait_timeouts == [0.01]
+
+
 def test_shard_cache_copy_cancellation_kills_copy_without_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

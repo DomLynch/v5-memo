@@ -2081,6 +2081,17 @@ def _shard_cache_copy_attempts() -> int:
     return _positive_int_env("V5_MEMO_FULL_RAW_SHARD_CACHE_COPY_ATTEMPTS") or 2
 
 
+def _kill_and_reap_copy(process: subprocess.Popen[bytes]) -> None:
+    process.kill()
+    try:
+        process.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        # A FUSE-backed read can remain in uninterruptible disk wait after
+        # SIGKILL. Reap it before cleanup or retry so the old writer cannot
+        # keep consuming an unlinked temp file alongside a replacement copy.
+        process.wait()
+
+
 def _copy2_with_timeout(
     source: Path,
     target: Path,
@@ -2116,15 +2127,11 @@ def _copy2_with_timeout(
             try:
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
-                        process.kill()
-                        with suppress(subprocess.TimeoutExpired):
-                            process.wait(timeout=1.0)
+                        _kill_and_reap_copy(process)
                         raise CancelledError(f"shard cache copy cancelled: {source}")
                     remaining = timeout_seconds - (time.monotonic() - last_progress_at)
                     if remaining <= 0:
-                        process.kill()
-                        with suppress(subprocess.TimeoutExpired):
-                            process.wait(timeout=1.0)
+                        _kill_and_reap_copy(process)
                         raise TimeoutError(
                             f"shard cache copy made no progress for {timeout_seconds:g}s: {source}"
                         )
