@@ -29,8 +29,9 @@ _DIRECTION_DISPLAY = {
     "reduce": "reduced",
     "worsen": "worsened",
 }
+_DOSE_NUMBER = r"(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)"
 _DOSE_RE = re.compile(
-    r"\b\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?\s*"
+    rf"(?<![\w,]){_DOSE_NUMBER}(?:\s*-\s*{_DOSE_NUMBER})?\s*"
     r"(?:µg|μg|mcg|mg|g)(?:\s*/\s*(?:kg|day|d))?"
     r"(?:\s+(?:once|twice)\s+daily|\s+(?:daily|per\s+day))?\b",
     re.IGNORECASE,

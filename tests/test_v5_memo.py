@@ -3334,6 +3334,169 @@ def test_publish_blocker_allows_primary_topic_context() -> None:
     assert candidate_publish_blocker(candidate) is None
 
 
+def test_publish_blocker_requires_two_core_topic_terms_per_primary_receipt() -> None:
+    candidate = InsightCandidate(
+        topic="urolithin a muscle strength older adults randomized trial",
+        thesis="Generic trial language must not substitute for the requested muscle-strength axis.",
+        bridge_terms=("urolithin", "randomized"),
+        tension_terms=("positive", "null"),
+        receipt_ids=("immune", "heart"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "immune",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "immune decline",
+                "positive",
+                "direct",
+                "high",
+                "Urolithin A randomized placebo-controlled trial in middle-aged adults measured immune decline.",
+            ),
+            ClaimCard(
+                "heart",
+                "null_signal",
+                "randomized_trial",
+                "human",
+                "ejection fraction",
+                "null",
+                "direct",
+                "high",
+                "Urolithin A randomized placebo-controlled trial in heart-failure patients measured cardiac outcomes.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_topic_primary_signal",
+        "receipt_ids": ("immune", "heart"),
+    }
+
+
+def test_publish_blocker_does_not_treat_design_terms_as_topic_axis() -> None:
+    candidate = InsightCandidate(
+        topic="urolithin muscle strength crossover trial",
+        thesis="Shared design language must not substitute for the requested outcome axis.",
+        bridge_terms=("urolithin", "crossover"),
+        tension_terms=("positive", "null"),
+        receipt_ids=("immune", "heart"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "immune", "positive_signal", "randomized_trial", "human",
+                "immune decline", "positive", "direct", "high",
+                "Urolithin crossover study measured immune decline.",
+            ),
+            ClaimCard(
+                "heart", "null_signal", "randomized_trial", "human",
+                "ejection fraction", "null", "direct", "high",
+                "Urolithin crossover study measured heart failure.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_topic_primary_signal",
+        "receipt_ids": ("immune", "heart"),
+    }
+
+
+def test_publish_blocker_allows_unknown_but_on_axis_endpoint() -> None:
+    candidate = InsightCandidate(
+        topic="urolithin ejection fraction heart failure trial",
+        thesis="On-axis direct receipts may retain an endpoint outside the parser lexicon.",
+        bridge_terms=("urolithin",),
+        tension_terms=("positive", "null"),
+        receipt_ids=("left", "right"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "left", "positive_signal", "randomized_trial", "human",
+                "unspecified", "positive", "direct", "high",
+                "Urolithin improved ejection fraction in heart failure.",
+            ),
+            ClaimCard(
+                "right", "null_signal", "randomized_trial", "human",
+                "unspecified", "null", "direct", "high",
+                "Urolithin did not change ejection fraction in heart failure.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) is None
+
+
+def test_publish_blocker_rejects_structural_endpoint_labels() -> None:
+    candidate = InsightCandidate(
+        topic="urolithin muscle strength",
+        thesis="Parser structure labels are not biological endpoints.",
+        bridge_terms=("urolithin", "muscle"),
+        tension_terms=("positive", "null"),
+        receipt_ids=("strength", "dose"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "strength",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "muscle strength",
+                "positive",
+                "direct",
+                "high",
+                "Urolithin improved muscle strength in a randomized trial.",
+            ),
+            ClaimCard(
+                "dose",
+                "null_signal",
+                "randomized_trial",
+                "human",
+                "dose",
+                "null",
+                "direct",
+                "high",
+                "Urolithin muscle dosing did not change strength in a randomized trial.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "structural_endpoint_without_outcome",
+        "receipt_ids": ("dose",),
+    }
+
+
+def test_claim_card_excludes_parser_structure_from_endpoint() -> None:
+    hit = CorpusHit(
+        hit_id="immune",
+        title="Effect of urolithin A on age-related immune decline: a randomized trial",
+        abstract=(
+            "Fifty middle-aged adult participants received a 1,000 mg dose. "
+            "The randomized population showed reduced immune decline."
+        ),
+        source="fullraw:semantic_scholar",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "positive_signal", "human trial"))
+
+    assert card.outcome == "decline"
+    assert "dose" not in card.outcome
+    assert "population" not in card.outcome
+
+
 def test_publish_quality_drops_off_axis_direct_context_receipts() -> None:
     candidate = InsightCandidate(
         topic="cold immersion training",

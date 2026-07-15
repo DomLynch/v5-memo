@@ -320,6 +320,17 @@ def test_intervention_context_does_not_mix_prior_and_current_regimens() -> None:
     assert _intervention_context(hit) == ("250 mg daily", "for 8 weeks")
 
 
+def test_intervention_context_preserves_comma_grouped_dose() -> None:
+    hit = CorpusHit(
+        hit_id="comma-dose",
+        title="Supplement trial in older adults",
+        abstract="Participants received 1,000 mg daily for 4 weeks.",
+        source="fullraw:openalex",
+    )
+
+    assert _intervention_context(hit) == ("1,000 mg daily", "for 4 weeks")
+
+
 def test_intervention_context_rejects_ambiguous_multi_arm_regimen() -> None:
     hit = CorpusHit(
         hit_id="multi-arm",

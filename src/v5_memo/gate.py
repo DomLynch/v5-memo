@@ -65,20 +65,56 @@ _MUSCLE_ADAPTATION_AXIS_TERMS = frozenset({
 _TOPIC_ANCHOR_STOP = frozenset({
     "adult",
     "adults",
+    "blind",
+    "blinded",
+    "clinical",
+    "cohort",
+    "controlled",
+    "crossover",
+    "difference",
+    "differences",
+    "double",
     "effect",
     "effects",
     "function",
     "functions",
     "human",
     "humans",
+    "intervention",
+    "label",
+    "multicenter",
+    "multicentre",
+    "observational",
+    "open",
     "older",
     "outcome",
     "outcomes",
+    "parallel",
+    "phase",
+    "pilot",
     "performance",
+    "placebo",
+    "prospective",
+    "randomised",
+    "randomized",
+    "retrospective",
+    "single",
     "study",
     "studies",
     "trial",
     "trials",
+})
+_STRUCTURAL_ENDPOINT_TERMS = frozenset({
+    "boundary",
+    "context",
+    "dose",
+    "endpoint",
+    "endpoints",
+    "modality",
+    "outcome",
+    "outcomes",
+    "population",
+    "setting",
 })
 
 
@@ -193,23 +229,33 @@ def candidate_publish_blocker(candidate: InsightCandidate) -> dict[str, object] 
             "error": "mixed_outcome_axis_bundle",
             "receipt_ids": mixed_axis,
         }
-    off_topic = _off_topic_primary_receipts(candidate.topic, claim_cards)
-    if off_topic:
-        return {
-            "error": "off_topic_primary_signal",
-            "receipt_ids": off_topic,
-        }
     off_modality = _off_modality_primary_receipts(candidate.topic, claim_cards)
     if off_modality:
         return {
             "error": "off_modality_primary_signal",
             "receipt_ids": off_modality,
         }
+    off_topic = _off_topic_primary_receipts(
+        candidate.topic,
+        claim_cards,
+        bridge_terms=candidate.bridge_terms,
+    )
+    if off_topic:
+        return {
+            "error": "off_topic_primary_signal",
+            "receipt_ids": off_topic,
+        }
     off_axis_context = _off_axis_direct_context_receipts(candidate.topic, claim_cards)
     if off_axis_context:
         return {
             "error": "off_axis_direct_context",
             "receipt_ids": off_axis_context,
+        }
+    structural_endpoints = _structural_endpoint_receipts(claim_cards)
+    if structural_endpoints:
+        return {
+            "error": "structural_endpoint_without_outcome",
+            "receipt_ids": structural_endpoints,
         }
     proxy_receipts = _proxy_boundary_receipts(claim_cards)
     if proxy_receipts and not _has_independent_directional_contrast(claim_cards):
@@ -325,11 +371,19 @@ def _off_axis_direct_context_receipts(
 def _off_topic_primary_receipts(
     topic: str,
     claim_cards: Sequence[ClaimCard],
+    *,
+    bridge_terms: Sequence[str] = (),
 ) -> tuple[str, ...]:
     topic_terms = set(re.findall(r"[a-z0-9]+", topic.casefold()))
     required_terms = topic_terms & {"resistance", "strength", "training"}
-    context_terms = _topic_primary_context_terms(topic)
     anchor_terms = _topic_primary_anchor_terms(topic_terms)
+    bridge_anchors = _topic_primary_anchor_terms({
+        term
+        for bridge in bridge_terms
+        for term in re.findall(r"[a-z0-9]+", bridge.casefold())
+    })
+    axis_terms = anchor_terms - bridge_anchors
+    required_overlap = min(2, len(anchor_terms))
     out: list[str] = []
     for card in claim_cards:
         if card.role not in _PRIMARY_SIGNAL_ROLES:
@@ -343,22 +397,11 @@ def _off_topic_primary_receipts(
             out.append(card.receipt_id)
             continue
         if (
-            (context_terms and not (context_terms & card_terms))
-            or (anchor_terms and not (anchor_terms & card_terms))
+            (axis_terms and not (axis_terms & card_terms))
+            or (required_overlap and len(anchor_terms & card_terms) < required_overlap)
         ):
             out.append(card.receipt_id)
     return tuple(out)
-
-
-def _topic_primary_context_terms(topic: str) -> set[str]:
-    ordered: list[str] = []
-    seen: set[str] = set()
-    for raw in re.findall(r"[a-z0-9]+", topic.casefold()):
-        if len(raw) < 4 or raw in _TOPIC_ANCHOR_STOP or raw in seen:
-            continue
-        seen.add(raw)
-        ordered.append(raw)
-    return set(ordered[1:]) if len(ordered) > 1 else set()
 
 
 def _topic_primary_anchor_terms(topic_terms: set[str]) -> set[str]:
@@ -367,6 +410,21 @@ def _topic_primary_anchor_terms(topic_terms: set[str]) -> set[str]:
         for term in topic_terms
         if len(term) >= 4 and term not in _TOPIC_ANCHOR_STOP
     }
+
+
+def _structural_endpoint_receipts(claim_cards: Sequence[ClaimCard]) -> tuple[str, ...]:
+    invalid: list[str] = []
+    for card in claim_cards:
+        if card.population != "human" or card.support_type != "direct" or card.confidence != "high":
+            continue
+        endpoints = (raw.rsplit("=", 1)[0].strip() for raw in card.outcome.split("/"))
+        if any(
+            (terms := set(re.findall(r"[a-z0-9]+", endpoint.casefold())))
+            and terms <= _STRUCTURAL_ENDPOINT_TERMS
+            for endpoint in endpoints
+        ):
+            invalid.append(card.receipt_id)
+    return tuple(invalid)
 
 
 def _off_topic_quote(quote: str) -> bool:
