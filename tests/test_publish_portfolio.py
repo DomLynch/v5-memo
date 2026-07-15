@@ -217,6 +217,22 @@ def test_empty_prepare_receipt_does_not_create_false_ready_supply() -> None:
     assert status == "blocked:invalid_publish_quality_receipt"
 
 
+def test_prepare_candidate_rejection_is_a_healthy_noop() -> None:
+    portfolio = _load_portfolio()
+
+    for status in (
+        "blocked:candidate_publish_blocker",
+        "blocked:no_receipt_bound_alpha_candidate",
+    ):
+        assert portfolio._portfolio_exit_code(status, preparing=True) == 0
+        assert portfolio._portfolio_exit_code(status, preparing=False) == 1
+
+    assert portfolio._portfolio_exit_code(
+        "blocked:search_backend_error",
+        preparing=True,
+    ) == 1
+
+
 def test_durable_submission_receipt_wins_even_if_outer_process_times_out() -> None:
     portfolio = _load_portfolio()
 
