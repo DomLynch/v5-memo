@@ -7,7 +7,12 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import TimeoutError as FuturesTimeoutError
+from concurrent.futures import (
+    CancelledError,
+)
+from concurrent.futures import (
+    TimeoutError as FuturesTimeoutError,
+)
 from dataclasses import replace
 from pathlib import Path
 from typing import NamedTuple
@@ -182,18 +187,22 @@ def test_shard_search_returns_partial_hits_on_timeout(tmp_path: Path, monkeypatc
     assert timeouts == [30] * len(called)
 
 
-def test_shard_search_does_not_wait_for_running_pool_after_timeout(
+def test_shard_search_cancels_and_drains_running_pool_after_timeout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shutdown_calls: list[tuple[bool, bool]] = []
+    cancel_events: list[threading.Event] = []
 
     class FakePool:
         def __init__(self, *args: object, **kwargs: object) -> None:
             del args, kwargs
 
         def submit(self, *args: object, **kwargs: object) -> object:
-            del args, kwargs
+            del kwargs
+            cancel_event = args[-1]
+            assert isinstance(cancel_event, threading.Event)
+            cancel_events.append(cancel_event)
             return object()
 
         def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
@@ -220,7 +229,9 @@ def test_shard_search_does_not_wait_for_running_pool_after_timeout(
     )
 
     assert timed_out is True
-    assert shutdown_calls == [(False, True)]
+    assert len(cancel_events) == 1
+    assert cancel_events[0].is_set()
+    assert shutdown_calls == [(True, True)]
 
 
 def test_isolated_shard_search_kills_timed_out_child(
@@ -1916,7 +1927,14 @@ def test_shard_search_materializes_before_isolated_worker(
 
     populate_seen: list[bool] = []
 
-    def fake_materialized(path: Path, *, preserve: set[Path] | None = None, populate: bool = False) -> Path:
+    def fake_materialized(
+        path: Path,
+        *,
+        preserve: set[Path] | None = None,
+        populate: bool = False,
+        cancel_event: threading.Event | None = None,
+    ) -> Path:
+        del cancel_event
         assert path == original
         assert preserve == set()
         populate_seen.append(populate)
@@ -1960,7 +1978,14 @@ def test_shard_search_preserves_materialized_batch_before_worker_search(
 
     populate_seen: list[bool] = []
 
-    def fake_materialized(path: Path, *, preserve: set[Path] | None = None, populate: bool = False) -> Path:
+    def fake_materialized(
+        path: Path,
+        *,
+        preserve: set[Path] | None = None,
+        populate: bool = False,
+        cancel_event: threading.Event | None = None,
+    ) -> Path:
+        del cancel_event
         populate_seen.append(populate)
         preserve = preserve or set()
         preserve_seen.append(set(preserve))
@@ -2007,8 +2032,14 @@ def test_shard_search_materializes_batch_concurrently(
     barrier = threading.Barrier(len(remotes))
     materialized: list[Path] = []
 
-    def fake_materialized(path: Path, *, preserve: set[Path] | None = None, populate: bool = False) -> Path:
-        del preserve
+    def fake_materialized(
+        path: Path,
+        *,
+        preserve: set[Path] | None = None,
+        populate: bool = False,
+        cancel_event: threading.Event | None = None,
+    ) -> Path:
+        del preserve, cancel_event
         assert populate is True
         materialized.append(path)
         barrier.wait(timeout=1.0)
@@ -2049,7 +2080,14 @@ def test_shard_search_caps_worker_batch_to_cache_budget(
 
     populate_seen: list[bool] = []
 
-    def fake_materialized(path: Path, *, preserve: set[Path] | None = None, populate: bool = False) -> Path:
+    def fake_materialized(
+        path: Path,
+        *,
+        preserve: set[Path] | None = None,
+        populate: bool = False,
+        cancel_event: threading.Event | None = None,
+    ) -> Path:
+        del cancel_event
         preserve_sizes.append(len(preserve or set()))
         populate_seen.append(populate)
         return tmp_path / f"local-{path.stem}.sqlite"
@@ -2332,6 +2370,41 @@ def test_shard_cache_copy_timeout_resets_when_copy_progresses(
     after = fullraw_index._shard_local_cache_health()
 
     assert progressing.waits == 3
+    assert after["copy_inflight"] == 0
+    assert after["copy_timeouts_total"] == before["copy_timeouts_total"]
+    assert after["copy_failures_total"] == before["copy_failures_total"]
+
+
+def test_shard_cache_copy_cancellation_kills_copy_without_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ActiveCopy:
+        killed = False
+
+        def wait(self, *, timeout: float) -> int:
+            if not self.killed:
+                raise subprocess.TimeoutExpired(cmd="copy", timeout=timeout)
+            return -9
+
+        def kill(self) -> None:
+            self.killed = True
+
+    active = ActiveCopy()
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: active)
+    cancel_event = threading.Event()
+    cancel_event.set()
+    before = fullraw_index._shard_local_cache_health()
+
+    with pytest.raises(CancelledError, match="shard cache copy cancelled"):
+        fullraw_index._copy2_with_timeout(
+            Path("remote.sqlite"),
+            Path("local.sqlite"),
+            timeout_seconds=180,
+            cancel_event=cancel_event,
+        )
+
+    after = fullraw_index._shard_local_cache_health()
+    assert active.killed
     assert after["copy_inflight"] == 0
     assert after["copy_timeouts_total"] == before["copy_timeouts_total"]
     assert after["copy_failures_total"] == before["copy_failures_total"]
