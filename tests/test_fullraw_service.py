@@ -254,7 +254,8 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "--state-path /var/lib/v5-memo/portfolio-runs/state.json" in prepare_config
     assert "/usr/bin/flock -n 9" in prepare_config
     assert "/usr/bin/flock -w 900 9" in config
-    assert "OnCalendar=*-*-* *:50:00" in prepare_timer
+    assert "OnCalendar=*-*-* *:00,15,30,45:00" in prepare_timer
+    assert "RandomizedDelaySec=2min" in prepare_timer
     assert "Unit=v5-memo-portfolio-prepare.service" in prepare_timer
     assert "--submit --ready-only" in catchup_config
     assert "--max-leads 1" in catchup_config
