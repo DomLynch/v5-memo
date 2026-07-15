@@ -668,18 +668,29 @@ def test_prepare_revalidates_post_quality_submission_failure_before_warming() ->
                 "status": "warming:search_coverage",
                 "sweep_remaining_shards": 1,
             },
-            "submit retry": {"status": "blocked:researka_submit_failed"},
+            "submit retry": {
+                "status": "blocked:researka_submit_failed",
+                "updated_at": portfolio._timestamp(),
+            },
         }
     }
 
     available = portfolio._available_leads(
         ["warming lead", "submit retry"],
         state,
-        blocked_retry_hours=0,
+        blocked_retry_hours=24,
+        now=portfolio.datetime.now(portfolio.UTC),
+        retry_post_quality=True,
+    )
+    normal_retry = portfolio._available_leads(
+        ["warming lead", "submit retry"],
+        state,
+        blocked_retry_hours=24,
         now=portfolio.datetime.now(portfolio.UTC),
     )
 
     assert available == ["submit retry", "warming lead"]
+    assert normal_retry == ["warming lead"]
 
 
 def test_available_leads_prioritizes_ready_supply_for_submit() -> None:
