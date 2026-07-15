@@ -238,12 +238,13 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     catchup_timer = (deploy_dir / "v5-memo-portfolio-catchup.timer").read_text()
 
     assert "TimeoutStartSec=150min" in config
-    assert "Ready leads are consumed first" in config
-    assert "One strict fullraw lead queues about five sweeps" in config
-    assert "Environment=V5_MEMO_PORTFOLIO_MAX_LEADS=3" in config
+    assert "Publish only prequalified supply" in config
+    assert "Environment=V5_MEMO_PORTFOLIO_MAX_LEADS=1" in config
     assert "Environment=V5_MEMO_PORTFOLIO_LEAD_TIMEOUT_SECONDS=600" in config
     assert "Environment=V5_MEMO_PORTFOLIO_DECISION_WAIT_SECONDS=600" in config
-    assert '--max-leads "${V5_MEMO_PORTFOLIO_MAX_LEADS:-3}"' in config
+    assert "--submit --ready-only" in config
+    assert "--auto-discover-leads" not in config
+    assert '--max-leads "${V5_MEMO_PORTFOLIO_MAX_LEADS:-1}"' in config
     assert '--lead-timeout-seconds "${V5_MEMO_PORTFOLIO_LEAD_TIMEOUT_SECONDS:-600}"' in config
     assert '--decision-wait-seconds "${V5_MEMO_PORTFOLIO_DECISION_WAIT_SECONDS:-600}"' in config
     assert "OnCalendar=*-*-* 00/8:20:00" in timer
