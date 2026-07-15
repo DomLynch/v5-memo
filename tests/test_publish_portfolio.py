@@ -7,6 +7,9 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
+from urllib.request import Request
+
+from pytest import MonkeyPatch
 
 
 def _load_portfolio() -> ModuleType:
@@ -478,6 +481,183 @@ def test_available_leads_prioritizes_warming_retries_before_untried() -> None:
     )
 
     assert available == ["warming lead", "fresh lead", "revision lead"]
+
+
+def test_prepare_prioritizes_closest_warming_lead_with_resource_limit(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    portfolio = _load_portfolio()
+    far_receipt = tmp_path / "far.json"
+    near_receipt = tmp_path / "near.json"
+    far_receipt.write_text(json.dumps({
+        "error": "search_backend_error",
+        "message": "Full raw corpus search coverage too narrow: {'sweep_remaining_shards': 1190}",
+    }))
+    near_receipt.write_text(json.dumps({
+        "error": "search_backend_error",
+        "message": "Full raw corpus search coverage too narrow: {'sweep_remaining_shards': 93}",
+    }))
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "attempted_leads": {
+            "far lead": {
+                "receipt_path": str(far_receipt),
+                "status": "warming:search_coverage",
+            },
+            "near lead": {
+                "receipt_path": str(near_receipt),
+                "status": "warming:search_coverage",
+            },
+        }
+    }))
+
+    class HealthResponse:
+        def __enter__(self) -> HealthResponse:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({
+                "ok": True,
+                "async_sweep": {"max_inflight": 1},
+            }).encode()
+
+    observed: dict[str, object] = {}
+
+    def health_request(req: Request, *, timeout: float) -> HealthResponse:
+        observed["url"] = req.full_url
+        observed["authorization"] = req.get_header("Authorization")
+        observed["timeout"] = timeout
+        return HealthResponse()
+
+    monkeypatch.setattr(portfolio.request, "urlopen", health_request)
+    calls: list[list[str]] = []
+
+    def fake_runner(
+        command: list[str],
+        _env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.write_text(json.dumps(_ready_receipt()))
+        return subprocess.CompletedProcess(command, 0, stdout="ready", stderr="")
+
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=3,
+        state_path=state_path,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=0,
+        ready_buffer_size=3,
+        resource_aware_max_leads=True,
+    )
+
+    code = portfolio.run_portfolio(
+        ["far lead", "near lead", "fresh lead"],
+        config,
+        runner=fake_runner,
+        env={
+            "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL": "http://127.0.0.1:9915/api/search",
+            "V5_MEMO_FULL_RAW_INDEX_TOKEN": "test-token",
+        },
+        cwd=Path.cwd(),
+    )
+
+    summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
+    assert code == 0
+    assert len(calls) == 1
+    assert calls[0][calls[0].index("--topic") + 1] == "near lead"
+    assert summary["effective_max_leads"] == 1
+    assert summary["resource_max_inflight"] == 1
+    assert summary["resource_limit_fallback"] is False
+    assert summary["resource_aware_max_leads"] is True
+    assert summary["ready_buffer_count_after"] == 1
+    assert observed == {
+        "url": "http://127.0.0.1:9915/health",
+        "authorization": "Bearer test-token",
+        "timeout": 2.0,
+    }
+
+
+def test_resource_aware_prepare_fails_safe_to_one_lead(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    portfolio = _load_portfolio()
+
+    def unavailable(*_args: object, **_kwargs: object) -> object:
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(portfolio.request, "urlopen", unavailable)
+    config = portfolio.RunConfig(
+        output_dir=tmp_path,
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=3,
+        state_path=None,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=0,
+        resource_aware_max_leads=True,
+    )
+
+    limit, probed = portfolio._preparation_lead_limit(
+        config,
+        {"V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL": "http://127.0.0.1:9915/search"},
+    )
+
+    assert limit == 1
+    assert probed is None
+
+
+def test_warming_coverage_order_handles_unknowns_and_stable_ties(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    state = {
+        "attempted_leads": {
+            "unknown lead": {"status": "warming:search_coverage"},
+            "near a": {"status": "warming:search_coverage", "sweep_remaining_shards": 15},
+            "near b": {"status": "warming:search_coverage", "sweep_remaining_shards": 15},
+            "far lead": {"status": "warming:search_coverage", "sweep_remaining_shards": 100},
+        }
+    }
+
+    available = portfolio._available_leads(
+        ["unknown lead", "near b", "fresh lead", "far lead", "near a"],
+        state,
+        blocked_retry_hours=24,
+        now=portfolio.datetime.now(portfolio.UTC),
+    )
+
+    assert available == ["near b", "near a", "far lead", "unknown lead", "fresh lead"]
 
 
 def test_available_leads_prioritizes_ready_supply_for_submit() -> None:
