@@ -374,6 +374,7 @@ def _attempt_on_cooldown(
     *,
     retry_hours: float,
     now: datetime,
+    retry_post_quality: bool = False,
 ) -> bool:
     if retry_hours <= 0:
         return False
@@ -383,6 +384,8 @@ def _attempt_on_cooldown(
         if _lead_key(str(raw_lead)) != lead_key or not isinstance(raw_meta, Mapping):
             continue
         status = str(raw_meta.get("status") or "")
+        if retry_post_quality and _post_quality_status(status):
+            return False
         if status.startswith("warming:") or status in {
             "accepted",
             "ready",
@@ -405,13 +408,20 @@ def _available_leads(
     blocked_retry_hours: float,
     now: datetime,
     prefer_ready: bool = False,
+    retry_post_quality: bool = False,
 ) -> list[str]:
     completed_keys = _state_keys(_completed_leads(state))
     available = [
         lead
         for lead in leads
         if _lead_key(lead) not in completed_keys
-        and not _attempt_on_cooldown(lead, state, retry_hours=blocked_retry_hours, now=now)
+        and not _attempt_on_cooldown(
+            lead,
+            state,
+            retry_hours=blocked_retry_hours,
+            now=now,
+            retry_post_quality=retry_post_quality,
+        )
     ]
     return sorted(
         available,
@@ -458,6 +468,8 @@ def _attempt_priority(
         status = str(raw_meta.get("status") or "")
         if status == "ready":
             return (-1 if prefer_ready else 4, 0)
+        if _post_quality_status(status):
+            return (0, -1)
         if status.startswith("warming:") or status == "blocked:search_backend_error":
             remaining = _receipt_remaining_shards(raw_meta)
             return (0, remaining if remaining is not None else sys.maxsize)
@@ -467,6 +479,14 @@ def _attempt_priority(
             return (3, 0)
         return (4, 0)
     return (2, 0)
+
+
+def _post_quality_status(status: str) -> bool:
+    return status in {
+        "accepted_pending_publication",
+        "deferred",
+        "submitted",
+    } or status.startswith("blocked:researka_")
 
 
 def discover_leads(
@@ -765,6 +785,7 @@ def run_portfolio(
     run_env = _portfolio_run_env(config, env or _env_for_repo(repo_root))
     state = _load_state(config.state_path)
     now = datetime.now(UTC)
+    preparing = not config.submit and config.ready_buffer_size > 0
     expanded_leads = list(leads)
     initial_completed_keys = _state_keys(_completed_leads(state))
     available_leads = _available_leads(
@@ -773,6 +794,7 @@ def run_portfolio(
         blocked_retry_hours=config.blocked_retry_hours,
         now=now,
         prefer_ready=config.submit,
+        retry_post_quality=preparing,
     )
     eligible_keys = {_lead_key(lead) for lead in expanded_leads}
     ready_keys = _ready_lead_keys(state) & eligible_keys
@@ -796,11 +818,11 @@ def run_portfolio(
             blocked_retry_hours=config.blocked_retry_hours,
             now=now,
             prefer_ready=config.submit,
+            retry_post_quality=preparing,
         )
         eligible_keys = {_lead_key(lead) for lead in expanded_leads}
         ready_keys = _ready_lead_keys(state) & eligible_keys
     ready_before = len(ready_keys)
-    preparing = not config.submit and config.ready_buffer_size > 0
     if preparing:
         available_leads = [
             lead for lead in available_leads if _lead_key(lead) not in ready_keys
@@ -828,6 +850,7 @@ def run_portfolio(
             state,
             retry_hours=config.blocked_retry_hours,
             now=now,
+            retry_post_quality=preparing,
         )
     )
     records: list[dict[str, object]] = []
