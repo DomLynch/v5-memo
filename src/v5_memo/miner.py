@@ -1295,7 +1295,12 @@ def _outcome_label(terms: frozenset[str]) -> str:
         return "hypertrophy"
     if {"muscle", "thickness"} <= terms:
         return "muscle thickness"
-    candidates = sorted(terms & (_OUTCOME | _METRIC | _ADVERSE_ENDPOINT | _HARM_REDUCTION_ENDPOINT | _BOUNDARY | _TIMING))
+    substantive_endpoints = (
+        _ENDPOINT_ANCHOR_TERMS | _TIMING
+    ) - _BOUNDARY - frozenset({"outcome", "outcomes"})
+    candidates = sorted(terms & substantive_endpoints)
+    if not candidates and "adapt" in terms:
+        return "adaptation"
     return "/".join(candidates[:3]) if candidates else "unspecified"
 
 
