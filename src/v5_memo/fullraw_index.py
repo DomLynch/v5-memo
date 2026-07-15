@@ -146,6 +146,7 @@ def _shard_local_cache_health(*, include_dynamic_budget: bool = True) -> dict[st
     with _SHARD_LOCAL_CACHE_LOCK:
         health.update({
             "copy_timeout_seconds": _shard_cache_copy_timeout_seconds(),
+            "copy_attempts": _shard_cache_copy_attempts(),
             "copy_inflight": _SHARD_LOCAL_CACHE_COPY_INFLIGHT,
             "copy_timeouts_total": _SHARD_LOCAL_CACHE_COPY_TIMEOUTS,
             "copy_failures_total": _SHARD_LOCAL_CACHE_COPY_FAILURES,
@@ -2076,12 +2077,17 @@ def _shard_cache_copy_timeout_seconds() -> float | None:
     return timeout if timeout is not None and timeout > 0 else None
 
 
+def _shard_cache_copy_attempts() -> int:
+    return _positive_int_env("V5_MEMO_FULL_RAW_SHARD_CACHE_COPY_ATTEMPTS") or 2
+
+
 def _copy2_with_timeout(
     source: Path,
     target: Path,
     *,
     timeout_seconds: float | None,
     cancel_event: threading.Event | None = None,
+    attempts: int | None = None,
 ) -> None:
     global _SHARD_LOCAL_CACHE_COPY_FAILURES
     global _SHARD_LOCAL_CACHE_COPY_INFLIGHT
@@ -2092,50 +2098,59 @@ def _copy2_with_timeout(
     with _SHARD_LOCAL_CACHE_LOCK:
         _SHARD_LOCAL_CACHE_COPY_INFLIGHT += 1
     try:
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-c",
-                "import shutil,sys; shutil.copy2(sys.argv[1], sys.argv[2])",
-                str(source),
-                str(target),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        last_size = -1
-        last_progress_at = time.monotonic()
-        while True:
-            if cancel_event is not None and cancel_event.is_set():
-                process.kill()
-                with suppress(subprocess.TimeoutExpired):
-                    process.wait(timeout=1.0)
-                raise CancelledError(f"shard cache copy cancelled: {source}")
-            remaining = timeout_seconds - (time.monotonic() - last_progress_at)
-            if remaining <= 0:
-                process.kill()
-                with suppress(subprocess.TimeoutExpired):
-                    process.wait(timeout=1.0)
-                raise TimeoutError(
-                    f"shard cache copy made no progress for {timeout_seconds:g}s: {source}"
-                )
+        attempt_limit = max(1, attempts or _shard_cache_copy_attempts())
+        for attempt in range(attempt_limit):
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "import shutil,sys; shutil.copy2(sys.argv[1], sys.argv[2])",
+                    str(source),
+                    str(target),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            last_size = -1
+            last_progress_at = time.monotonic()
             try:
-                returncode = process.wait(timeout=min(1.0, remaining))
-                break
-            except subprocess.TimeoutExpired:
-                try:
-                    current_size = target.stat().st_size
-                except OSError:
-                    current_size = -1
-                if current_size > last_size:
-                    last_size = current_size
-                    last_progress_at = time.monotonic()
-        if returncode != 0:
-            raise OSError(f"shard cache copy failed with exit code {returncode}: {source}")
+                while True:
+                    if cancel_event is not None and cancel_event.is_set():
+                        process.kill()
+                        with suppress(subprocess.TimeoutExpired):
+                            process.wait(timeout=1.0)
+                        raise CancelledError(f"shard cache copy cancelled: {source}")
+                    remaining = timeout_seconds - (time.monotonic() - last_progress_at)
+                    if remaining <= 0:
+                        process.kill()
+                        with suppress(subprocess.TimeoutExpired):
+                            process.wait(timeout=1.0)
+                        raise TimeoutError(
+                            f"shard cache copy made no progress for {timeout_seconds:g}s: {source}"
+                        )
+                    try:
+                        returncode = process.wait(timeout=min(1.0, remaining))
+                        break
+                    except subprocess.TimeoutExpired:
+                        try:
+                            current_size = target.stat().st_size
+                        except OSError:
+                            current_size = -1
+                        if current_size > last_size:
+                            last_size = current_size
+                            last_progress_at = time.monotonic()
+                if returncode != 0:
+                    raise OSError(f"shard cache copy failed with exit code {returncode}: {source}")
+                return
+            except TimeoutError:
+                with _SHARD_LOCAL_CACHE_LOCK:
+                    _SHARD_LOCAL_CACHE_COPY_TIMEOUTS += 1
+                if attempt + 1 >= attempt_limit:
+                    with _SHARD_LOCAL_CACHE_LOCK:
+                        _SHARD_LOCAL_CACHE_COPY_FAILURES += 1
+                    raise
+                target.unlink(missing_ok=True)
     except TimeoutError:
-        with _SHARD_LOCAL_CACHE_LOCK:
-            _SHARD_LOCAL_CACHE_COPY_TIMEOUTS += 1
-            _SHARD_LOCAL_CACHE_COPY_FAILURES += 1
         raise
     except OSError:
         with _SHARD_LOCAL_CACHE_LOCK:

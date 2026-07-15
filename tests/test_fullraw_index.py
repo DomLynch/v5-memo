@@ -2326,6 +2326,7 @@ def test_shard_cache_copy_timeout_kills_stalled_copy(
             Path("remote.sqlite"),
             Path("local.sqlite"),
             timeout_seconds=0.01,
+            attempts=1,
         )
 
     assert stalled.killed
@@ -2373,6 +2374,49 @@ def test_shard_cache_copy_timeout_resets_when_copy_progresses(
     assert after["copy_inflight"] == 0
     assert after["copy_timeouts_total"] == before["copy_timeouts_total"]
     assert after["copy_failures_total"] == before["copy_failures_total"]
+
+
+def test_shard_cache_copy_retries_transient_stall_without_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CopyAttempt:
+        def __init__(self, *, stalls: bool) -> None:
+            self.stalls = stalls
+            self.killed = False
+
+        def wait(self, *, timeout: float) -> int:
+            if self.stalls and not self.killed:
+                raise subprocess.TimeoutExpired(cmd="copy", timeout=timeout)
+            return -9 if self.killed else 0
+
+        def kill(self) -> None:
+            self.killed = True
+
+    stalled = CopyAttempt(stalls=True)
+    successful = CopyAttempt(stalls=False)
+    copies = iter((stalled, successful))
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: next(copies))
+    monotonic = iter((0.0, 0.0, 0.02, 0.03, 0.03))
+    monkeypatch.setattr("v5_memo.fullraw_index.time.monotonic", lambda: next(monotonic))
+    before = fullraw_index._shard_local_cache_health()
+    before_timeouts = before["copy_timeouts_total"]
+    before_failures = before["copy_failures_total"]
+    assert isinstance(before_timeouts, int)
+    assert isinstance(before_failures, int)
+
+    fullraw_index._copy2_with_timeout(
+        Path("remote.sqlite"),
+        Path("local.sqlite"),
+        timeout_seconds=0.01,
+        attempts=2,
+    )
+
+    after = fullraw_index._shard_local_cache_health()
+    assert stalled.killed
+    assert not successful.killed
+    assert after["copy_inflight"] == 0
+    assert after["copy_timeouts_total"] == before_timeouts + 1
+    assert after["copy_failures_total"] == before_failures
 
 
 def test_shard_cache_copy_cancellation_kills_copy_without_failure(
