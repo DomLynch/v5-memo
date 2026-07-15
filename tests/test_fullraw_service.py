@@ -241,12 +241,12 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "TimeoutStartSec=150min" in config
     assert "Publish only prequalified supply" in config
     assert "Environment=V5_MEMO_PORTFOLIO_MAX_LEADS=1" in config
-    assert "Environment=V5_MEMO_PORTFOLIO_LEAD_TIMEOUT_SECONDS=600" in config
+    assert "Environment=V5_MEMO_PORTFOLIO_LEAD_TIMEOUT_SECONDS=1200" in config
     assert "Environment=V5_MEMO_PORTFOLIO_DECISION_WAIT_SECONDS=600" in config
     assert "--submit --ready-only" in config
     assert "--auto-discover-leads" not in config
     assert '--max-leads "${V5_MEMO_PORTFOLIO_MAX_LEADS:-1}"' in config
-    assert '--lead-timeout-seconds "${V5_MEMO_PORTFOLIO_LEAD_TIMEOUT_SECONDS:-600}"' in config
+    assert '--lead-timeout-seconds "${V5_MEMO_PORTFOLIO_LEAD_TIMEOUT_SECONDS:-1200}"' in config
     assert '--decision-wait-seconds "${V5_MEMO_PORTFOLIO_DECISION_WAIT_SECONDS:-600}"' in config
     assert "OnCalendar=*-*-* 00/8:20:00" in timer
     assert "Environment=V5_MEMO_READY_BUFFER_SIZE=3" in prepare_config
@@ -257,13 +257,19 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "--state-path /var/lib/v5-memo/portfolio-runs/state.json" in prepare_config
     assert "/usr/bin/flock -n 9" in prepare_config
     assert "/usr/bin/flock -w 900 9" in config
+    assert "--record-noop-status lock_busy" in prepare_config
+    assert "--record-noop-status lock_busy" in config
     assert "OnCalendar=*-*-* *:00,15,30,45:00" in prepare_timer
     assert "RandomizedDelaySec=2min" in prepare_timer
     assert "Unit=v5-memo-portfolio-prepare.service" in prepare_timer
     assert "--submit --ready-only" in catchup_config
     assert "--max-leads 1" in catchup_config
     assert "--auto-discover-leads" not in catchup_config
-    assert "/usr/bin/flock -n 9" in catchup_config
+    assert "TimeoutStartSec=35min" in prepare_config
+    assert "TimeoutStartSec=45min" in catchup_config
+    assert "/usr/bin/flock -w 900 9" in catchup_config
+    assert "--lead-timeout-seconds 1200" in catchup_config
+    assert "--record-noop-status lock_busy" in catchup_config
     assert "OnCalendar=*-*-* *:10,25,40,55:00" in catchup_timer
     assert "Unit=v5-memo-portfolio-catchup.service" in catchup_timer
 

@@ -4,7 +4,7 @@ Wants=network-online.target v5-memo-isolated-fullraw-search.service
 After=network-online.target v5-memo-isolated-fullraw-search.service
 
 [Service]
-TimeoutStartSec=15min
+TimeoutStartSec=35min
 Type=oneshot
 WorkingDirectory=/opt/v5-memo
 EnvironmentFile=/etc/v5-memo/env
@@ -15,4 +15,4 @@ Environment=PYTHONPATH=/opt/v5-memo/src
 Environment=V5_MEMO_READY_BUFFER_SIZE=3
 Environment=V5_MEMO_PREPARE_MAX_LEADS=3
 Environment=V5_MEMO_PREPARE_LEAD_TIMEOUT_SECONDS=600
-ExecStart=/bin/bash -lc 'set -e; exec 9>/run/v5-memo-portfolio.lock; if ! /usr/bin/flock -n 9; then exit 0; fi; run_dir=/var/lib/v5-memo/portfolio-prep-runs/$(date -u +%%Y%%m%%dT%%H%%M%%SZ); mkdir -p "$run_dir"; exec /usr/bin/python3 scripts/v5_publish_portfolio.py --lead-file /etc/v5-memo/v5-portfolio-leads.txt --output-dir "$run_dir" --state-path /var/lib/v5-memo/portfolio-runs/state.json --auto-discover-leads --min-open-leads 40 --discover-count 20 --blocked-retry-hours 24 --max-leads "${V5_MEMO_PREPARE_MAX_LEADS:-1}" --lead-timeout-seconds "${V5_MEMO_PREPARE_LEAD_TIMEOUT_SECONDS:-600}" --ready-buffer-size "${V5_MEMO_READY_BUFFER_SIZE:-3}"'
+ExecStart=/bin/bash -lc 'set -e; run_dir=/var/lib/v5-memo/portfolio-prep-runs/$(date -u +%%Y%%m%%dT%%H%%M%%SZ); mkdir -p "$run_dir"; exec 9>/run/v5-memo-portfolio.lock; if ! /usr/bin/flock -n 9; then exec /usr/bin/python3 scripts/v5_publish_portfolio.py --output-dir "$run_dir" --state-path /var/lib/v5-memo/portfolio-runs/state.json --record-noop-status lock_busy; fi; exec /usr/bin/python3 scripts/v5_publish_portfolio.py --lead-file /etc/v5-memo/v5-portfolio-leads.txt --output-dir "$run_dir" --state-path /var/lib/v5-memo/portfolio-runs/state.json --auto-discover-leads --min-open-leads 40 --discover-count 20 --blocked-retry-hours 24 --max-leads "${V5_MEMO_PREPARE_MAX_LEADS:-1}" --lead-timeout-seconds "${V5_MEMO_PREPARE_LEAD_TIMEOUT_SECONDS:-600}" --ready-buffer-size "${V5_MEMO_READY_BUFFER_SIZE:-3}"'

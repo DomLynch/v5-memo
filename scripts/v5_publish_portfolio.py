@@ -401,6 +401,8 @@ def _save_attempted_lead(
     path: Path | None,
     state: dict[str, object],
     record: Mapping[str, object],
+    *,
+    preserve_ready: bool = False,
 ) -> None:
     if path is None:
         return
@@ -408,11 +410,27 @@ def _save_attempted_lead(
     if not isinstance(raw, dict):
         raw = {}
         state["attempted_leads"] = raw
-    raw[str(record["lead"])] = {
+    lead = str(record["lead"])
+    previous = raw.get(lead)
+    previous_meta = previous if isinstance(previous, Mapping) else {}
+    record_status = str(record["status"])
+    keep_ready = (
+        preserve_ready
+        and str(previous_meta.get("status") or "") == "ready"
+        and _submission_status_is_retryable(record_status)
+    )
+    entry: dict[str, object] = {
         "receipt_path": record["receipt_path"],
-        "status": record["status"],
+        "status": "ready" if keep_ready else record_status,
         "updated_at": _timestamp(),
     }
+    if keep_ready:
+        entry["last_attempt_status"] = record_status
+        entry["ready_receipt_path"] = previous_meta.get(
+            "ready_receipt_path",
+            previous_meta.get("receipt_path"),
+        )
+    raw[lead] = entry
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2, sort_keys=True))
 
@@ -437,15 +455,103 @@ def _save_completed_lead(
     path.write_text(json.dumps(state, indent=2, sort_keys=True))
 
 
+def _listed_minted_publication(receipt: Mapping[str, object]) -> bool:
+    if receipt.get("visibility_error"):
+        return False
+    raw_decision = receipt.get("decision")
+    if not isinstance(raw_decision, Mapping):
+        return False
+    raw_publication = raw_decision.get("publication")
+    if not isinstance(raw_publication, Mapping):
+        return False
+    publication_id = raw_publication.get("publication_id") or raw_publication.get("id")
+    doi = raw_publication.get("doi")
+    doi_status = raw_publication.get("doi_status") or raw_publication.get("doiStatus")
+    raw_visibility = receipt.get("visibility")
+    if not isinstance(raw_visibility, Mapping):
+        return False
+    visibility = (
+        raw_visibility.get("public_visibility")
+        or raw_visibility.get("publicVisibility")
+        or raw_visibility.get("visibility")
+    )
+    listed = (
+        raw_visibility.get("public_visible") is True
+        or raw_visibility.get("publicVisible") is True
+        or str(visibility or "").casefold() == "listed"
+    )
+    return bool(
+        publication_id
+        and isinstance(doi, str)
+        and doi.strip()
+        and str(doi_status or "").casefold() == "minted"
+        and listed
+    )
+
+
+def _submission_status_is_retryable(status: str) -> bool:
+    # Researka's duplicate response returns the original submission ID. Keeping
+    # these leads ready makes the next unattended run poll that same submission
+    # through DOI minting/listing instead of stranding it.
+    return (
+        status in {
+            "accepted_pending_publication",
+            "blocked:lead_timeout",
+            "deferred",
+            "failed_no_receipt",
+            "submitted",
+        }
+        or status.startswith("blocked:researka_")
+    )
+
+
+def _submission_id(receipt: Mapping[str, object]) -> str:
+    for key in ("submission_id", "id"):
+        raw_id = receipt.get(key)
+        if isinstance(raw_id, str) and raw_id.strip():
+            return raw_id.strip()
+    raw_submission = receipt.get("submission")
+    if isinstance(raw_submission, Mapping):
+        for key in ("id", "submission_id"):
+            raw_id = raw_submission.get(key)
+            if isinstance(raw_id, str) and raw_id.strip():
+                return raw_id.strip()
+    return ""
+
+
+def write_noop_portfolio(
+    output_dir: Path,
+    *,
+    status: str,
+    state_path: Path | None = None,
+) -> int:
+    state = _load_state(state_path)
+    ready_count = len(_ready_lead_keys(state))
+    summary = {
+        "created_at": _timestamp(),
+        "attempted_leads": 0,
+        "final_status": status,
+        "ready_buffer_count_after": ready_count,
+        "ready_buffer_count_before": ready_count,
+        "records": [],
+        "selected_leads": 0,
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "portfolio.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True)
+    )
+    return 0
+
+
 def classify_run(returncode: int, receipt: Mapping[str, object], *, submit: bool) -> str:
     raw_decision = receipt.get("decision")
     if isinstance(raw_decision, Mapping):
         decision = str(raw_decision.get("decision") or "")
         if decision == "accept":
-            return "accepted"
+            return "accepted" if _listed_minted_publication(receipt) else "accepted_pending_publication"
         if decision in {"reject", "revise"}:
             return f"decision:{decision}"
-    if submit and returncode == 0 and any(key in receipt for key in ("submission", "submission_id", "id")):
+    if submit and _submission_id(receipt):
         return "submitted"
     error = receipt.get("error")
     if error == "researka_submit_deferred":
@@ -454,13 +560,23 @@ def classify_run(returncode: int, receipt: Mapping[str, object], *, submit: bool
         return "warming:search_coverage"
     if error:
         return f"blocked:{error}"
+    if returncode == 0 and not submit:
+        if receipt.get("ready") is True and receipt.get("validation") == "publish_quality":
+            return "ready"
+        return "blocked:invalid_publish_quality_receipt"
     if returncode == 0:
-        return "submitted" if submit else "ready"
+        return "failed_no_receipt"
     return "failed_no_receipt"
 
 
 def _should_stop(status: str) -> bool:
-    return status in {"accepted", "submitted", "ready", "deferred"}
+    return status in {
+        "accepted",
+        "accepted_pending_publication",
+        "submitted",
+        "ready",
+        "deferred",
+    }
 
 
 def _run(
@@ -633,7 +749,12 @@ def run_portfolio(
         if visibility_error:
             record["visibility_error"] = visibility_error
         records.append(record)
-        _save_attempted_lead(config.state_path, state, record)
+        _save_attempted_lead(
+            config.state_path,
+            state,
+            record,
+            preserve_ready=config.submit,
+        )
         if _should_stop(status) and not preparing:
             if status == "accepted":
                 _save_completed_lead(config.state_path, state, record)
@@ -671,6 +792,7 @@ def run_portfolio(
     final_status = str(summary["final_status"])
     if final_status in {
         "accepted",
+        "accepted_pending_publication",
         "submitted",
         "ready",
         "ready_buffer_full",
@@ -710,11 +832,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--lead-timeout-seconds", type=float, default=0.0)
     parser.add_argument("--ready-buffer-size", type=int, default=0)
     parser.add_argument("--ready-only", action="store_true")
+    parser.add_argument("--record-noop-status", choices=["lock_busy"])
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.record_noop_status:
+        return write_noop_portfolio(
+            args.output_dir,
+            status=args.record_noop_status,
+            state_path=args.state_path,
+        )
     leads = load_leads(args)
     if not leads:
         raise SystemExit("at least one lead is required")

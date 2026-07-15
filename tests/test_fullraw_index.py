@@ -1573,7 +1573,7 @@ def test_queued_sweep_job_promotes_when_lane_frees() -> None:
     assert queued_jobs == {}
 
 
-def test_repolled_queued_sweep_job_gets_next_lane_without_reordering_rest() -> None:
+def test_repolled_queued_sweep_job_keeps_fifo_position() -> None:
     older = fullraw_index.SweepJob("older", "older query", 10, 1900, 2100, "relevance", [])
     target_old = fullraw_index.SweepJob("target", "target old", 10, 1900, 2100, "relevance", [])
     later = fullraw_index.SweepJob("later", "later query", 10, 1900, 2100, "relevance", [])
@@ -1589,8 +1589,60 @@ def test_repolled_queued_sweep_job_gets_next_lane_without_reordering_rest() -> N
         max_inflight=1,
     )
 
-    assert next_job == target_new
-    assert list(queued_jobs) == ["older", "later"]
+    assert next_job == older
+    assert list(queued_jobs) == ["target", "later"]
+    assert queued_jobs["target"] == target_new
+
+
+def test_full_lane_does_not_rotate_oldest_queued_sweep_job() -> None:
+    first = fullraw_index.SweepJob(
+        "first", "first query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    second = fullraw_index.SweepJob(
+        "second", "second query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    queued_jobs = {"first": first, "second": second}
+
+    next_job = fullraw_index._take_next_queued_sweep_job(
+        sweep_inflight={"running"},
+        sweep_queued={"first", "second"},
+        sweep_queued_jobs=queued_jobs,
+        max_inflight=1,
+    )
+
+    assert next_job is None
+    assert list(queued_jobs) == ["first", "second"]
+
+
+def test_priority_sweep_jobs_remain_fifo_ahead_of_background() -> None:
+    first = fullraw_index.SweepJob(
+        "first", "first query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    second = fullraw_index.SweepJob(
+        "second", "second query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    third = fullraw_index.SweepJob(
+        "third", "third query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    background = fullraw_index.SweepJob(
+        "background", "background query", 10, 1900, 2100, "relevance", []
+    )
+    queued_jobs = {"first": first, "second": second, "background": background}
+
+    fullraw_index._queue_sweep_job_with_priority(
+        queued_jobs,
+        "third",
+        third,
+        priority=True,
+    )
+    fullraw_index._queue_sweep_job_with_priority(
+        queued_jobs,
+        "first",
+        first,
+        priority=True,
+    )
+
+    assert list(queued_jobs) == ["first", "second", "third", "background"]
 
 
 def test_priority_sweep_job_gets_next_lane_before_background_queue() -> None:

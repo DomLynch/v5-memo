@@ -3015,13 +3015,14 @@ def _take_next_queued_sweep_job(
         priority_max_inflight=priority_max_inflight,
     )
     for key in tuple(sweep_queued_jobs):
-        job = sweep_queued_jobs.pop(key)
+        job = sweep_queued_jobs[key]
         if key not in sweep_queued:
+            sweep_queued_jobs.pop(key, None)
             continue
         can_burst = job.priority and priority_limit > inflight_limit
         if len(sweep_inflight) >= inflight_limit and (not can_burst or len(sweep_inflight) >= priority_limit):
-            sweep_queued_jobs[key] = job
             return None
+        sweep_queued_jobs.pop(key, None)
         sweep_queued.discard(key)
         sweep_inflight.add(key)
         return job
@@ -3072,32 +3073,37 @@ def _queue_sweep_job_with_priority(
 ) -> None:
     existing_job = sweep_queued_jobs.get(key)
     effective_priority = priority or bool(existing_job and existing_job.priority)
-    if not effective_priority and existing_job is None:
-        sweep_queued_jobs[key] = job
-        _trim_sweep_queue(sweep_queued_jobs, sweep_queued=sweep_queued, max_queue=max_queue)
-        return
     queued_job = (
         existing_job
         if existing_job is not None and existing_job.priority and not priority
         else replace(job, priority=effective_priority)
     )
-    existing = tuple(
-        (queued_key, existing)
-        for queued_key, existing in sweep_queued_jobs.items()
-        if queued_key != key
+    if existing_job is not None and existing_job.priority == effective_priority:
+        # Refresh the job in place. Polling must not change FIFO order inside
+        # either queue class or newer foreground work can starve older work.
+        sweep_queued_jobs[key] = queued_job
+        _trim_sweep_queue(sweep_queued_jobs, sweep_queued=sweep_queued, max_queue=max_queue)
+        return
+    priority_jobs = tuple(
+        (queued_key, queued)
+        for queued_key, queued in sweep_queued_jobs.items()
+        if queued_key != key and queued.priority
+    )
+    background_jobs = tuple(
+        (queued_key, queued)
+        for queued_key, queued in sweep_queued_jobs.items()
+        if queued_key != key and not queued.priority
     )
     sweep_queued_jobs.clear()
+    sweep_queued_jobs.update(priority_jobs)
     if effective_priority:
+        # Foreground work stays ahead of background work while remaining FIFO
+        # with foreground jobs that were already waiting.
         sweep_queued_jobs[key] = queued_job
-        sweep_queued_jobs.update(existing)
+        sweep_queued_jobs.update(background_jobs)
     else:
-        sweep_queued_jobs.update(
-            (queued_key, queued) for queued_key, queued in existing if queued.priority
-        )
+        sweep_queued_jobs.update(background_jobs)
         sweep_queued_jobs[key] = queued_job
-        sweep_queued_jobs.update(
-            (queued_key, queued) for queued_key, queued in existing if not queued.priority
-        )
     _trim_sweep_queue(sweep_queued_jobs, sweep_queued=sweep_queued, max_queue=max_queue)
 
 

@@ -31,6 +31,7 @@ from v5_memo.publisher import (
     build_researka_payload,
     set_researka_public_visibility,
     submit_researka,
+    wait_researka_decision,
 )
 from v5_memo.retriever import collect_seed_hits
 from v5_memo.schemas import (
@@ -155,6 +156,85 @@ def test_submit_researka_does_not_retry_429_by_default(monkeypatch: pytest.Monke
         )
 
     assert len(calls) == 1
+
+
+def test_wait_researka_decision_waits_for_minted_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decisions: list[dict[str, object]] = [
+        {"status": "complete", "decision": "accept"},
+        {
+            "status": "complete",
+            "decision": "accept",
+            "publication": {
+                "publication_id": "pub-1",
+                "doi": "10.17605/OSF.IO/WAIT1",
+                "doi_status": "pending",
+            },
+        },
+        {
+            "status": "complete",
+            "decision": "accept",
+            "publication": {
+                "publication_id": "pub-1",
+                "doi": "10.17605/OSF.IO/WAIT1",
+                "doi_status": "minted",
+            },
+        },
+    ]
+    calls: list[tuple[str, str]] = []
+    sleeps: list[float] = []
+
+    def fake_fetch(submission_id: str, *, api_base: str) -> dict[str, object]:
+        calls.append((submission_id, api_base))
+        return decisions[len(calls) - 1]
+
+    monkeypatch.setattr("v5_memo.publisher.fetch_researka_decision", fake_fetch)
+    monkeypatch.setattr(
+        "v5_memo.publisher.time.sleep",
+        lambda seconds: sleeps.append(seconds),
+    )
+
+    decision = wait_researka_decision(
+        "sub-1",
+        api_base="https://api.example.test",
+        timeout_seconds=10,
+        poll_seconds=0.25,
+    )
+
+    assert decision["publication"] == {
+        "publication_id": "pub-1",
+        "doi": "10.17605/OSF.IO/WAIT1",
+        "doi_status": "minted",
+    }
+    assert calls == [("sub-1", "https://api.example.test")] * 3
+    assert sleeps == [0.25, 0.25]
+
+
+def test_wait_researka_decision_marks_accepted_publication_pending_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_fetch(_submission_id: str, *, api_base: str) -> dict[str, object]:
+        del api_base
+        return {
+            "status": "complete",
+            "decision": "accept",
+            "publication": {"doi_status": "pending"},
+        }
+
+    monkeypatch.setattr(
+        "v5_memo.publisher.fetch_researka_decision",
+        fake_fetch,
+    )
+
+    decision = wait_researka_decision("sub-1", timeout_seconds=0)
+
+    assert decision == {
+        "status": "timeout",
+        "decision": "accept",
+        "publication": {"doi_status": "pending"},
+        "publication_pending": True,
+    }
 
 
 def test_visibility_403_verifies_already_listed_publication(
