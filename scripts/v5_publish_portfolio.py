@@ -919,6 +919,25 @@ def _should_stop(status: str) -> bool:
     }
 
 
+def _portfolio_exit_code(final_status: str, *, preparing: bool) -> int:
+    if final_status in {
+        "accepted",
+        "accepted_pending_publication",
+        "submitted",
+        "ready",
+        "ready_buffer_full",
+        "ready_buffer_empty",
+        "no_new_leads",
+    } or final_status.startswith("warming:"):
+        return 0
+    if preparing and final_status in {
+        "blocked:candidate_publish_blocker",
+        "blocked:no_receipt_bound_alpha_candidate",
+    }:
+        return 0
+    return 6 if final_status == "deferred" else 1
+
+
 def _run(
     command: Sequence[str],
     env: Mapping[str, str],
@@ -1179,18 +1198,7 @@ def run_portfolio(
         "records": records,
     }
     (config.output_dir / "portfolio.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
-    final_status = str(summary["final_status"])
-    if final_status in {
-        "accepted",
-        "accepted_pending_publication",
-        "submitted",
-        "ready",
-        "ready_buffer_full",
-        "ready_buffer_empty",
-        "no_new_leads",
-    } or final_status.startswith("warming:"):
-        return 0
-    return 6 if final_status == "deferred" else 1
+    return _portfolio_exit_code(str(summary["final_status"]), preparing=preparing)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
