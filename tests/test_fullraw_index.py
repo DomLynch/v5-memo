@@ -3035,6 +3035,36 @@ def test_auto_sweep_workers_scales_by_inflight(monkeypatch: pytest.MonkeyPatch) 
     assert fullraw_index._auto_sweep_workers(0) == 16
 
 
+def test_auto_sweep_inflight_preserves_cache_worker_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gib = 1024 * 1024 * 1024
+    monkeypatch.setattr(os, "cpu_count", lambda: 16)
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", str(31 * gib))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", str(8 * gib))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", "0")
+
+    assert fullraw_index._auto_sweep_max_inflight() == 3
+    assert fullraw_index._auto_sweep_workers(3) == 1
+
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", "1")
+
+    assert fullraw_index._auto_sweep_max_inflight() == 2
+
+
+def test_configured_sweep_inflight_honors_auto_and_explicit_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT", "auto")
+    monkeypatch.setattr(fullraw_index, "_auto_sweep_max_inflight", lambda: 3)
+
+    assert fullraw_index._configured_sweep_max_inflight() == 3
+
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT", "2")
+
+    assert fullraw_index._configured_sweep_max_inflight() == 2
+
+
 def test_auto_sweep_workers_ignores_cache_budget(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
