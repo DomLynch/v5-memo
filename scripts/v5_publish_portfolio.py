@@ -458,6 +458,10 @@ def _attempt_priority(
         status = str(raw_meta.get("status") or "")
         if status == "ready":
             return (-1 if prefer_ready else 4, 0)
+        if status in {"accepted_pending_publication", "deferred", "submitted"} or status.startswith(
+            "blocked:researka_"
+        ):
+            return (0, -1)
         if status.startswith("warming:") or status == "blocked:search_backend_error":
             remaining = _receipt_remaining_shards(raw_meta)
             return (0, remaining if remaining is not None else sys.maxsize)

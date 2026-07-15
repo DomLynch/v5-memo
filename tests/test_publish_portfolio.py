@@ -660,6 +660,28 @@ def test_warming_coverage_order_handles_unknowns_and_stable_ties(tmp_path: Path)
     assert available == ["near b", "near a", "far lead", "unknown lead", "fresh lead"]
 
 
+def test_prepare_revalidates_post_quality_submission_failure_before_warming() -> None:
+    portfolio = _load_portfolio()
+    state = {
+        "attempted_leads": {
+            "warming lead": {
+                "status": "warming:search_coverage",
+                "sweep_remaining_shards": 1,
+            },
+            "submit retry": {"status": "blocked:researka_submit_failed"},
+        }
+    }
+
+    available = portfolio._available_leads(
+        ["warming lead", "submit retry"],
+        state,
+        blocked_retry_hours=0,
+        now=portfolio.datetime.now(portfolio.UTC),
+    )
+
+    assert available == ["submit retry", "warming lead"]
+
+
 def test_available_leads_prioritizes_ready_supply_for_submit() -> None:
     portfolio = _load_portfolio()
     state = {
