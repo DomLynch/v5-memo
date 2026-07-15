@@ -500,6 +500,8 @@ def test_prepare_run_fills_only_missing_ready_capacity(tmp_path: Path) -> None:
     assert summary["ready_buffer_count_before"] == 1
     assert summary["ready_buffer_count_after"] == 2
     assert summary["selected_leads"] == 1
+    assert summary["publish_quality_validation"] is True
+    assert summary["records"][0]["publish_quality_validation"] is True
     assert state["attempted_leads"]["ready lead"]["status"] == "ready"
     assert state["attempted_leads"]["orphan ready"]["status"] == "ready"
     assert state["attempted_leads"]["fresh lead"]["status"] == "ready"
