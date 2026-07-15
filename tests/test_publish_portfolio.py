@@ -4,6 +4,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
@@ -39,6 +40,62 @@ def _accepted_receipt() -> dict[str, object]:
         },
         "visibility": {"id": "pub-1", "public_visibility": "listed"},
     }
+
+
+def _cache_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
+    cache_dir = tmp_path / "active-cache"
+    shard_dir = tmp_path / "active-shards"
+    cache_dir.mkdir()
+    shard_dir.mkdir()
+    return (
+        {
+            "RESEARKA_FULLRAW_SWEEP_CACHE_DIR": str(cache_dir),
+            "RESEARKA_FULLRAW_SHARD_DIR": str(shard_dir),
+            "RESEARKA_FULLRAW_SWEEP_SHARD_LIMIT": "1525",
+            "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT": "12",
+            "RESEARKA_FULLRAW_SWEEP_TTL_SECONDS": "604800",
+            "V5_MEMO_FULL_RAW_PER_QUERY_LIMIT": "25",
+            "V5_MEMO_FULL_RAW_MAX_HITS": "100",
+        },
+        cache_dir,
+        shard_dir,
+    )
+
+
+def _write_sweep_cache(
+    portfolio: ModuleType,
+    path: Path,
+    *,
+    query: str,
+    scope: str,
+    created_at: float | None = None,
+    shards_searched: int = 1525,
+    remaining_shards: int = 0,
+    failed_shards: int = 0,
+    pass_shard_limit: int | None = 12,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    receipt = {
+        "partial_shard_search": shards_searched != 1525,
+        "result_count_raw": 25,
+        "shards_searched": shards_searched,
+        "shards_total": 1525,
+        "sweep_catalog_scope": scope,
+        "sweep_failed_shards": failed_shards,
+        "sweep_original_query": query,
+        "sweep_query": query,
+        "sweep_remaining_shards": remaining_shards,
+        "sweep_result_limit": 25,
+        "sweep_shard_limit": 1525,
+        "sweep_strategy": portfolio._SWEEP_STRATEGY,
+    }
+    if pass_shard_limit is not None:
+        receipt["sweep_pass_shard_limit"] = pass_shard_limit
+    path.write_text(json.dumps({
+        "created_at": time.time() if created_at is None else created_at,
+        "hits": [{"id": index} for index in range(25)],
+        "receipt": receipt,
+    }))
 
 
 def test_build_command_preserves_strict_submit_gate(tmp_path: Path) -> None:
@@ -660,6 +717,176 @@ def test_warming_coverage_order_handles_unknowns_and_stable_ties(tmp_path: Path)
     assert available == ["near b", "near a", "far lead", "unknown lead", "fresh lead"]
 
 
+def test_prepare_prioritizes_eligible_lead_with_complete_first_query_cache(
+    tmp_path: Path,
+) -> None:
+    portfolio = _load_portfolio()
+    env, cache_dir, shard_dir = _cache_env(tmp_path)
+    cached_lead = "cached compound resistance training older adults trial"
+    query, result_limit = portfolio._first_query_cache_specs(
+        [cached_lead],
+        env,
+    )[portfolio._lead_key(cached_lead)]
+    assert result_limit == 25
+    _write_sweep_cache(
+        portfolio,
+        cache_dir / "complete.json",
+        query=query,
+        scope=str(shard_dir.absolute()),
+    )
+    state = {
+        "attempted_leads": {
+            cached_lead: {"status": "blocked:no_receipt_bound_alpha_candidate"},
+            "warming lead": {
+                "status": "warming:search_coverage",
+                "sweep_remaining_shards": 1,
+            },
+        }
+    }
+
+    cache_keys = portfolio._complete_first_query_cache_lead_keys(
+        ["warming lead", cached_lead],
+        env,
+        planner=None,
+    )
+    available = portfolio._available_leads(
+        ["warming lead", cached_lead],
+        state,
+        blocked_retry_hours=0,
+        now=portfolio.datetime.now(portfolio.UTC),
+        complete_cache_lead_keys=cache_keys,
+    )
+
+    assert cache_keys == {portfolio._lead_key(cached_lead)}
+    assert available == [cached_lead, "warming lead"]
+
+
+def test_cache_priority_ignores_stale_wrong_scope_incomplete_and_unconfigured(
+    tmp_path: Path,
+) -> None:
+    portfolio = _load_portfolio()
+    env, cache_dir, shard_dir = _cache_env(tmp_path)
+    leads = [
+        "stale intervention trial",
+        "wrong scope trial",
+        "incomplete trial",
+        "missing pass width trial",
+        "wrong pass width trial",
+    ]
+    specs = portfolio._first_query_cache_specs(leads, env)
+    _write_sweep_cache(
+        portfolio,
+        cache_dir / "stale.json",
+        query=specs[portfolio._lead_key(leads[0])][0],
+        scope=str(shard_dir.absolute()),
+        created_at=0,
+    )
+    _write_sweep_cache(
+        portfolio,
+        cache_dir / "wrong-scope.json",
+        query=specs[portfolio._lead_key(leads[1])][0],
+        scope=str(tmp_path / "different-shards"),
+    )
+    _write_sweep_cache(
+        portfolio,
+        cache_dir / "incomplete.json",
+        query=specs[portfolio._lead_key(leads[2])][0],
+        scope=str(shard_dir.absolute()),
+        shards_searched=1524,
+        remaining_shards=1,
+    )
+    _write_sweep_cache(
+        portfolio,
+        cache_dir / "missing-pass-width.json",
+        query=specs[portfolio._lead_key(leads[3])][0],
+        scope=str(shard_dir.absolute()),
+        pass_shard_limit=None,
+    )
+    _write_sweep_cache(
+        portfolio,
+        cache_dir / "wrong-pass-width.json",
+        query=specs[portfolio._lead_key(leads[4])][0],
+        scope=str(shard_dir.absolute()),
+        pass_shard_limit=16,
+    )
+    legacy_dir = tmp_path / "unconfigured-cache"
+    _write_sweep_cache(
+        portfolio,
+        legacy_dir / "otherwise-valid.json",
+        query=specs[portfolio._lead_key(leads[0])][0],
+        scope=str(shard_dir.absolute()),
+    )
+
+    cache_keys = portfolio._complete_first_query_cache_lead_keys(
+        leads,
+        env,
+        planner=None,
+    )
+
+    assert cache_keys == set()
+
+
+def test_complete_cache_priority_preserves_input_order_among_equals(
+    tmp_path: Path,
+) -> None:
+    portfolio = _load_portfolio()
+    env, cache_dir, shard_dir = _cache_env(tmp_path)
+    leads = [
+        "second cached compound trial",
+        "first cached compound trial",
+        "warming lead",
+    ]
+    specs = portfolio._first_query_cache_specs(leads[:2], env)
+    for index, lead in enumerate(leads[:2]):
+        _write_sweep_cache(
+            portfolio,
+            cache_dir / f"complete-{index}.json",
+            query=specs[portfolio._lead_key(lead)][0],
+            scope=str(shard_dir.absolute()),
+        )
+    state = {
+        "attempted_leads": {
+            lead: {"status": "blocked:no_receipt_bound_alpha_candidate"}
+            for lead in leads[:2]
+        }
+        | {
+            "warming lead": {
+                "status": "warming:search_coverage",
+                "sweep_remaining_shards": 1,
+            }
+        }
+    }
+
+    cache_keys = portfolio._complete_first_query_cache_lead_keys(
+        leads,
+        env,
+        planner=None,
+    )
+    available = portfolio._available_leads(
+        leads,
+        state,
+        blocked_retry_hours=0,
+        now=portfolio.datetime.now(portfolio.UTC),
+        complete_cache_lead_keys=cache_keys,
+    )
+
+    assert available == leads
+
+
+def test_cache_query_limit_ignores_generic_only_limit_variables() -> None:
+    portfolio = _load_portfolio()
+
+    specs = portfolio._first_query_cache_specs(
+        ["generic compound resistance training trial"],
+        {
+            "RESEARKA_FULLRAW_PER_QUERY_LIMIT": "7",
+            "RESEARKA_FULLRAW_MAX_HITS": "7",
+        },
+    )
+
+    assert next(iter(specs.values()))[1] == 50
+
+
 def test_prepare_revalidates_post_quality_submission_failure_before_warming() -> None:
     portfolio = _load_portfolio()
     state = {
@@ -691,6 +918,31 @@ def test_prepare_revalidates_post_quality_submission_failure_before_warming() ->
 
     assert available == ["submit retry", "warming lead"]
     assert normal_retry == ["warming lead"]
+
+
+def test_post_quality_retry_stays_ahead_of_complete_cache_priority() -> None:
+    portfolio = _load_portfolio()
+    state = {
+        "attempted_leads": {
+            "submit retry": {"status": "blocked:researka_submit_failed"},
+            "cached lead": {"status": "blocked:no_receipt_bound_alpha_candidate"},
+            "warming lead": {
+                "status": "warming:search_coverage",
+                "sweep_remaining_shards": 1,
+            },
+        }
+    }
+
+    available = portfolio._available_leads(
+        ["warming lead", "cached lead", "submit retry"],
+        state,
+        blocked_retry_hours=0,
+        now=portfolio.datetime.now(portfolio.UTC),
+        retry_post_quality=True,
+        complete_cache_lead_keys={"cached lead", "submit retry"},
+    )
+
+    assert available == ["submit retry", "cached lead", "warming lead"]
 
 
 def test_available_leads_prioritizes_ready_supply_for_submit() -> None:

@@ -15,6 +15,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib import parse, request
 
+from v5_memo.__main__ import _alpha_shape_queries, _dedupe_queries
+from v5_memo.client import _fullraw_search_passes
+from v5_memo.fullraw_index import (
+    _SWEEP_STRATEGY,
+    _load_sweep_cache,
+    _sweep_cache_entry_matches_active_or_completed_original_query,
+)
+
 DEFAULT_LEADS = (
     "urolithin muscle strength endurance older adults trial",
     "urolithin muscle recovery trained runners placebo trial",
@@ -82,6 +90,7 @@ V5_SWEEP_WAIT_ENV = "V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS"
 GENERIC_SWEEP_WAIT_ENV = "RESEARKA_FULLRAW_FOREGROUND_SWEEP_WAIT_SECONDS"
 V5_SEARCH_BUDGET_ENV = "V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS"
 GENERIC_SEARCH_BUDGET_ENV = "RESEARKA_FULLRAW_SEARCH_BUDGET_SECONDS"
+CACHE_SCAN_LIMIT = 512
 
 Runner = Callable[
     [Sequence[str], Mapping[str, str], Path],
@@ -417,6 +426,7 @@ def _available_leads(
     now: datetime,
     prefer_ready: bool = False,
     retry_post_quality: bool = False,
+    complete_cache_lead_keys: set[str] | None = None,
 ) -> list[str]:
     completed_keys = _state_keys(_completed_leads(state))
     terminal_decision_keys = _terminal_decision_lead_keys(state)
@@ -435,7 +445,12 @@ def _available_leads(
     ]
     return sorted(
         available,
-        key=lambda lead: _attempt_priority(lead, state, prefer_ready=prefer_ready),
+        key=lambda lead: _attempt_priority(
+            lead,
+            state,
+            prefer_ready=prefer_ready,
+            complete_cache_lead_keys=complete_cache_lead_keys,
+        ),
     )
 
 
@@ -470,6 +485,7 @@ def _attempt_priority(
     state: Mapping[str, object],
     *,
     prefer_ready: bool = False,
+    complete_cache_lead_keys: set[str] | None = None,
 ) -> tuple[int, int]:
     lead_key = _lead_key(lead)
     for raw_lead, raw_meta in _attempted_leads(state).items():
@@ -480,6 +496,8 @@ def _attempt_priority(
             return (-1 if prefer_ready else 4, 0)
         if _post_quality_status(status):
             return (0, -1)
+        if complete_cache_lead_keys and lead_key in complete_cache_lead_keys:
+            return (0, 0)
         if status.startswith("warming:") or status == "blocked:search_backend_error":
             remaining = _receipt_remaining_shards(raw_meta)
             return (0, remaining if remaining is not None else sys.maxsize)
@@ -488,7 +506,149 @@ def _attempt_priority(
         if status.startswith("decision:"):
             return (3, 0)
         return (4, 0)
+    if complete_cache_lead_keys and lead_key in complete_cache_lead_keys:
+        return (0, 0)
     return (2, 0)
+
+
+def _env_text(env: Mapping[str, str], *names: str) -> str:
+    return next(
+        (
+            str(env.get(name, "")).strip()
+            for name in names
+            if str(env.get(name, "")).strip()
+        ),
+        "",
+    )
+
+
+def _positive_int_from_env(env: Mapping[str, str], *names: str) -> int | None:
+    raw = _env_text(env, *names)
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _positive_float_from_env(env: Mapping[str, str], *names: str) -> float | None:
+    raw = _env_text(env, *names)
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _first_query_cache_specs(
+    leads: Sequence[str],
+    env: Mapping[str, str],
+) -> dict[str, tuple[str, int]]:
+    per_query_limit = _positive_int_from_env(
+        env,
+        "V5_MEMO_FULL_RAW_PER_QUERY_LIMIT",
+        "V5_MEMO_FULL_RAW_RECALL_LIMIT",
+    ) or 50
+    specs: dict[str, tuple[str, int]] = {}
+    for lead in leads:
+        seed_queries = _dedupe_queries([lead, *_alpha_shape_queries(lead)])
+        if not seed_queries:
+            continue
+        max_hits = _positive_int_from_env(
+            env,
+            "V5_MEMO_FULL_RAW_MAX_HITS",
+        ) or per_query_limit * max(2, min(4, len(seed_queries)))
+        result_limit = min(
+            per_query_limit,
+            max(1, -(-max_hits // len(seed_queries))),
+        )
+        passes = _fullraw_search_passes(seed_queries[0], limit=1)
+        if passes:
+            specs[_lead_key(lead)] = (passes[0].query, result_limit)
+    return specs
+
+
+def _complete_first_query_cache_lead_keys(
+    leads: Sequence[str],
+    env: Mapping[str, str],
+    *,
+    planner: str | None,
+) -> set[str]:
+    if planner not in {None, "seed"}:
+        return set()
+    cache_dir_text = _env_text(
+        env,
+        "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR",
+        "RESEARKA_FULLRAW_SWEEP_CACHE_DIR",
+    )
+    shard_dir_text = _env_text(
+        env,
+        "V5_MEMO_FULL_RAW_SHARD_DIR",
+        "RESEARKA_FULLRAW_SHARD_DIR",
+    )
+    sweep_shard_limit = _positive_int_from_env(
+        env,
+        "V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT",
+        "RESEARKA_FULLRAW_SWEEP_SHARD_LIMIT",
+    )
+    if not cache_dir_text or not shard_dir_text or sweep_shard_limit is None:
+        return set()
+    cache_dir = Path(cache_dir_text)
+    if not cache_dir.is_dir():
+        return set()
+    sweep_pass_shard_limit = _positive_int_from_env(
+        env,
+        "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT",
+        "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT",
+    ) or sweep_shard_limit
+    sweep_ttl = _positive_float_from_env(
+        env,
+        "V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS",
+        "RESEARKA_FULLRAW_SWEEP_TTL_SECONDS",
+    ) or 86400.0
+    catalog_scope = str(Path(shard_dir_text).absolute())
+    specs = _first_query_cache_specs(leads, env)
+    if not specs:
+        return set()
+
+    matched: set[str] = set()
+    try:
+        with os.scandir(cache_dir) as entries:
+            paths = [
+                Path(entry.path)
+                for _, entry in zip(range(CACHE_SCAN_LIMIT), entries, strict=False)
+                if entry.is_file(follow_symlinks=False) and entry.name.endswith(".json")
+            ]
+    except OSError:
+        return set()
+    for path in paths:
+        entry = _load_sweep_cache(path, ttl_seconds=sweep_ttl)
+        if entry is None:
+            continue
+        receipt = entry.receipt
+        if not (
+            receipt.get("shards_searched") == sweep_shard_limit
+            and receipt.get("shards_total") == sweep_shard_limit
+            and receipt.get("sweep_pass_shard_limit") == sweep_pass_shard_limit
+            and receipt.get("sweep_remaining_shards") == 0
+            and receipt.get("sweep_failed_shards", 0) == 0
+        ):
+            continue
+        for lead_key, (query, result_limit) in specs.items():
+            if lead_key in matched:
+                continue
+            if _sweep_cache_entry_matches_active_or_completed_original_query(
+                entry,
+                active_query=query,
+                original_query=query,
+                result_limit=result_limit,
+                sweep_shard_limit=sweep_shard_limit,
+                sweep_pass_shard_limit=sweep_pass_shard_limit,
+                sweep_strategy=_SWEEP_STRATEGY,
+                sweep_catalog_scope=catalog_scope,
+            ):
+                matched.add(lead_key)
+    return matched
 
 
 def _post_quality_status(status: str) -> bool:
@@ -838,6 +998,15 @@ def run_portfolio(
     preparing = not config.submit and config.ready_buffer_size > 0
     expanded_leads = list(leads)
     initial_completed_keys = _state_keys(_completed_leads(state))
+    complete_cache_lead_keys = (
+        _complete_first_query_cache_lead_keys(
+            expanded_leads,
+            run_env,
+            planner=config.planner,
+        )
+        if preparing and config.searcher == "fullraw"
+        else set()
+    )
     available_leads = _available_leads(
         expanded_leads,
         state,
@@ -845,6 +1014,7 @@ def run_portfolio(
         now=now,
         prefer_ready=config.submit,
         retry_post_quality=preparing,
+        complete_cache_lead_keys=complete_cache_lead_keys,
     )
     eligible_keys = {_lead_key(lead) for lead in expanded_leads}
     ready_keys = _ready_lead_keys(state) & eligible_keys
@@ -862,6 +1032,15 @@ def run_portfolio(
         discovered = discover_leads(expanded_leads, state, count=needed)
         _append_leads(config.lead_file, discovered)
         expanded_leads.extend(discovered)
+        complete_cache_lead_keys = (
+            _complete_first_query_cache_lead_keys(
+                expanded_leads,
+                run_env,
+                planner=config.planner,
+            )
+            if preparing and config.searcher == "fullraw"
+            else set()
+        )
         available_leads = _available_leads(
             expanded_leads,
             state,
@@ -869,6 +1048,7 @@ def run_portfolio(
             now=now,
             prefer_ready=config.submit,
             retry_post_quality=preparing,
+            complete_cache_lead_keys=complete_cache_lead_keys,
         )
         eligible_keys = {_lead_key(lead) for lead in expanded_leads}
         ready_keys = _ready_lead_keys(state) & eligible_keys
@@ -983,6 +1163,11 @@ def run_portfolio(
             and resource_max_inflight is None
         ),
         "effective_max_leads": lead_limit,
+        "complete_cache_priority_leads": [
+            lead
+            for lead in available_leads
+            if _lead_key(lead) in complete_cache_lead_keys
+        ],
         "ready_buffer_size": config.ready_buffer_size,
         "ready_buffer_count_before": ready_before,
         "ready_buffer_count_after": ready_after,
