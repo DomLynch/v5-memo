@@ -2946,7 +2946,7 @@ def test_materialized_shard_cache_evicts_dead_pid_temp_files(
     keep = cache_dir / "keep.sqlite"
     for path in (dead_tmp, keep):
         path.write_bytes(b"x" * 6)
-    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "6")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_MAX_BYTES", "100")
     monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_LOCAL_CACHE_TMP_TTL_SECONDS", "3600")
 
     def fake_kill(pid: int, sig: int) -> None:

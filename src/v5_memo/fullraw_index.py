@@ -2225,12 +2225,13 @@ def _evict_shard_cache(
         for path in cache_dir.glob(pattern):
             if not path.is_file() or path == keep or path.resolve() in preserved:
                 continue
-            if (
-                ".sqlite.tmp." in path.name
-                and now - path.stat().st_mtime < tmp_ttl_seconds
-                and _cache_tmp_owner_alive(path)
-            ):
-                continue
+            if ".sqlite.tmp." in path.name:
+                if not _cache_tmp_owner_alive(path):
+                    with suppress(OSError):
+                        path.unlink()
+                    continue
+                if now - path.stat().st_mtime < tmp_ttl_seconds:
+                    continue
             entries.append(path)
     total = sum(path.stat().st_size for path in entries)
     if keep.exists():
