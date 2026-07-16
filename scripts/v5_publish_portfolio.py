@@ -282,18 +282,21 @@ def _portfolio_run_env(config: RunConfig, base_env: Mapping[str, str]) -> dict[s
                 config.lead_timeout_seconds / 2.0,
             )
         run_env[V5_HEALTH_WAIT_ENV] = _format_seconds(wait_seconds)
-    if not (config.submit and config.searcher == "fullraw"):
+    if config.searcher != "fullraw" or not (config.submit or config.ready_buffer_size > 0):
         return run_env
-    if not (
-        _configured_env(run_env, V5_SWEEP_WAIT_ENV)
-        or _configured_env(run_env, GENERIC_SWEEP_WAIT_ENV)
+    if not _configured_env(run_env, V5_SWEEP_WAIT_ENV):
+        bounded_wait = _positive_float(_portfolio_sweep_wait_seconds(config)) or 0.0
+        generic_wait = _positive_float(run_env.get(GENERIC_SWEEP_WAIT_ENV))
+        wait_seconds = min(generic_wait, bounded_wait) if generic_wait else bounded_wait
+        run_env[V5_SWEEP_WAIT_ENV] = _format_seconds(wait_seconds)
+    v5_wait = _positive_float(run_env.get(V5_SWEEP_WAIT_ENV))
+    generic_budget = _positive_float(run_env.get(GENERIC_SEARCH_BUDGET_ENV))
+    if (
+        v5_wait is not None
+        and not _configured_env(run_env, V5_SEARCH_BUDGET_ENV)
+        and (generic_budget is None or generic_budget < v5_wait)
     ):
-        run_env[V5_SWEEP_WAIT_ENV] = _portfolio_sweep_wait_seconds(config)
-        if not (
-            _configured_env(run_env, V5_SEARCH_BUDGET_ENV)
-            or _configured_env(run_env, GENERIC_SEARCH_BUDGET_ENV)
-        ):
-            run_env[V5_SEARCH_BUDGET_ENV] = run_env[V5_SWEEP_WAIT_ENV]
+        run_env[V5_SEARCH_BUDGET_ENV] = _format_seconds(v5_wait)
     return run_env
 
 
