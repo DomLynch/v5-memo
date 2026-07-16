@@ -270,6 +270,7 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     config = (deploy_dir / "v5-memo-portfolio-publish.service").read_text()
     isolation = (deploy_dir / "zzz-v5-portfolio-isolated-fullraw.conf").read_text()
     isolation_installer = (deploy_dir / "install-v5-portfolio-isolation.sh").read_text()
+    shared_env = (deploy_dir / "v5-memo-portfolio-shared-fullraw.env").read_text()
     timer = (deploy_dir / "v5-memo-portfolio-publish.timer").read_text()
     prepare_config = (deploy_dir / "v5-memo-portfolio-prepare.service").read_text()
     prepare_timer = (deploy_dir / "v5-memo-portfolio-prepare.timer").read_text()
@@ -314,16 +315,19 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "researka-fullraw-search.service" in isolation
     assert "Wants=network-online.target researka-fullraw-search.service" in isolation
     assert "After=network-online.target researka-fullraw-search.service" in isolation
-    assert "RESEARKA_FULLRAW_SEARCH_URL=http://127.0.0.1:9903/search" in isolation
-    assert "RESEARKA_FULL_RAW" not in isolation
-    assert "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL=http://127.0.0.1:9903/search" in isolation
-    assert "V5_MEMO_FULL_RAW_INDEX_PORT=9903" in isolation
+    assert "EnvironmentFile=/etc/v5-memo/portfolio-shared-fullraw.env" in isolation
     assert "9915" not in isolation
+    assert "RESEARKA_FULLRAW_SEARCH_URL=http://127.0.0.1:9903/search" in shared_env
+    assert "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL=http://127.0.0.1:9903/search" in shared_env
+    assert "V5_MEMO_FULL_RAW_INDEX_PORT=9903" in shared_env
+    assert "9915" not in shared_env
     assert "v5-memo-portfolio-prepare.service" in isolation_installer
     assert "v5-memo-portfolio-catchup.service" in isolation_installer
     assert "v5-memo-portfolio-publish.service" in isolation_installer
     assert '"$deploy_dir/$unit"' in isolation_installer
     assert '"$unit_dir/$unit"' in isolation_installer
+    assert '"$deploy_dir/$shared_env"' in isolation_installer
+    assert "/etc/v5-memo/portfolio-shared-fullraw.env" in isolation_installer
     assert "rm -f" not in isolation_installer
     assert "systemctl daemon-reload" in isolation_installer
 
