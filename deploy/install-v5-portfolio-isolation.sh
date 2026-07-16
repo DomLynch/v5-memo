@@ -11,6 +11,9 @@ for unit in \
     v5-memo-portfolio-catchup.service \
     v5-memo-portfolio-publish.service
 do
+    install -D -m 0644 \
+        "$deploy_dir/$unit" \
+        "$unit_dir/$unit"
     rm -f "$unit_dir/$unit.d/$shared_dropin"
     install -D -m 0644 \
         "$deploy_dir/$dropin" \
