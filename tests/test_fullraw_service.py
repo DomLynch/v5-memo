@@ -322,6 +322,8 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "v5-memo-portfolio-prepare.service" in isolation_installer
     assert "v5-memo-portfolio-catchup.service" in isolation_installer
     assert "v5-memo-portfolio-publish.service" in isolation_installer
+    assert '"$deploy_dir/$unit"' in isolation_installer
+    assert '"$unit_dir/$unit"' in isolation_installer
     assert "90-researka-shared-fullraw.conf" in isolation_installer
     assert 'rm -f "$unit_dir/$unit.d/$shared_dropin"' in isolation_installer
     assert "systemctl daemon-reload" in isolation_installer
