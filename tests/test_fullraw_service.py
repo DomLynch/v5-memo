@@ -262,6 +262,7 @@ def test_v5_isolated_fullraw_env_overrides_shared_shard_dir() -> None:
     assert "RESEARKA_FULLRAW_SWEEP_SHARD_TIMEOUT_SECONDS=180" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST=0" in env_example
     assert "RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=64" in env_example
+    assert "RESEARKA_FULLRAW_MAX_VARIANTS=1" in env_example
     assert "RESEARKA_FULLRAW_INDEX_PORT=9915" in env_example
 
 
@@ -289,7 +290,8 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert '--decision-wait-seconds "${V5_MEMO_PORTFOLIO_DECISION_WAIT_SECONDS:-600}"' in config
     assert "OnCalendar=*-*-* 00/8:20:00" in timer
     assert "Environment=V5_MEMO_READY_BUFFER_SIZE=3" in prepare_config
-    assert "Environment=V5_MEMO_PREPARE_MAX_LEADS=3" in prepare_config
+    assert "Environment=V5_MEMO_PREPARE_MAX_LEADS=1" in prepare_config
+    assert "one strict candidate at a time" in prepare_config
     assert '--ready-buffer-size "${V5_MEMO_READY_BUFFER_SIZE:-3}"' in prepare_config
     assert "--resource-aware-max-leads" in prepare_config
     assert "--validate-publish-quality" not in prepare_config
