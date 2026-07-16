@@ -311,21 +311,20 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "--record-noop-status lock_busy" in catchup_config
     assert "OnCalendar=*-*-* *:10,25,40,55:00" in catchup_timer
     assert "Unit=v5-memo-portfolio-catchup.service" in catchup_timer
-    assert "v5-memo-isolated-fullraw-search.service" in isolation
-    assert "Wants=network-online.target v5-memo-isolated-fullraw-search.service" in isolation
-    assert "After=network-online.target v5-memo-isolated-fullraw-search.service" in isolation
-    assert "RESEARKA_FULLRAW_SEARCH_URL=http://127.0.0.1:9915/search" in isolation
-    assert "RESEARKA_FULLRAW_INDEX_PORT=9915" in isolation
-    assert "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL=http://127.0.0.1:9915/search" in isolation
-    assert "V5_MEMO_FULL_RAW_INDEX_PORT=9915" in isolation
-    assert "9903" not in isolation
+    assert "researka-fullraw-search.service" in isolation
+    assert "Wants=network-online.target researka-fullraw-search.service" in isolation
+    assert "After=network-online.target researka-fullraw-search.service" in isolation
+    assert "RESEARKA_FULLRAW_SEARCH_URL=http://127.0.0.1:9903/search" in isolation
+    assert "RESEARKA_FULL_RAW" not in isolation
+    assert "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL=http://127.0.0.1:9903/search" in isolation
+    assert "V5_MEMO_FULL_RAW_INDEX_PORT=9903" in isolation
+    assert "9915" not in isolation
     assert "v5-memo-portfolio-prepare.service" in isolation_installer
     assert "v5-memo-portfolio-catchup.service" in isolation_installer
     assert "v5-memo-portfolio-publish.service" in isolation_installer
     assert '"$deploy_dir/$unit"' in isolation_installer
     assert '"$unit_dir/$unit"' in isolation_installer
-    assert "90-researka-shared-fullraw.conf" in isolation_installer
-    assert 'rm -f "$unit_dir/$unit.d/$shared_dropin"' in isolation_installer
+    assert "rm -f" not in isolation_installer
     assert "systemctl daemon-reload" in isolation_installer
 
 
