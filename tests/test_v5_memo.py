@@ -677,6 +677,12 @@ def test_no_alpha_failure_reports_publish_quality_blockers() -> None:
         candidates=[],
         min_alpha_tier="publishable_alpha",
         mined_candidates=[weak],
+        final_quality_blockers=[
+            {
+                "receipt_ids": ("human", "rat"),
+                "blocker": {"error": "claim_trace_missing"},
+            }
+        ],
     )
 
     assert failure.details["publish_quality_blocked_count"] == 1
@@ -688,6 +694,10 @@ def test_no_alpha_failure_reports_publish_quality_blockers() -> None:
         "direct_human_receipts": 1,
         "strong_direct_human_receipts": 1,
     }
+    assert failure.details["final_publish_quality_blocked_count"] == 1
+    final_blockers = failure.details["top_final_publish_quality_blockers"]
+    assert isinstance(final_blockers, tuple)
+    assert final_blockers[0]["blocker"] == {"error": "claim_trace_missing"}
     assert "publish_quality_blocked_count=1" in str(MemoBuildError(failure))
 
 
@@ -1344,7 +1354,7 @@ def test_pipeline_stops_retrieval_once_publishable_candidate_exists() -> None:
     assert result.candidate.receipt_ids == ("promise", "outcome")
 
 
-def test_publish_quality_pipeline_skips_incomplete_late_shape_coverage() -> None:
+def test_publish_quality_pipeline_propagates_incomplete_late_shape_coverage() -> None:
     calls: list[str] = []
 
     def search(query: str, limit: int) -> Sequence[CorpusHit]:
@@ -1354,7 +1364,7 @@ def test_publish_quality_pipeline_skips_incomplete_late_shape_coverage() -> None
             raise RuntimeError("Full raw corpus search coverage too narrow: {'shards_searched': None}")
         return [_hit("weak", "Metformin resistance training review", "Review evidence.")]
 
-    with pytest.raises(MemoBuildError, match="no receipt-bound alpha memo candidate"):
+    with pytest.raises(RuntimeError, match="coverage too narrow"):
         build_alpha_memo(
             topic="metformin resistance training adaptation",
             seed_queries=[

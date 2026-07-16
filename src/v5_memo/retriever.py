@@ -36,6 +36,7 @@ def collect_seed_hits(
     per_query_limit: int = 25,
     max_hits: int = 100,
     stop_when: Callable[[Sequence[CorpusHit]], bool] | None = None,
+    require_complete_queries: bool = False,
 ) -> list[CorpusHit]:
     """Search multiple seeds and dedupe before mining insights."""
     seed_queries = _dedupe_seed_queries(seed_queries)
@@ -50,7 +51,7 @@ def collect_seed_hits(
             if message.startswith("Full raw corpus search coverage too narrow"):
                 if "'sweep_stopped_no_hits': True" in message or '"sweep_stopped_no_hits": true' in message:
                     continue
-                if out:
+                if out and not require_complete_queries:
                     break
                 raise
             continue

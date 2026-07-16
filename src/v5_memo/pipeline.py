@@ -82,6 +82,7 @@ def build_alpha_memo(
             if len(seed_queries) > 1 and not require_publish_quality
             else None
         ),
+        require_complete_queries=require_publish_quality,
     )
     mined_candidates: list[InsightCandidate] = mine_insights(
         hits,
@@ -104,6 +105,7 @@ def build_alpha_memo(
         preserve_fallbacks=require_publish_quality,
     )
     coverage_failures: list[MemoBuildError] = []
+    final_quality_blockers: list[dict[str, object]] = []
     for candidate in candidates:
         receipts = bind_receipts(candidate, hits)
         if receipts:
@@ -129,8 +131,16 @@ def build_alpha_memo(
                 receipts=receipts,
                 markdown=memo_writer(candidate, receipts),
             )
-            if require_publish_quality and publication_quality_blocker(result) is not None:
-                continue
+            if require_publish_quality:
+                blocker = publication_quality_blocker(result)
+                if blocker is not None:
+                    final_quality_blockers.append(
+                        {
+                            "receipt_ids": candidate.receipt_ids,
+                            "blocker": blocker,
+                        }
+                    )
+                    continue
             return result
     if coverage_failures:
         raise coverage_failures[0]
@@ -143,6 +153,7 @@ def build_alpha_memo(
             mined_candidates=mined_candidates,
             seed_queries=seed_queries,
             anchor_terms=anchor_terms,
+            final_quality_blockers=final_quality_blockers,
         )
     )
 
