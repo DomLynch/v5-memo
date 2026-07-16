@@ -312,8 +312,6 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "OnCalendar=*-*-* *:10,25,40,55:00" in catchup_timer
     assert "Unit=v5-memo-portfolio-catchup.service" in catchup_timer
     assert "v5-memo-isolated-fullraw-search.service" in isolation
-    assert "Wants=\n" in isolation
-    assert "After=\n" in isolation
     assert "Wants=network-online.target v5-memo-isolated-fullraw-search.service" in isolation
     assert "After=network-online.target v5-memo-isolated-fullraw-search.service" in isolation
     assert "RESEARKA_FULLRAW_SEARCH_URL=http://127.0.0.1:9915/search" in isolation
@@ -324,6 +322,8 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "v5-memo-portfolio-prepare.service" in isolation_installer
     assert "v5-memo-portfolio-catchup.service" in isolation_installer
     assert "v5-memo-portfolio-publish.service" in isolation_installer
+    assert "90-researka-shared-fullraw.conf" in isolation_installer
+    assert 'rm -f "$unit_dir/$unit.d/$shared_dropin"' in isolation_installer
     assert "systemctl daemon-reload" in isolation_installer
 
 
