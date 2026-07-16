@@ -14,6 +14,8 @@ from html import unescape
 from pathlib import Path
 from typing import Any
 
+from v5_memo.evidence import normalize_publication_integrity
+
 DEFAULT_SOURCE_SPECS = (
     ("openalex", "openalex_jsonl", "sb:researka-database/raw/openalex/works"),
     ("semantic_scholar", "semantic_scholar_jsonl", "sb:researka-database/raw/semantic_scholar/papers"),
@@ -207,6 +209,7 @@ def _normalize_json_hit(item: Any, source: str) -> dict[str, object] | None:
         or item.get("journal")
         or ((item.get("journal") or {}).get("name") if isinstance(item.get("journal"), dict) else "")
     )
+    integrity = normalize_publication_integrity(item)
     return {
         "title": title,
         "abstract": abstract,
@@ -221,6 +224,7 @@ def _normalize_json_hit(item: Any, source: str) -> dict[str, object] | None:
         "url": _clean(item.get("url")) or (f"https://doi.org/{doi}" if doi else openalex_id),
         "cited_by_count": _int_or_none(item.get("citationcount") or item.get("cited_by_count")),
         "score": 1.0,
+        **integrity,
     }
 
 
@@ -233,6 +237,17 @@ def _normalize_pubmed_hit(elem: ET.Element) -> dict[str, object] | None:
         if node.attrib.get("EIdType", "").casefold() == "doi":
             doi = _normalize_doi(node.text)
             break
+    publication_types = tuple(
+        clean
+        for node in elem.findall(".//PublicationType")
+        if (clean := _clean(node.text))
+    )
+    correction_status = tuple(
+        ref_type
+        for node in elem.findall(".//CommentsCorrections")
+        if (ref_type := _clean(node.attrib.get("RefType")))
+    )
+    retraction_terms = " ".join((*publication_types, *correction_status)).casefold()
     return {
         "title": title,
         "abstract": _clean(" ".join(node.text or "" for node in elem.findall(".//AbstractText"))),
@@ -244,6 +259,13 @@ def _normalize_pubmed_hit(elem: ET.Element) -> dict[str, object] | None:
         "source": "pubmed",
         "url": f"https://doi.org/{doi}" if doi else "",
         "score": 1.0,
+        "document_type": publication_types[0] if publication_types else "",
+        "publication_types": publication_types,
+        "is_retracted": "retract" in retraction_terms,
+        "retraction_status_known": bool(publication_types or correction_status),
+        "is_withdrawn": "withdraw" in retraction_terms,
+        "withdrawal_status_known": bool(publication_types or correction_status),
+        "correction_status": ",".join(correction_status),
     }
 
 

@@ -220,6 +220,17 @@ def test_empty_prepare_receipt_does_not_create_false_ready_supply() -> None:
 def test_prepare_candidate_rejection_is_a_healthy_noop() -> None:
     portfolio = _load_portfolio()
 
+    status = portfolio.classify_run(
+        5,
+        {
+            "error": "candidate_publish_blocker",
+            "reason": "missing_stable_source_identity",
+        },
+        submit=False,
+    )
+
+    assert status == "blocked:candidate_publish_blocker"
+
     for status in (
         "blocked:candidate_publish_blocker",
         "blocked:no_receipt_bound_alpha_candidate",

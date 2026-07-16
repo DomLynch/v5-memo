@@ -12,6 +12,7 @@ from v5_memo.gate import (
     no_alpha_failure,
 )
 from v5_memo.miner import _tokens, mine_insights, query_anchor_terms
+from v5_memo.publisher import publication_quality_blocker
 from v5_memo.retriever import CorpusSearcher, collect_seed_hits
 from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult
 from v5_memo.writer import render_memo
@@ -76,7 +77,11 @@ def build_alpha_memo(
         seed_queries,
         per_query_limit=per_query_limit,
         max_hits=max_hits,
-        stop_when=has_publishable_candidate if len(seed_queries) > 1 else None,
+        stop_when=(
+            has_publishable_candidate
+            if len(seed_queries) > 1 and not require_publish_quality
+            else None
+        ),
     )
     mined_candidates: list[InsightCandidate] = mine_insights(
         hits,
@@ -92,7 +97,12 @@ def build_alpha_memo(
         primary_anchor_terms,
         require_publish_quality=require_publish_quality,
     )
-    candidates = _apply_selector(publishable_candidates, hits, memo_selector)
+    candidates = _apply_selector(
+        publishable_candidates,
+        hits,
+        memo_selector,
+        preserve_fallbacks=require_publish_quality,
+    )
     coverage_failures: list[MemoBuildError] = []
     for candidate in candidates:
         receipts = bind_receipts(candidate, hits)
@@ -114,11 +124,14 @@ def build_alpha_memo(
             if coverage_failure is not None:
                 coverage_failures.append(MemoBuildError(coverage_failure))
                 continue
-            return MemoResult(
+            result = MemoResult(
                 candidate=candidate,
                 receipts=receipts,
                 markdown=memo_writer(candidate, receipts),
             )
+            if require_publish_quality and publication_quality_blocker(result) is not None:
+                continue
+            return result
     if coverage_failures:
         raise coverage_failures[0]
     raise MemoBuildError(
@@ -252,20 +265,28 @@ def _apply_selector(
     candidates: Sequence[InsightCandidate],
     hits: Sequence[CorpusHit],
     selector: MemoSelector | None,
+    *,
+    preserve_fallbacks: bool = False,
 ) -> Sequence[InsightCandidate]:
     if selector is None:
         return candidates
-    candidates = _selector_slate(candidates)
-    by_receipts = {candidate.receipt_ids: candidate for candidate in candidates}
+    ranked_candidates = list(candidates)
+    selector_candidates = _selector_slate(ranked_candidates)
+    by_receipts = {candidate.receipt_ids: candidate for candidate in ranked_candidates}
     selected: list[InsightCandidate] = []
-    selector_choices = list(selector(candidates, hits))
+    selector_choices = list(selector(selector_candidates, hits))
     for candidate in selector_choices:
         original = by_receipts.get(candidate.receipt_ids)
         if original is not None and original not in selected:
             selected.append(original)
     if selected:
+        if preserve_fallbacks:
+            return [
+                *selected,
+                *(candidate for candidate in ranked_candidates if candidate not in selected),
+            ]
         return selected
-    return candidates if selector_choices else []
+    return selector_candidates if selector_choices else []
 
 
 def _selector_slate(candidates: Sequence[InsightCandidate]) -> Sequence[InsightCandidate]:

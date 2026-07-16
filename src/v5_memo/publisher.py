@@ -9,6 +9,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from v5_memo.evidence import source_artifact_type
+from v5_memo.publication_quality import assess_publication_quality, quality_blocker
 from v5_memo.schemas import ClaimCard, CorpusHit, MemoResult
 
 _RETRIEVAL_EVIDENCE_KEYS = (
@@ -173,16 +174,13 @@ def build_researka_payload(
     domain_slug: str,
     parent_submission_id: str = "",
 ) -> dict[str, object]:
-    body = _submission_markdown(result.markdown.strip())
+    title, body = _final_submission_body(result)
     candidate = result.candidate
-    heading = next((line[2:] for line in body.splitlines() if line.startswith("# ")), "Untitled alpha memo")
-    title = _submission_title(result, heading)
-    body = _replace_heading(body, title)
-    body = _append_alpha_disclaimer(body)
     abstract = _abstract_from_markdown(body)
     source_bundle = [_source_bundle_entry(hit) for hit in result.receipts]
     fullraw_coverage = _fullraw_retrieval_coverage(result.receipts)
-    verdict = {"decision": "ready_to_publish", "publish_tier": "TIER_1", "maturity_level": "L5", "confidence_label": "evidence_backed_signal", "blockers": [], "axes": {"bound_receipts": len(source_bundle)}}
+    evidence_bundle = assess_publication_quality(result, public_markdown=body)
+    evidence_bundle["fullraw_retrieval_coverage"] = fullraw_coverage
     payload: dict[str, object] = {
         "title": title,
         "abstract": abstract,
@@ -193,12 +191,33 @@ def build_researka_payload(
         "domain_slug": domain_slug,
         "body_markdown": body,
         "source_bundle": source_bundle,
-        "evidence_bundle": {"publish_verdict": verdict, "fullraw_retrieval_coverage": fullraw_coverage},
+        "evidence_bundle": evidence_bundle,
         "metadata": {"receipt_ids": list(candidate.receipt_ids), "score": candidate.score},
     }
     if parent_submission_id.strip():
         payload["parent_submission_id"] = parent_submission_id.strip()
     return payload
+
+
+def publication_quality_blocker(result: MemoResult) -> dict[str, object] | None:
+    """Use the payload-equivalent evidence gate for prepare and submit."""
+    _, body = _final_submission_body(result)
+    blocker = quality_blocker(assess_publication_quality(result, public_markdown=body))
+    if blocker is None:
+        return None
+    reason = str(blocker.pop("error", "publication_quality_blocked"))
+    return {"error": "candidate_publish_blocker", "reason": reason, **blocker}
+
+
+def _final_submission_body(result: MemoResult) -> tuple[str, str]:
+    body = _submission_markdown(result.markdown.strip())
+    heading = next(
+        (line[2:] for line in body.splitlines() if line.startswith("# ")),
+        "Untitled alpha memo",
+    )
+    title = _submission_title(result, heading)
+    body = _append_alpha_disclaimer(_replace_heading(body, title))
+    return title, body
 
 
 def _submission_markdown(markdown: str) -> str:

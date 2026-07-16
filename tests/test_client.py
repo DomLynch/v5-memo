@@ -2158,6 +2158,8 @@ def test_parse_openalex_response_reconstructs_abstract() -> None:
                     "publication_year": 2026,
                     "primary_location": {"source": {"display_name": "Nature"}},
                     "cited_by_count": 12,
+                    "type": "article",
+                    "is_retracted": True,
                 }
             ],
         }
@@ -2169,6 +2171,9 @@ def test_parse_openalex_response_reconstructs_abstract() -> None:
     assert hit.url == "https://doi.org/10.123/test"
     assert hit.venue == "Nature"
     assert hit.metadata["query_match_count"] == 492361307
+    assert hit.metadata["document_type"] == "article"
+    assert hit.metadata["is_retracted"] is True
+    assert hit.metadata["retraction_status_known"] is True
 
 def test_parse_corpus_search_rejects_non_list_shape() -> None:
     hits = _parse_corpus_search_response({"results": []})
@@ -2187,6 +2192,9 @@ def test_parse_full_raw_search_accepts_results_shape_and_openalex_abstract() -> 
                 "primary_location": {"source": {"display_name": "Nature Aging"}},
                 "provider": "openalex",
                 "cited_by_count": "42",
+                "document_type": "journal-article",
+                "publication_types": ["Clinical Trial", "Journal Article"],
+                "correction_status": "ErratumIn",
             }
         ],
     })
@@ -2198,6 +2206,71 @@ def test_parse_full_raw_search_accepts_results_shape_and_openalex_abstract() -> 
     assert hit.venue == "Nature Aging"
     assert hit.metadata["query_match_count"] == 280000000
     assert hit.metadata["cited_by_count"] == 42
+    assert hit.metadata["document_type"] == "journal-article"
+    assert hit.metadata["publication_types"] == ("Clinical Trial", "Journal Article")
+    assert hit.metadata["correction_status"] == "ErratumIn"
+
+
+def test_parse_corpus_search_preserves_structured_publication_integrity() -> None:
+    hits = _parse_corpus_search_response([
+        {
+            "pmid": "12345",
+            "title": "Ordinary article title",
+            "abstract": "Evidence text.",
+            "publication_type": "Retracted Publication",
+            "is_retracted": True,
+            "retraction_status": "RetractionIn",
+        }
+    ])
+
+    hit = hits[0]
+    assert hit.metadata["publication_types"] == ("Retracted Publication",)
+    assert hit.metadata["is_retracted"] is True
+    assert hit.metadata["retraction_status_known"] is True
+    assert hit.metadata["correction_status"] == "RetractionIn"
+
+
+def test_hybrid_client_preserves_unsafe_status_from_duplicate_backend() -> None:
+    safe = CorpusHit(
+        "safe",
+        "Preferred duplicate article",
+        "Evidence text.",
+        "safe_backend",
+        doi="10.1234/duplicate",
+        metadata={
+            "document_type": "article",
+            "is_retracted": False,
+            "retraction_status_known": True,
+        },
+    )
+    unsafe = CorpusHit(
+        "unsafe",
+        "Lower-ranked duplicate article",
+        "Evidence text.",
+        "unsafe_backend",
+        doi="10.1234/duplicate",
+        metadata={
+            "document_type": "retraction notice",
+            "is_retracted": True,
+            "correction_status": "RetractionIn",
+        },
+    )
+
+    class StaticSearcher:
+        def __init__(self, hit: CorpusHit) -> None:
+            self.hit = hit
+
+        def search(self, _query: str, *, limit: int = 25) -> list[CorpusHit]:
+            return [self.hit][:limit]
+
+    hit = HybridCorpusSearchClient([StaticSearcher(safe), StaticSearcher(unsafe)]).search(
+        "duplicate article",
+        limit=1,
+    )[0]
+
+    assert hit.title == "Preferred duplicate article"
+    assert hit.metadata["is_retracted"] is True
+    assert "retraction notice" in cast(tuple[str, ...], hit.metadata["publication_types"])
 
 def test_parse_full_raw_search_rejects_conflicting_doi_year_metadata() -> None:
     hits = _parse_full_raw_search_response({
