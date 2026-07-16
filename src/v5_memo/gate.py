@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from v5_memo.schemas import ClaimCard, CorpusHit, InsightCandidate, SearchFailure
 
@@ -450,6 +450,7 @@ def no_alpha_failure(
     mined_candidates: Sequence[InsightCandidate] = (),
     seed_queries: Sequence[str] = (),
     anchor_terms: Sequence[str] = (),
+    final_quality_blockers: Sequence[Mapping[str, object]] = (),
 ) -> SearchFailure:
     best_mined = max(mined_candidates, key=lambda candidate: candidate.score, default=None)
     publish_quality_blockers = tuple(
@@ -476,6 +477,8 @@ def no_alpha_failure(
             "best_mined_novelty": best_mined.novelty_score if best_mined is not None else 0,
             "publish_quality_blocked_count": len(publish_quality_blockers),
             "top_publish_quality_blockers": publish_quality_blockers[:3],
+            "final_publish_quality_blocked_count": len(final_quality_blockers),
+            "top_final_publish_quality_blockers": tuple(final_quality_blockers[:3]),
             "min_alpha_tier": min_alpha_tier,
             "queries_used": tuple(seed_queries),
             "anchor_terms": tuple(anchor_terms),
