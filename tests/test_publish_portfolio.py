@@ -42,6 +42,42 @@ def _accepted_receipt() -> dict[str, object]:
     }
 
 
+def _lead_proposal_receipt(
+    portfolio: ModuleType,
+    *,
+    lead: str = "creatine blood pressure randomized trial human",
+    source_topic: str = "source lead",
+    receipt_ids: tuple[str, ...] = ("10.1000/a", "10.1000/b"),
+    source_keys: tuple[str, ...] = ("doi:10.1000/a", "doi:10.1000/b"),
+) -> dict[str, object]:
+    proposal = {
+        "schema": "v5_evidence_lead_proposal_v1",
+        "lead": lead,
+        "source_topic": source_topic,
+        "receipt_ids": receipt_ids,
+        "source_keys": source_keys,
+        "candidate_score": 90,
+        "candidate_novelty_score": 40,
+        "candidate_tier": "publishable_alpha",
+        "source_blocker": "off_topic_primary_signal",
+    }
+    proposal["proposal_fingerprint"] = portfolio.lead_proposal_fingerprint(
+        schema="v5_evidence_lead_proposal_v1",
+        lead=lead,
+        source_topic=source_topic,
+        receipt_ids=receipt_ids,
+        source_keys=source_keys,
+        candidate_score=90,
+        candidate_novelty_score=40,
+        candidate_tier="publishable_alpha",
+        source_blocker="off_topic_primary_signal",
+    )
+    return {
+        "error": "no_receipt_bound_alpha_candidate",
+        "details": {"lead_proposal": proposal},
+    }
+
+
 def _cache_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
     cache_dir = tmp_path / "active-cache"
     shard_dir = tmp_path / "active-shards"
@@ -1538,12 +1574,23 @@ def test_submitted_without_decision_is_not_completed(tmp_path: Path) -> None:
     assert "pending lead" not in state.get("completed_leads", {})
 
 
-def test_auto_discovery_appends_unique_leads_when_open_queue_is_low(tmp_path: Path) -> None:
+def test_receipt_discovery_persists_one_strict_warming_lead(tmp_path: Path) -> None:
     portfolio = _load_portfolio()
     lead_file = tmp_path / "leads.txt"
-    lead_file.write_text("done lead\nurolithin a muscle strength older adults randomized trial\n")
+    lead_file.write_text("source lead\n")
+    proposal_lead = "creatine blood pressure randomized trial human"
+    source_receipt = tmp_path / "source-receipt.json"
+    source_receipt.write_text(json.dumps(_lead_proposal_receipt(portfolio)))
     state_path = tmp_path / "state.json"
-    state_path.write_text(json.dumps({"completed_leads": {"done lead": {"status": "accepted"}}}))
+    state_path.write_text(json.dumps({
+        "attempted_leads": {
+            "source lead": {
+                "status": "blocked:no_receipt_bound_alpha_candidate",
+                "updated_at": "20260716T120000Z",
+                "receipt_path": str(source_receipt),
+            }
+        }
+    }))
     config = portfolio.RunConfig(
         output_dir=tmp_path / "run",
         python="python3",
@@ -1561,23 +1608,33 @@ def test_auto_discovery_appends_unique_leads_when_open_queue_is_low(tmp_path: Pa
         state_path=state_path,
         lead_file=lead_file,
         auto_discover_leads=True,
-        min_open_leads=3,
-        discover_count=3,
+        min_open_leads=40,
+        discover_count=20,
         blocked_retry_hours=0,
+        ready_buffer_size=3,
     )
+    calls: list[list[str]] = []
 
     def fake_runner(
         command: list[str],
         _env: dict[str, str],
         _cwd: Path,
     ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        assert "--validate-publish-quality" in command
         receipt = Path(command[command.index("--publish-receipt-path") + 1])
         receipt.parent.mkdir(parents=True, exist_ok=True)
-        receipt.write_text(json.dumps(_ready_receipt()))
+        receipt.write_text(json.dumps({
+            "error": "search_backend_error",
+            "message": (
+                "Full raw corpus search coverage too narrow: "
+                "{'sweep_remaining_shards': 1200}"
+            ),
+        }))
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     code = portfolio.run_portfolio(
-        ["done lead", "urolithin a muscle strength older adults randomized trial"],
+        ["source lead"],
         config,
         runner=fake_runner,
         env={},
@@ -1587,9 +1644,376 @@ def test_auto_discovery_appends_unique_leads_when_open_queue_is_low(tmp_path: Pa
     lead_lines = [line for line in lead_file.read_text().splitlines() if line]
     summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
     assert code == 0
-    assert len(lead_lines) == len(set(lead_lines))
-    assert len(summary["discovered_leads"]) == 3
-    assert "urolithin a muscle strength older adults randomized trial" not in summary["discovered_leads"]
+    assert len(calls) == 1
+    assert calls[0][calls[0].index("--topic") + 1] == proposal_lead
+    assert lead_lines == ["source lead"]
+    assert summary["discovered_leads"] == [proposal_lead]
+    assert summary["ready_buffer_count_before"] == 0
+    assert summary["ready_buffer_count_after"] == 0
+    assert summary["records"][0]["status"] == "warming:search_coverage"
+    state = json.loads(state_path.read_text())
+    assert state["derived_leads"][proposal_lead]["source_topic"] == "source lead"
+    assert state["attempted_leads"][proposal_lead]["status"] == "warming:search_coverage"
+
+
+def test_derived_state_is_authoritative_without_a_lead_file_entry(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    derived_lead = "creatine blood pressure randomized trial human"
+    lead_file = tmp_path / "leads.txt"
+    lead_file.write_text("source lead\n")
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "completed_leads": {"source lead": {"status": "accepted"}},
+        "derived_leads": {
+            derived_lead: {
+                "proposal_fingerprint": "persisted",
+                "source_topic": "source lead",
+            }
+        },
+        "attempted_leads": {
+            derived_lead: {
+                "status": "warming:search_coverage",
+                "updated_at": "20260716T120000Z",
+            }
+        },
+    }))
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=state_path,
+        lead_file=lead_file,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=0,
+        ready_buffer_size=3,
+    )
+    calls: list[list[str]] = []
+
+    def fake_runner(
+        command: list[str],
+        _env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps(_ready_receipt()))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    assert portfolio.run_portfolio(
+        ["source lead"],
+        config,
+        runner=fake_runner,
+        env={},
+        cwd=Path.cwd(),
+    ) == 0
+    assert calls[0][calls[0].index("--topic") + 1] == derived_lead
+    assert lead_file.read_text() == "source lead\n"
+
+
+def test_atomic_state_write_preserves_original_on_replace_failure(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    portfolio = _load_portfolio()
+    state_path = tmp_path / "state.json"
+    state_path.write_text('{"original": true}')
+
+    def fail_replace(_source: Path, _target: object) -> Path:
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    try:
+        portfolio._write_state(state_path, {"replacement": True})
+    except OSError as exc:
+        assert str(exc) == "injected replace failure"
+    else:
+        raise AssertionError("replace failure must propagate")
+
+    assert json.loads(state_path.read_text()) == {"original": True}
+    assert list(tmp_path.glob(".state.json.*.tmp")) == []
+
+
+def test_active_derived_supply_blocks_a_second_discovery_cycle(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    first_derived = "creatine blood pressure randomized trial human"
+    second_derived = "taurine sleep randomized trial human"
+    second_receipt = tmp_path / "second-source.json"
+    second_receipt.write_text(json.dumps(_lead_proposal_receipt(
+        portfolio,
+        lead=second_derived,
+        source_topic="second source",
+    )))
+    state = {
+        "derived_leads": {
+            first_derived: {
+                "proposal_fingerprint": "first",
+                "source_topic": "first source",
+            }
+        },
+        "attempted_leads": {
+            first_derived: {
+                "status": "warming:search_coverage",
+                "updated_at": "20260716T130000Z",
+            },
+            "second source": {
+                "status": "blocked:no_receipt_bound_alpha_candidate",
+                "updated_at": "20260716T120000Z",
+                "receipt_path": str(second_receipt),
+            },
+        },
+    }
+    assert portfolio.discover_leads(["second source"], state, count=1) == [second_derived]
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps(state))
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=state_path,
+        lead_file=tmp_path / "leads.txt",
+        auto_discover_leads=True,
+        min_open_leads=0,
+        discover_count=1,
+        blocked_retry_hours=0,
+        ready_buffer_size=3,
+    )
+
+    def warming_runner(
+        command: list[str],
+        _env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps({
+            "error": "search_backend_error",
+            "message": "Full raw corpus search coverage too narrow",
+        }))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    assert portfolio.run_portfolio(
+        ["second source"],
+        config,
+        runner=warming_runner,
+        env={},
+        cwd=Path.cwd(),
+    ) == 0
+    summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
+    saved = json.loads(state_path.read_text())
+    assert summary["discovered_leads"] == []
+    assert set(saved["derived_leads"]) == {first_derived}
+
+
+def test_ready_only_never_consumes_a_warming_derived_lead(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    derived_lead = "creatine blood pressure randomized trial human"
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "derived_leads": {derived_lead: {"proposal_fingerprint": "first"}},
+        "attempted_leads": {
+            derived_lead: {
+                "status": "warming:search_coverage",
+                "updated_at": "20260716T130000Z",
+            }
+        },
+    }))
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=True,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=state_path,
+        lead_file=None,
+        auto_discover_leads=True,
+        min_open_leads=0,
+        discover_count=1,
+        blocked_retry_hours=0,
+        ready_buffer_size=3,
+        ready_only=True,
+    )
+
+    def fail_runner(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("warming derived lead must not reach the publisher")
+
+    assert portfolio.run_portfolio(
+        [],
+        config,
+        runner=fail_runner,
+        env={},
+        cwd=Path.cwd(),
+    ) == 0
+    summary = json.loads((tmp_path / "run" / "portfolio.json").read_text())
+    assert summary["attempted_leads"] == 0
+    assert summary["final_status"] == "ready_buffer_empty"
+
+
+def test_receipt_discovery_rejects_tampered_proposal(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps({
+        "error": "no_receipt_bound_alpha_candidate",
+        "details": {
+            "lead_proposal": {
+                "schema": "v5_evidence_lead_proposal_v1",
+                "lead": "tampered lead",
+                "source_topic": "source lead",
+                "receipt_ids": ["a", "b"],
+                "source_keys": ["source:a", "source:b"],
+                "candidate_score": 90,
+                "candidate_novelty_score": 40,
+                "candidate_tier": "publishable_alpha",
+                "source_blocker": "off_topic_primary_signal",
+                "proposal_fingerprint": "0" * 64,
+            }
+        }
+    }))
+    state = {
+        "attempted_leads": {
+            "source lead": {
+                "status": "blocked:no_receipt_bound_alpha_candidate",
+                "updated_at": "20260716T120000Z",
+                "receipt_path": str(receipt_path),
+            }
+        }
+    }
+
+    assert portfolio.discover_leads(["source lead"], state, count=20) == []
+
+
+def test_receipt_discovery_binds_all_provenance_fields() -> None:
+    portfolio = _load_portfolio()
+    base = {
+        "schema": "v5_evidence_lead_proposal_v1",
+        "lead": "creatine blood pressure randomized trial human",
+        "source_topic": "source lead",
+        "receipt_ids": ["a", "b"],
+        "source_keys": ["source:a", "source:b"],
+        "candidate_score": 90,
+        "candidate_novelty_score": 40,
+        "candidate_tier": "publishable_alpha",
+        "source_blocker": "off_topic_primary_signal",
+    }
+    base["proposal_fingerprint"] = portfolio.lead_proposal_fingerprint(
+        schema=str(base["schema"]),
+        lead=str(base["lead"]),
+        source_topic=str(base["source_topic"]),
+        receipt_ids=base["receipt_ids"],
+        source_keys=base["source_keys"],
+        candidate_score=base["candidate_score"],
+        candidate_novelty_score=base["candidate_novelty_score"],
+        candidate_tier=str(base["candidate_tier"]),
+        source_blocker=str(base["source_blocker"]),
+    )
+    mutations = {
+        "schema": "v0",
+        "lead": "different lead",
+        "source_topic": "different source",
+        "receipt_ids": ["a", 7],
+        "source_keys": ["source:a", "source:a"],
+        "candidate_score": -1,
+        "candidate_novelty_score": -1,
+        "candidate_tier": "discovery_seed",
+        "source_blocker": "insufficient_direct_human_receipts",
+    }
+
+    for field, value in mutations.items():
+        proposal = {**base, field: value}
+        receipt = {
+            "error": "no_receipt_bound_alpha_candidate",
+            "details": {"lead_proposal": proposal},
+        }
+        assert portfolio._receipt_lead_proposal(
+            receipt,
+            expected_source_topic="source lead",
+        ) is None
+
+    unicode_source = "source lead λ"
+    unicode_receipt = _lead_proposal_receipt(
+        portfolio,
+        source_topic=unicode_source,
+    )
+    assert portfolio._receipt_lead_proposal(
+        unicode_receipt,
+        expected_source_topic="source lead",
+    ) is None
+    unicode_details = unicode_receipt["details"]
+    assert isinstance(unicode_details, dict)
+    unicode_proposal = unicode_details["lead_proposal"]
+    assert isinstance(unicode_proposal, dict)
+    assert unicode_proposal["proposal_fingerprint"] != base["proposal_fingerprint"]
+
+
+def test_receipt_discovery_rejects_wrong_status_and_derived_source(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(_lead_proposal_receipt(portfolio)))
+    attempted = {
+        "source lead": {
+            "status": "warming:search_coverage",
+            "updated_at": "20260716T120000Z",
+            "receipt_path": str(receipt_path),
+        }
+    }
+    assert portfolio.discover_leads(
+        ["source lead"],
+        {"attempted_leads": attempted},
+        count=1,
+    ) == []
+    attempted["source lead"]["status"] = "blocked:no_receipt_bound_alpha_candidate"
+    assert portfolio.discover_leads(
+        ["source lead"],
+        {
+            "attempted_leads": attempted,
+            "derived_leads": {"source lead": {"proposal_fingerprint": "prior"}},
+        },
+        count=1,
+    ) == []
+
+
+def test_load_leads_has_no_hardcoded_topic_fallback() -> None:
+    portfolio = _load_portfolio()
+    args = portfolio.parse_args([])
+
+    assert portfolio.load_leads(args) == []
+    for name in (
+        "DEFAULT_LEADS",
+        "DISCOVERY_ANGLES",
+        "DISCOVERY_CONTEXTS",
+        "DISCOVERY_INTERVENTIONS",
+    ):
+        assert not hasattr(portfolio, name)
 
 
 def test_recent_blocked_leads_cool_down_so_later_leads_can_run(tmp_path: Path) -> None:

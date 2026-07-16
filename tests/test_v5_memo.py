@@ -1,5 +1,6 @@
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from email.message import Message
 from pathlib import Path
 from typing import Any, cast
@@ -698,6 +699,231 @@ def test_no_alpha_failure_reports_publish_quality_blockers() -> None:
     final_blockers = failure.details["top_final_publish_quality_blockers"]
     assert isinstance(final_blockers, tuple)
     assert final_blockers[0]["blocker"] == {"error": "claim_trace_missing"}
+
+
+def test_no_alpha_failure_proposes_one_receipt_derived_reanchored_lead() -> None:
+    hits = [
+        CorpusHit(
+            hit_id="pressure-a",
+            title="Creatine and blood pressure trial A",
+            abstract="Randomized human trial found creatine lowered blood pressure.",
+            source="fullraw",
+            doi="10.1000/pressure-a",
+        ),
+        CorpusHit(
+            hit_id="pressure-b",
+            title="Creatine and blood pressure trial B",
+            abstract="Randomized human trial found creatine improved blood pressure.",
+            source="fullraw",
+            doi="10.1000/pressure-b",
+        ),
+        CorpusHit(
+            hit_id="strength",
+            title="Creatine and resistance-training strength",
+            abstract=(
+                "Randomized human trial found creatine improved resistance-training "
+                "muscle strength."
+            ),
+            source="fullraw",
+            doi="10.1000/strength",
+        ),
+    ]
+    candidate = InsightCandidate(
+        topic="creatine resistance training strength",
+        thesis="The direct evidence is cardiovascular rather than resistance-training evidence.",
+        bridge_terms=("creatine",),
+        tension_terms=("positive",),
+        receipt_ids=tuple(hit.receipt_id for hit in hits),
+        score=92,
+        novelty_score=45,
+        evidence_score=96,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=tuple(
+            ClaimCard(
+                hit.receipt_id,
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "muscle strength" if hit.hit_id == "strength" else "blood pressure",
+                "positive",
+                "direct",
+                "high",
+                hit.abstract,
+            )
+            for hit in hits
+        ),
+    )
+
+    failure = no_alpha_failure(
+        topic=candidate.topic,
+        hits=list(reversed(hits)),
+        candidates=[],
+        min_alpha_tier="publishable_alpha",
+        mined_candidates=[candidate],
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_topic_primary_signal",
+        "receipt_ids": candidate.receipt_ids[:2],
+    }
+    proposal = failure.details["lead_proposal"]
+    assert isinstance(proposal, Mapping)
+    assert proposal["schema"] == "v5_evidence_lead_proposal_v1"
+    assert proposal["lead"] == "creatine blood pressure randomized trial human"
+    assert proposal["receipt_ids"] == tuple(sorted(candidate.receipt_ids[:2]))
+    assert proposal["source_keys"] == (
+        "doi:10.1000/pressure-a",
+        "doi:10.1000/pressure-b",
+    )
+    assert proposal["source_blocker"] == "off_topic_primary_signal"
+    assert len(proposal["proposal_fingerprint"]) == 64
+
+    tied = replace(candidate, bridge_terms=("betaine",))
+    forward = no_alpha_failure(
+        topic=candidate.topic,
+        hits=hits,
+        candidates=[],
+        min_alpha_tier="publishable_alpha",
+        mined_candidates=[candidate, tied],
+    )
+    reversed_order = no_alpha_failure(
+        topic=candidate.topic,
+        hits=list(reversed(hits)),
+        candidates=[],
+        min_alpha_tier="publishable_alpha",
+        mined_candidates=[tied, candidate],
+    )
+    assert forward.details["lead_proposal"] == reversed_order.details["lead_proposal"]
+
+    elite = replace(candidate, reasons=("tier:elite_alpha",))
+    tier_forward = no_alpha_failure(
+        topic=candidate.topic,
+        hits=hits,
+        candidates=[],
+        min_alpha_tier="publishable_alpha",
+        mined_candidates=[candidate, elite],
+    )
+    tier_reversed = no_alpha_failure(
+        topic=candidate.topic,
+        hits=list(reversed(hits)),
+        candidates=[],
+        min_alpha_tier="publishable_alpha",
+        mined_candidates=[elite, candidate],
+    )
+    tier_proposal = tier_forward.details["lead_proposal"]
+    assert isinstance(tier_proposal, Mapping)
+    assert tier_proposal == tier_reversed.details["lead_proposal"]
+    assert tier_proposal["candidate_tier"] == "elite_alpha"
+
+
+def test_no_alpha_failure_rejects_ambiguous_receipt_aliases() -> None:
+    hits = [
+        CorpusHit(
+            "primary-a",
+            "Primary A",
+            "Creatine lowered blood pressure in a randomized human trial.",
+            "fullraw",
+            doi="10.1000/a",
+        ),
+        CorpusHit(
+            "10.1000/a",
+            "Identifier collision",
+            "A different human record reused the first DOI as its hit identifier.",
+            "fullraw",
+        ),
+        CorpusHit(
+            "primary-b",
+            "Primary B",
+            "Creatine improved blood pressure in a randomized human trial.",
+            "fullraw",
+            doi="10.1000/b",
+        ),
+    ]
+    candidate = InsightCandidate(
+        topic="creatine resistance training strength",
+        thesis="The direct evidence is cardiovascular.",
+        bridge_terms=("creatine",),
+        tension_terms=("positive",),
+        receipt_ids=("10.1000/a", "10.1000/b"),
+        score=92,
+        novelty_score=45,
+        evidence_score=96,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=tuple(
+            ClaimCard(
+                receipt_id,
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "blood pressure",
+                "positive",
+                "direct",
+                "high",
+                "Creatine changed blood pressure in a randomized human trial.",
+            )
+            for receipt_id in ("10.1000/a", "10.1000/b")
+        ),
+    )
+
+    forward = no_alpha_failure(
+        topic=candidate.topic,
+        hits=hits,
+        candidates=[],
+        min_alpha_tier="publishable_alpha",
+        mined_candidates=[candidate],
+    )
+    reversed_order = no_alpha_failure(
+        topic=candidate.topic,
+        hits=list(reversed(hits)),
+        candidates=[],
+        min_alpha_tier="publishable_alpha",
+        mined_candidates=[candidate],
+    )
+
+    assert "lead_proposal" not in forward.details
+    assert "lead_proposal" not in reversed_order.details
+
+
+def test_no_alpha_failure_omits_proposal_without_distinct_strong_sources() -> None:
+    hits = [
+        CorpusHit("a", "Duplicate evidence", "Human trial blood pressure.", "fullraw"),
+        CorpusHit("b", "Duplicate evidence", "Human trial blood pressure.", "fullraw"),
+    ]
+    candidate = InsightCandidate(
+        topic="creatine resistance training strength",
+        thesis="Duplicate sources cannot seed another lead.",
+        bridge_terms=("creatine",),
+        tension_terms=("positive",),
+        receipt_ids=("a", "b"),
+        score=92,
+        novelty_score=45,
+        evidence_score=96,
+        reasons=("tier:publishable_alpha",),
+        claim_cards=tuple(
+            ClaimCard(
+                hit.hit_id,
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "blood pressure",
+                "positive",
+                "direct",
+                "high",
+                hit.abstract,
+            )
+            for hit in hits
+        ),
+    )
+
+    failure = no_alpha_failure(
+        topic=candidate.topic,
+        hits=hits,
+        candidates=[],
+        min_alpha_tier="publishable_alpha",
+        mined_candidates=[candidate],
+    )
+
+    assert "lead_proposal" not in failure.details
     assert "publish_quality_blocked_count=1" in str(MemoBuildError(failure))
 
 
