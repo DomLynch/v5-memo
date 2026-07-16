@@ -64,24 +64,48 @@ def build_alpha_memo(
             include_discovery=min_alpha_tier == "discovery_seed",
             max_candidates=30 if memo_selector is not None else 12,
         )
-        return bool(_publishable_candidates(
+        publishable = _publishable_candidates(
             mined,
             partial_hits,
             min_alpha_tier,
             primary_anchor_terms,
             require_publish_quality=require_publish_quality,
-        ))
+        )
+        if not require_publish_quality:
+            return bool(publishable)
+        if memo_writer is not render_memo or memo_selector is not None:
+            return False
+        for candidate in publishable:
+            receipts = bind_receipts(candidate, partial_hits)
+            if not receipts:
+                continue
+            candidate = _prune_to_bound_receipts(candidate, receipts)
+            if len(candidate.claim_cards) < 2 or candidate_publish_blocker(candidate) is not None:
+                continue
+            if memo_coverage_failure(
+                topic=topic,
+                receipts=receipts,
+                min_shards_searched=min_shards_searched,
+                min_sources_searched=min_sources_searched,
+                min_search_passes=min_search_passes,
+                min_abstract_receipts=1 if min_alpha_tier == "elite_alpha" else 0,
+            ) is not None:
+                continue
+            result = MemoResult(
+                candidate=candidate,
+                receipts=receipts,
+                markdown=render_memo(candidate, receipts),
+            )
+            if publication_quality_blocker(result) is None:
+                return True
+        return False
 
     hits = collect_seed_hits(
         searcher,
         seed_queries,
         per_query_limit=per_query_limit,
         max_hits=max_hits,
-        stop_when=(
-            has_publishable_candidate
-            if len(seed_queries) > 1 and not require_publish_quality
-            else None
-        ),
+        stop_when=has_publishable_candidate if len(seed_queries) > 1 else None,
         require_complete_queries=require_publish_quality,
     )
     mined_candidates: list[InsightCandidate] = mine_insights(
