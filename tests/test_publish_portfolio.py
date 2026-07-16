@@ -244,6 +244,24 @@ def test_prepare_candidate_rejection_is_a_healthy_noop() -> None:
     ) == 1
 
 
+def test_retryable_fullraw_preflight_error_is_warming() -> None:
+    portfolio = _load_portfolio()
+
+    status = portfolio.classify_run(
+        1,
+        {
+            "error": "search_backend_error",
+            "message": "fullraw unavailable: Connection refused",
+            "retryable": True,
+            "stage": "fullraw_preflight",
+        },
+        submit=False,
+    )
+
+    assert status == "warming:search_backend_unavailable"
+    assert portfolio._portfolio_exit_code(status, preparing=True) == 0
+
+
 def test_durable_submission_receipt_wins_even_if_outer_process_times_out() -> None:
     portfolio = _load_portfolio()
 
@@ -310,6 +328,25 @@ def test_retryable_submit_failure_preserves_prequalified_ready_lead(
     saved = json.loads(state_path.read_text())["attempted_leads"]["ready lead"]
     assert saved["status"] == "ready"
     assert saved["last_attempt_status"] == "accepted_pending_publication"
+
+    for status in (
+        "warming:search_backend_unavailable",
+        "blocked:search_backend_error",
+    ):
+        portfolio._save_attempted_lead(
+            state_path,
+            state,
+            {
+                "lead": "ready lead",
+                "receipt_path": str(tmp_path / "search-error.json"),
+                "status": status,
+            },
+            preserve_ready=True,
+        )
+
+        saved = json.loads(state_path.read_text())["attempted_leads"]["ready lead"]
+        assert saved["status"] == "ready"
+        assert saved["last_attempt_status"] == status
 
 
 def test_known_submission_remains_ready_for_idempotent_decision_retry(
@@ -1797,8 +1834,21 @@ def test_portfolio_caps_injected_fullraw_wait_to_lead_timeout(tmp_path: Path) ->
 
     run_env = portfolio._portfolio_run_env(config, {})
 
+    assert run_env["V5_MEMO_FULL_RAW_HEALTH_WAIT_SECONDS"] == "300"
     assert run_env["V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS"] == "60"
     assert run_env["V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS"] == "60"
+    assert portfolio._portfolio_run_env(
+        replace(config, submit=False, ready_buffer_size=3),
+        {},
+    )["V5_MEMO_FULL_RAW_HEALTH_WAIT_SECONDS"] == "300"
+    assert portfolio._portfolio_run_env(
+        replace(config, lead_timeout_seconds=10),
+        {},
+    )["V5_MEMO_FULL_RAW_HEALTH_WAIT_SECONDS"] == "5"
+    assert portfolio._portfolio_run_env(
+        replace(config, searcher="hybrid"),
+        {},
+    )["V5_MEMO_FULL_RAW_HEALTH_WAIT_SECONDS"] == "300"
 
 
 def test_run_env_prefers_explicit_v5_zero_over_generic_default(tmp_path: Path) -> None:

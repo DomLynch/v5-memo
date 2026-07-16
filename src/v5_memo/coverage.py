@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -41,6 +42,15 @@ class SearchBackendHealth:
     shards_searched: int = 0
     shards_total: int = 0
     error: str = ""
+    retryable: bool = False
+
+
+class FullRawCorpusUnavailable(RuntimeError):
+    """Fullraw preflight failed, with an explicit retryability verdict."""
+
+    def __init__(self, message: str, *, retryable: bool) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def current_search_coverage() -> SearchCoverage:
@@ -84,17 +94,28 @@ def current_search_coverage() -> SearchCoverage:
     )
 
 
-def require_full_raw_corpus() -> None:
+def require_full_raw_corpus(
+    *,
+    wait_seconds: float = 0.0,
+    poll_seconds: float = 2.0,
+) -> None:
     """Fail loudly if caller requires the full local raw 450M+ corpus."""
-    coverage = current_search_coverage()
-    if not coverage.full_raw_local_corpus:
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    poll = max(0.1, poll_seconds)
+    while True:
         health = full_raw_search_health()
-        raise RuntimeError(
-            "Full local raw 450M+ corpus search is not healthy. "
-            "Set RESEARKA_FULLRAW_SEARCH_URL or V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL "
-            "to a real fullraw service with "
-            f"/health ok=true. Current status: {health.error or 'not configured'}"
-        )
+        if health.ok:
+            return
+        remaining = deadline - time.monotonic()
+        if not health.retryable or remaining <= 0:
+            raise FullRawCorpusUnavailable(
+                "Full local raw 450M+ corpus search is not healthy. "
+                "Set RESEARKA_FULLRAW_SEARCH_URL or V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL "
+                "to a real fullraw service with "
+                f"/health ok=true. Current status: {health.error or 'not configured'}",
+                retryable=health.retryable,
+            )
+        time.sleep(min(poll, remaining))
 
 
 def full_raw_search_health(url: str | None = None) -> SearchBackendHealth:
@@ -112,7 +133,13 @@ def full_raw_search_health(url: str | None = None) -> SearchBackendHealth:
         with urlopen(request, timeout=_health_timeout()) as response:
             data: Any = json.loads(response.read().decode("utf-8"))
     except (HTTPError, URLError, TimeoutError, ValueError, OSError) as exc:
-        return SearchBackendHealth(configured=True, ok=False, url=search_url, error=str(exc))
+        return SearchBackendHealth(
+            configured=True,
+            ok=False,
+            url=search_url,
+            error=str(exc),
+            retryable=_retryable_probe_error(exc),
+        )
     if not isinstance(data, dict):
         return SearchBackendHealth(configured=True, ok=False, url=search_url, error="health response is not an object")
     papers_indexed = _int_value(data.get("papers_indexed"))
@@ -145,7 +172,14 @@ def full_raw_search_health(url: str | None = None) -> SearchBackendHealth:
         and not partial_shard_search
         and sweep_failed_shards == 0
     )
-    smoke = _full_raw_query_smoke(search_url)
+    # Static health already authorizes strict complete-sweep operation. Avoid a
+    # redundant query smoke in that mode: even cache-only probes can contend
+    # with real candidate work on a shared bounded search service.
+    smoke = (
+        _full_raw_query_smoke(search_url)
+        if static_ok and not strict_sweep_ready
+        else {}
+    )
     raw_smoke_receipt = smoke.get("receipt")
     smoke_receipt: dict[str, object] = (
         raw_smoke_receipt if isinstance(raw_smoke_receipt, dict) else {}
@@ -194,6 +228,7 @@ def full_raw_search_health(url: str | None = None) -> SearchBackendHealth:
         shards_searched=smoke_shards,
         shards_total=smoke_total,
         error=error,
+        retryable=bool(smoke.get("retryable")),
     )
 
 
@@ -247,7 +282,13 @@ def _full_raw_query_smoke(search_url: str) -> dict[str, object]:
         with urlopen(request, timeout=_health_timeout()) as response:
             data: Any = json.loads(response.read().decode("utf-8"))
     except (HTTPError, URLError, TimeoutError, ValueError, OSError) as exc:
-        return {"query": query, "hits": 0, "receipt": {}, "error": str(exc)}
+        return {
+            "query": query,
+            "hits": 0,
+            "receipt": {},
+            "error": str(exc),
+            "retryable": _retryable_probe_error(exc),
+        }
     if not isinstance(data, dict):
         return {"query": query, "hits": 0, "receipt": {}, "error": "smoke response is not an object"}
     meta = data.get("meta")
@@ -285,6 +326,12 @@ def _health_timeout() -> float:
         )
     except ValueError:
         return 3.0
+
+
+def _retryable_probe_error(exc: BaseException) -> bool:
+    if isinstance(exc, HTTPError):
+        return exc.code in {500, 502, 503, 504}
+    return isinstance(exc, (URLError, TimeoutError, OSError))
 
 
 def _int_value(value: object) -> int:
