@@ -1,7 +1,10 @@
 """Selector gate contracts for V5 memo candidates."""
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 
 from v5_memo.schemas import ClaimCard, CorpusHit, InsightCandidate, SearchFailure
@@ -116,6 +119,11 @@ _STRUCTURAL_ENDPOINT_TERMS = frozenset({
     "population",
     "setting",
 })
+_EVIDENCE_REANCHOR_BLOCKERS = frozenset({
+    "off_modality_primary_signal",
+    "off_topic_primary_signal",
+})
+LEAD_PROPOSAL_SCHEMA = "v5_evidence_lead_proposal_v1"
 
 
 def candidate_alpha_tier(candidate: InsightCandidate) -> str:
@@ -262,6 +270,197 @@ def candidate_publish_blocker(candidate: InsightCandidate) -> dict[str, object] 
         return {
             "error": "proxy_without_independent_directional_contrast",
             "receipt_ids": proxy_receipts,
+        }
+    return None
+
+
+def lead_proposal_fingerprint(
+    *,
+    schema: str,
+    lead: str,
+    source_topic: str,
+    receipt_ids: Sequence[str],
+    source_keys: Sequence[str],
+    candidate_score: int,
+    candidate_novelty_score: int,
+    candidate_tier: str,
+    source_blocker: str,
+) -> str:
+    payload = {
+        "schema": schema,
+        "lead": lead_proposal_identity(lead),
+        "source_topic": lead_proposal_identity(source_topic),
+        "receipt_ids": sorted(set(receipt_ids)),
+        "source_keys": sorted(set(source_keys)),
+        "candidate_score": candidate_score,
+        "candidate_novelty_score": candidate_novelty_score,
+        "candidate_tier": candidate_tier,
+        "source_blocker": source_blocker,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def lead_proposal_identity(value: str) -> str:
+    """Return a lossless, Unicode-stable identity for a searched topic."""
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+
+
+def _proposal_phrase(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", value.replace("_", " ").casefold()))
+
+
+def lead_proposal_metadata_valid(
+    *,
+    candidate_score: int,
+    candidate_novelty_score: int,
+    candidate_tier: str,
+    source_blocker: str,
+) -> bool:
+    return (
+        candidate_tier in {"publishable_alpha", "elite_alpha"}
+        and candidate_score >= _MIN_SCORE_BY_TIER[candidate_tier]
+        and candidate_novelty_score >= _MIN_NOVELTY_BY_TIER[candidate_tier]
+        and source_blocker in _EVIDENCE_REANCHOR_BLOCKERS
+    )
+
+
+def _evidence_lead_proposal(
+    *,
+    topic: str,
+    hits: Sequence[CorpusHit],
+    candidates: Sequence[InsightCandidate],
+    min_alpha_tier: str,
+) -> dict[str, object] | None:
+    source_keys_by_identifier: dict[str, set[str]] = {}
+    for hit in hits:
+        for identifier in {hit.receipt_id, hit.hit_id}:
+            source_keys_by_identifier.setdefault(identifier, set()).add(hit.source_key)
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: (
+            -candidate.score,
+            -candidate.novelty_score,
+            -_TIER_RANK.get(candidate_alpha_tier(candidate), -1),
+            -candidate.evidence_score,
+            tuple(sorted(candidate.receipt_ids)),
+            candidate.topic,
+            candidate.thesis,
+            tuple(sorted(candidate.bridge_terms)),
+            tuple(sorted(candidate.tension_terms)),
+            tuple(sorted(candidate.reasons)),
+            tuple(sorted(candidate.scorecard.items())),
+            tuple(sorted(
+                (role.receipt_id, role.role, role.reason)
+                for role in candidate.receipt_roles
+            )),
+            tuple(sorted(
+                (
+                    card.receipt_id,
+                    card.role,
+                    card.design,
+                    card.population,
+                    card.outcome,
+                    card.direction,
+                    card.support_type,
+                    card.confidence,
+                    card.quote,
+                )
+                for card in candidate.claim_cards
+            )),
+            tuple(sorted(
+                (node.receipt_id, node.role, node.reason)
+                for node in candidate.evidence_graph
+            )),
+        ),
+    )
+    for candidate in ranked:
+        if not meets_publish_bar(candidate, min_alpha_tier):
+            continue
+        blocker = candidate_publish_blocker(candidate)
+        if not blocker or blocker.get("error") not in _EVIDENCE_REANCHOR_BLOCKERS:
+            continue
+        raw_blocker_receipts = blocker.get("receipt_ids")
+        blocker_receipts = {
+            receipt_id
+            for receipt_id in raw_blocker_receipts
+            if isinstance(receipt_id, str) and receipt_id
+        } if isinstance(raw_blocker_receipts, Sequence) and not isinstance(
+            raw_blocker_receipts, str
+        ) else set()
+        strong_cards = {
+            card.receipt_id: card
+            for card in candidate.claim_cards
+            if card.receipt_id in blocker_receipts
+            if card.role in _PRIMARY_SIGNAL_ROLES
+            and card.population == "human"
+            and card.support_type == "direct"
+            and card.confidence == "high"
+        }
+        receipt_sources: dict[str, str] = {}
+        for receipt_id in strong_cards:
+            matching_source_keys = source_keys_by_identifier.get(receipt_id, set())
+            if len(matching_source_keys) != 1:
+                receipt_sources = {}
+                break
+            receipt_sources[receipt_id] = next(iter(matching_source_keys))
+        if len(receipt_sources) < 2 or len(set(receipt_sources.values())) < 2:
+            continue
+        cards = [strong_cards[receipt_id] for receipt_id in sorted(receipt_sources)]
+        bridge_terms = sorted({
+            phrase
+            for term in candidate.bridge_terms
+            if (phrase := _proposal_phrase(term))
+        })
+        bridge_tokens = {
+            token
+            for phrase in bridge_terms
+            for token in phrase.split()
+            if token not in _TOPIC_ANCHOR_STOP
+            and token not in _STRUCTURAL_ENDPOINT_TERMS
+        }
+        if not bridge_tokens:
+            continue
+        outcomes = sorted({
+            phrase
+            for card in cards
+            if (phrase := _proposal_phrase(card.outcome))
+            and phrase not in _STRUCTURAL_ENDPOINT_TERMS
+        })
+        designs = sorted({
+            phrase
+            for card in cards
+            if (phrase := _proposal_phrase(card.design))
+        })
+        parts = [*bridge_terms[:3], *outcomes[:2], *designs[:1], "human"]
+        lead = " ".join(dict.fromkeys(part for part in parts if part))
+        if not outcomes or not lead or _proposal_phrase(topic) == lead:
+            continue
+        receipt_ids = tuple(sorted(receipt_sources))
+        source_keys = tuple(sorted(set(receipt_sources.values())))
+        candidate_tier = candidate_alpha_tier(candidate)
+        source_blocker = str(blocker["error"])
+        return {
+            "schema": LEAD_PROPOSAL_SCHEMA,
+            "lead": lead,
+            "source_topic": topic,
+            "receipt_ids": receipt_ids,
+            "source_keys": source_keys,
+            "candidate_score": candidate.score,
+            "candidate_novelty_score": candidate.novelty_score,
+            "candidate_tier": candidate_tier,
+            "source_blocker": source_blocker,
+            "proposal_fingerprint": lead_proposal_fingerprint(
+                schema=LEAD_PROPOSAL_SCHEMA,
+                lead=lead,
+                source_topic=topic,
+                receipt_ids=receipt_ids,
+                source_keys=source_keys,
+                candidate_score=candidate.score,
+                candidate_novelty_score=candidate.novelty_score,
+                candidate_tier=candidate_tier,
+                source_blocker=source_blocker,
+            ),
         }
     return None
 
@@ -453,6 +652,12 @@ def no_alpha_failure(
     final_quality_blockers: Sequence[Mapping[str, object]] = (),
 ) -> SearchFailure:
     best_mined = max(mined_candidates, key=lambda candidate: candidate.score, default=None)
+    lead_proposal = _evidence_lead_proposal(
+        topic=topic,
+        hits=hits,
+        candidates=mined_candidates,
+        min_alpha_tier=min_alpha_tier,
+    )
     publish_quality_blockers = tuple(
         {
             "receipt_ids": candidate.receipt_ids,
@@ -492,6 +697,7 @@ def no_alpha_failure(
                 }
                 for candidate in mined_candidates[:3]
             ),
+            **({"lead_proposal": lead_proposal} if lead_proposal is not None else {}),
         },
     )
 

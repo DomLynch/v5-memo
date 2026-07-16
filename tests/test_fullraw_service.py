@@ -292,9 +292,9 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "Environment=V5_MEMO_READY_BUFFER_SIZE=3" in prepare_config
     assert "Environment=V5_MEMO_PREPARE_MAX_LEADS=1" in prepare_config
     assert "one strict candidate at a time" in prepare_config
-    assert "--auto-discover-leads" not in prepare_config
+    assert "--auto-discover-leads" in prepare_config
     assert "--min-open-leads" not in prepare_config
-    assert "--discover-count" not in prepare_config
+    assert "--discover-count 1" in prepare_config
     assert '--ready-buffer-size "${V5_MEMO_READY_BUFFER_SIZE:-3}"' in prepare_config
     assert "--resource-aware-max-leads" in prepare_config
     assert "--validate-publish-quality" not in prepare_config

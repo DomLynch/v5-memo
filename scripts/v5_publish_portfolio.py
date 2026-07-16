@@ -23,67 +23,13 @@ from v5_memo.fullraw_index import (
     _load_sweep_cache,
     _sweep_cache_entry_matches_active_or_completed_original_query,
 )
+from v5_memo.gate import (
+    LEAD_PROPOSAL_SCHEMA,
+    lead_proposal_fingerprint,
+    lead_proposal_identity,
+    lead_proposal_metadata_valid,
+)
 
-DEFAULT_LEADS = (
-    "urolithin muscle strength endurance older adults trial",
-    "urolithin muscle recovery trained runners placebo trial",
-    "metformin exercise training adaptation older adults trial",
-    "resveratrol exercise training mitochondrial adaptation trial",
-    "cold water immersion resistance training adaptation trial",
-)
-DISCOVERY_INTERVENTIONS = (
-    "urolithin a",
-    "nicotinamide riboside",
-    "nmn",
-    "taurine",
-    "creatine",
-    "omega 3",
-    "vitamin d",
-    "collagen peptides",
-    "nitrate supplementation",
-    "beetroot nitrate",
-    "sauna bathing",
-    "heat therapy",
-    "cold water immersion",
-    "metformin",
-    "acarbose",
-    "rapamycin",
-    "fisetin senolytic",
-    "quercetin dasatinib senolytic",
-    "spermidine",
-    "resveratrol",
-    "curcumin",
-    "ashwagandha",
-    "beta alanine",
-    "time restricted eating",
-    "ketogenic diet",
-    "protein timing",
-    "leucine supplementation",
-)
-DISCOVERY_CONTEXTS = (
-    "muscle strength older adults randomized trial",
-    "resistance training adaptation human trial",
-    "exercise recovery inflammation placebo trial",
-    "mitochondrial function exercise adaptation human trial",
-    "frailty physical function older adults trial",
-    "sarcopenia lean mass randomized trial",
-    "endurance performance older adults trial",
-    "blood pressure vascular aging trial",
-    "insulin sensitivity exercise training trial",
-    "cognitive aging physical function trial",
-    "sleep recovery exercise adaptation trial",
-    "bone density resistance training trial",
-    "tendon collagen adaptation trial",
-    "immune inflammation aging placebo trial",
-)
-DISCOVERY_ANGLES = (
-    "",
-    "null result",
-    "dose response",
-    "sex differences",
-    "subgroup response",
-    "adverse adaptation",
-)
 TAIL_CHARS = 2000
 STATE_TIME_FORMAT = "%Y%m%dT%H%M%SZ"
 PORTFOLIO_SWEEP_WAIT_SECONDS = "21600"
@@ -129,6 +75,13 @@ class RunConfig:
     resource_aware_max_leads: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ReceiptLeadProposal:
+    lead: str
+    source_topic: str
+    fingerprint: str
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -165,7 +118,7 @@ def load_leads(args: argparse.Namespace) -> list[str]:
             stripped = line.strip()
             if stripped and not stripped.startswith("#"):
                 leads.append(stripped)
-    return _dedupe(leads or list(DEFAULT_LEADS))
+    return _dedupe(leads)
 
 
 def build_command(lead: str, lead_dir: Path, receipt_path: Path, config: RunConfig) -> list[str]:
@@ -227,6 +180,20 @@ def _load_state(path: Path | None) -> dict[str, object]:
     return data if isinstance(data, dict) else {}
 
 
+def _write_state(path: Path, state: Mapping[str, object]) -> None:
+    """Replace state atomically so derived provenance cannot be partially saved."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("w") as handle:
+            json.dump(state, handle, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _completed_leads(state: Mapping[str, object]) -> Mapping[str, object]:
     raw = state.get("completed_leads")
     return raw if isinstance(raw, Mapping) else {}
@@ -234,6 +201,11 @@ def _completed_leads(state: Mapping[str, object]) -> Mapping[str, object]:
 
 def _attempted_leads(state: Mapping[str, object]) -> Mapping[str, object]:
     raw = state.get("attempted_leads")
+    return raw if isinstance(raw, Mapping) else {}
+
+
+def _derived_leads(state: Mapping[str, object]) -> Mapping[str, object]:
+    raw = state.get("derived_leads")
     return raw if isinstance(raw, Mapping) else {}
 
 
@@ -831,33 +803,169 @@ def discover_leads(
     *,
     count: int,
 ) -> list[str]:
+    proposal = _discover_lead_proposal(known_leads, state, count=count)
+    return [proposal.lead] if proposal is not None else []
+
+
+def _discover_lead_proposal(
+    known_leads: Sequence[str],
+    state: Mapping[str, object],
+    *,
+    count: int,
+) -> ReceiptLeadProposal | None:
     if count <= 0:
-        return []
+        return None
     known = {_lead_key(lead) for lead in known_leads}
     known.update(_state_keys(_completed_leads(state)))
     known.update(_state_keys(_attempted_leads(state)))
-    out: list[str] = []
-    for angle in DISCOVERY_ANGLES:
-        for context in DISCOVERY_CONTEXTS:
-            for intervention in DISCOVERY_INTERVENTIONS:
-                lead = " ".join(part for part in (intervention, context, angle) if part)
-                key = _lead_key(lead)
-                if key in known:
-                    continue
-                known.add(key)
-                out.append(lead)
-                if len(out) >= count:
-                    return out
-    return out
+    derived_keys = _state_keys(_derived_leads(state))
+    known.update(derived_keys)
+    consumed_fingerprints = {
+        str(meta.get("proposal_fingerprint") or "")
+        for meta in _derived_leads(state).values()
+        if isinstance(meta, Mapping)
+    }
+    attempts = sorted(
+        _attempted_leads(state).items(),
+        key=lambda item: _parse_state_time(
+            item[1].get("updated_at") if isinstance(item[1], Mapping) else None
+        )
+        or datetime.min.replace(tzinfo=UTC),
+        reverse=True,
+    )
+    for raw_lead, raw_meta in attempts:
+        if not isinstance(raw_meta, Mapping):
+            continue
+        if (
+            _lead_key(str(raw_lead)) in derived_keys
+            or raw_meta.get("status") != "blocked:no_receipt_bound_alpha_candidate"
+        ):
+            continue
+        receipt_path = raw_meta.get("receipt_path")
+        if not isinstance(receipt_path, str) or not receipt_path:
+            continue
+        proposal = _receipt_lead_proposal(
+            _read_json(Path(receipt_path)),
+            expected_source_topic=str(raw_lead),
+        )
+        if (
+            proposal is not None
+            and _lead_key(proposal.lead) not in known
+            and proposal.fingerprint not in consumed_fingerprints
+        ):
+            return proposal
+    return None
 
 
-def _append_leads(path: Path | None, leads: Sequence[str]) -> None:
-    if path is None or not leads:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = path.read_text() if path.exists() else ""
-    prefix = "" if not existing or existing.endswith("\n") else "\n"
-    path.write_text(f"{existing}{prefix}" + "\n".join(leads) + "\n")
+def _proposal_strings(value: object) -> tuple[str, ...] | None:
+    if not isinstance(value, Sequence) or isinstance(value, str):
+        return None
+    if any(not isinstance(item, str) or not item or item != item.strip() for item in value):
+        return None
+    strings = tuple(value)
+    return strings if len(strings) == len(set(strings)) else None
+
+
+def _receipt_lead_proposal(
+    receipt: Mapping[str, object],
+    *,
+    expected_source_topic: str,
+) -> ReceiptLeadProposal | None:
+    if receipt.get("error") != "no_receipt_bound_alpha_candidate":
+        return None
+    details = receipt.get("details")
+    raw_proposal = details.get("lead_proposal") if isinstance(details, Mapping) else None
+    if not isinstance(raw_proposal, Mapping):
+        return None
+    lead = str(raw_proposal.get("lead") or "").strip()
+    source_topic = str(raw_proposal.get("source_topic") or "").strip()
+    receipt_ids = _proposal_strings(raw_proposal.get("receipt_ids"))
+    source_keys = _proposal_strings(raw_proposal.get("source_keys"))
+    fingerprint = str(raw_proposal.get("proposal_fingerprint") or "").strip()
+    candidate_score = raw_proposal.get("candidate_score")
+    candidate_novelty = raw_proposal.get("candidate_novelty_score")
+    candidate_tier = str(raw_proposal.get("candidate_tier") or "")
+    source_blocker = str(raw_proposal.get("source_blocker") or "")
+    if (
+        raw_proposal.get("schema") != LEAD_PROPOSAL_SCHEMA
+        or not lead
+        or not source_topic
+        or lead_proposal_identity(source_topic)
+        != lead_proposal_identity(expected_source_topic)
+        or lead_proposal_identity(lead) == lead_proposal_identity(source_topic)
+        or receipt_ids is None
+        or source_keys is None
+        or len(receipt_ids) < 2
+        or len(source_keys) < 2
+        or type(candidate_score) is not int
+        or type(candidate_novelty) is not int
+        or not lead_proposal_metadata_valid(
+            candidate_score=candidate_score,
+            candidate_novelty_score=candidate_novelty,
+            candidate_tier=candidate_tier,
+            source_blocker=source_blocker,
+        )
+    ):
+        return None
+    expected = lead_proposal_fingerprint(
+        schema=LEAD_PROPOSAL_SCHEMA,
+        lead=lead,
+        source_topic=source_topic,
+        receipt_ids=receipt_ids,
+        source_keys=source_keys,
+        candidate_score=candidate_score,
+        candidate_novelty_score=candidate_novelty,
+        candidate_tier=candidate_tier,
+        source_blocker=source_blocker,
+    )
+    if fingerprint != expected:
+        return None
+    return ReceiptLeadProposal(lead, source_topic, fingerprint)
+
+
+def _derived_supply_open(state: Mapping[str, object]) -> bool:
+    completed = _state_keys(_completed_leads(state))
+    attempts = _attempted_leads(state)
+    for raw_lead in _derived_leads(state):
+        lead_key = _lead_key(str(raw_lead))
+        if lead_key in completed:
+            continue
+        attempt = next(
+            (
+                meta
+                for lead, meta in attempts.items()
+                if _lead_key(str(lead)) == lead_key and isinstance(meta, Mapping)
+            ),
+            None,
+        )
+        if attempt is None:
+            return True
+        status = str(attempt.get("status") or "")
+        if (
+            _search_warming_status(status)
+            or status in {"accepted", "ready", "blocked:lead_timeout", "blocked:search_backend_error"}
+            or _post_quality_status(status)
+        ):
+            return True
+    return False
+
+
+def _save_derived_lead(
+    path: Path | None,
+    state: dict[str, object],
+    proposal: ReceiptLeadProposal,
+) -> None:
+    raw = state.setdefault("derived_leads", {})
+    if not isinstance(raw, dict):
+        raw = {}
+        state["derived_leads"] = raw
+    raw[proposal.lead] = {
+        "proposal_fingerprint": proposal.fingerprint,
+        "source_topic": proposal.source_topic,
+        "updated_at": _timestamp(),
+    }
+    if path is not None:
+        _write_state(path, state)
 
 
 def _save_attempted_lead(
@@ -908,8 +1016,7 @@ def _save_attempted_lead(
     if isinstance(revision, Mapping):
         entry["revision"] = dict(revision)
     raw[lead] = entry
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2, sort_keys=True))
+    _write_state(path, state)
 
 
 def _save_completed_lead(
@@ -928,8 +1035,7 @@ def _save_completed_lead(
         "status": record["status"],
         "updated_at": _timestamp(),
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2, sort_keys=True))
+    _write_state(path, state)
 
 
 def _listed_minted_publication(receipt: Mapping[str, object]) -> bool:
@@ -1196,7 +1302,10 @@ def run_portfolio(
     state = _load_state(config.state_path)
     now = datetime.now(UTC)
     preparing = not config.submit and config.ready_buffer_size > 0
-    expanded_leads = list(leads)
+    expanded_leads = _dedupe([
+        *leads,
+        *(str(lead) for lead in _derived_leads(state)),
+    ])
     initial_completed_keys = _state_keys(_completed_leads(state))
     complete_cache_lead_keys = (
         _complete_first_query_cache_lead_keys(
@@ -1232,15 +1341,24 @@ def run_portfolio(
         available_leads = [
             lead for lead in available_leads if _lead_key(lead) in ready_keys
         ]
+    attempted_keys = _state_keys(_attempted_leads(state))
     discovered: list[str] = []
     if (
         config.auto_discover_leads
+        and preparing
         and not config.ready_only
-        and len(available_leads) < config.min_open_leads
+        and len(ready_keys) < config.ready_buffer_size
+        and not _derived_supply_open(state)
+        and not any(_lead_key(lead) not in attempted_keys for lead in available_leads)
     ):
-        needed = max(config.discover_count, config.min_open_leads - len(available_leads))
-        discovered = discover_leads(expanded_leads, state, count=needed)
-        _append_leads(config.lead_file, discovered)
+        proposal = _discover_lead_proposal(
+            expanded_leads,
+            state,
+            count=min(1, config.discover_count),
+        )
+        discovered = [proposal.lead] if proposal is not None else []
+        if proposal is not None:
+            _save_derived_lead(config.state_path, state, proposal)
         expanded_leads.extend(discovered)
         complete_cache_lead_keys = (
             _complete_first_query_cache_lead_keys(
