@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -443,6 +444,7 @@ def _available_leads(
     prefer_ready: bool = False,
     retry_post_quality: bool = False,
     complete_cache_lead_keys: set[str] | None = None,
+    warming_fingerprints: Mapping[str, str] | None = None,
 ) -> list[str]:
     completed_keys = _state_keys(_completed_leads(state))
     terminal_decision_keys = _terminal_decision_lead_keys(state)
@@ -459,6 +461,11 @@ def _available_leads(
             retry_post_quality=retry_post_quality,
         )
     ]
+    warming_lease_key = (
+        _warming_lease_key(available, state, warming_fingerprints)
+        if warming_fingerprints is not None
+        else None
+    )
     return sorted(
         available,
         key=lambda lead: _attempt_priority(
@@ -466,6 +473,8 @@ def _available_leads(
             state,
             prefer_ready=prefer_ready,
             complete_cache_lead_keys=complete_cache_lead_keys,
+            warming_fingerprints=warming_fingerprints,
+            warming_lease_key=warming_lease_key,
         ),
     )
 
@@ -496,12 +505,56 @@ def _receipt_remaining_shards(meta: Mapping[str, object]) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _search_warming_status(status: str) -> bool:
+    return status.startswith("warming:")
+
+
+def _warming_lease_key(
+    leads: Sequence[str],
+    state: Mapping[str, object],
+    warming_fingerprints: Mapping[str, str],
+) -> str:
+    eligible_keys = {_lead_key(lead) for lead in leads}
+    exact: list[tuple[float, int, int, str]] = []
+    legacy: list[tuple[float, int, int, str]] = []
+    for order, (raw_lead, raw_meta) in enumerate(_attempted_leads(state).items()):
+        if not isinstance(raw_meta, Mapping):
+            continue
+        status = str(raw_meta.get("status") or "")
+        if not _search_warming_status(status):
+            continue
+        lead_key = _lead_key(str(raw_lead))
+        if lead_key not in eligible_keys:
+            continue
+        current_fingerprint = warming_fingerprints.get(lead_key)
+        if not current_fingerprint:
+            continue
+        updated_at = _parse_state_time(raw_meta.get("updated_at"))
+        updated_rank = -updated_at.timestamp() if updated_at is not None else float("inf")
+        remaining = _receipt_remaining_shards(raw_meta)
+        rank = (
+            updated_rank,
+            remaining if remaining is not None else sys.maxsize,
+            order,
+            lead_key,
+        )
+        stored_fingerprint = raw_meta.get("warming_fingerprint")
+        if stored_fingerprint == current_fingerprint:
+            exact.append(rank)
+        elif stored_fingerprint is None or stored_fingerprint == "":
+            legacy.append(rank)
+    candidates = exact or legacy
+    return min(candidates)[-1] if candidates else ""
+
+
 def _attempt_priority(
     lead: str,
     state: Mapping[str, object],
     *,
     prefer_ready: bool = False,
     complete_cache_lead_keys: set[str] | None = None,
+    warming_fingerprints: Mapping[str, str] | None = None,
+    warming_lease_key: str | None = None,
 ) -> tuple[int, int]:
     lead_key = _lead_key(lead)
     for raw_lead, raw_meta in _attempted_leads(state).items():
@@ -514,9 +567,16 @@ def _attempt_priority(
             return (0, -1)
         if complete_cache_lead_keys and lead_key in complete_cache_lead_keys:
             return (0, 0)
-        if status.startswith("warming:") or status == "blocked:search_backend_error":
+        if _search_warming_status(status):
             remaining = _receipt_remaining_shards(raw_meta)
-            return (0, remaining if remaining is not None else sys.maxsize)
+            if warming_fingerprints is None:
+                return (0, remaining if remaining is not None else sys.maxsize)
+            if lead_key != warming_lease_key:
+                return (3, 0)
+            return (
+                0,
+                remaining + 1 if remaining is not None else sys.maxsize,
+            )
         if status in {"blocked:lead_timeout", "blocked:researka_submit_failed"}:
             return (1, 0)
         if status.startswith("decision:"):
@@ -538,22 +598,36 @@ def _env_text(env: Mapping[str, str], *names: str) -> str:
     )
 
 
-def _positive_int_from_env(env: Mapping[str, str], *names: str) -> int | None:
-    raw = _env_text(env, *names)
+def _consistent_env_text(env: Mapping[str, str], *names: str) -> str | None:
+    values = [str(env.get(name, "")).strip() for name in names]
+    configured = [value for value in values if value]
+    if len(set(configured)) > 1:
+        return None
+    return configured[0] if configured else ""
+
+
+def _positive_int_text(value: str | None) -> int | None:
     try:
-        value = int(raw)
+        parsed = int(value or "")
     except ValueError:
         return None
-    return value if value > 0 else None
+    return parsed if parsed > 0 else None
+
+
+def _positive_float_text(value: str | None) -> float | None:
+    try:
+        parsed = float(value or "")
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _positive_int_from_env(env: Mapping[str, str], *names: str) -> int | None:
+    return _positive_int_text(_env_text(env, *names))
 
 
 def _positive_float_from_env(env: Mapping[str, str], *names: str) -> float | None:
-    raw = _env_text(env, *names)
-    try:
-        value = float(raw)
-    except ValueError:
-        return None
-    return value if value > 0 else None
+    return _positive_float_text(_env_text(env, *names))
 
 
 def _first_query_cache_specs(
@@ -584,6 +658,70 @@ def _first_query_cache_specs(
     return specs
 
 
+def _warming_fingerprints(
+    leads: Sequence[str],
+    env: Mapping[str, str],
+    *,
+    planner: str | None,
+) -> dict[str, str]:
+    if planner not in {None, "seed"}:
+        return {}
+    search_url = _consistent_env_text(
+        env,
+        "RESEARKA_FULLRAW_SEARCH_URL",
+        "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL",
+    )
+    if not search_url:
+        return {}
+    backend = {
+        "search_url": search_url.rstrip("/"),
+        "shard_dir": _consistent_env_text(
+            env,
+            "RESEARKA_FULLRAW_SHARD_DIR",
+            "V5_MEMO_FULL_RAW_SHARD_DIR",
+        ),
+        "sweep_cache_dir": _consistent_env_text(
+            env,
+            "RESEARKA_FULLRAW_SWEEP_CACHE_DIR",
+            "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR",
+        ),
+        "sweep_shard_limit": _positive_int_text(
+            _consistent_env_text(
+                env,
+                "RESEARKA_FULLRAW_SWEEP_SHARD_LIMIT",
+                "V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT",
+            )
+        ),
+        "sweep_pass_shard_limit": _positive_int_text(
+            _consistent_env_text(
+                env,
+                "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT",
+                "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT",
+            )
+        ),
+        "sweep_ttl_seconds": _positive_float_text(
+            _consistent_env_text(
+                env,
+                "RESEARKA_FULLRAW_SWEEP_TTL_SECONDS",
+                "V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS",
+            )
+        ),
+        "sweep_strategy": _SWEEP_STRATEGY,
+    }
+    if any(value in {None, ""} for value in backend.values()):
+        return {}
+    out: dict[str, str] = {}
+    for lead_key, (query, result_limit) in _first_query_cache_specs(leads, env).items():
+        payload = {
+            "backend": backend,
+            "query": " ".join(query.casefold().split()),
+            "result_limit": result_limit,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        out[lead_key] = hashlib.sha256(encoded).hexdigest()
+    return out
+
+
 def _complete_first_query_cache_lead_keys(
     leads: Sequence[str],
     env: Mapping[str, str],
@@ -592,36 +730,48 @@ def _complete_first_query_cache_lead_keys(
 ) -> set[str]:
     if planner not in {None, "seed"}:
         return set()
-    cache_dir_text = _env_text(
+    cache_dir_text = _consistent_env_text(
         env,
-        "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR",
         "RESEARKA_FULLRAW_SWEEP_CACHE_DIR",
+        "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR",
     )
-    shard_dir_text = _env_text(
+    shard_dir_text = _consistent_env_text(
         env,
-        "V5_MEMO_FULL_RAW_SHARD_DIR",
         "RESEARKA_FULLRAW_SHARD_DIR",
+        "V5_MEMO_FULL_RAW_SHARD_DIR",
     )
-    sweep_shard_limit = _positive_int_from_env(
+    raw_sweep_shard_limit = _consistent_env_text(
         env,
-        "V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT",
         "RESEARKA_FULLRAW_SWEEP_SHARD_LIMIT",
+        "V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT",
     )
-    if not cache_dir_text or not shard_dir_text or sweep_shard_limit is None:
+    sweep_shard_limit = _positive_int_text(raw_sweep_shard_limit)
+    if (
+        not cache_dir_text
+        or not shard_dir_text
+        or raw_sweep_shard_limit is None
+        or sweep_shard_limit is None
+    ):
         return set()
     cache_dir = Path(cache_dir_text)
     if not cache_dir.is_dir():
         return set()
-    sweep_pass_shard_limit = _positive_int_from_env(
+    raw_sweep_pass_shard_limit = _consistent_env_text(
         env,
-        "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT",
         "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT",
-    ) or sweep_shard_limit
-    sweep_ttl = _positive_float_from_env(
+        "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT",
+    )
+    raw_sweep_ttl = _consistent_env_text(
         env,
-        "V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS",
         "RESEARKA_FULLRAW_SWEEP_TTL_SECONDS",
-    ) or 86400.0
+        "V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS",
+    )
+    if raw_sweep_pass_shard_limit is None or raw_sweep_ttl is None:
+        return set()
+    sweep_pass_shard_limit = (
+        _positive_int_text(raw_sweep_pass_shard_limit) or sweep_shard_limit
+    )
+    sweep_ttl = _positive_float_text(raw_sweep_ttl) or 86400.0
     catalog_scope = str(Path(shard_dir_text).absolute())
     specs = _first_query_cache_specs(leads, env)
     if not specs:
@@ -740,6 +890,14 @@ def _save_attempted_lead(
     remaining = record.get("sweep_remaining_shards")
     if isinstance(remaining, int) and remaining >= 0:
         entry["sweep_remaining_shards"] = remaining
+    warming_fingerprint = record.get("warming_fingerprint")
+    if (
+        _search_warming_status(record_status)
+        and not keep_ready
+        and isinstance(warming_fingerprint, str)
+        and warming_fingerprint
+    ):
+        entry["warming_fingerprint"] = warming_fingerprint
     if keep_ready:
         entry["last_attempt_status"] = record_status
         entry["ready_receipt_path"] = previous_meta.get(
@@ -1049,6 +1207,15 @@ def run_portfolio(
         if preparing and config.searcher == "fullraw"
         else set()
     )
+    warming_fingerprints = (
+        _warming_fingerprints(
+            expanded_leads,
+            run_env,
+            planner=config.planner,
+        )
+        if preparing and config.searcher == "fullraw"
+        else None
+    ) or None
     available_leads = _available_leads(
         expanded_leads,
         state,
@@ -1057,6 +1224,7 @@ def run_portfolio(
         prefer_ready=config.submit,
         retry_post_quality=preparing,
         complete_cache_lead_keys=complete_cache_lead_keys,
+        warming_fingerprints=warming_fingerprints,
     )
     eligible_keys = {_lead_key(lead) for lead in expanded_leads}
     ready_keys = _ready_lead_keys(state) & eligible_keys
@@ -1083,6 +1251,15 @@ def run_portfolio(
             if preparing and config.searcher == "fullraw"
             else set()
         )
+        warming_fingerprints = (
+            _warming_fingerprints(
+                expanded_leads,
+                run_env,
+                planner=config.planner,
+            )
+            if preparing and config.searcher == "fullraw"
+            else None
+        ) or None
         available_leads = _available_leads(
             expanded_leads,
             state,
@@ -1091,6 +1268,7 @@ def run_portfolio(
             prefer_ready=config.submit,
             retry_post_quality=preparing,
             complete_cache_lead_keys=complete_cache_lead_keys,
+            warming_fingerprints=warming_fingerprints,
         )
         eligible_keys = {_lead_key(lead) for lead in expanded_leads}
         ready_keys = _ready_lead_keys(state) & eligible_keys
@@ -1099,6 +1277,11 @@ def run_portfolio(
         available_leads = [
             lead for lead in available_leads if _lead_key(lead) not in ready_keys
         ]
+    warming_lease_lead_key = (
+        _warming_lease_key(available_leads, state, warming_fingerprints)
+        if warming_fingerprints is not None
+        else ""
+    )
     if preparing:
         configured_lead_limit, resource_max_inflight = _preparation_lead_limit(
             config,
@@ -1160,6 +1343,13 @@ def run_portfolio(
         remaining = _receipt_remaining_shards({"receipt_path": str(receipt_path)})
         if remaining is not None:
             record["sweep_remaining_shards"] = remaining
+        current_warming_fingerprint = (
+            warming_fingerprints.get(_lead_key(lead))
+            if warming_fingerprints is not None
+            else None
+        )
+        if _search_warming_status(status) and current_warming_fingerprint:
+            record["warming_fingerprint"] = current_warming_fingerprint
         visibility_error = receipt.get("visibility_error")
         if visibility_error:
             record["visibility_error"] = visibility_error
@@ -1210,6 +1400,14 @@ def run_portfolio(
             for lead in available_leads
             if _lead_key(lead) in complete_cache_lead_keys
         ],
+        "warming_lease_lead": next(
+            (
+                lead
+                for lead in available_leads
+                if _lead_key(lead) == warming_lease_lead_key
+            ),
+            None,
+        ),
         "ready_buffer_size": config.ready_buffer_size,
         "ready_buffer_count_before": ready_before,
         "ready_buffer_count_after": ready_after,

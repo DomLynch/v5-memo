@@ -292,6 +292,9 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "Environment=V5_MEMO_READY_BUFFER_SIZE=3" in prepare_config
     assert "Environment=V5_MEMO_PREPARE_MAX_LEADS=1" in prepare_config
     assert "one strict candidate at a time" in prepare_config
+    assert "--auto-discover-leads" not in prepare_config
+    assert "--min-open-leads" not in prepare_config
+    assert "--discover-count" not in prepare_config
     assert '--ready-buffer-size "${V5_MEMO_READY_BUFFER_SIZE:-3}"' in prepare_config
     assert "--resource-aware-max-leads" in prepare_config
     assert "--validate-publish-quality" not in prepare_config
@@ -322,6 +325,26 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "RESEARKA_FULLRAW_SEARCH_URL=http://127.0.0.1:9903/search" in shared_env
     assert "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL=http://127.0.0.1:9903/search" in shared_env
     assert "V5_MEMO_FULL_RAW_INDEX_PORT=9903" in shared_env
+    shared_values = dict(
+        line.split("=", 1)
+        for line in shared_env.splitlines()
+        if line and not line.startswith("#")
+    )
+    expected_shared_values = {
+        "RESEARKA_FULLRAW_SHARD_DIR": "/var/lib/researka-fullraw/fullraw-fts",
+        "RESEARKA_FULLRAW_SWEEP_CACHE_DIR": "/var/lib/researka-fullraw/sweep-cache",
+        "RESEARKA_FULLRAW_SWEEP_SHARD_LIMIT": "1525",
+        "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT": "32",
+        "RESEARKA_FULLRAW_SWEEP_TTL_SECONDS": "604800",
+        "V5_MEMO_FULL_RAW_SHARD_DIR": "/var/lib/researka-fullraw/fullraw-fts",
+        "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR": "/var/lib/researka-fullraw/sweep-cache",
+        "V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT": "1525",
+        "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT": "32",
+        "V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS": "604800",
+    }
+    assert expected_shared_values.items() <= shared_values.items()
+    assert "/var/lib/v5-memo/v5-fullraw-sweep-cache" not in shared_env
+    assert "/var/lib/v5-memo/v5-isolated-fullraw-fts-remote" not in shared_env
     assert "9915" not in shared_env
     assert "v5-memo-portfolio-prepare.service" in isolation_installer
     assert "v5-memo-portfolio-catchup.service" in isolation_installer
