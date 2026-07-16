@@ -781,6 +781,174 @@ def test_warming_coverage_order_handles_unknowns_and_stable_ties(tmp_path: Path)
     assert available == ["near b", "near a", "far lead", "unknown lead", "fresh lead"]
 
 
+def test_warming_fingerprint_tracks_backend_and_sweep_contract(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    env, cache_dir, shard_dir = _cache_env(tmp_path)
+    env["V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL"] = "http://127.0.0.1:9903/search"
+    lead = "creatine resistance training human trial"
+
+    initial = portfolio._warming_fingerprints([lead], env, planner=None)
+    changed_url = portfolio._warming_fingerprints(
+        [lead],
+        {**env, "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL": "http://127.0.0.1:9915/search"},
+        planner=None,
+    )
+    changed_pass = portfolio._warming_fingerprints(
+        [lead],
+        {**env, "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT": "32"},
+        planner=None,
+    )
+    conflicting_aliases = portfolio._warming_fingerprints(
+        [lead],
+        {
+            **env,
+            "RESEARKA_FULLRAW_SEARCH_URL": "http://127.0.0.1:9903/search",
+            "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL": "http://127.0.0.1:9915/search",
+            "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT": "32",
+            "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT": "12",
+        },
+        planner=None,
+    )
+    generic_contract = portfolio._warming_fingerprints(
+        [lead],
+        {
+            **env,
+            "RESEARKA_FULLRAW_SEARCH_URL": "http://127.0.0.1:9903/search",
+            "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL": "http://127.0.0.1:9903/search",
+            "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT": "32",
+            "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT": "32",
+        },
+        planner=None,
+    )
+
+    key = portfolio._lead_key(lead)
+    assert len(initial[key]) == 64
+    assert initial[key] != changed_url[key]
+    assert initial[key] != changed_pass[key]
+    assert conflicting_aliases == {}
+    assert generic_contract[key]
+    available_after_backend_change = portfolio._available_leads(
+        [lead, "fresh lead"],
+        {
+            "attempted_leads": {
+                lead: {
+                    "status": "warming:search_coverage",
+                    "warming_fingerprint": initial[key],
+                }
+            }
+        },
+        blocked_retry_hours=24,
+        now=portfolio.datetime.now(portfolio.UTC),
+        warming_fingerprints=changed_url,
+    )
+    assert available_after_backend_change == ["fresh lead", lead]
+    assert cache_dir.is_dir()
+    assert shard_dir.is_dir()
+
+
+def test_current_warming_lease_outranks_fresh_and_stale_warmers() -> None:
+    portfolio = _load_portfolio()
+    fingerprints = {
+        "current lead": "current-fingerprint",
+        "legacy lead": "legacy-current-fingerprint",
+        "stale lead": "stale-current-fingerprint",
+    }
+    state = {
+        "attempted_leads": {
+            "current lead": {
+                "status": "warming:search_coverage",
+                "warming_fingerprint": "current-fingerprint",
+                "updated_at": "20260716T120000Z",
+                "sweep_remaining_shards": 500,
+            },
+            "legacy lead": {
+                "status": "warming:search_coverage",
+                "updated_at": "20260716T130000Z",
+                "sweep_remaining_shards": 1,
+            },
+            "stale lead": {
+                "status": "warming:search_coverage",
+                "warming_fingerprint": "old-fingerprint",
+                "updated_at": "20260716T140000Z",
+                "sweep_remaining_shards": 1,
+            },
+        }
+    }
+
+    available = portfolio._available_leads(
+        ["legacy lead", "stale lead", "fresh lead", "current lead"],
+        state,
+        blocked_retry_hours=24,
+        now=portfolio.datetime.now(portfolio.UTC),
+        warming_fingerprints=fingerprints,
+    )
+
+    assert available[:2] == ["current lead", "fresh lead"]
+
+
+def test_legacy_warming_lease_uses_closest_when_timestamps_are_missing() -> None:
+    portfolio = _load_portfolio()
+    state = {
+        "attempted_leads": {
+            "far lead": {
+                "status": "warming:search_coverage",
+                "sweep_remaining_shards": 500,
+            },
+            "near lead": {
+                "status": "warming:search_coverage",
+                "sweep_remaining_shards": 5,
+            },
+            "orphan lead": {
+                "status": "warming:search_coverage",
+                "sweep_remaining_shards": 1,
+            },
+        }
+    }
+    fingerprints = {
+        "far lead": "far",
+        "near lead": "near",
+        "orphan lead": "orphan",
+    }
+
+    available = portfolio._available_leads(
+        ["far lead", "fresh lead", "near lead"],
+        state,
+        blocked_retry_hours=24,
+        now=portfolio.datetime.now(portfolio.UTC),
+        warming_fingerprints=fingerprints,
+    )
+
+    assert available == ["near lead", "fresh lead", "far lead"]
+
+
+def test_complete_cache_outranks_single_current_warming_lease() -> None:
+    portfolio = _load_portfolio()
+    state = {
+        "attempted_leads": {
+            "warming lead": {
+                "status": "warming:search_coverage",
+                "warming_fingerprint": "current",
+                "sweep_remaining_shards": 0,
+            },
+            "cached lead": {"status": "blocked:no_receipt_bound_alpha_candidate"},
+        }
+    }
+
+    available = portfolio._available_leads(
+        ["warming lead", "fresh lead", "cached lead"],
+        state,
+        blocked_retry_hours=0,
+        now=portfolio.datetime.now(portfolio.UTC),
+        complete_cache_lead_keys={"cached lead"},
+        warming_fingerprints={
+            "warming lead": "current",
+            "cached lead": "cached",
+        },
+    )
+
+    assert available == ["cached lead", "warming lead", "fresh lead"]
+
+
 def test_prepare_prioritizes_eligible_lead_with_complete_first_query_cache(
     tmp_path: Path,
 ) -> None:
@@ -813,6 +981,15 @@ def test_prepare_prioritizes_eligible_lead_with_complete_first_query_cache(
         env,
         planner=None,
     )
+    conflicting_cache_keys = portfolio._complete_first_query_cache_lead_keys(
+        [cached_lead],
+        {
+            **env,
+            "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR": str(tmp_path / "legacy-cache"),
+            "V5_MEMO_FULL_RAW_SHARD_DIR": str(tmp_path / "legacy-shards"),
+        },
+        planner=None,
+    )
     available = portfolio._available_leads(
         ["warming lead", cached_lead],
         state,
@@ -822,6 +999,7 @@ def test_prepare_prioritizes_eligible_lead_with_complete_first_query_cache(
     )
 
     assert cache_keys == {portfolio._lead_key(cached_lead)}
+    assert conflicting_cache_keys == set()
     assert available == [cached_lead, "warming lead"]
 
 
@@ -1693,7 +1871,7 @@ def test_search_coverage_warming_continues_past_generic_zero_wait(tmp_path: Path
     state_path.write_text(json.dumps({
         "attempted_leads": {
             "cold lead": {
-                "status": "blocked:search_backend_error",
+                "status": "warming:search_coverage",
                 "updated_at": portfolio._timestamp(),
             },
         },
@@ -1775,6 +1953,170 @@ def test_search_coverage_warming_continues_past_generic_zero_wait(tmp_path: Path
     assert len(calls) == 1
     assert calls[0][calls[0].index("--topic") + 1] == "cold lead"
     assert second_summary["skipped_recent_attempts"] == 1
+
+
+def test_prepare_migrates_one_legacy_warming_lease_and_keeps_it(
+    tmp_path: Path,
+) -> None:
+    portfolio = _load_portfolio()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "attempted_leads": {
+            "old warming lead": {
+                "status": "warming:search_coverage",
+                "updated_at": "20260716T100000Z",
+                "sweep_remaining_shards": 10,
+            },
+            "leased warming lead": {
+                "status": "warming:search_coverage",
+                "updated_at": "20260716T110000Z",
+                "sweep_remaining_shards": 100,
+            },
+        }
+    }))
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run-1",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=state_path,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=24,
+        ready_buffer_size=3,
+    )
+    calls: list[str] = []
+
+    def warming_runner(
+        command: list[str],
+        _env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command[command.index("--topic") + 1])
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps({
+            "error": "search_backend_error",
+            "message": (
+                "Full raw corpus search coverage too narrow: "
+                "{'sweep_remaining_shards': 90}"
+            ),
+        }))
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="warming")
+
+    env, _cache_dir, _shard_dir = _cache_env(tmp_path)
+    env["RESEARKA_FULLRAW_SEARCH_URL"] = "http://127.0.0.1:9903/search"
+    leads = ["old warming lead", "fresh lead", "leased warming lead"]
+    assert portfolio.run_portfolio(
+        leads,
+        config,
+        runner=warming_runner,
+        env=env,
+        cwd=Path.cwd(),
+    ) == 0
+    assert portfolio.run_portfolio(
+        leads,
+        replace(config, output_dir=tmp_path / "run-2"),
+        runner=warming_runner,
+        env=env,
+        cwd=Path.cwd(),
+    ) == 0
+
+    state = json.loads(state_path.read_text())
+    first_summary = json.loads((tmp_path / "run-1" / "portfolio.json").read_text())
+    second_summary = json.loads((tmp_path / "run-2" / "portfolio.json").read_text())
+    saved = state["attempted_leads"]["leased warming lead"]
+    assert calls == ["leased warming lead", "leased warming lead"]
+    assert len(saved["warming_fingerprint"]) == 64
+    assert saved["sweep_remaining_shards"] == 90
+    assert first_summary["warming_lease_lead"] == "leased warming lead"
+    assert second_summary["warming_lease_lead"] == "leased warming lead"
+
+
+def test_generic_backend_error_yields_to_fresh_lead_on_next_tick(
+    tmp_path: Path,
+) -> None:
+    portfolio = _load_portfolio()
+    state_path = tmp_path / "state.json"
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run-1",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=state_path,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=24,
+        ready_buffer_size=3,
+    )
+    calls: list[str] = []
+
+    def runner(
+        command: list[str],
+        _env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        lead = command[command.index("--topic") + 1]
+        calls.append(lead)
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        if lead == "backend error lead":
+            receipt.write_text(json.dumps({
+                "error": "search_backend_error",
+                "message": "malformed backend response",
+            }))
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="error")
+        receipt.write_text(json.dumps(_ready_receipt()))
+        return subprocess.CompletedProcess(command, 0, stdout="ready", stderr="")
+
+    env = {"RESEARKA_FULLRAW_SEARCH_URL": "http://127.0.0.1:9903/search"}
+    leads = ["backend error lead", "fresh lead"]
+    assert portfolio.run_portfolio(
+        leads,
+        config,
+        runner=runner,
+        env=env,
+        cwd=Path.cwd(),
+    ) == 1
+    assert portfolio.run_portfolio(
+        leads,
+        replace(config, output_dir=tmp_path / "run-2"),
+        runner=runner,
+        env=env,
+        cwd=Path.cwd(),
+    ) == 0
+
+    state = json.loads(state_path.read_text())
+    assert calls == ["backend error lead", "fresh lead"]
+    assert state["attempted_leads"]["backend error lead"] == {
+        "receipt_path": str(
+            tmp_path / "run-1" / "01-backend-error-lead" / "publish-receipt.json"
+        ),
+        "status": "blocked:search_backend_error",
+        "updated_at": state["attempted_leads"]["backend error lead"]["updated_at"],
+    }
 
 
 def test_portfolio_injects_fullraw_wait_when_unconfigured(tmp_path: Path) -> None:
