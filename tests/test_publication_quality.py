@@ -518,6 +518,41 @@ def test_pipeline_tries_next_candidate_when_selected_memo_fails_final_gate(
     assert result.candidate.receipt_ids == second_candidate.receipt_ids
 
 
+def test_pipeline_stops_after_first_fully_quality_approved_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quality = _quality_result()
+    receipts = tuple(
+        replace(hit, hit_id=hit.receipt_id)
+        for hit in quality.receipts
+    )
+    calls: list[str] = []
+
+    class Searcher:
+        def search(self, query: str, *, limit: int = 25) -> tuple[CorpusHit, ...]:
+            del limit
+            calls.append(query)
+            if query == "unneeded later shape":
+                raise AssertionError("later shape should not run after the final gate passes")
+            return receipts
+
+    monkeypatch.setattr(
+        "v5_memo.pipeline.mine_insights",
+        lambda *_args, **_kwargs: [quality.candidate],
+    )
+
+    result = build_alpha_memo(
+        topic=quality.candidate.topic,
+        seed_queries=("intervention outcome", "unneeded later shape"),
+        anchor_queries=(),
+        searcher=Searcher(),
+        require_publish_quality=True,
+    )
+
+    assert result.candidate.receipt_ids == quality.candidate.receipt_ids
+    assert calls == ["intervention outcome"]
+
+
 def test_publication_quality_blocks_cross_receipt_quantitative_claim() -> None:
     result = _quality_result()
     receipts = (
