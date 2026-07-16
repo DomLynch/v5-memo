@@ -90,6 +90,9 @@ V5_SWEEP_WAIT_ENV = "V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS"
 GENERIC_SWEEP_WAIT_ENV = "RESEARKA_FULLRAW_FOREGROUND_SWEEP_WAIT_SECONDS"
 V5_SEARCH_BUDGET_ENV = "V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS"
 GENERIC_SEARCH_BUDGET_ENV = "RESEARKA_FULLRAW_SEARCH_BUDGET_SECONDS"
+V5_HEALTH_WAIT_ENV = "V5_MEMO_FULL_RAW_HEALTH_WAIT_SECONDS"
+GENERIC_HEALTH_WAIT_ENV = "RESEARKA_FULLRAW_HEALTH_WAIT_SECONDS"
+PORTFOLIO_HEALTH_WAIT_SECONDS = 300.0
 CACHE_SCAN_LIMIT = 512
 
 Runner = Callable[
@@ -293,6 +296,19 @@ def _portfolio_sweep_wait_seconds(config: RunConfig) -> str:
 
 def _portfolio_run_env(config: RunConfig, base_env: Mapping[str, str]) -> dict[str, str]:
     run_env = dict(base_env)
+    # Every portfolio command explicitly requires fullraw, including hybrid and
+    # smart modes, so all of them need the same bounded readiness grace period.
+    if not (
+        _configured_env(run_env, V5_HEALTH_WAIT_ENV)
+        or _configured_env(run_env, GENERIC_HEALTH_WAIT_ENV)
+    ):
+        wait_seconds = PORTFOLIO_HEALTH_WAIT_SECONDS
+        if config.lead_timeout_seconds > 0:
+            wait_seconds = min(
+                wait_seconds,
+                config.lead_timeout_seconds / 2.0,
+            )
+        run_env[V5_HEALTH_WAIT_ENV] = _format_seconds(wait_seconds)
     if not (config.submit and config.searcher == "fullraw"):
         return run_env
     if not (
@@ -796,9 +812,10 @@ def _submission_status_is_retryable(status: str) -> bool:
     # Researka's duplicate response returns the original submission ID. Keeping
     # these leads ready makes the next unattended run poll that same submission
     # through DOI minting/listing instead of stranding it.
-    return (
+    return status.startswith("warming:") or (
         status in {
             "accepted_pending_publication",
+            "blocked:search_backend_error",
             "blocked:lead_timeout",
             "deferred",
             "failed_no_receipt",
@@ -896,8 +913,14 @@ def classify_run(returncode: int, receipt: Mapping[str, object], *, submit: bool
     error = receipt.get("error")
     if error == "researka_submit_deferred":
         return "deferred"
-    if error == "search_backend_error" and "coverage too narrow" in str(receipt.get("message") or "").casefold():
-        return "warming:search_coverage"
+    if error == "search_backend_error":
+        if (
+            receipt.get("stage") == "fullraw_preflight"
+            and receipt.get("retryable") is True
+        ):
+            return "warming:search_backend_unavailable"
+        if "coverage too narrow" in str(receipt.get("message") or "").casefold():
+            return "warming:search_coverage"
     if error:
         return f"blocked:{error}"
     if returncode == 0 and not submit:

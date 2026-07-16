@@ -24,6 +24,7 @@ from v5_memo.__main__ import (
     main,
 )
 from v5_memo.client import ResearkaSearchClient, SearchBackendError
+from v5_memo.coverage import FullRawCorpusUnavailable
 from v5_memo.schemas import (
     ClaimCard,
     CorpusHit,
@@ -39,6 +40,8 @@ _COVERAGE_THRESHOLD_ENV = (
     "V5_MEMO_MEMO_MIN_SEARCH_PASSES",
     "V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED",
     "V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED",
+    "V5_MEMO_FULL_RAW_HEALTH_WAIT_SECONDS",
+    "RESEARKA_FULLRAW_HEALTH_WAIT_SECONDS",
 )
 
 
@@ -604,6 +607,92 @@ def test_cli_writes_search_backend_error_receipt(
     assert exc.value.code == 1
     assert receipt["error"] == "search_backend_error"
     assert "coverage too narrow" in receipt["message"]
+
+
+def test_fullraw_preflight_failure_writes_retryable_receipt(
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "preflight-error.json"
+    monkeypatch.setenv(
+        "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL",
+        "http://127.0.0.1:9903/search",
+    )
+
+    def unavailable() -> None:
+        raise FullRawCorpusUnavailable(
+            "fullraw unavailable: Connection refused",
+            retryable=True,
+        )
+
+    monkeypatch.setattr("v5_memo.__main__.require_full_raw_corpus", unavailable)
+    monkeypatch.setattr(
+        "v5_memo.__main__.build_alpha_memo",
+        lambda **_kwargs: pytest.fail("build must not run before a healthy backend"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--require-full-raw-corpus",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 1
+    assert json.loads(receipt_path.read_text()) == {
+        "error": "search_backend_error",
+        "message": "fullraw unavailable: Connection refused",
+        "retryable": True,
+        "stage": "fullraw_preflight",
+    }
+    captured = capsys.readouterr()
+    assert "Connection refused" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_fullraw_preflight_runs_once_when_explicit_and_fullraw(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def preflight() -> None:
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr("v5_memo.__main__._require_full_raw_or_exit", preflight)
+    monkeypatch.setattr(
+        "v5_memo.__main__.FullRawCorpusSearchClient.from_env",
+        lambda *, strict: object(),
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.build_alpha_memo",
+        lambda **_kwargs: SimpleNamespace(markdown="# Alpha memo\n"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--searcher",
+            "fullraw",
+            "--require-full-raw-corpus",
+            "--query",
+            "generic intervention randomized trial",
+        ],
+    )
+
+    main()
+
+    assert calls == 1
 
 
 def test_cli_submit_researka_uses_generated_memo(

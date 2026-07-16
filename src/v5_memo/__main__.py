@@ -19,7 +19,11 @@ from v5_memo.client import (
     ResearkaSearchClient,
     SearchBackendError,
 )
-from v5_memo.coverage import current_search_coverage, require_full_raw_corpus
+from v5_memo.coverage import (
+    FullRawCorpusUnavailable,
+    current_search_coverage,
+    require_full_raw_corpus,
+)
 from v5_memo.gate import candidate_publish_blocker
 from v5_memo.miner import query_anchor_terms
 from v5_memo.minimax_writer import (
@@ -177,10 +181,12 @@ def main() -> None:
     if args.coverage_report:
         print(current_search_coverage().summary)
         return
-    if args.require_full_raw_corpus:
-        _require_full_raw_or_exit()
-
     searcher_mode = "hybrid" if args.searcher == "smart" else args.searcher
+    if args.require_full_raw_corpus or (
+        not args.demo and searcher_mode == "fullraw"
+    ):
+        _require_full_raw_or_receipt(args.publish_receipt_path)
+
     planner_mode = args.planner or ("minimax" if args.searcher == "smart" else "seed")
     writer_mode = args.writer or ("minimax" if args.searcher == "smart" else "template")
     selector_mode = args.selector or (
@@ -195,7 +201,6 @@ def main() -> None:
     if args.demo:
         searcher = DemoSearch()
     elif searcher_mode == "fullraw":
-        _require_full_raw_or_exit()
         searcher = FullRawCorpusSearchClient.from_env(strict=True)
     elif searcher_mode == "researka":
         searcher = ResearkaSearchClient.from_env()
@@ -427,11 +432,52 @@ def main() -> None:
 
 
 def _require_full_raw_or_exit() -> None:
+    raw_wait = (
+        os.environ.get("V5_MEMO_FULL_RAW_HEALTH_WAIT_SECONDS")
+        or os.environ.get("RESEARKA_FULLRAW_HEALTH_WAIT_SECONDS")
+        or "0"
+    )
+    raw_poll = (
+        os.environ.get("V5_MEMO_FULL_RAW_HEALTH_POLL_SECONDS")
+        or os.environ.get("RESEARKA_FULLRAW_HEALTH_POLL_SECONDS")
+        or "2"
+    )
+    wait_seconds = min(600.0, max(0.0, _float_value(raw_wait)))
+    poll_seconds = min(30.0, max(0.1, _float_value(raw_poll) or 2.0))
     try:
-        require_full_raw_corpus()
+        if wait_seconds > 0:
+            require_full_raw_corpus(
+                wait_seconds=wait_seconds,
+                poll_seconds=poll_seconds,
+            )
+        else:
+            require_full_raw_corpus()
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(2) from exc
+
+
+def _require_full_raw_or_receipt(receipt_path: str) -> None:
+    try:
+        _require_full_raw_or_exit()
+    except SystemExit as exc:
+        cause = exc.__cause__
+        if not receipt_path or exc.code != 2 or not isinstance(cause, RuntimeError):
+            raise
+        _write_json(
+            receipt_path,
+            {
+                "error": "search_backend_error",
+                "message": str(cause),
+                "retryable": (
+                    cause.retryable
+                    if isinstance(cause, FullRawCorpusUnavailable)
+                    else False
+                ),
+                "stage": "fullraw_preflight",
+            },
+        )
+        raise SystemExit(1) from cause
 
 
 def _researka_submit_cooldown() -> tuple[float, Mapping[str, object]] | None:

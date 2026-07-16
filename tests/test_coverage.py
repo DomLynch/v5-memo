@@ -1,9 +1,12 @@
 from collections.abc import Callable
+from email.message import Message
+from urllib.error import HTTPError
 
 import pytest
 from pytest import MonkeyPatch
 
 from v5_memo.coverage import (
+    SearchBackendHealth,
     current_search_coverage,
     full_raw_search_health,
     require_full_raw_corpus,
@@ -82,6 +85,86 @@ def test_require_full_raw_corpus_fails_closed(monkeypatch: MonkeyPatch) -> None:
         require_full_raw_corpus()
 
 
+def test_require_full_raw_corpus_probes_unhealthy_backend_once(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def unhealthy() -> SearchBackendHealth:
+        nonlocal calls
+        calls += 1
+        return SearchBackendHealth(
+            configured=True,
+            ok=False,
+            error="<urlopen error [Errno 111] Connection refused>",
+        )
+
+    monkeypatch.setattr("v5_memo.coverage.full_raw_search_health", unhealthy)
+
+    with pytest.raises(RuntimeError, match="Connection refused"):
+        require_full_raw_corpus()
+
+    assert calls == 1
+
+
+def test_require_full_raw_corpus_waits_for_transient_backend(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    now = 100.0
+    calls = 0
+    sleeps: list[float] = []
+
+    def health() -> SearchBackendHealth:
+        nonlocal calls
+        calls += 1
+        return SearchBackendHealth(
+            configured=True,
+            ok=calls == 3,
+            error="connection refused" if calls < 3 else "",
+            retryable=calls < 3,
+        )
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        sleeps.append(seconds)
+        now += seconds
+
+    monkeypatch.setattr("v5_memo.coverage.full_raw_search_health", health)
+    monkeypatch.setattr("v5_memo.coverage.time.monotonic", lambda: now)
+    monkeypatch.setattr("v5_memo.coverage.time.sleep", fake_sleep)
+
+    require_full_raw_corpus(wait_seconds=2.0, poll_seconds=1.0)
+
+    assert calls == 3
+    assert sleeps == [1.0, 1.0]
+
+
+@pytest.mark.parametrize(
+    ("status", "retryable"),
+    ((401, False), (429, False), (503, True)),
+)
+def test_fullraw_health_retries_only_transient_server_errors(
+    monkeypatch: MonkeyPatch,
+    status: int,
+    retryable: bool,
+) -> None:
+    def fail_health(_request: object, timeout: float) -> FakeResponse:
+        del timeout
+        raise HTTPError(
+            "http://127.0.0.1:9999/health",
+            status,
+            "error",
+            Message(),
+            None,
+        )
+
+    monkeypatch.setattr("v5_memo.coverage.urlopen", fail_health)
+
+    health = full_raw_search_health("http://127.0.0.1:9999/search")
+
+    assert health.retryable is retryable
+
+
 def test_require_full_raw_corpus_accepts_complete_explicit_service(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "http://127.0.0.1:9999/search")
     monkeypatch.setattr(
@@ -140,12 +223,19 @@ def test_require_full_raw_corpus_accepts_strict_sweep_service(monkeypatch: Monke
         '"complete": false, "coverage_requirements": {"min_shards_searched": 1525, '
         '"min_sources_searched": 5, "require_complete_search": 1, "sweep_require_complete": 1}}'
     )
-    monkeypatch.setattr(
-        "v5_memo.coverage.urlopen",
-        _fake_fullraw_urlopen(health=health, search=_search_body(partial=True)),
-    )
+    seen: list[str] = []
+
+    def health_only(request: object, timeout: float) -> FakeResponse:
+        del timeout
+        seen.append(request.full_url)  # type: ignore[attr-defined]
+        assert not getattr(request, "data", None)
+        return FakeResponse(health)
+
+    monkeypatch.setattr("v5_memo.coverage.urlopen", health_only)
 
     require_full_raw_corpus()
+
+    assert seen == ["http://127.0.0.1:9999/health"]
 
 
 def test_coverage_reports_configured_full_raw_endpoint(monkeypatch: MonkeyPatch) -> None:
