@@ -17,6 +17,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from v5_memo.evidence import merge_publication_integrity, normalize_publication_integrity
 from v5_memo.schemas import CorpusHit
 
 
@@ -181,8 +182,18 @@ class OpenAlexFullCorpusSearchClient:
                     },
                 )
                 current = best.get(scored.source_key)
-                if current is None or score > current[0]:
+                if current is None:
                     best[scored.source_key] = (score, scored)
+                elif score > current[0]:
+                    best[scored.source_key] = (
+                        score,
+                        _merge_hit_integrity(scored, current[1]),
+                    )
+                else:
+                    best[scored.source_key] = (
+                        current[0],
+                        _merge_hit_integrity(current[1], scored),
+                    )
         return [hit for _, hit in sorted(best.values(), key=lambda item: item[0], reverse=True)[:limit]]
 
     def _search_works(self, query: str, *, limit: int) -> list[CorpusHit]:
@@ -469,8 +480,18 @@ class FullRawCorpusSearchClient:
                     },
                 )
                 current = best.get(scored.source_key)
-                if current is None or score > current[0]:
+                if current is None:
                     best[scored.source_key] = (score, scored)
+                elif score > current[0]:
+                    best[scored.source_key] = (
+                        score,
+                        _merge_hit_integrity(scored, current[1]),
+                    )
+                else:
+                    best[scored.source_key] = (
+                        current[0],
+                        _merge_hit_integrity(current[1], scored),
+                    )
             if len(best) >= limit:
                 break
             if (
@@ -717,18 +738,31 @@ class HybridCorpusSearchClient:
             for rank, hit in enumerate(hits, start=1):
                 score = _rerank_score(hit, seed_terms=seed_terms, variant_terms=seed_terms, rank=rank)
                 current = best.get(hit.source_key)
-                if current is None or score > current[0]:
+                scored = replace(
+                    hit,
+                    metadata={
+                        **hit.metadata,
+                        "hybrid_backend": backend,
+                        "hybrid_rerank_score": round(score, 4),
+                    },
+                )
+                if current is None:
                     best[hit.source_key] = (
                         score,
                         backend,
-                        replace(
-                            hit,
-                            metadata={
-                                **hit.metadata,
-                                "hybrid_backend": backend,
-                                "hybrid_rerank_score": round(score, 4),
-                            },
-                        ),
+                        scored,
+                    )
+                elif score > current[0]:
+                    best[hit.source_key] = (
+                        score,
+                        backend,
+                        _merge_hit_integrity(scored, current[2]),
+                    )
+                else:
+                    best[hit.source_key] = (
+                        current[0],
+                        current[1],
+                        _merge_hit_integrity(current[2], scored),
                     )
         return _balanced_hybrid_hits(list(best.values()), backend_order, limit=limit)
 
@@ -736,6 +770,16 @@ class HybridCorpusSearchClient:
 def _hybrid_backend_name(searcher: object) -> str:
     name = searcher.__class__.__name__.replace("CorpusSearchClient", "")
     return re.sub(r"(?<!^)([A-Z])", r"_\1", name).casefold()
+
+
+def _merge_hit_integrity(preferred: CorpusHit, observed: CorpusHit) -> CorpusHit:
+    return replace(
+        preferred,
+        metadata={
+            **preferred.metadata,
+            **merge_publication_integrity(preferred.metadata, observed.metadata),
+        },
+    )
 
 
 def _balanced_hybrid_hits(
@@ -924,6 +968,7 @@ def _parse_openalex_work(item: Any, *, match_count: int | None) -> CorpusHit | N
             "raw_doi": raw_doi if raw_doi != doi else "",
             "cited_by_count": _int_or_none(item.get("cited_by_count")),
             "query_match_count": match_count,
+            **normalize_publication_integrity(item),
         },
     )
 
@@ -1036,6 +1081,7 @@ def _parse_paper_hit(item: Any) -> CorpusHit | None:
             "raw_doi": raw_doi if raw_doi != doi else "",
             "cited_by_count": _int_or_none(item.get("cited_by_count")),
             "similarity_score": _float_or_none(item.get("similarity_score")),
+            **normalize_publication_integrity(item),
         },
     )
 
@@ -1098,6 +1144,7 @@ def _parse_full_raw_paper_hit(
             "score": _float_or_none(item.get("score") or item.get("search_score")),
             "query_match_count": match_count,
             "shard_receipt": shard_receipt or {},
+            **normalize_publication_integrity(item),
         },
     )
 

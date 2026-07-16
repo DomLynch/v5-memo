@@ -3,6 +3,7 @@ import json
 import os
 import signal
 import socket
+import sqlite3
 import subprocess
 import threading
 import time
@@ -83,6 +84,171 @@ def test_fullraw_index_builds_searchable_ranked_index(tmp_path: Path) -> None:
         index.close()
     assert (result.files_completed, result.papers_inserted, stats.papers_indexed) == (1, 2, 2)
     assert hits[0]["doi"] == "10.example/guidance"
+
+
+def test_fullraw_index_round_trips_publication_integrity_metadata(tmp_path: Path) -> None:
+    index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
+    try:
+        index.index_files([_raw(tmp_path, "integrity", [{
+            "doi": "https://doi.org/10.example/retracted",
+            "display_name": "Ordinary article title",
+            "abstract": "Evidence text for retrieval.",
+            "type": "journal-article",
+            "publication_types": ["Retracted Publication"],
+            "is_retracted": True,
+            "is_withdrawn": True,
+            "correction_status": "RetractionIn",
+        }])])
+        hits = index.search("evidence retrieval", limit=1)
+    finally:
+        index.close()
+
+    assert hits[0]["document_type"] == "journal-article"
+    assert hits[0]["publication_types"] == ("Retracted Publication",)
+    assert hits[0]["is_retracted"] is True
+    assert hits[0]["retraction_status_known"] is True
+    assert hits[0]["is_withdrawn"] is True
+    assert hits[0]["withdrawal_status_known"] is True
+    assert hits[0]["correction_status"] == "RetractionIn"
+
+
+def test_fullraw_duplicate_ingestion_conservatively_merges_unsafe_status(
+    tmp_path: Path,
+) -> None:
+    safe = _raw(tmp_path, "safe", [{
+        "doi": "10.example/duplicate",
+        "display_name": "Duplicate evidence article",
+        "abstract": "Duplicate evidence retrieval text.",
+        "type": "article",
+        "is_retracted": False,
+    }])
+    unsafe = _raw(tmp_path, "unsafe", [{
+        "doi": "10.example/duplicate",
+        "display_name": "Duplicate evidence article",
+        "abstract": "Duplicate evidence retrieval text.",
+        "type": "retraction-notice",
+        "is_retracted": True,
+        "is_withdrawn": True,
+        "correction_status": "RetractionIn",
+    }])
+    index = FullRawFtsIndex(tmp_path / "fullraw.sqlite")
+    try:
+        index.index_files([safe, unsafe])
+        hits = index.search("duplicate evidence retrieval", limit=1)
+    finally:
+        index.close()
+
+    assert hits[0]["is_retracted"] is True
+    assert hits[0]["retraction_status_known"] is True
+    assert hits[0]["is_withdrawn"] is True
+    publication_types = hits[0]["publication_types"]
+    assert isinstance(publication_types, tuple)
+    assert "retraction-notice" in publication_types
+    assert hits[0]["correction_status"] == "RetractionIn"
+
+
+def test_cross_shard_dedupe_preserves_lower_score_unsafe_status() -> None:
+    safe = {
+        "doi": "10.example/cross-shard",
+        "title": "Preferred content",
+        "abstract": "Evidence text.",
+        "score": 10.0,
+        "document_type": "article",
+        "is_retracted": False,
+        "retraction_status_known": True,
+    }
+    unsafe = {
+        "doi": "10.example/cross-shard",
+        "title": "Lower-ranked content",
+        "abstract": "Evidence text.",
+        "score": 1.0,
+        "document_type": "retraction-notice",
+        "is_retracted": True,
+        "correction_status": "RetractionIn",
+    }
+
+    merged = fullraw_index._merge_hit_groups([[safe], [unsafe]], limit=1)[0]
+
+    assert merged["title"] == "Preferred content"
+    assert merged["score"] == 10.0
+    assert merged["is_retracted"] is True
+    publication_types = merged["publication_types"]
+    assert isinstance(publication_types, tuple)
+    assert "retraction-notice" in publication_types
+
+
+def test_read_only_legacy_shard_defaults_missing_integrity_columns(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.sqlite"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE papers (
+          id INTEGER PRIMARY KEY, source_key TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+          abstract TEXT NOT NULL, doi TEXT, pmid TEXT, pmcid TEXT, openalex_id TEXT,
+          semantic_scholar_id TEXT, year INTEGER, journal TEXT, source TEXT NOT NULL,
+          source_remote TEXT NOT NULL DEFAULT '', url TEXT, cited_by_count INTEGER, raw_score REAL
+        );
+        CREATE VIRTUAL TABLE paper_fts USING fts5(
+          title, abstract, journal, content='papers', content_rowid='id'
+        );
+        INSERT INTO papers(id, source_key, title, abstract, source)
+        VALUES (1, 'legacy:1', 'Legacy intervention paper', 'Evidence retrieval result.', 'legacy');
+        INSERT INTO paper_fts(rowid, title, abstract, journal)
+        VALUES (1, 'Legacy intervention paper', 'Evidence retrieval result.', '');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    index = FullRawFtsIndex(path, read_only=True)
+    try:
+        hits = index.search("evidence retrieval", limit=1)
+    finally:
+        index.close()
+
+    assert hits[0]["document_type"] == ""
+    assert hits[0]["publication_types"] == ()
+    assert hits[0]["is_retracted"] is None
+    assert hits[0]["retraction_status_known"] is False
+    assert hits[0]["is_withdrawn"] is None
+    assert hits[0]["withdrawal_status_known"] is False
+
+
+def test_writable_legacy_index_migrates_integrity_columns_in_place(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-writable.sqlite"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """
+        CREATE TABLE papers (
+          id INTEGER PRIMARY KEY, source_key TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+          abstract TEXT NOT NULL, doi TEXT, pmid TEXT, pmcid TEXT, openalex_id TEXT,
+          semantic_scholar_id TEXT, year INTEGER, journal TEXT, source TEXT NOT NULL,
+          source_remote TEXT NOT NULL DEFAULT '', url TEXT, cited_by_count INTEGER, raw_score REAL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    index = FullRawFtsIndex(path)
+    try:
+        index.initialize()
+        columns = {
+            str(row["name"])
+            for row in index._conn.execute("PRAGMA table_info(papers)").fetchall()
+        }
+    finally:
+        index.close()
+
+    assert {
+        "document_type",
+        "publication_types_json",
+        "is_retracted",
+        "retraction_status_known",
+        "is_withdrawn",
+        "withdrawal_status_known",
+        "correction_status",
+    } <= columns
 
 
 def test_fullraw_relevance_prefers_construct_fit_over_loose_token_overlap(tmp_path: Path) -> None:

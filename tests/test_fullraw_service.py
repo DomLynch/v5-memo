@@ -25,6 +25,8 @@ def test_iter_raw_file_hits_reads_local_jsonl_fixture(tmp_path: Path) -> None:
             "abstract_inverted_index": {"NAD": [0], "mitochondrial": [1], "repair": [2]},
             "publication_year": 2025,
             "cited_by_count": 10,
+            "type": "article",
+            "is_retracted": True,
         }) + "\n",
     )
 
@@ -33,6 +35,34 @@ def test_iter_raw_file_hits_reads_local_jsonl_fixture(tmp_path: Path) -> None:
     assert hits[0]["doi"] == "10.raw/one"
     assert hits[0]["source"] == "openalex"
     assert hits[0]["abstract"] == "NAD mitochondrial repair"
+    assert hits[0]["document_type"] == "article"
+    assert hits[0]["is_retracted"] is True
+    assert hits[0]["retraction_status_known"] is True
+
+
+@pytest.mark.parametrize("field", ["publicationtypes", "publicationTypes"])
+def test_semantic_scholar_publication_type_aliases_are_preserved(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    source = tmp_path / f"semantic-{field}.jsonl.gz"
+    _write_gzip(
+        source,
+        json.dumps({
+            "corpusid": 987,
+            "title": "Human intervention evidence",
+            "abstract": "The intervention changed the endpoint.",
+            field: ["JournalArticle", "ClinicalTrial"],
+        }) + "\n",
+    )
+
+    hits = list(iter_raw_file_hits(RawFile(
+        source="semantic_scholar",
+        format="semantic_scholar_jsonl",
+        remote=f"file://{source}",
+    )))
+
+    assert hits[0]["publication_types"] == ("JournalArticle", "ClinicalTrial")
 
 
 def test_iter_raw_file_hits_skips_invalid_jsonl_rows(tmp_path: Path) -> None:
@@ -108,8 +138,10 @@ def test_iter_raw_file_hits_reads_local_pubmed_xml_fixture(tmp_path: Path) -> No
                     <ArticleTitle>NAD mitochondrial stress response</ArticleTitle>
                     <ELocationID EIdType="doi">10.raw/pubmed</ELocationID>
                     <Abstract><AbstractText>NAD repair changed after exercise.</AbstractText></Abstract>
+                    <PublicationTypeList><PublicationType>Retracted Publication</PublicationType></PublicationTypeList>
                     <Journal><JournalIssue><PubDate><Year>2024</Year></PubDate></JournalIssue></Journal>
                   </Article>
+                  <CommentsCorrections RefType="RetractionIn"><RefSource>Retraction notice</RefSource></CommentsCorrections>
                 </MedlineCitation>
               </PubmedArticle>
             </PubmedArticleSet>
@@ -122,6 +154,10 @@ def test_iter_raw_file_hits_reads_local_pubmed_xml_fixture(tmp_path: Path) -> No
     assert hits[0]["pmid"] == "123"
     assert hits[0]["doi"] == "10.raw/pubmed"
     assert hits[0]["source"] == "pubmed"
+    assert hits[0]["publication_types"] == ("Retracted Publication",)
+    assert hits[0]["is_retracted"] is True
+    assert hits[0]["retraction_status_known"] is True
+    assert hits[0]["correction_status"] == "RetractionIn"
 
 
 def test_strict_5tb_service_keeps_secret_env_file() -> None:

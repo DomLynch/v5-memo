@@ -36,6 +36,7 @@ from dataclasses import asdict, dataclass, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from v5_memo.evidence import merge_publication_integrity
 from v5_memo.fullraw.http import write_json
 from v5_memo.fullraw_service import RawFile, iter_raw_file_hits, load_or_build_manifest
 
@@ -328,6 +329,7 @@ class FullRawFtsIndex:
             self._conn = sqlite3.connect(str(path), timeout=60.0, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
+        self._paper_columns_cache: frozenset[str] | None = None
 
     def close(self) -> None:
         self._conn.close()
@@ -351,6 +353,13 @@ class FullRawFtsIndex:
                   pmcid TEXT,
                   openalex_id TEXT,
                   semantic_scholar_id TEXT,
+                  document_type TEXT NOT NULL DEFAULT '',
+                  publication_types_json TEXT NOT NULL DEFAULT '[]',
+                  is_retracted INTEGER DEFAULT NULL,
+                  retraction_status_known INTEGER NOT NULL DEFAULT 0,
+                  is_withdrawn INTEGER DEFAULT NULL,
+                  withdrawal_status_known INTEGER NOT NULL DEFAULT 0,
+                  correction_status TEXT NOT NULL DEFAULT '',
                   year INTEGER,
                   journal TEXT,
                   source TEXT NOT NULL,
@@ -398,6 +407,7 @@ class FullRawFtsIndex:
                 """
             )
             self._ensure_source_remote_column()
+            self._paper_columns_cache = None
             self._seed_default_term_map()
             self._conn.commit()
 
@@ -613,11 +623,13 @@ class FullRawFtsIndex:
                 deadline = time.monotonic() + timeout_seconds
                 self._conn.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
             try:
+                integrity_columns = self._integrity_select_sql()
                 rows = self._conn.execute(
                     f"""
                     SELECT
                       p.title, p.abstract, p.doi, p.pmid, p.pmcid,
-                      p.openalex_id, p.semantic_scholar_id, p.year,
+                      p.openalex_id, p.semantic_scholar_id,
+                      {integrity_columns}, p.year,
                       p.journal, p.source, p.url, p.cited_by_count,
                       bm25(paper_fts, 8.0, 3.0, 1.0) AS rank
                     FROM paper_fts
@@ -715,6 +727,13 @@ class FullRawFtsIndex:
               pmcid,
               openalex_id,
               semantic_scholar_id,
+              document_type,
+              publication_types_json,
+              is_retracted,
+              retraction_status_known,
+              is_withdrawn,
+              withdrawal_status_known,
+              correction_status,
               year,
               journal,
               source,
@@ -723,7 +742,7 @@ class FullRawFtsIndex:
               cited_by_count,
               raw_score
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_key,
@@ -734,6 +753,21 @@ class FullRawFtsIndex:
                 _clean(hit.get("pmcid")),
                 _clean(hit.get("openalex_id")),
                 _clean(hit.get("semantic_scholar_id")),
+                _clean(hit.get("document_type")),
+                json.dumps(_string_tuple(hit.get("publication_types"))),
+                (
+                    int(hit.get("is_retracted") is True)
+                    if isinstance(hit.get("is_retracted"), bool)
+                    else None
+                ),
+                int(hit.get("retraction_status_known") is True),
+                (
+                    int(hit.get("is_withdrawn") is True)
+                    if isinstance(hit.get("is_withdrawn"), bool)
+                    else None
+                ),
+                int(hit.get("withdrawal_status_known") is True),
+                _clean(hit.get("correction_status")),
                 _int_or_none(hit.get("year")),
                 journal,
                 _clean(hit.get("source")) or "unknown",
@@ -744,6 +778,7 @@ class FullRawFtsIndex:
             ),
         )
         if cursor.rowcount == 0:
+            self._merge_existing_hit_integrity(source_key, hit)
             return False
         paper_id = cursor.lastrowid
         if paper_id is None:
@@ -753,6 +788,53 @@ class FullRawFtsIndex:
             (paper_id, title, abstract, journal),
         )
         return True
+
+    def _merge_existing_hit_integrity(
+        self,
+        source_key: str,
+        hit: dict[str, object],
+    ) -> None:
+        row = self._conn.execute(
+            """
+            SELECT id, document_type, publication_types_json, is_retracted,
+                   retraction_status_known, is_withdrawn, withdrawal_status_known,
+                   correction_status
+            FROM papers
+            WHERE source_key = ?
+            """,
+            (source_key,),
+        ).fetchone()
+        if row is None:
+            return
+        existing = {
+            "document_type": _clean(row["document_type"]),
+            "publication_types": _json_string_tuple(row["publication_types_json"]),
+            "is_retracted": _nullable_bool(row["is_retracted"]),
+            "retraction_status_known": bool(_int_or_none(row["retraction_status_known"])),
+            "is_withdrawn": _nullable_bool(row["is_withdrawn"]),
+            "withdrawal_status_known": bool(_int_or_none(row["withdrawal_status_known"])),
+            "correction_status": _clean(row["correction_status"]),
+        }
+        merged = merge_publication_integrity(existing, hit)
+        self._conn.execute(
+            """
+            UPDATE papers
+            SET document_type = ?, publication_types_json = ?, is_retracted = ?,
+                retraction_status_known = ?, is_withdrawn = ?,
+                withdrawal_status_known = ?, correction_status = ?
+            WHERE id = ?
+            """,
+            (
+                _clean(merged.get("document_type")),
+                json.dumps(_string_tuple(merged.get("publication_types"))),
+                _sqlite_nullable_bool(merged.get("is_retracted")),
+                int(merged.get("retraction_status_known") is True),
+                _sqlite_nullable_bool(merged.get("is_withdrawn")),
+                int(merged.get("withdrawal_status_known") is True),
+                _clean(merged.get("correction_status")),
+                int(row["id"]),
+            ),
+        )
 
     def _update_hit_abstract(self, hit: dict[str, object]) -> bool:
         abstract = _clean(hit.get("abstract"))
@@ -864,7 +946,41 @@ class FullRawFtsIndex:
         }
         if "source_remote" not in columns:
             self._conn.execute("ALTER TABLE papers ADD COLUMN source_remote TEXT NOT NULL DEFAULT ''")
+        for name, definition in (
+            ("document_type", "TEXT NOT NULL DEFAULT ''"),
+            ("publication_types_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("is_retracted", "INTEGER DEFAULT NULL"),
+            ("retraction_status_known", "INTEGER NOT NULL DEFAULT 0"),
+            ("is_withdrawn", "INTEGER DEFAULT NULL"),
+            ("withdrawal_status_known", "INTEGER NOT NULL DEFAULT 0"),
+            ("correction_status", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if name not in columns:
+                self._conn.execute(f"ALTER TABLE papers ADD COLUMN {name} {definition}")
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_papers_source_remote ON papers(source_remote)")
+
+    def _integrity_select_sql(self) -> str:
+        columns = self._paper_columns()
+        return ", ".join(
+            f"p.{name}" if name in columns else f"{fallback} AS {name}"
+            for name, fallback in (
+                ("document_type", "''"),
+                ("publication_types_json", "'[]'"),
+                ("is_retracted", "NULL"),
+                ("retraction_status_known", "0"),
+                ("is_withdrawn", "NULL"),
+                ("withdrawal_status_known", "0"),
+                ("correction_status", "''"),
+            )
+        )
+
+    def _paper_columns(self) -> frozenset[str]:
+        if self._paper_columns_cache is None:
+            self._paper_columns_cache = frozenset(
+                str(row["name"])
+                for row in self._conn.execute("PRAGMA table_info(papers)").fetchall()
+            )
+        return self._paper_columns_cache
 
     def _get_meta(self, key: str) -> str | None:
         row = self._conn.execute("SELECT value FROM index_meta WHERE key = ?", (key,)).fetchone()
@@ -892,10 +1008,15 @@ class FullRawFtsIndex:
             )
 
     def _term_expansions(self, term: str) -> tuple[str, ...]:
-        row = self._conn.execute(
-            "SELECT expansions_json FROM term_map WHERE term = ?",
-            (term,),
-        ).fetchone()
+        try:
+            row = self._conn.execute(
+                "SELECT expansions_json FROM term_map WHERE term = ?",
+                (term,),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table: term_map" in str(exc):
+                return ()
+            raise
         if row is None:
             return ()
         try:
@@ -1398,8 +1519,18 @@ def _merge_hit_groups_with_receipt(
             raw_count += 1
             key = _dedupe_key(hit)
             existing = merged.get(key)
-            if existing is None or _hit_score(hit) > _hit_score(existing):
+            if existing is None:
                 merged[key] = hit
+                continue
+            preferred, observed = (
+                (hit, existing)
+                if _hit_score(hit) > _hit_score(existing)
+                else (existing, hit)
+            )
+            merged[key] = {
+                **preferred,
+                **merge_publication_integrity(preferred, observed),
+            }
     ranked = _rank_limited_hits(merged.values(), limit=limit)
     return ranked, _hit_diversity_receipt(
         raw_result_count=raw_count,
@@ -5037,6 +5168,8 @@ def main() -> None:
 
 def _row_to_hit(row: sqlite3.Row) -> dict[str, object]:
     rank = _float_or_none(row["rank"]) or 0.0
+    raw_retracted = _int_or_none(row["is_retracted"])
+    raw_withdrawn = _int_or_none(row["is_withdrawn"])
     return {
         "title": _clean(row["title"]),
         "abstract": _clean(row["abstract"]),
@@ -5045,6 +5178,13 @@ def _row_to_hit(row: sqlite3.Row) -> dict[str, object]:
         "pmcid": _clean(row["pmcid"]),
         "openalex_id": _clean(row["openalex_id"]),
         "semantic_scholar_id": _clean(row["semantic_scholar_id"]),
+        "document_type": _clean(row["document_type"]),
+        "publication_types": _json_string_tuple(row["publication_types_json"]),
+        "is_retracted": None if raw_retracted is None else bool(raw_retracted),
+        "retraction_status_known": bool(_int_or_none(row["retraction_status_known"])),
+        "is_withdrawn": None if raw_withdrawn is None else bool(raw_withdrawn),
+        "withdrawal_status_known": bool(_int_or_none(row["withdrawal_status_known"])),
+        "correction_status": _clean(row["correction_status"]),
         "year": _int_or_none(row["year"]),
         "journal": _clean(row["journal"]),
         "source": _clean(row["source"]),
@@ -5320,6 +5460,23 @@ def _string_tuple(value: object) -> tuple[str, ...]:
     if not isinstance(value, list | tuple):
         return ()
     return tuple(str(item) for item in value if str(item))
+
+
+def _json_string_tuple(value: object) -> tuple[str, ...]:
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except (TypeError, ValueError):
+        return ()
+    return _string_tuple(parsed)
+
+
+def _nullable_bool(value: object) -> bool | None:
+    parsed = _int_or_none(value)
+    return None if parsed is None else bool(parsed)
+
+
+def _sqlite_nullable_bool(value: object) -> int | None:
+    return int(value) if isinstance(value, bool) else None
 
 
 def _unique_terms(values: Iterable[str]) -> tuple[str, ...]:

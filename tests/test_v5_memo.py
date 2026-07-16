@@ -26,7 +26,12 @@ from v5_memo.minimax_writer import (
     build_minimax_prompt,
     validate_minimax_memo,
 )
-from v5_memo.pipeline import _publishable_candidates, _selector_slate, build_alpha_memo
+from v5_memo.pipeline import (
+    _apply_selector,
+    _publishable_candidates,
+    _selector_slate,
+    build_alpha_memo,
+)
 from v5_memo.publisher import (
     build_researka_payload,
     set_researka_public_visibility,
@@ -1042,9 +1047,9 @@ def test_pipeline_prunes_title_duplicates_from_candidate_and_public_payload(
             ReceiptRole("c", "counter", "distinct boundary evidence"),
         ),
         claim_cards=(
-            ClaimCard("a", "positive_signal", "intervention_study", "human", "review", "positive", "direct", "high", "Accepted comments."),
-            ClaimCard("b", "positive_signal", "intervention_study", "human", "review", "positive", "direct", "high", "Duplicate entry."),
-            ClaimCard("c", "negative_signal", "intervention_study", "human", "review", "negative", "direct", "high", "Incorrect comments."),
+            ClaimCard("a", "positive_signal", "intervention_study", "human", "review", "positive", "direct", "high", "Review Bot: Automatic Code Review Tool. Developers accepted automated review comments."),
+            ClaimCard("b", "positive_signal", "intervention_study", "human", "review", "positive", "direct", "high", "Review Bot Automatic Code Review Tool. A second index entry for the same review-comments paper."),
+            ClaimCard("c", "negative_signal", "intervention_study", "human", "review", "negative", "direct", "high", "Human Oversight of Automated Review Comments. Human oversight reduced incorrect automated review comments."),
         ),
         evidence_graph=(
             EvidenceNode("a", "primary", "direct evidence"),
@@ -1512,6 +1517,34 @@ def test_pipeline_selector_slate_surfaces_diverse_alpha_shapes() -> None:
 
     assert ranked.index(reversal) == 10
     assert list(_selector_slate(ranked)).index(reversal) == 3
+
+
+def test_quality_fallbacks_keep_original_miner_rank_after_selector_choice() -> None:
+    def candidate(index: int, shape: str = "") -> InsightCandidate:
+        return InsightCandidate(
+            topic="tool reliability",
+            thesis=f"candidate-{index}",
+            bridge_terms=("tool", "reliability"),
+            tension_terms=("positive", "negative"),
+            receipt_ids=(f"{index}-a", f"{index}-b"),
+            score=100 - index,
+            novelty_score=90,
+            evidence_score=90,
+            reasons=tuple(value for value in (shape, "tier:elite_alpha") if value),
+        )
+
+    ranked = [candidate(index) for index in range(7)]
+    selected = candidate(7, "shape:expectation_reversal")
+    ranked.insert(4, selected)
+
+    ordered = _apply_selector(
+        ranked,
+        (),
+        lambda slate, _hits: [selected] if selected in slate else [],
+        preserve_fallbacks=True,
+    )
+
+    assert list(ordered) == [selected, *(candidate for candidate in ranked if candidate != selected)]
 
 
 def test_pipeline_mines_broader_slate_when_selector_is_present(

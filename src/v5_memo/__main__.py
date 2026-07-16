@@ -31,6 +31,7 @@ from v5_memo.pipeline import build_alpha_memo
 from v5_memo.publisher import (
     build_researka_payload,
     load_researka_submit_config,
+    publication_quality_blocker,
     researka_publication_id,
     researka_submission_id,
     set_researka_public_visibility,
@@ -797,7 +798,9 @@ def _publish_blocker(result: object) -> dict[str, object] | None:
     if unsafe_dois:
         return {"error": "unbundled_doi_citation", "dois": unsafe_dois}
     candidate = getattr(result, "candidate", None)
-    return candidate_publish_blocker(candidate) if candidate is not None else None
+    if candidate is not None and (blocker := candidate_publish_blocker(candidate)) is not None:
+        return blocker
+    return publication_quality_blocker(result) if isinstance(result, MemoResult) else None
 
 
 if __name__ == "__main__":

@@ -37,6 +37,10 @@ class CorpusHit:
         pmid = self.metadata.get("pmid")
         if isinstance(pmid, str) and pmid:
             return f"pmid:{pmid}"
+        for key in ("pmcid", "openalex_id", "semantic_scholar_id", "arxiv_id"):
+            value = self.metadata.get(key)
+            if isinstance(value, str) and value:
+                return f"{key}:{value.casefold()}"
         return f"{self.source}:{self.title.casefold()}:{self.year or ''}"
 
     @property
