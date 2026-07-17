@@ -372,11 +372,12 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "dropin=zzzzz-v5-portfolio-fullraw-route.conf" in isolation_installer
     assert "V5_MEMO_PORTFOLIO_SEARCH_ROUTE" in isolation_installer
     assert "must be dedicated or shared" in isolation_installer
-    assert 'route=${V5_MEMO_PORTFOLIO_SEARCH_ROUTE:-shared}' in isolation_installer
+    assert 'route=${V5_MEMO_PORTFOLIO_SEARCH_ROUTE:-}' in isolation_installer
+    assert "The marker is the durable operator opt-in" in isolation_installer
     assert "dedicated V5 fullraw requires V5_MEMO_ALLOW_DEDICATED_FULLRAW=1" in (
         isolation_installer
     )
-    assert 'requires $config_dir/allow-dedicated-fullraw' in isolation_installer
+    assert 'requires $dedicated_marker' in isolation_installer
     assert 'systemctl enable "$mount_unit" "$search_unit"' in isolation_installer
     assert 'mountpoint -q "$publish_mount"' in isolation_installer
     assert 'systemctl restart "$search_unit"' in isolation_installer
@@ -523,6 +524,20 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
     assert "stop v5-memo-portfolio-prepare.service" in systemctl_log.read_text()
     assert sentinel.read_text() == "platform-owned\n"
 
+    systemctl_log.write_text("")
+    env.pop("V5_MEMO_PORTFOLIO_SEARCH_ROUTE")
+    env.pop("V5_MEMO_ALLOW_DEDICATED_FULLRAW")
+    subprocess.run(
+        ["/bin/sh", str(deploy_dir / "install-v5-portfolio-isolation.sh")],
+        check=True,
+        env=env,
+    )
+    durable_default_log = systemctl_log.read_text()
+    assert "enable v5-memo-publish-fullraw-fts-mount.service" in durable_default_log
+    assert "restart v5-memo-publish-fullraw-search.service" in durable_default_log
+    env["V5_MEMO_PORTFOLIO_SEARCH_ROUTE"] = "dedicated"
+    env["V5_MEMO_ALLOW_DEDICATED_FULLRAW"] = "1"
+
     (fake_bin / "curl").write_text(
         "#!/bin/sh\n"
         "printf '%s\\n' "
@@ -568,6 +583,7 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
     systemctl_log.write_text("")
     dedicated_marker.unlink()
     env["V5_MEMO_PORTFOLIO_SEARCH_ROUTE"] = "dedicated"
+    env["V5_MEMO_ALLOW_DEDICATED_FULLRAW"] = "1"
     marker_rejected = subprocess.run(
         ["/bin/sh", str(deploy_dir / "install-v5-portfolio-isolation.sh")],
         check=False,

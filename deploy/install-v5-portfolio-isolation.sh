@@ -4,7 +4,7 @@ set -eu
 unit_dir=${SYSTEMD_UNIT_DIR:-/etc/systemd/system}
 config_dir=${V5_MEMO_CONFIG_DIR:-/etc/v5-memo}
 deploy_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-route=${V5_MEMO_PORTFOLIO_SEARCH_ROUTE:-shared}
+route=${V5_MEMO_PORTFOLIO_SEARCH_ROUTE:-}
 allow_dedicated=${V5_MEMO_ALLOW_DEDICATED_FULLRAW:-0}
 dropin=zzzzz-v5-portfolio-fullraw-route.conf
 dedicated_profile=v5-portfolio-publish-fullraw.conf
@@ -19,6 +19,18 @@ shared_sidecar_profile=v5-memo-publish-fullraw-shared.conf
 lock_path=${V5_MEMO_PORTFOLIO_LOCK_PATH:-/run/v5-memo-portfolio.lock}
 publish_mount=${V5_MEMO_PUBLISH_MOUNT_PATH:-/var/lib/v5-memo/v5-publish-fullraw-fts-remote}
 publish_catalog=${V5_MEMO_PUBLISH_CATALOG_PATH:-/var/lib/v5-memo/v5-isolated-fullraw-shard-catalog.json}
+dedicated_marker=$config_dir/allow-dedicated-fullraw
+
+# The marker is the durable operator opt-in. Explicit route variables still
+# win, so rollback can always force the shared route.
+if [ -z "$route" ]; then
+    if [ -f "$dedicated_marker" ]; then
+        route=dedicated
+        allow_dedicated=1
+    else
+        route=shared
+    fi
+fi
 
 case "$route" in
     dedicated | shared) ;;
@@ -31,8 +43,8 @@ if [ "$route" = dedicated ] && [ "$allow_dedicated" != 1 ]; then
     echo "dedicated V5 fullraw requires V5_MEMO_ALLOW_DEDICATED_FULLRAW=1" >&2
     exit 2
 fi
-if [ "$route" = dedicated ] && [ ! -f "$config_dir/allow-dedicated-fullraw" ]; then
-    echo "dedicated V5 fullraw requires $config_dir/allow-dedicated-fullraw" >&2
+if [ "$route" = dedicated ] && [ ! -f "$dedicated_marker" ]; then
+    echo "dedicated V5 fullraw requires $dedicated_marker" >&2
     exit 2
 fi
 
