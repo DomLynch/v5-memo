@@ -4,7 +4,8 @@ set -eu
 unit_dir=${SYSTEMD_UNIT_DIR:-/etc/systemd/system}
 config_dir=${V5_MEMO_CONFIG_DIR:-/etc/v5-memo}
 deploy_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-route=${V5_MEMO_PORTFOLIO_SEARCH_ROUTE:-dedicated}
+route=${V5_MEMO_PORTFOLIO_SEARCH_ROUTE:-shared}
+allow_dedicated=${V5_MEMO_ALLOW_DEDICATED_FULLRAW:-0}
 dropin=zzzzz-v5-portfolio-fullraw-route.conf
 dedicated_profile=v5-portfolio-publish-fullraw.conf
 shared_profile=v5-portfolio-shared-fullraw.conf
@@ -14,6 +15,7 @@ mount_unit=v5-memo-publish-fullraw-fts-mount.service
 search_unit=v5-memo-publish-fullraw-search.service
 owned_dropin=zzzzz-v5-publish-fullraw-owned.conf
 owned_profile=v5-memo-publish-fullraw-owned.conf
+shared_sidecar_profile=v5-memo-publish-fullraw-shared.conf
 lock_path=${V5_MEMO_PORTFOLIO_LOCK_PATH:-/run/v5-memo-portfolio.lock}
 publish_mount=${V5_MEMO_PUBLISH_MOUNT_PATH:-/var/lib/v5-memo/v5-publish-fullraw-fts-remote}
 publish_catalog=${V5_MEMO_PUBLISH_CATALOG_PATH:-/var/lib/v5-memo/v5-isolated-fullraw-shard-catalog.json}
@@ -25,6 +27,10 @@ case "$route" in
         exit 2
         ;;
 esac
+if [ "$route" = dedicated ] && [ "$allow_dedicated" != 1 ]; then
+    echo "dedicated V5 fullraw requires V5_MEMO_ALLOW_DEDICATED_FULLRAW=1" >&2
+    exit 2
+fi
 
 install -d -m 0755 "$config_dir" "$unit_dir"
 install -m 0644 \
@@ -39,14 +45,26 @@ do
     install -m 0644 \
         "$deploy_dir/$unit" \
         "$unit_dir/$unit"
-    install -d -m 0755 "$unit_dir/$unit.d"
-    install -m 0644 \
-        "$deploy_dir/$owned_profile" \
-        "$unit_dir/$unit.d/$owned_dropin"
-    cmp -s \
-        "$deploy_dir/$owned_profile" \
-        "$unit_dir/$unit.d/$owned_dropin"
 done
+
+install_sidecar_profile() {
+    selected_profile=$1
+    for unit in "$mount_unit" "$search_unit"
+    do
+        install -d -m 0755 "$unit_dir/$unit.d"
+        install -m 0644 \
+            "$deploy_dir/$selected_profile" \
+            "$unit_dir/$unit.d/$owned_dropin" || return 1
+        cmp -s \
+            "$deploy_dir/$selected_profile" \
+            "$unit_dir/$unit.d/$owned_dropin" || return 1
+    done
+}
+if [ "$route" = dedicated ]; then
+    install_sidecar_profile "$owned_profile"
+else
+    install_sidecar_profile "$shared_sidecar_profile"
+fi
 
 portfolio_units="v5-memo-portfolio-prepare.service v5-memo-portfolio-catchup.service v5-memo-portfolio-publish.service"
 portfolio_timers="v5-memo-portfolio-prepare.timer v5-memo-portfolio-catchup.timer v5-memo-portfolio-publish.timer"
@@ -74,6 +92,8 @@ install_profile() {
 rollback_dedicated() {
     rollback_failed=0
     install_profile "$shared_profile" || rollback_failed=1
+    install_sidecar_profile "$shared_sidecar_profile" || rollback_failed=1
+    systemctl daemon-reload || rollback_failed=1
     systemctl disable --now "$search_unit" "$mount_unit" || rollback_failed=1
     if systemctl is-active --quiet "$search_unit" || systemctl is-active --quiet "$mount_unit"; then
         rollback_failed=1

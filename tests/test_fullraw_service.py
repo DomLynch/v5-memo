@@ -275,6 +275,9 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     isolation = (deploy_dir / "zzz-v5-portfolio-isolated-fullraw.conf").read_text()
     dedicated_profile = (deploy_dir / "v5-portfolio-publish-fullraw.conf").read_text()
     owned_profile = (deploy_dir / "v5-memo-publish-fullraw-owned.conf").read_text()
+    shared_sidecar_profile = (
+        deploy_dir / "v5-memo-publish-fullraw-shared.conf"
+    ).read_text()
     shared_profile = (deploy_dir / "v5-portfolio-shared-fullraw.conf").read_text()
     isolation_installer = (deploy_dir / "install-v5-portfolio-isolation.sh").read_text()
     shared_env = (deploy_dir / "v5-memo-portfolio-shared-fullraw.env").read_text()
@@ -331,6 +334,10 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "EnvironmentFile=" not in dedicated_profile
     assert "not legacy fullraw sidecars" in owned_profile
     assert "ConditionPathExists=" in owned_profile
+    assert "Shared 9903 owns fullraw search" in shared_sidecar_profile
+    assert "ConditionPathExists=/run/researka-fullraw-allow-legacy-sidecars" in (
+        shared_sidecar_profile
+    )
     assert "Wants=network-online.target researka-fullraw-search.service" in shared_profile
     assert "UnsetEnvironment=V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL" in shared_profile
     assert "RESEARKA_FULLRAW_SEARCH_URL=http://127.0.0.1:9903/search" in shared_env
@@ -365,6 +372,10 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "dropin=zzzzz-v5-portfolio-fullraw-route.conf" in isolation_installer
     assert "V5_MEMO_PORTFOLIO_SEARCH_ROUTE" in isolation_installer
     assert "must be dedicated or shared" in isolation_installer
+    assert 'route=${V5_MEMO_PORTFOLIO_SEARCH_ROUTE:-shared}' in isolation_installer
+    assert "dedicated V5 fullraw requires V5_MEMO_ALLOW_DEDICATED_FULLRAW=1" in (
+        isolation_installer
+    )
     assert 'systemctl enable "$mount_unit" "$search_unit"' in isolation_installer
     assert 'mountpoint -q "$publish_mount"' in isolation_installer
     assert 'systemctl restart "$search_unit"' in isolation_installer
@@ -372,7 +383,8 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert '"$deploy_dir/$unit"' in isolation_installer
     assert '"$unit_dir/$unit"' in isolation_installer
     assert '"$deploy_dir/$selected_profile"' in isolation_installer
-    assert '"$deploy_dir/$owned_profile"' in isolation_installer
+    assert 'install_sidecar_profile "$owned_profile"' in isolation_installer
+    assert 'install_sidecar_profile "$shared_sidecar_profile"' in isolation_installer
     assert '"$unit_dir/$unit.d/$owned_dropin"' in isolation_installer
     assert '"$config_dir/portfolio-shared-fullraw.env"' in isolation_installer
     assert "rm -f" not in isolation_installer
@@ -465,6 +477,7 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
         "V5_MEMO_PUBLISH_MOUNT_PATH": str(tmp_path / "mount"),
         "V5_MEMO_PUBLISH_CATALOG_PATH": str(tmp_path / "catalog.json"),
         "V5_MEMO_PORTFOLIO_SEARCH_ROUTE": "dedicated",
+        "V5_MEMO_ALLOW_DEDICATED_FULLRAW": "1",
     }
     config_dir.mkdir()
     (config_dir / "env").write_text("RESEARKA_FULLRAW_INDEX_TOKEN=test-token\n")
@@ -541,6 +554,12 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
 
     assert "UnsetEnvironment=V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL" in route.read_text()
     assert "disable --now v5-memo-publish-fullraw-search.service" in systemctl_log.read_text()
+    assert "ConditionPathExists=/run/researka-fullraw-allow-legacy-sidecars" in (
+        search_override.read_text()
+    )
+    assert "ConditionPathExists=/run/researka-fullraw-allow-legacy-sidecars" in (
+        mount_override.read_text()
+    )
     assert sentinel.read_text() == "platform-owned\n"
 
     env["V5_MEMO_PORTFOLIO_SEARCH_ROUTE"] = "dedicated"
@@ -554,6 +573,31 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
     assert "UnsetEnvironment=V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL" in route.read_text()
     assert systemctl_state.read_text() == "disabled\n"
     assert sentinel.read_text() == "platform-owned\n"
+
+    systemctl_log.write_text("")
+    env.pop("V5_MEMO_PORTFOLIO_SEARCH_ROUTE")
+    env.pop("V5_MEMO_ALLOW_DEDICATED_FULLRAW")
+    subprocess.run(
+        ["/bin/sh", str(deploy_dir / "install-v5-portfolio-isolation.sh")],
+        check=True,
+        env=env,
+    )
+    default_log = systemctl_log.read_text()
+    assert "disable --now v5-memo-publish-fullraw-search.service" in default_log
+    assert "enable v5-memo-publish-fullraw-fts-mount.service" not in default_log
+
+    systemctl_log.write_text("")
+    env["V5_MEMO_PORTFOLIO_SEARCH_ROUTE"] = "dedicated"
+    rejected = subprocess.run(
+        ["/bin/sh", str(deploy_dir / "install-v5-portfolio-isolation.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert rejected.returncode == 2
+    assert "V5_MEMO_ALLOW_DEDICATED_FULLRAW=1" in rejected.stderr
+    assert systemctl_log.read_text() == ""
 
 
 def test_v5_isolated_fullraw_mount_uses_separate_vfs_cache() -> None:
