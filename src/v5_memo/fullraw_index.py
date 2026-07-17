@@ -70,6 +70,7 @@ _SWEEP_QUERY_FILLER_TERMS = frozenset({
     *_SWEEP_QUERY_POPULATION_FILLER_TERMS,
     "function", "muscle", "performance", "strength",
 })
+_SWEEP_QUERY_OUTCOME_TERMS = _SWEEP_QUERY_FILLER_TERMS - _SWEEP_QUERY_POPULATION_FILLER_TERMS
 _FULLRAW_LEGACY_PREFIX = "V5_MEMO_FULL_RAW_"
 _FULLRAW_GENERIC_PREFIX = "RESEARKA_FULLRAW_"
 _FULLRAW_SPECIAL_ALIASES = {
@@ -159,7 +160,7 @@ def _shard_local_cache_health(*, include_dynamic_budget: bool = True) -> dict[st
 
 
 _FULL_COVERAGE_PREFIX_SHARDS = max(1, int(_fullraw_env("V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS", "32")))
-_SWEEP_STRATEGY = "profile_relaxed_v12"
+_SWEEP_STRATEGY = "profile_relaxed_v13"
 _SWEEP_MIN_RESULT_LIMIT = 10
 _DEFAULT_SHARD_CACHE_COPY_TIMEOUT_SECONDS = 180.0
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
@@ -1816,11 +1817,7 @@ def _profile_relaxed_sweep_query(
     # Do not collapse an intervention + outcome + design query into only the
     # intervention and design. Population terms remain removable, but at least
     # one broad outcome axis must survive when it is the only endpoint signal.
-    removed_outcome_axis = any(
-        term in _SWEEP_QUERY_FILLER_TERMS
-        and term not in _SWEEP_QUERY_POPULATION_FILLER_TERMS
-        for term in raw_terms
-    )
+    removed_outcome_axis = any(term in _SWEEP_QUERY_OUTCOME_TERMS for term in raw_terms)
     if len(filtered_terms) == 2 and removed_outcome_axis:
         terms = tuple(
             term
@@ -1830,6 +1827,12 @@ def _profile_relaxed_sweep_query(
     else:
         terms = filtered_terms if len(filtered_terms) >= 2 else raw_terms
     if len(terms) <= max_terms:
+        if removed_outcome_axis and not any(term in _SWEEP_QUERY_OUTCOME_TERMS for term in terms):
+            outcome_term = next(
+                term for term in reversed(raw_terms) if term in _SWEEP_QUERY_OUTCOME_TERMS
+            )
+            selected_terms = {*terms, outcome_term}
+            terms = tuple(dict.fromkeys(term for term in raw_terms if term in selected_terms))
         return " ".join(terms)
     profile_counts: Counter[str] = Counter()
     aliases = {term: _term_aliases(term) for term in terms}
@@ -1864,6 +1867,15 @@ def _profile_relaxed_sweep_query(
             ordered = [term for term in terms if term in set((*protected, *fill))]
         else:
             ordered = _spread_terms(ordered, max_terms)
+    if removed_outcome_axis and not any(term in _SWEEP_QUERY_OUTCOME_TERMS for term in ordered):
+        # A compound intervention can fill the normal three-term budget. Add
+        # one endpoint term instead of silently turning an on-axis query into
+        # intervention + class + design only.
+        outcome_term = next(
+            term for term in reversed(raw_terms) if term in _SWEEP_QUERY_OUTCOME_TERMS
+        )
+        selected_terms = {*ordered, outcome_term}
+        ordered = list(dict.fromkeys(term for term in raw_terms if term in selected_terms))
     return " ".join(ordered) if len(ordered) >= 2 else " ".join(terms)
 
 
