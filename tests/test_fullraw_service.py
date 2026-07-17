@@ -470,7 +470,7 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
     sentinel.write_text("platform-owned\n")
     platform_break_glass = tmp_path / "allow-legacy-sidecars"
     platform_break_glass.touch()
-    competing_name = "zzzzzz-researka-shared-disabled.conf"
+    competing_name = "zzzzzzzzzzzzzzzz-researka-shared-disabled.conf"
     competing_overrides = []
     for unit in (
         "v5-memo-publish-fullraw-fts-mount.service",
@@ -530,13 +530,13 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
         / "v5-memo-publish-fullraw-fts-mount.service.d"
         / "zzzzzzzz-v5-publish-fullraw-owned.conf"
     )
-    assert search_override.name > competing_name
-    assert mount_override.name > competing_name
+    assert search_override.name < competing_name
+    assert mount_override.name < competing_name
     assert sorted(path.name for path in search_override.parent.glob("*.conf"))[-1] == (
-        search_override.name
+        competing_name
     )
     assert sorted(path.name for path in mount_override.parent.glob("*.conf"))[-1] == (
-        mount_override.name
+        competing_name
     )
     assert "V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL" in route.read_text()
     assert "ConditionPathExists=" in search_override.read_text()
