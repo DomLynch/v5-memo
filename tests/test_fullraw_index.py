@@ -890,6 +890,32 @@ def test_full_sweep_cache_query_drops_broad_fillers(tmp_path: Path) -> None:
     assert verbose == compact == "creatine resistance trial"
 
 
+def test_full_sweep_cache_query_preserves_only_outcome_axis(tmp_path: Path) -> None:
+    entries = [
+        replace(
+            _entry(tmp_path, idx, "openalex"),
+            topic_terms=("omega", "muscle", "strength", "trial"),
+        )
+        for idx in range(4)
+    ]
+
+    query = fullraw_index._sweep_cache_query(
+        "omega muscle strength trial",
+        entries,
+        sweep_shard_limit=4,
+        rank_mode="relevance",
+    )
+    population_only = fullraw_index._sweep_cache_query(
+        "omega older adults trial",
+        entries,
+        sweep_shard_limit=4,
+        rank_mode="relevance",
+    )
+
+    assert query == "omega strength trial"
+    assert population_only == "omega trial"
+
+
 def test_sweep_cache_matcher_accepts_compatible_pass_query() -> None:
     entry = fullraw_index.SweepCacheEntry(
         created_at=time.time(),
@@ -1071,6 +1097,33 @@ def test_completed_sweep_cache_matches_original_query_when_active_query_changed(
         active_query="urolithin runners trial",
         original_query="urolithin muscle trained runners placebo trial",
         result_limit=50,
+        sweep_shard_limit=1525,
+        sweep_pass_shard_limit=32,
+        sweep_strategy=fullraw_index._SWEEP_STRATEGY,
+    )
+
+
+def test_completed_sweep_cache_rejects_old_query_normalizer_strategy() -> None:
+    entry = fullraw_index.SweepCacheEntry(
+        created_at=time.time(),
+        hits=[{"title": "Irrelevant omega trial"} for _ in range(2)],
+        receipt={
+            "sweep_result_limit": 25,
+            "result_count_raw": 2,
+            "sweep_shard_limit": 1525,
+            "sweep_strategy": "profile_relaxed_v11",
+            "sweep_query": "omega trial",
+            "sweep_original_query": "omega muscle strength trial",
+            "partial_shard_search": False,
+            "sweep_remaining_shards": 0,
+        },
+    )
+
+    assert not fullraw_index._sweep_cache_entry_matches_active_or_completed_original_query(
+        entry,
+        active_query="omega strength trial",
+        original_query="omega muscle strength trial",
+        result_limit=25,
         sweep_shard_limit=1525,
         sweep_pass_shard_limit=32,
         sweep_strategy=fullraw_index._SWEEP_STRATEGY,

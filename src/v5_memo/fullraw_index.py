@@ -159,7 +159,7 @@ def _shard_local_cache_health(*, include_dynamic_budget: bool = True) -> dict[st
 
 
 _FULL_COVERAGE_PREFIX_SHARDS = max(1, int(_fullraw_env("V5_MEMO_FULL_RAW_SEARCH_PREFIX_SHARDS", "32")))
-_SWEEP_STRATEGY = "profile_relaxed_v11"
+_SWEEP_STRATEGY = "profile_relaxed_v12"
 _SWEEP_MIN_RESULT_LIMIT = 10
 _DEFAULT_SHARD_CACHE_COPY_TIMEOUT_SECONDS = 180.0
 _SHARD_LOCAL_CACHE_LOCK = threading.RLock()
@@ -1813,7 +1813,22 @@ def _profile_relaxed_sweep_query(
     if any(term in _ALPHA_SWEEP_TERMS for term in raw_terms):
         filler_terms = _SWEEP_QUERY_POPULATION_FILLER_TERMS
     filtered_terms = tuple(term for term in raw_terms if term not in filler_terms)
-    terms = filtered_terms if len(filtered_terms) >= 2 else raw_terms
+    # Do not collapse an intervention + outcome + design query into only the
+    # intervention and design. Population terms remain removable, but at least
+    # one broad outcome axis must survive when it is the only endpoint signal.
+    removed_outcome_axis = any(
+        term in _SWEEP_QUERY_FILLER_TERMS
+        and term not in _SWEEP_QUERY_POPULATION_FILLER_TERMS
+        for term in raw_terms
+    )
+    if len(filtered_terms) == 2 and removed_outcome_axis:
+        terms = tuple(
+            term
+            for term in raw_terms
+            if term not in _SWEEP_QUERY_POPULATION_FILLER_TERMS
+        )
+    else:
+        terms = filtered_terms if len(filtered_terms) >= 2 else raw_terms
     if len(terms) <= max_terms:
         return " ".join(terms)
     profile_counts: Counter[str] = Counter()
