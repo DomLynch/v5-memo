@@ -1479,6 +1479,10 @@ def _should_stop(status: str) -> bool:
 
 
 def _portfolio_exit_code(final_status: str, *, preparing: bool) -> int:
+    # A retryable coverage warm-up is healthy, but an unreachable fullraw
+    # backend must fail the systemd run so the outage cannot look successful.
+    if final_status == "warming:search_backend_unavailable":
+        return 1
     if final_status in {
         "accepted",
         "accepted_pending_publication",

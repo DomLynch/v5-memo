@@ -312,7 +312,10 @@ def test_retryable_fullraw_preflight_error_is_warming() -> None:
     )
 
     assert status == "warming:search_backend_unavailable"
-    assert portfolio._portfolio_exit_code(status, preparing=True) == 0
+    assert portfolio._portfolio_exit_code(status, preparing=True) == 1
+    assert portfolio._portfolio_exit_code(status, preparing=False) == 1
+    assert portfolio._portfolio_exit_code("warming:search_coverage", preparing=True) == 0
+    assert portfolio._portfolio_exit_code("warming:search_coverage", preparing=False) == 0
 
 
 def test_durable_submission_receipt_wins_even_if_outer_process_times_out() -> None:
