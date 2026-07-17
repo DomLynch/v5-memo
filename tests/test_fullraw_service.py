@@ -387,6 +387,7 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert '"$deploy_dir/$selected_profile"' in isolation_installer
     assert 'install_sidecar_profile "$owned_profile"' in isolation_installer
     assert 'install_sidecar_profile "$shared_sidecar_profile"' in isolation_installer
+    assert "owned_dropin=zzzzzzzz-v5-publish-fullraw-owned.conf" in isolation_installer
     assert '"$unit_dir/$unit.d/$owned_dropin"' in isolation_installer
     assert '"$config_dir/portfolio-shared-fullraw.env"' in isolation_installer
     assert "rm -f" not in isolation_installer
@@ -467,6 +468,18 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
     sentinel = unit_dir / "researka-fullraw-search.service"
     sentinel.parent.mkdir(parents=True)
     sentinel.write_text("platform-owned\n")
+    competing_name = "zzzzzz-researka-shared-disabled.conf"
+    competing_overrides = []
+    for unit in (
+        "v5-memo-publish-fullraw-fts-mount.service",
+        "v5-memo-publish-fullraw-search.service",
+    ):
+        competing_override = unit_dir / f"{unit}.d" / competing_name
+        competing_override.parent.mkdir(parents=True)
+        competing_override.write_text(
+            "[Unit]\nConditionPathExists=/run/researka-fullraw-allow-legacy-sidecars\n",
+        )
+        competing_overrides.append(competing_override)
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -507,16 +520,25 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
     search_override = (
         unit_dir
         / "v5-memo-publish-fullraw-search.service.d"
-        / "zzzzz-v5-publish-fullraw-owned.conf"
+        / "zzzzzzzz-v5-publish-fullraw-owned.conf"
     )
     mount_override = (
         unit_dir
         / "v5-memo-publish-fullraw-fts-mount.service.d"
-        / "zzzzz-v5-publish-fullraw-owned.conf"
+        / "zzzzzzzz-v5-publish-fullraw-owned.conf"
+    )
+    assert search_override.name > competing_name
+    assert mount_override.name > competing_name
+    assert sorted(path.name for path in search_override.parent.glob("*.conf"))[-1] == (
+        search_override.name
+    )
+    assert sorted(path.name for path in mount_override.parent.glob("*.conf"))[-1] == (
+        mount_override.name
     )
     assert "V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL" in route.read_text()
     assert "ConditionPathExists=" in search_override.read_text()
     assert "ConditionPathExists=" in mount_override.read_text()
+    assert all("allow-legacy-sidecars" in path.read_text() for path in competing_overrides)
     assert "enable v5-memo-publish-fullraw-fts-mount.service" in systemctl_log.read_text()
     assert "restart v5-memo-publish-fullraw-search.service" in systemctl_log.read_text()
     assert "stop v5-memo-portfolio-prepare.timer" in systemctl_log.read_text()
