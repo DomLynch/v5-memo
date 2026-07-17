@@ -468,7 +468,9 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
     sentinel = unit_dir / "researka-fullraw-search.service"
     sentinel.parent.mkdir(parents=True)
     sentinel.write_text("platform-owned\n")
-    competing_name = "zzzzzz-researka-shared-disabled.conf"
+    platform_break_glass = tmp_path / "allow-legacy-sidecars"
+    platform_break_glass.touch()
+    competing_name = "zzzzzzzzzzzzzzzz-researka-shared-disabled.conf"
     competing_overrides = []
     for unit in (
         "v5-memo-publish-fullraw-fts-mount.service",
@@ -489,6 +491,7 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
         "SYSTEMD_UNIT_DIR": str(unit_dir),
         "V5_MEMO_CONFIG_DIR": str(config_dir),
         "V5_MEMO_PORTFOLIO_LOCK_PATH": str(tmp_path / "portfolio.lock"),
+        "V5_MEMO_PLATFORM_BREAK_GLASS_PATH": str(platform_break_glass),
         "V5_MEMO_PUBLISH_MOUNT_PATH": str(tmp_path / "mount"),
         "V5_MEMO_PUBLISH_CATALOG_PATH": str(tmp_path / "catalog.json"),
         "V5_MEMO_PORTFOLIO_SEARCH_ROUTE": "dedicated",
@@ -527,13 +530,13 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
         / "v5-memo-publish-fullraw-fts-mount.service.d"
         / "zzzzzzzz-v5-publish-fullraw-owned.conf"
     )
-    assert search_override.name > competing_name
-    assert mount_override.name > competing_name
+    assert search_override.name < competing_name
+    assert mount_override.name < competing_name
     assert sorted(path.name for path in search_override.parent.glob("*.conf"))[-1] == (
-        search_override.name
+        competing_name
     )
     assert sorted(path.name for path in mount_override.parent.glob("*.conf"))[-1] == (
-        mount_override.name
+        competing_name
     )
     assert "V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL" in route.read_text()
     assert "ConditionPathExists=" in search_override.read_text()
@@ -547,8 +550,21 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
     assert sentinel.read_text() == "platform-owned\n"
 
     systemctl_log.write_text("")
+    platform_break_glass.unlink()
     env.pop("V5_MEMO_PORTFOLIO_SEARCH_ROUTE")
     env.pop("V5_MEMO_ALLOW_DEDICATED_FULLRAW")
+    platform_rejected = subprocess.run(
+        ["/bin/sh", str(deploy_dir / "install-v5-portfolio-isolation.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert platform_rejected.returncode == 2
+    assert "platform break-glass marker" in platform_rejected.stderr
+    assert systemctl_log.read_text() == ""
+
+    platform_break_glass.touch()
     subprocess.run(
         ["/bin/sh", str(deploy_dir / "install-v5-portfolio-isolation.sh")],
         check=True,

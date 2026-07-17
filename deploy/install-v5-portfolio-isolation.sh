@@ -20,6 +20,8 @@ lock_path=${V5_MEMO_PORTFOLIO_LOCK_PATH:-/run/v5-memo-portfolio.lock}
 publish_mount=${V5_MEMO_PUBLISH_MOUNT_PATH:-/var/lib/v5-memo/v5-publish-fullraw-fts-remote}
 publish_catalog=${V5_MEMO_PUBLISH_CATALOG_PATH:-/var/lib/v5-memo/v5-isolated-fullraw-shard-catalog.json}
 dedicated_marker=$config_dir/allow-dedicated-fullraw
+platform_break_glass=${V5_MEMO_PLATFORM_BREAK_GLASS_PATH:-/run/researka-fullraw-allow-legacy-sidecars}
+shared_unit=$unit_dir/researka-fullraw-search.service
 
 # The marker is the durable operator opt-in. Explicit route variables still
 # win, so rollback can always force the shared route.
@@ -45,6 +47,10 @@ if [ "$route" = dedicated ] && [ "$allow_dedicated" != 1 ]; then
 fi
 if [ "$route" = dedicated ] && [ ! -f "$dedicated_marker" ]; then
     echo "dedicated V5 fullraw requires $dedicated_marker" >&2
+    exit 2
+fi
+if [ "$route" = dedicated ] && [ -e "$shared_unit" ] && [ ! -f "$platform_break_glass" ]; then
+    echo "dedicated V5 fullraw requires platform break-glass marker $platform_break_glass" >&2
     exit 2
 fi
 
