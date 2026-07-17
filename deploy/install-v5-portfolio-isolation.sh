@@ -12,6 +12,8 @@ shared_env=v5-memo-portfolio-shared-fullraw.env
 dedicated_env=v5-memo-publish-fullraw.env
 mount_unit=v5-memo-publish-fullraw-fts-mount.service
 search_unit=v5-memo-publish-fullraw-search.service
+search_dropin=zzzzz-v5-publish-fullraw-owned.conf
+search_profile=v5-memo-publish-fullraw-search-owned.conf
 lock_path=${V5_MEMO_PORTFOLIO_LOCK_PATH:-/run/v5-memo-portfolio.lock}
 publish_mount=${V5_MEMO_PUBLISH_MOUNT_PATH:-/var/lib/v5-memo/v5-publish-fullraw-fts-remote}
 publish_catalog=${V5_MEMO_PUBLISH_CATALOG_PATH:-/var/lib/v5-memo/v5-isolated-fullraw-shard-catalog.json}
@@ -38,6 +40,13 @@ do
         "$deploy_dir/$unit" \
         "$unit_dir/$unit"
 done
+install -d -m 0755 "$unit_dir/$search_unit.d"
+install -m 0644 \
+    "$deploy_dir/$search_profile" \
+    "$unit_dir/$search_unit.d/$search_dropin"
+cmp -s \
+    "$deploy_dir/$search_profile" \
+    "$unit_dir/$search_unit.d/$search_dropin"
 
 portfolio_units="v5-memo-portfolio-prepare.service v5-memo-portfolio-catchup.service v5-memo-portfolio-publish.service"
 portfolio_timers="v5-memo-portfolio-prepare.timer v5-memo-portfolio-catchup.timer v5-memo-portfolio-publish.timer"

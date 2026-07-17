@@ -274,6 +274,9 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     config = (deploy_dir / "v5-memo-portfolio-publish.service").read_text()
     isolation = (deploy_dir / "zzz-v5-portfolio-isolated-fullraw.conf").read_text()
     dedicated_profile = (deploy_dir / "v5-portfolio-publish-fullraw.conf").read_text()
+    search_profile = (
+        deploy_dir / "v5-memo-publish-fullraw-search-owned.conf"
+    ).read_text()
     shared_profile = (deploy_dir / "v5-portfolio-shared-fullraw.conf").read_text()
     isolation_installer = (deploy_dir / "install-v5-portfolio-isolation.sh").read_text()
     shared_env = (deploy_dir / "v5-memo-portfolio-shared-fullraw.env").read_text()
@@ -328,6 +331,8 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "After=v5-memo-publish-fullraw-search.service" in dedicated_profile
     assert "V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL=http://127.0.0.1:9935/search" in dedicated_profile
     assert "EnvironmentFile=" not in dedicated_profile
+    assert "not a legacy fullraw sidecar" in search_profile
+    assert "ConditionPathExists=" in search_profile
     assert "Wants=network-online.target researka-fullraw-search.service" in shared_profile
     assert "UnsetEnvironment=V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL" in shared_profile
     assert "RESEARKA_FULLRAW_SEARCH_URL=http://127.0.0.1:9903/search" in shared_env
@@ -369,6 +374,8 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert '"$deploy_dir/$unit"' in isolation_installer
     assert '"$unit_dir/$unit"' in isolation_installer
     assert '"$deploy_dir/$selected_profile"' in isolation_installer
+    assert '"$deploy_dir/$search_profile"' in isolation_installer
+    assert '"$unit_dir/$search_unit.d/$search_dropin"' in isolation_installer
     assert '"$config_dir/portfolio-shared-fullraw.env"' in isolation_installer
     assert "rm -f" not in isolation_installer
     assert "systemctl daemon-reload" in isolation_installer
@@ -482,7 +489,13 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
     )
 
     route = unit_dir / "v5-memo-portfolio-prepare.service.d" / "zzzzz-v5-portfolio-fullraw-route.conf"
+    search_override = (
+        unit_dir
+        / "v5-memo-publish-fullraw-search.service.d"
+        / "zzzzz-v5-publish-fullraw-owned.conf"
+    )
     assert "V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL" in route.read_text()
+    assert "ConditionPathExists=" in search_override.read_text()
     assert "enable v5-memo-publish-fullraw-fts-mount.service" in systemctl_log.read_text()
     assert "restart v5-memo-publish-fullraw-search.service" in systemctl_log.read_text()
     assert "stop v5-memo-portfolio-prepare.timer" in systemctl_log.read_text()
