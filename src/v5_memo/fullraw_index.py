@@ -2348,6 +2348,40 @@ def _kill_and_reap_copy(process: subprocess.Popen[bytes]) -> None:
         raise OSError("copy child could not be reaped after SIGKILL") from exc
 
 
+def _shard_cache_copy_command(source: Path, target: Path) -> list[str]:
+    remote_root = _fullraw_env("V5_MEMO_FULL_RAW_SHARD_REMOTE").strip().rstrip("/")
+    mount_root_raw = _fullraw_env("V5_MEMO_FULL_RAW_SHARD_DIR").strip()
+    if remote_root and mount_root_raw:
+        source_absolute = source.absolute()
+        mount_root = Path(mount_root_raw).absolute()
+        try:
+            relative = source_absolute.relative_to(mount_root)
+        except ValueError:
+            relative = None
+        if relative is not None and relative.parts and ".." not in relative.parts:
+            return [
+                _fullraw_env("V5_MEMO_FULL_RAW_RCLONE_BIN", "rclone"),
+                "copyto",
+                f"{remote_root}/{relative.as_posix()}",
+                str(target),
+                "--contimeout",
+                "15s",
+                "--timeout",
+                "60s",
+                "--retries",
+                "1",
+                "--low-level-retries",
+                "2",
+            ]
+    return [
+        sys.executable,
+        "-c",
+        "import shutil,sys; shutil.copy2(sys.argv[1], sys.argv[2])",
+        str(source),
+        str(target),
+    ]
+
+
 def _copy2_with_timeout(
     source: Path,
     target: Path,
@@ -2371,13 +2405,7 @@ def _copy2_with_timeout(
         attempt_limit = max(1, attempts or _shard_cache_copy_attempts())
         for attempt in range(attempt_limit):
             process = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-c",
-                    "import shutil,sys; shutil.copy2(sys.argv[1], sys.argv[2])",
-                    str(source),
-                    str(target),
-                ],
+                _shard_cache_copy_command(source, target),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
