@@ -376,6 +376,7 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "dedicated V5 fullraw requires V5_MEMO_ALLOW_DEDICATED_FULLRAW=1" in (
         isolation_installer
     )
+    assert 'requires $config_dir/allow-dedicated-fullraw' in isolation_installer
     assert 'systemctl enable "$mount_unit" "$search_unit"' in isolation_installer
     assert 'mountpoint -q "$publish_mount"' in isolation_installer
     assert 'systemctl restart "$search_unit"' in isolation_installer
@@ -481,6 +482,8 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
     }
     config_dir.mkdir()
     (config_dir / "env").write_text("RESEARKA_FULLRAW_INDEX_TOKEN=test-token\n")
+    dedicated_marker = config_dir / "allow-dedicated-fullraw"
+    dedicated_marker.touch()
     catalog_shard = tmp_path / "mount" / "batch_00000" / "fullraw_shard_0000.sqlite"
     catalog_shard.parent.mkdir(parents=True)
     catalog_shard.touch()
@@ -562,13 +565,19 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
     )
     assert sentinel.read_text() == "platform-owned\n"
 
+    systemctl_log.write_text("")
+    dedicated_marker.unlink()
     env["V5_MEMO_PORTFOLIO_SEARCH_ROUTE"] = "dedicated"
-    with pytest.raises(subprocess.CalledProcessError):
-        subprocess.run(
-            ["/bin/sh", str(deploy_dir / "install-v5-portfolio-isolation.sh")],
-            check=True,
-            env=env,
-        )
+    marker_rejected = subprocess.run(
+        ["/bin/sh", str(deploy_dir / "install-v5-portfolio-isolation.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert marker_rejected.returncode == 2
+    assert "allow-dedicated-fullraw" in marker_rejected.stderr
+    assert systemctl_log.read_text() == ""
 
     assert "UnsetEnvironment=V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL" in route.read_text()
     assert systemctl_state.read_text() == "disabled\n"

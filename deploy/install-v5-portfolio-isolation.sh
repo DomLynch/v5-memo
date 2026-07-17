@@ -31,6 +31,10 @@ if [ "$route" = dedicated ] && [ "$allow_dedicated" != 1 ]; then
     echo "dedicated V5 fullraw requires V5_MEMO_ALLOW_DEDICATED_FULLRAW=1" >&2
     exit 2
 fi
+if [ "$route" = dedicated ] && [ ! -f "$config_dir/allow-dedicated-fullraw" ]; then
+    echo "dedicated V5 fullraw requires $config_dir/allow-dedicated-fullraw" >&2
+    exit 2
+fi
 
 install -d -m 0755 "$config_dir" "$unit_dir"
 install -m 0644 \
