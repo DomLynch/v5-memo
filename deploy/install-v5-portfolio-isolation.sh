@@ -20,6 +20,9 @@ lock_path=${V5_MEMO_PORTFOLIO_LOCK_PATH:-/run/v5-memo-portfolio.lock}
 publish_mount=${V5_MEMO_PUBLISH_MOUNT_PATH:-/var/lib/v5-memo/v5-publish-fullraw-fts-remote}
 publish_catalog=${V5_MEMO_PUBLISH_CATALOG_PATH:-/var/lib/v5-memo/v5-isolated-fullraw-shard-catalog.json}
 dedicated_marker=$config_dir/allow-dedicated-fullraw
+mount_fingerprint_path=$config_dir/publish-fullraw-mount.sha256
+search_fingerprint_path=$config_dir/publish-fullraw-search.sha256
+source_dir=$(CDPATH= cd -- "$deploy_dir/../src/v5_memo" && pwd)
 
 # The marker is the durable operator opt-in. Explicit route variables still
 # win, so rollback can always force the shared route.
@@ -46,6 +49,57 @@ fi
 if [ "$route" = dedicated ] && [ ! -f "$dedicated_marker" ]; then
     echo "dedicated V5 fullraw requires $dedicated_marker" >&2
     exit 2
+fi
+
+fingerprint_files() {
+    for fingerprint_file in "$@"; do
+        sha256sum "$fingerprint_file" | awk '{print $1}'
+    done | sha256sum | awk '{print $1}'
+}
+file_differs() {
+    [ ! -f "$2" ] || ! cmp -s "$1" "$2"
+}
+fingerprint_differs() {
+    [ ! -f "$2" ] || [ "$(cat "$2")" != "$1" ]
+}
+write_fingerprint() {
+    fingerprint_value=$1
+    fingerprint_path=$2
+    fingerprint_tmp=$fingerprint_path.tmp.$$
+    umask 022
+    printf '%s\n' "$fingerprint_value" >"$fingerprint_tmp"
+    chmod 0644 "$fingerprint_tmp"
+    mv -f "$fingerprint_tmp" "$fingerprint_path"
+}
+
+mount_fingerprint=$(fingerprint_files \
+    "$deploy_dir/$mount_unit" \
+    "$deploy_dir/$owned_profile")
+search_fingerprint=$(fingerprint_files \
+    "$deploy_dir/$dedicated_env" \
+    "$deploy_dir/$search_unit" \
+    "$deploy_dir/$owned_profile" \
+    "$source_dir/fullraw_index.py" \
+    "$source_dir/fullraw_service.py" \
+    "$source_dir/evidence.py" \
+    "$source_dir/schemas.py" \
+    "$source_dir/fullraw/http.py")
+mount_runtime_changed=0
+search_runtime_changed=0
+if [ "$route" = dedicated ]; then
+    if file_differs "$deploy_dir/$mount_unit" "$unit_dir/$mount_unit" || \
+        file_differs "$deploy_dir/$owned_profile" "$unit_dir/$mount_unit.d/$owned_dropin" || \
+        fingerprint_differs "$mount_fingerprint" "$mount_fingerprint_path"
+    then
+        mount_runtime_changed=1
+    fi
+    if file_differs "$deploy_dir/$dedicated_env" "$config_dir/publish-fullraw.env" || \
+        file_differs "$deploy_dir/$search_unit" "$unit_dir/$search_unit" || \
+        file_differs "$deploy_dir/$owned_profile" "$unit_dir/$search_unit.d/$owned_dropin" || \
+        fingerprint_differs "$search_fingerprint" "$search_fingerprint_path"
+    then
+        search_runtime_changed=1
+    fi
 fi
 
 install -d -m 0755 "$config_dir" "$unit_dir"
@@ -158,7 +212,12 @@ systemctl stop $portfolio_units
 
 if [ "$route" = dedicated ]; then
     systemctl enable "$mount_unit" "$search_unit"
-    systemctl restart "$mount_unit"
+    if [ "$mount_runtime_changed" -eq 1 ] || \
+        ! systemctl is-active --quiet "$mount_unit" || \
+        ! mountpoint -q "$publish_mount"
+    then
+        systemctl restart "$mount_unit"
+    fi
     mounted=0
     for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
         if mountpoint -q "$publish_mount"; then
@@ -182,20 +241,27 @@ if [ "$route" = dedicated ]; then
         echo "V5 publish fullraw mounted corpus probe failed" >&2
         exit 1
     fi
-    systemctl restart "$search_unit"
     token=$(awk -F= '$1 == "RESEARKA_FULLRAW_INDEX_TOKEN" {print substr($0, index($0, "=") + 1); exit}' "$config_dir/env")
     if [ -z "$token" ]; then
         echo "missing RESEARKA_FULLRAW_INDEX_TOKEN" >&2
         exit 1
     fi
-    healthy=0
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
-        if curl -fsS --max-time 5 \
+    search_health_ok() {
+        curl -fsS --max-time 5 \
             -H "Authorization: Bearer $token" \
             http://127.0.0.1:9935/health |
             jq -e '.ok == true and .backend == "researka-fullraw-indexed-fts5" and .shard_dir == "/var/lib/v5-memo/v5-publish-fullraw-fts-remote" and .shard_receipt.shards_total == 1525 and .coverage_requirements.min_shards_searched == 1525 and .coverage_requirements.require_complete_search == 1 and .coverage_requirements.sweep_require_complete == 1 and .async_sweep.max_inflight == 1 and .async_sweep.workers == 1' \
                 >/dev/null 2>&1
-        then
+    }
+    if [ "$search_runtime_changed" -eq 1 ] || \
+        ! systemctl is-active --quiet "$search_unit" || \
+        ! search_health_ok
+    then
+        systemctl restart "$search_unit"
+    fi
+    healthy=0
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+        if search_health_ok; then
             healthy=1
             break
         fi
@@ -216,6 +282,8 @@ if [ "$route" = dedicated ]; then
         echo "V5 publish fullraw authentication check failed" >&2
         exit 1
     fi
+    write_fingerprint "$mount_fingerprint" "$mount_fingerprint_path"
+    write_fingerprint "$search_fingerprint" "$search_fingerprint_path"
     systemctl is-active --quiet "$mount_unit" "$search_unit"
     systemctl is-enabled --quiet "$mount_unit" "$search_unit"
     install_profile "$dedicated_profile"

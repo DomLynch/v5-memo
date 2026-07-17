@@ -545,6 +545,8 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
     assert "start v5-memo-portfolio-prepare.timer" in systemctl_log.read_text()
     assert "stop v5-memo-portfolio-prepare.service" in systemctl_log.read_text()
     assert sentinel.read_text() == "platform-owned\n"
+    assert (config_dir / "publish-fullraw-mount.sha256").read_text().strip()
+    assert (config_dir / "publish-fullraw-search.sha256").read_text().strip()
 
     systemctl_log.write_text("")
     env.pop("V5_MEMO_PORTFOLIO_SEARCH_ROUTE")
@@ -556,10 +558,12 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
     )
     durable_default_log = systemctl_log.read_text()
     assert "enable v5-memo-publish-fullraw-fts-mount.service" in durable_default_log
-    assert "restart v5-memo-publish-fullraw-search.service" in durable_default_log
+    assert "restart v5-memo-publish-fullraw-fts-mount.service" not in durable_default_log
+    assert "restart v5-memo-publish-fullraw-search.service" not in durable_default_log
     env["V5_MEMO_PORTFOLIO_SEARCH_ROUTE"] = "dedicated"
     env["V5_MEMO_ALLOW_DEDICATED_FULLRAW"] = "1"
 
+    systemctl_log.write_text("")
     (fake_bin / "curl").write_text(
         "#!/bin/sh\n"
         "printf '%s\\n' "
@@ -582,6 +586,7 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
     )
     assert failed_rollback.returncode != 0
     assert "rollback failed" in failed_rollback.stderr
+    assert "restart v5-memo-publish-fullraw-search.service" in systemctl_log.read_text()
     assert "V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL" in catchup_route.read_text()
     env.pop("FAIL_INSTALL_MATCH")
 
