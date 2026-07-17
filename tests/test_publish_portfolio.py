@@ -109,27 +109,44 @@ def _write_sweep_cache(
     remaining_shards: int = 0,
     failed_shards: int = 0,
     pass_shard_limit: int | None = 12,
+    include_original_query: bool = True,
+    include_sweep_query: bool = True,
+    partial_shard_search: bool | None = None,
+    hit_count: int = 25,
+    strategy: str | None = None,
+    timed_out: bool = False,
+    stopped_no_hits: bool = False,
+    deferred_paths: list[str] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     receipt = {
-        "partial_shard_search": shards_searched != 1525,
-        "result_count_raw": 25,
+        "partial_shard_search": (
+            shards_searched != 1525
+            if partial_shard_search is None
+            else partial_shard_search
+        ),
+        "result_count_raw": hit_count,
         "shards_searched": shards_searched,
         "shards_total": 1525,
         "sweep_catalog_scope": scope,
         "sweep_failed_shards": failed_shards,
-        "sweep_original_query": query,
-        "sweep_query": query,
         "sweep_remaining_shards": remaining_shards,
         "sweep_result_limit": 25,
         "sweep_shard_limit": 1525,
-        "sweep_strategy": portfolio._SWEEP_STRATEGY,
+        "sweep_strategy": strategy or portfolio._SWEEP_STRATEGY,
+        "sweep_timed_out": timed_out,
+        "sweep_stopped_no_hits": stopped_no_hits,
+        "sweep_deferred_paths": deferred_paths or [],
     }
+    if include_original_query:
+        receipt["sweep_original_query"] = query
+    if include_sweep_query:
+        receipt["sweep_query"] = query
     if pass_shard_limit is not None:
         receipt["sweep_pass_shard_limit"] = pass_shard_limit
     path.write_text(json.dumps({
         "created_at": time.time() if created_at is None else created_at,
-        "hits": [{"id": index} for index in range(25)],
+        "hits": [{"id": index} for index in range(hit_count)],
         "receipt": receipt,
     }))
 
@@ -1149,6 +1166,242 @@ def test_complete_cache_priority_preserves_input_order_among_equals(
     )
 
     assert available == leads
+
+
+def test_complete_cache_discovery_is_strict_related_and_deterministic(
+    tmp_path: Path,
+) -> None:
+    portfolio = _load_portfolio()
+    env, cache_dir, shard_dir = _cache_env(tmp_path)
+    known = [
+        "creatine muscle strength trial outcome",
+        "creatine muscle performance trial outcome",
+    ]
+    scope = str(shard_dir.absolute())
+    _write_sweep_cache(
+        portfolio,
+        cache_dir / "z-older.json",
+        query="creatine muscle strength trial",
+        scope=scope,
+        created_at=time.time() - 10,
+    )
+    _write_sweep_cache(
+        portfolio,
+        cache_dir / "a-newer.json",
+        query="creatine muscle performance trial",
+        scope=scope,
+        created_at=time.time(),
+    )
+    _write_sweep_cache(
+        portfolio,
+        cache_dir / "partial.json",
+        query="creatine muscle adaptation trial",
+        scope=scope,
+        partial_shard_search=True,
+    )
+    _write_sweep_cache(
+        portfolio,
+        cache_dir / "timed-out.json",
+        query="creatine muscle recovery trial",
+        scope=scope,
+        timed_out=True,
+    )
+    _write_sweep_cache(
+        portfolio,
+        cache_dir / "exact-no-original.json",
+        query="creatine muscle function trial",
+        scope=scope,
+        include_original_query=False,
+    )
+    _write_sweep_cache(
+        portfolio,
+        cache_dir / "missing-source-query.json",
+        query="creatine muscle velocity trial",
+        scope=scope,
+        include_original_query=False,
+        include_sweep_query=False,
+    )
+    _write_sweep_cache(
+        portfolio,
+        cache_dir / "empty.json",
+        query="creatine muscle power trial",
+        scope=scope,
+        hit_count=0,
+    )
+    _write_sweep_cache(
+        portfolio,
+        cache_dir / "wrong-strategy.json",
+        query="creatine muscle mass trial",
+        scope=scope,
+        strategy="legacy",
+    )
+
+    proposal = portfolio._discover_complete_cache_lead_proposal(
+        known,
+        {},
+        env,
+        planner=None,
+        count=1,
+    )
+
+    assert proposal is not None
+    assert proposal.lead == "creatine muscle strength trial"
+    assert proposal.cache_key == "z-older.json"
+    assert proposal.result_limit == 25
+    state = {
+        "attempted_leads": {
+            proposal.lead: {"status": "blocked:candidate_publish_blocker"}
+        }
+    }
+    fallback = portfolio._discover_complete_cache_lead_proposal(
+        known,
+        state,
+        env,
+        planner=None,
+        count=1,
+    )
+    assert fallback is not None
+    assert fallback.lead == "creatine muscle performance trial"
+    exact_state = {
+        "attempted_leads": {
+            proposal.lead: {"status": "blocked:candidate_publish_blocker"},
+            fallback.lead: {"status": "blocked:candidate_publish_blocker"},
+        }
+    }
+    exact_without_original = portfolio._discover_complete_cache_lead_proposal(
+        known,
+        exact_state,
+        env,
+        planner=None,
+        count=1,
+    )
+    assert exact_without_original is not None
+    assert exact_without_original.lead == "creatine muscle function trial"
+    assert exact_without_original.cache_key == "exact-no-original.json"
+
+
+def test_complete_cache_discovery_rejects_unrelated_query(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    env, cache_dir, shard_dir = _cache_env(tmp_path)
+    known_lead = "creatine muscle strength older adults randomized trial"
+    _write_sweep_cache(
+        portfolio,
+        cache_dir / "unrelated.json",
+        query="metformin glucose tolerance trial",
+        scope=str(shard_dir.absolute()),
+    )
+
+    assert portfolio._cache_relevance_score(
+        "randomized trial bitcoin price volatility",
+        [known_lead],
+    ) is None
+    assert portfolio._discover_complete_cache_lead_proposal(
+        [known_lead],
+        {},
+        env,
+        planner=None,
+        count=1,
+    ) is None
+
+
+def test_prepare_uses_one_cache_derived_lead_without_queueing(
+    tmp_path: Path,
+) -> None:
+    portfolio = _load_portfolio()
+    env, cache_dir, shard_dir = _cache_env(tmp_path)
+    source_lead = "creatine muscle strength older adults randomized trial"
+    cached_lead = "creatine muscle strength trial"
+    _write_sweep_cache(
+        portfolio,
+        cache_dir / "complete.json",
+        query=cached_lead,
+        scope=str(shard_dir.absolute()),
+        hit_count=9,
+    )
+    receipt_path = tmp_path / "source-receipt.json"
+    receipt_path.write_text(json.dumps(_lead_proposal_receipt(
+        portfolio,
+        lead="taurine sleep randomized trial human",
+        source_topic=source_lead,
+    )))
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "attempted_leads": {
+            source_lead: {
+                "status": "blocked:no_receipt_bound_alpha_candidate",
+                "receipt_path": str(receipt_path),
+                "updated_at": "20260717T000000Z",
+            }
+        }
+    }))
+    lead_file = tmp_path / "leads.txt"
+    lead_file.write_text(f"{source_lead}\n")
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=state_path,
+        lead_file=lead_file,
+        auto_discover_leads=True,
+        min_open_leads=0,
+        discover_count=1,
+        blocked_retry_hours=0,
+        ready_buffer_size=1,
+    )
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def fake_runner(
+        command: list[str],
+        run_env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((command, dict(run_env)))
+        output_receipt = Path(
+            command[command.index("--publish-receipt-path") + 1]
+        )
+        output_receipt.write_text(json.dumps({
+            "ready": True,
+            "validation": "publish_quality",
+        }))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    assert portfolio.run_portfolio(
+        [source_lead],
+        config,
+        runner=fake_runner,
+        env=env,
+        cwd=Path.cwd(),
+    ) == 0
+
+    assert len(calls) == 1
+    command, run_env = calls[0]
+    assert command[command.index("--topic") + 1] == cached_lead
+    assert command[command.index("--query") + 1] == cached_lead
+    assert "--validate-publish-quality" in command
+    assert "--submit-researka" not in command
+    assert run_env[portfolio.CACHE_QUEUE_IF_MISSING_ENV] == "0"
+    assert run_env[portfolio.CACHE_PER_QUERY_LIMIT_ENV] == "25"
+    summary = json.loads((config.output_dir / "portfolio.json").read_text())
+    saved = json.loads(state_path.read_text())
+    assert summary["discovered_leads"] == [cached_lead]
+    assert summary["cache_derived_selected_leads"] == [cached_lead]
+    assert summary["selected_leads"] == 1
+    assert summary["attempted_leads"] == 1
+    assert summary["ready_buffer_count_after"] == 1
+    assert summary["records"][0]["queue_if_missing"] is False
+    assert saved["derived_leads"][cached_lead]["source"] == "complete_sweep_cache"
+    assert saved["attempted_leads"][cached_lead]["status"] == "ready"
+    assert lead_file.read_text() == f"{source_lead}\n"
 
 
 def test_cache_query_limit_ignores_generic_only_limit_variables() -> None:

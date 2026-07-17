@@ -20,6 +20,7 @@ from v5_memo.__main__ import _alpha_shape_queries, _dedupe_queries
 from v5_memo.client import _fullraw_search_passes
 from v5_memo.fullraw_index import (
     _SWEEP_STRATEGY,
+    SweepCacheEntry,
     _load_sweep_cache,
     _sweep_cache_entry_matches_active_or_completed_original_query,
 )
@@ -29,6 +30,7 @@ from v5_memo.gate import (
     lead_proposal_identity,
     lead_proposal_metadata_valid,
 )
+from v5_memo.miner import query_anchor_terms
 
 TAIL_CHARS = 2000
 STATE_TIME_FORMAT = "%Y%m%dT%H%M%SZ"
@@ -41,6 +43,9 @@ V5_HEALTH_WAIT_ENV = "V5_MEMO_FULL_RAW_HEALTH_WAIT_SECONDS"
 GENERIC_HEALTH_WAIT_ENV = "RESEARKA_FULLRAW_HEALTH_WAIT_SECONDS"
 PORTFOLIO_HEALTH_WAIT_SECONDS = 300.0
 CACHE_SCAN_LIMIT = 512
+CACHE_DERIVED_SOURCE = "complete_sweep_cache"
+CACHE_QUEUE_IF_MISSING_ENV = "V5_MEMO_FULL_RAW_QUEUE_IF_MISSING"
+CACHE_PER_QUERY_LIMIT_ENV = "V5_MEMO_FULL_RAW_PER_QUERY_LIMIT"
 
 Runner = Callable[
     [Sequence[str], Mapping[str, str], Path],
@@ -82,6 +87,23 @@ class ReceiptLeadProposal:
     fingerprint: str
 
 
+@dataclass(frozen=True, slots=True)
+class CacheLeadProposal:
+    lead: str
+    cache_key: str
+    fingerprint: str
+    result_limit: int
+
+
+@dataclass(frozen=True, slots=True)
+class SweepCacheContext:
+    cache_dir: Path
+    catalog_scope: str
+    shard_limit: int
+    pass_shard_limit: int
+    ttl_seconds: float
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -121,7 +143,14 @@ def load_leads(args: argparse.Namespace) -> list[str]:
     return _dedupe(leads)
 
 
-def build_command(lead: str, lead_dir: Path, receipt_path: Path, config: RunConfig) -> list[str]:
+def build_command(
+    lead: str,
+    lead_dir: Path,
+    receipt_path: Path,
+    config: RunConfig,
+    *,
+    explicit_query: str | None = None,
+) -> list[str]:
     command = [
         config.python,
         "-m",
@@ -138,6 +167,8 @@ def build_command(lead: str, lead_dir: Path, receipt_path: Path, config: RunConf
         "--publish-receipt-path",
         str(receipt_path),
     ]
+    if explicit_query:
+        command.extend(["--query", explicit_query])
     if config.planner:
         command.extend(["--planner", config.planner])
     if config.writer:
@@ -207,6 +238,21 @@ def _attempted_leads(state: Mapping[str, object]) -> Mapping[str, object]:
 def _derived_leads(state: Mapping[str, object]) -> Mapping[str, object]:
     raw = state.get("derived_leads")
     return raw if isinstance(raw, Mapping) else {}
+
+
+def _cache_derived_lead_meta(
+    state: Mapping[str, object],
+    lead: str,
+) -> Mapping[str, object] | None:
+    lead_key = _lead_key(lead)
+    for raw_lead, raw_meta in _derived_leads(state).items():
+        if (
+            _lead_key(str(raw_lead)) == lead_key
+            and isinstance(raw_meta, Mapping)
+            and raw_meta.get("source") == CACHE_DERIVED_SOURCE
+        ):
+            return raw_meta
+    return None
 
 
 def _ready_lead_keys(state: Mapping[str, object]) -> set[str]:
@@ -605,6 +651,128 @@ def _positive_float_from_env(env: Mapping[str, str], *names: str) -> float | Non
     return _positive_float_text(_env_text(env, *names))
 
 
+def _sweep_cache_context(
+    env: Mapping[str, str],
+    *,
+    planner: str | None,
+) -> SweepCacheContext | None:
+    if planner not in {None, "seed"}:
+        return None
+    cache_dir_text = _consistent_env_text(
+        env,
+        "RESEARKA_FULLRAW_SWEEP_CACHE_DIR",
+        "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR",
+    )
+    shard_dir_text = _consistent_env_text(
+        env,
+        "RESEARKA_FULLRAW_SHARD_DIR",
+        "V5_MEMO_FULL_RAW_SHARD_DIR",
+    )
+    raw_shard_limit = _consistent_env_text(
+        env,
+        "RESEARKA_FULLRAW_SWEEP_SHARD_LIMIT",
+        "V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT",
+    )
+    raw_pass_limit = _consistent_env_text(
+        env,
+        "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT",
+        "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT",
+    )
+    raw_ttl = _consistent_env_text(
+        env,
+        "RESEARKA_FULLRAW_SWEEP_TTL_SECONDS",
+        "V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS",
+    )
+    shard_limit = _positive_int_text(raw_shard_limit)
+    if (
+        not cache_dir_text
+        or not shard_dir_text
+        or shard_limit is None
+        or raw_pass_limit is None
+        or raw_ttl is None
+    ):
+        return None
+    cache_dir = Path(cache_dir_text)
+    if not cache_dir.is_dir():
+        return None
+    return SweepCacheContext(
+        cache_dir=cache_dir,
+        catalog_scope=str(Path(shard_dir_text).absolute()),
+        shard_limit=shard_limit,
+        pass_shard_limit=_positive_int_text(raw_pass_limit) or shard_limit,
+        ttl_seconds=_positive_float_text(raw_ttl) or 86400.0,
+    )
+
+
+def _sweep_cache_paths(cache_dir: Path) -> list[Path]:
+    try:
+        with os.scandir(cache_dir) as entries:
+            paths = sorted(
+                (
+                    Path(entry.path)
+                    for entry in entries
+                    if entry.is_file(follow_symlinks=False)
+                    and entry.name.endswith(".json")
+                ),
+                key=lambda path: path.name,
+            )
+    except OSError:
+        return []
+    return paths[:CACHE_SCAN_LIMIT]
+
+
+def _sweep_cache_source_query(receipt: Mapping[str, object]) -> str:
+    original_query = str(receipt.get("sweep_original_query") or "").strip()
+    if original_query:
+        return original_query
+    # The current cache writer omits sweep_original_query only when the active
+    # pass query is identical to the job query, so sweep_query is exact here.
+    return str(receipt.get("sweep_query") or "").strip()
+
+
+def _strict_complete_sweep_cache_entry(
+    entry: SweepCacheEntry,
+    context: SweepCacheContext,
+    *,
+    require_source_query: bool,
+) -> bool:
+    receipt = entry.receipt
+    source_query = _sweep_cache_source_query(receipt)
+    return bool(
+        len(entry.hits) >= 2
+        and receipt.get("partial_shard_search") is False
+        and receipt.get("shards_searched") == context.shard_limit
+        and receipt.get("shards_total") == context.shard_limit
+        and receipt.get("sweep_shard_limit") == context.shard_limit
+        and receipt.get("sweep_pass_shard_limit") == context.pass_shard_limit
+        and receipt.get("sweep_remaining_shards") == 0
+        and receipt.get("sweep_failed_shards", 0) == 0
+        and receipt.get("sweep_strategy") == _SWEEP_STRATEGY
+        and receipt.get("sweep_catalog_scope") == context.catalog_scope
+        and receipt.get("sweep_timed_out") is not True
+        and receipt.get("sweep_stopped_no_hits") is not True
+        and not receipt.get("sweep_deferred_paths")
+        and (not require_source_query or source_query)
+    )
+
+
+def _strict_complete_sweep_cache_entries(
+    context: SweepCacheContext,
+    *,
+    require_source_query: bool,
+) -> list[tuple[Path, SweepCacheEntry]]:
+    result: list[tuple[Path, SweepCacheEntry]] = []
+    for path in _sweep_cache_paths(context.cache_dir):
+        entry = _load_sweep_cache(path, ttl_seconds=context.ttl_seconds)
+        if entry is not None and _strict_complete_sweep_cache_entry(
+            entry,
+            context,
+            require_source_query=require_source_query,
+        ):
+            result.append((path, entry))
+    return result
+
+
 def _first_query_cache_specs(
     leads: Sequence[str],
     env: Mapping[str, str],
@@ -703,78 +871,18 @@ def _complete_first_query_cache_lead_keys(
     *,
     planner: str | None,
 ) -> set[str]:
-    if planner not in {None, "seed"}:
+    context = _sweep_cache_context(env, planner=planner)
+    if context is None:
         return set()
-    cache_dir_text = _consistent_env_text(
-        env,
-        "RESEARKA_FULLRAW_SWEEP_CACHE_DIR",
-        "V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR",
-    )
-    shard_dir_text = _consistent_env_text(
-        env,
-        "RESEARKA_FULLRAW_SHARD_DIR",
-        "V5_MEMO_FULL_RAW_SHARD_DIR",
-    )
-    raw_sweep_shard_limit = _consistent_env_text(
-        env,
-        "RESEARKA_FULLRAW_SWEEP_SHARD_LIMIT",
-        "V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT",
-    )
-    sweep_shard_limit = _positive_int_text(raw_sweep_shard_limit)
-    if (
-        not cache_dir_text
-        or not shard_dir_text
-        or raw_sweep_shard_limit is None
-        or sweep_shard_limit is None
-    ):
-        return set()
-    cache_dir = Path(cache_dir_text)
-    if not cache_dir.is_dir():
-        return set()
-    raw_sweep_pass_shard_limit = _consistent_env_text(
-        env,
-        "RESEARKA_FULLRAW_SWEEP_PASS_SHARD_LIMIT",
-        "V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT",
-    )
-    raw_sweep_ttl = _consistent_env_text(
-        env,
-        "RESEARKA_FULLRAW_SWEEP_TTL_SECONDS",
-        "V5_MEMO_FULL_RAW_SWEEP_TTL_SECONDS",
-    )
-    if raw_sweep_pass_shard_limit is None or raw_sweep_ttl is None:
-        return set()
-    sweep_pass_shard_limit = (
-        _positive_int_text(raw_sweep_pass_shard_limit) or sweep_shard_limit
-    )
-    sweep_ttl = _positive_float_text(raw_sweep_ttl) or 86400.0
-    catalog_scope = str(Path(shard_dir_text).absolute())
     specs = _first_query_cache_specs(leads, env)
     if not specs:
         return set()
 
     matched: set[str] = set()
-    try:
-        with os.scandir(cache_dir) as entries:
-            paths = [
-                Path(entry.path)
-                for _, entry in zip(range(CACHE_SCAN_LIMIT), entries, strict=False)
-                if entry.is_file(follow_symlinks=False) and entry.name.endswith(".json")
-            ]
-    except OSError:
-        return set()
-    for path in paths:
-        entry = _load_sweep_cache(path, ttl_seconds=sweep_ttl)
-        if entry is None:
-            continue
-        receipt = entry.receipt
-        if not (
-            receipt.get("shards_searched") == sweep_shard_limit
-            and receipt.get("shards_total") == sweep_shard_limit
-            and receipt.get("sweep_pass_shard_limit") == sweep_pass_shard_limit
-            and receipt.get("sweep_remaining_shards") == 0
-            and receipt.get("sweep_failed_shards", 0) == 0
-        ):
-            continue
+    for _, entry in _strict_complete_sweep_cache_entries(
+        context,
+        require_source_query=False,
+    ):
         for lead_key, (query, result_limit) in specs.items():
             if lead_key in matched:
                 continue
@@ -783,13 +891,158 @@ def _complete_first_query_cache_lead_keys(
                 active_query=query,
                 original_query=query,
                 result_limit=result_limit,
-                sweep_shard_limit=sweep_shard_limit,
-                sweep_pass_shard_limit=sweep_pass_shard_limit,
+                sweep_shard_limit=context.shard_limit,
+                sweep_pass_shard_limit=context.pass_shard_limit,
                 sweep_strategy=_SWEEP_STRATEGY,
-                sweep_catalog_scope=catalog_scope,
+                sweep_catalog_scope=context.catalog_scope,
             ):
                 matched.add(lead_key)
     return matched
+
+
+def _cache_relevance_score(
+    candidate: str,
+    known_leads: Sequence[str],
+) -> tuple[int, int, int] | None:
+    candidate_terms = {
+        term for term in _lead_key(candidate).split() if len(term) >= 3
+    }
+    candidate_anchors = set(query_anchor_terms([candidate], limit=8))
+    known_terms_and_anchors = [
+        (
+            {term for term in _lead_key(lead).split() if len(term) >= 3},
+            set(query_anchor_terms([lead], limit=8)),
+        )
+        for lead in _dedupe(known_leads)
+    ]
+    known_terms_and_anchors = [
+        (terms, anchors)
+        for terms, anchors in known_terms_and_anchors
+        if terms and anchors
+    ]
+    if (
+        len(candidate_terms) < 2
+        or not candidate_anchors
+        or not known_terms_and_anchors
+    ):
+        return None
+    scores: list[tuple[int, int, int]] = []
+    for terms, anchors in known_terms_and_anchors:
+        shared = candidate_terms & terms
+        shared_anchors = candidate_anchors & anchors
+        if len(shared) < 2 or not shared_anchors:
+            continue
+        overlap_ratio = 1000 * len(shared) // max(len(candidate_terms), len(terms))
+        scores.append((len(shared_anchors), len(shared), overlap_ratio))
+    return max(scores) if scores else None
+
+
+def _cache_proposal_fingerprint(
+    *,
+    lead: str,
+    cache_key: str,
+    created_at: float,
+    result_limit: int,
+    context: SweepCacheContext,
+) -> str:
+    payload = {
+        "cache_key": cache_key,
+        "catalog_scope": context.catalog_scope,
+        "created_at": created_at,
+        "lead": _lead_key(lead),
+        "pass_shard_limit": context.pass_shard_limit,
+        "result_limit": result_limit,
+        "shard_limit": context.shard_limit,
+        "source": CACHE_DERIVED_SOURCE,
+        "strategy": _SWEEP_STRATEGY,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _discover_complete_cache_lead_proposal(
+    known_leads: Sequence[str],
+    state: Mapping[str, object],
+    env: Mapping[str, str],
+    *,
+    planner: str | None,
+    count: int,
+) -> CacheLeadProposal | None:
+    if count <= 0:
+        return None
+    context = _sweep_cache_context(env, planner=planner)
+    if context is None:
+        return None
+    known_keys = {_lead_key(lead) for lead in known_leads}
+    known_keys.update(_state_keys(_completed_leads(state)))
+    known_keys.update(_state_keys(_attempted_leads(state)))
+    known_keys.update(_state_keys(_derived_leads(state)))
+    consumed_fingerprints = {
+        str(meta.get("proposal_fingerprint") or "")
+        for meta in _derived_leads(state).values()
+        if isinstance(meta, Mapping)
+    }
+    ranked: list[tuple[tuple[int, int, int], float, str, CacheLeadProposal]] = []
+    for path, entry in _strict_complete_sweep_cache_entries(
+        context,
+        require_source_query=True,
+    ):
+        lead = " ".join(_sweep_cache_source_query(entry.receipt).split())
+        lead_key = _lead_key(lead)
+        if not lead_key or lead_key in known_keys:
+            continue
+        specs = _first_query_cache_specs([lead], env)
+        spec = specs.get(lead_key)
+        if spec is None:
+            continue
+        query, result_limit = spec
+        if _lead_key(query) != lead_key:
+            continue
+        if not _sweep_cache_entry_matches_active_or_completed_original_query(
+            entry,
+            active_query=query,
+            original_query=lead,
+            result_limit=result_limit,
+            sweep_shard_limit=context.shard_limit,
+            sweep_pass_shard_limit=context.pass_shard_limit,
+            sweep_strategy=_SWEEP_STRATEGY,
+            sweep_catalog_scope=context.catalog_scope,
+        ):
+            continue
+        relevance = _cache_relevance_score(lead, known_leads)
+        if relevance is None:
+            continue
+        fingerprint = _cache_proposal_fingerprint(
+            lead=lead,
+            cache_key=path.name,
+            created_at=entry.created_at,
+            result_limit=result_limit,
+            context=context,
+        )
+        if fingerprint in consumed_fingerprints:
+            continue
+        ranked.append((
+            relevance,
+            entry.created_at,
+            lead_key,
+            CacheLeadProposal(
+                lead=lead,
+                cache_key=path.name,
+                fingerprint=fingerprint,
+                result_limit=result_limit,
+            ),
+        ))
+    ranked.sort(
+        key=lambda item: (
+            -item[0][0],
+            -item[0][1],
+            -item[0][2],
+            -item[1],
+            item[2],
+            item[3].cache_key,
+        )
+    )
+    return ranked[0][3] if ranked else None
 
 
 def _post_quality_status(status: str) -> bool:
@@ -956,17 +1209,25 @@ def _derived_supply_open(state: Mapping[str, object]) -> bool:
 def _save_derived_lead(
     path: Path | None,
     state: dict[str, object],
-    proposal: ReceiptLeadProposal,
+    proposal: ReceiptLeadProposal | CacheLeadProposal,
 ) -> None:
     raw = state.setdefault("derived_leads", {})
     if not isinstance(raw, dict):
         raw = {}
         state["derived_leads"] = raw
-    raw[proposal.lead] = {
+    entry: dict[str, object] = {
         "proposal_fingerprint": proposal.fingerprint,
-        "source_topic": proposal.source_topic,
         "updated_at": _timestamp(),
     }
+    if isinstance(proposal, ReceiptLeadProposal):
+        entry["source_topic"] = proposal.source_topic
+    else:
+        entry.update({
+            "cache_key": proposal.cache_key,
+            "cache_result_limit": proposal.result_limit,
+            "source": CACHE_DERIVED_SOURCE,
+        })
+    raw[proposal.lead] = entry
     if path is not None:
         _write_state(path, state)
 
@@ -1351,18 +1612,36 @@ def run_portfolio(
         and preparing
         and not config.ready_only
         and len(ready_keys) < config.ready_buffer_size
-        and not _derived_supply_open(state)
-        and not any(_lead_key(lead) not in attempted_keys for lead in available_leads)
     ):
-        proposal = _discover_lead_proposal(
-            expanded_leads,
-            state,
-            count=min(1, config.discover_count),
-        )
+        proposal: ReceiptLeadProposal | CacheLeadProposal | None = None
+        if not any(
+            _lead_key(lead) in complete_cache_lead_keys
+            and _cache_derived_lead_meta(state, lead) is not None
+            for lead in available_leads
+        ):
+            proposal = _discover_complete_cache_lead_proposal(
+                expanded_leads,
+                state,
+                run_env,
+                planner=config.planner,
+                count=min(1, config.discover_count),
+            )
+        if (
+            proposal is None
+            and not _derived_supply_open(state)
+            and not any(
+                _lead_key(lead) not in attempted_keys for lead in available_leads
+            )
+        ):
+            proposal = _discover_lead_proposal(
+                expanded_leads,
+                state,
+                count=min(1, config.discover_count),
+            )
         discovered = [proposal.lead] if proposal is not None else []
         if proposal is not None:
             _save_derived_lead(config.state_path, state, proposal)
-        expanded_leads.extend(discovered)
+        expanded_leads = _dedupe([*discovered, *expanded_leads])
         complete_cache_lead_keys = (
             _complete_first_query_cache_lead_keys(
                 expanded_leads,
@@ -1436,11 +1715,27 @@ def run_portfolio(
         lead_dir = config.output_dir / f"{index:02d}-{_slug(lead)}"
         receipt_path = lead_dir / "publish-receipt.json"
         lead_dir.mkdir(parents=True, exist_ok=True)
-        command = build_command(lead, lead_dir, receipt_path, config)
+        cache_meta = _cache_derived_lead_meta(state, lead)
+        lead_env = run_env
+        explicit_query = None
+        if cache_meta is not None:
+            lead_env = dict(run_env)
+            lead_env[CACHE_QUEUE_IF_MISSING_ENV] = "0"
+            cache_result_limit = cache_meta.get("cache_result_limit")
+            if type(cache_result_limit) is int and cache_result_limit > 0:
+                lead_env[CACHE_PER_QUERY_LIMIT_ENV] = str(cache_result_limit)
+            explicit_query = lead
+        command = build_command(
+            lead,
+            lead_dir,
+            receipt_path,
+            config,
+            explicit_query=explicit_query,
+        )
         completed = _run_lead(
             runner,
             command,
-            run_env,
+            lead_env,
             repo_root,
             receipt_path,
             timeout_seconds=config.lead_timeout_seconds,
@@ -1458,6 +1753,11 @@ def run_portfolio(
             "stdout_tail": (completed.stdout or "")[-TAIL_CHARS:],
             "stderr_tail": (completed.stderr or "")[-TAIL_CHARS:],
         }
+        if cache_meta is not None:
+            record.update({
+                "cache_derived": True,
+                "queue_if_missing": False,
+            })
         error = receipt.get("error")
         if error:
             record["error"] = error
@@ -1520,6 +1820,9 @@ def run_portfolio(
             lead
             for lead in available_leads
             if _lead_key(lead) in complete_cache_lead_keys
+        ],
+        "cache_derived_selected_leads": [
+            lead for lead in selected if _cache_derived_lead_meta(state, lead) is not None
         ],
         "warming_lease_lead": next(
             (
