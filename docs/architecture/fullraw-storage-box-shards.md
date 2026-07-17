@@ -72,7 +72,8 @@ Storage Box index shards
 
 Search service on VPS
   keeps hot shards in /var/cache/v5-memo/fullraw-shards
-  downloads missing relevant shards from Storage Box
+  downloads missing relevant shards directly from Storage Box with rclone
+  does not copy large shards through the FUSE mount
   searches local cached shards
   merges and reranks results
 ```
@@ -86,6 +87,11 @@ V5_MEMO_FULL_RAW_SHARD_CACHE_MAX_GB=60
 V5_MEMO_FULL_RAW_SHARD_BUILD_DIR=/var/lib/v5-memo/shard-build
 V5_MEMO_FULL_RAW_SHARD_MANIFEST=/var/lib/v5-memo/fullraw_shard_manifest.json
 ```
+
+When `RESEARKA_FULLRAW_SHARD_REMOTE` and `RESEARKA_FULLRAW_SHARD_DIR` are both
+set, cache population maps paths below the mounted shard directory back to the
+remote and uses `rclone copyto`. The service account needs a restricted
+`RCLONE_CONFIG`; paths outside that mount continue to use the local copy path.
 
 Keep the existing live endpoint:
 

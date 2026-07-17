@@ -5,6 +5,7 @@ import signal
 import socket
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -2750,6 +2751,49 @@ def test_materialized_shard_path_does_not_recache_local_cache_path(
 
     assert fullraw_index._shard_cache_path(cached) is None
     assert fullraw_index._materialized_shard_path(cached) == cached
+
+
+def test_shard_cache_copy_command_bypasses_configured_mount(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    mount_root = tmp_path / "mounted-shards"
+    source = mount_root / "batch_00007" / "fullraw_shard_0003.sqlite"
+    target = tmp_path / "cache" / "shard.sqlite"
+    monkeypatch.setenv(
+        "RESEARKA_FULLRAW_SHARD_REMOTE",
+        "sb:researka-database/index/v5/fullraw-fts",
+    )
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_DIR", str(mount_root))
+
+    command = fullraw_index._shard_cache_copy_command(source, target)
+
+    assert command[:4] == [
+        "rclone",
+        "copyto",
+        "sb:researka-database/index/v5/fullraw-fts/batch_00007/fullraw_shard_0003.sqlite",
+        str(target),
+    ]
+    assert command[-4:] == ["--retries", "1", "--low-level-retries", "2"]
+
+
+def test_shard_cache_copy_command_falls_back_outside_configured_mount(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    mount_root = tmp_path / "mounted-shards"
+    source = tmp_path / "outside" / "fullraw_shard_0003.sqlite"
+    target = tmp_path / "cache" / "shard.sqlite"
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_REMOTE", "sb:fullraw-fts")
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_DIR", str(mount_root))
+
+    command = fullraw_index._shard_cache_copy_command(source, target)
+
+    assert command[:3] == [
+        sys.executable,
+        "-c",
+        "import shutil,sys; shutil.copy2(sys.argv[1], sys.argv[2])",
+    ]
 
 
 def test_shard_cache_copy_timeout_kills_stalled_copy(
