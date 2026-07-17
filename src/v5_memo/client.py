@@ -332,6 +332,7 @@ class FullRawCorpusSearchClient:
         allow_completed_low_limit_fallback: bool = False,
         min_shards_searched: int = 0,
         min_sources_searched: int = 0,
+        queue_if_missing: bool = True,
         require_auth: bool = False,
         progress: bool = False,
         strict: bool = False,
@@ -350,6 +351,7 @@ class FullRawCorpusSearchClient:
         self._allow_completed_low_limit_fallback = allow_completed_low_limit_fallback
         self._min_shards_searched = max(0, min_shards_searched)
         self._min_sources_searched = max(0, min_sources_searched)
+        self._queue_if_missing = queue_if_missing
         self._require_auth = require_auth or bool(self._token)
         self._progress = progress
         self._strict = strict
@@ -393,6 +395,10 @@ class FullRawCorpusSearchClient:
             ),
             min_shards_searched=min_shards_searched,
             min_sources_searched=_int_env("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", default_min_sources),
+            queue_if_missing=_bool_env(
+                "V5_MEMO_FULL_RAW_QUEUE_IF_MISSING",
+                True,
+            ),
             require_auth=_bool_env("V5_MEMO_FULL_RAW_REQUIRE_AUTH", bool(token)),
             progress=_bool_env("V5_MEMO_FULL_RAW_PROGRESS", False),
             strict=strict,
@@ -547,7 +553,7 @@ class FullRawCorpusSearchClient:
             coverage_required = bool(self._min_shards_searched or self._min_sources_searched)
             payload.update({
                 "cache_only": True,
-                "queue_if_missing": True,
+                "queue_if_missing": self._queue_if_missing,
                 "priority": True,
                 "min_shards_searched": self._min_shards_searched,
                 "min_sources_searched": self._min_sources_searched,
@@ -603,6 +609,7 @@ class FullRawCorpusSearchClient:
         coverage_error = isinstance(data, dict) and data.get("error") == "coverage_too_narrow"
         if (
             self._sweep_wait_seconds
+            and self._queue_if_missing
             and search_pass.name in {"focused", "core"}
             and (not _parse_full_raw_search_response(data) or not self._receipt_is_sufficient(receipt))
             and not stopped_no_hits
@@ -624,7 +631,11 @@ class FullRawCorpusSearchClient:
 
     def _wait_for_sweep_hit(self, payload: dict[str, object]) -> Any | None:
         deadline = time.monotonic() + self._sweep_wait_seconds
-        cache_payload = {**payload, "cache_only": True, "queue_if_missing": True}
+        cache_payload = {
+            **payload,
+            "cache_only": True,
+            "queue_if_missing": self._queue_if_missing,
+        }
         while True:
             try:
                 remaining = deadline - time.monotonic()

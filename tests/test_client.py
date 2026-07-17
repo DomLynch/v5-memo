@@ -2383,3 +2383,64 @@ def test_corpus_parser_strips_html_titles() -> None:
     assert hit.title == "The beneficial effects of metformin"
     assert hit.hit_id == "1"
     assert hit.metadata["similarity_score"] == 0.5
+
+
+def test_fullraw_cache_only_run_can_disable_queue_and_wait(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payloads.append(json.loads(cast(bytes, request.data).decode("utf-8")))
+        return FakeResponse({
+            "error": "coverage_too_narrow",
+            "meta": {
+                "async_sweep": {"status": "miss"},
+                "shard_receipt": {
+                    "authenticated": True,
+                    "partial_shard_search": True,
+                    "shards_searched": 0,
+                    "shards_total": 1525,
+                    "sources_searched": {},
+                    "sweep_failed_shards": 0,
+                    "sweep_remaining_shards": 1525,
+                },
+            },
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        token="token",
+        max_variants=1,
+        min_shards_searched=1525,
+        queue_if_missing=False,
+        sweep_wait_seconds=30,
+        strict=True,
+    )
+
+    with pytest.raises(SearchBackendError, match="coverage too narrow"):
+        client.search("creatine muscle strength trial", limit=10)
+
+    assert len(payloads) == 1
+    assert payloads[0]["cache_only"] is True
+    assert payloads[0]["queue_if_missing"] is False
+
+
+def test_fullraw_queue_if_missing_defaults_true_and_loads_false_from_env(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    default_client = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw"
+    )
+    assert default_client._queue_if_missing is True
+
+    monkeypatch.setenv(
+        "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL",
+        "https://search.example/full-raw",
+    )
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_QUEUE_IF_MISSING", "0")
+    configured = FullRawCorpusSearchClient.from_env(strict=True)
+
+    assert configured._queue_if_missing is False
