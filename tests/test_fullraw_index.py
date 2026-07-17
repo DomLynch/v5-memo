@@ -866,7 +866,7 @@ def test_full_sweep_cache_query_uses_canonical_pass(tmp_path: Path) -> None:
     assert verbose == compact
 
 
-def test_full_sweep_cache_query_drops_broad_fillers(tmp_path: Path) -> None:
+def test_full_sweep_cache_query_preserves_outcome_for_compound_intervention(tmp_path: Path) -> None:
     entries = [
         replace(_entry(tmp_path, 0, "openalex"), topic_terms=("creatine", "trial", "resistance")),
         replace(_entry(tmp_path, 1, "openalex"), topic_terms=("adults", "older", "muscle")),
@@ -887,7 +887,8 @@ def test_full_sweep_cache_query_drops_broad_fillers(tmp_path: Path) -> None:
         rank_mode="relevance",
     )
 
-    assert verbose == compact == "creatine resistance trial"
+    assert verbose == "creatine resistance strength trial"
+    assert compact == "creatine resistance trial"
 
 
 def test_full_sweep_cache_query_preserves_only_outcome_axis(tmp_path: Path) -> None:
@@ -911,9 +912,23 @@ def test_full_sweep_cache_query_preserves_only_outcome_axis(tmp_path: Path) -> N
         sweep_shard_limit=4,
         rank_mode="relevance",
     )
+    compound = fullraw_index._sweep_cache_query(
+        "quercetin dasatinib senolytic muscle strength trial",
+        entries,
+        sweep_shard_limit=4,
+        rank_mode="relevance",
+    )
+    compact_compound = fullraw_index._sweep_cache_query(
+        "quercetin senolytic muscle strength trial",
+        entries,
+        sweep_shard_limit=4,
+        rank_mode="relevance",
+    )
 
     assert query == "omega strength trial"
     assert population_only == "omega trial"
+    assert compound == "quercetin senolytic strength trial"
+    assert compact_compound == "quercetin senolytic strength trial"
 
 
 def test_sweep_cache_matcher_accepts_compatible_pass_query() -> None:
@@ -1111,7 +1126,7 @@ def test_completed_sweep_cache_rejects_old_query_normalizer_strategy() -> None:
             "sweep_result_limit": 25,
             "result_count_raw": 2,
             "sweep_shard_limit": 1525,
-            "sweep_strategy": "profile_relaxed_v11",
+            "sweep_strategy": "profile_relaxed_v12",
             "sweep_query": "omega trial",
             "sweep_original_query": "omega muscle strength trial",
             "partial_shard_search": False,
