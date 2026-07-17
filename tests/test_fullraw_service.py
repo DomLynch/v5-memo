@@ -1,5 +1,8 @@
 import gzip
 import json
+import os
+import shutil
+import subprocess
 import textwrap
 from pathlib import Path
 
@@ -270,6 +273,8 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
     config = (deploy_dir / "v5-memo-portfolio-publish.service").read_text()
     isolation = (deploy_dir / "zzz-v5-portfolio-isolated-fullraw.conf").read_text()
+    dedicated_profile = (deploy_dir / "v5-portfolio-publish-fullraw.conf").read_text()
+    shared_profile = (deploy_dir / "v5-portfolio-shared-fullraw.conf").read_text()
     isolation_installer = (deploy_dir / "install-v5-portfolio-isolation.sh").read_text()
     shared_env = (deploy_dir / "v5-memo-portfolio-shared-fullraw.env").read_text()
     timer = (deploy_dir / "v5-memo-portfolio-publish.timer").read_text()
@@ -318,10 +323,13 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "OnCalendar=*-*-* *:10,25,40,55:00" in catchup_timer
     assert "Unit=v5-memo-portfolio-catchup.service" in catchup_timer
     assert "researka-fullraw-search.service" in isolation
-    assert "Wants=network-online.target researka-fullraw-search.service" in isolation
-    assert "After=network-online.target researka-fullraw-search.service" in isolation
     assert "EnvironmentFile=/etc/v5-memo/portfolio-shared-fullraw.env" in isolation
-    assert "9915" not in isolation
+    assert "Wants=v5-memo-publish-fullraw-search.service" in dedicated_profile
+    assert "After=v5-memo-publish-fullraw-search.service" in dedicated_profile
+    assert "V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL=http://127.0.0.1:9935/search" in dedicated_profile
+    assert "EnvironmentFile=" not in dedicated_profile
+    assert "Wants=network-online.target researka-fullraw-search.service" in shared_profile
+    assert "UnsetEnvironment=V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL" in shared_profile
     assert "RESEARKA_FULLRAW_SEARCH_URL=http://127.0.0.1:9903/search" in shared_env
     assert "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL=http://127.0.0.1:9903/search" in shared_env
     assert "V5_MEMO_FULL_RAW_INDEX_PORT=9903" in shared_env
@@ -349,12 +357,186 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert "v5-memo-portfolio-prepare.service" in isolation_installer
     assert "v5-memo-portfolio-catchup.service" in isolation_installer
     assert "v5-memo-portfolio-publish.service" in isolation_installer
+    assert "v5-memo-publish-fullraw-fts-mount.service" in isolation_installer
+    assert "v5-memo-publish-fullraw-search.service" in isolation_installer
+    assert "dropin=zzzzz-v5-portfolio-fullraw-route.conf" in isolation_installer
+    assert "V5_MEMO_PORTFOLIO_SEARCH_ROUTE" in isolation_installer
+    assert "must be dedicated or shared" in isolation_installer
+    assert 'systemctl enable "$mount_unit" "$search_unit"' in isolation_installer
+    assert 'mountpoint -q "$publish_mount"' in isolation_installer
+    assert 'systemctl restart "$search_unit"' in isolation_installer
+    assert 'systemctl disable --now "$search_unit" "$mount_unit"' in isolation_installer
     assert '"$deploy_dir/$unit"' in isolation_installer
     assert '"$unit_dir/$unit"' in isolation_installer
-    assert '"$deploy_dir/$shared_env"' in isolation_installer
-    assert "/etc/v5-memo/portfolio-shared-fullraw.env" in isolation_installer
+    assert '"$deploy_dir/$selected_profile"' in isolation_installer
+    assert '"$config_dir/portfolio-shared-fullraw.env"' in isolation_installer
     assert "rm -f" not in isolation_installer
     assert "systemctl daemon-reload" in isolation_installer
+
+
+def test_v5_publish_fullraw_service_is_bounded_and_not_legacy() -> None:
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
+    search = (deploy_dir / "v5-memo-publish-fullraw-search.service").read_text()
+    mount = (deploy_dir / "v5-memo-publish-fullraw-fts-mount.service").read_text()
+    env = (deploy_dir / "v5-memo-publish-fullraw.env").read_text()
+
+    assert "v5-memo-isolated-fullraw-search.service" not in search
+    assert "BindsTo=v5-memo-publish-fullraw-fts-mount.service" in search
+    assert "ExecStartPre=/usr/bin/mountpoint -q" in search
+    assert "EnvironmentFile=/etc/v5-memo/env" in search
+    assert "EnvironmentFile=/etc/v5-memo/publish-fullraw.env" in search
+    assert search.index("EnvironmentFile=/etc/v5-memo/env") < search.index(
+        "EnvironmentFile=/etc/v5-memo/publish-fullraw.env",
+    )
+    assert "RESEARKA_FULLRAW_INDEX_PORT=9935" in env
+    assert "V5_MEMO_FULL_RAW_INDEX_PORT=9935" in env
+    assert "RESEARKA_FULLRAW_SWEEP_WORKERS=1" in env
+    assert "RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=1" in env
+    assert "RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=4" in env
+    assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto" in env
+    assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_GB=42" in env
+    assert "RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES=4294967296" in env
+    assert "RESEARKA_FULLRAW_FAST_HEALTH=0" in env
+    assert "RESEARKA_FULLRAW_SHARD_MANIFEST_STATS=1" in env
+    assert "MemoryMax=8G" in search
+    assert "MemorySwapMax=1G" in search
+    assert "ConditionPathExists=" not in search
+    assert "9915" not in search
+    assert "--vfs-cache-max-size=1G" in mount
+    assert "--vfs-read-chunk-streams=2" in mount
+    assert "v5-publish-fullraw-fts-remote" in mount
+    assert "9915" not in mount
+
+
+def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_path: Path) -> None:
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy"
+    unit_dir = tmp_path / "systemd"
+    config_dir = tmp_path / "config"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    systemctl_log = tmp_path / "systemctl.log"
+    systemctl_state = tmp_path / "systemctl.state"
+    (fake_bin / "systemctl").write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$SYSTEMCTL_LOG\"\n"
+        "case \"$1\" in\n"
+        "  enable|restart) printf '%s\\n' enabled > \"$SYSTEMCTL_STATE\" ;;\n"
+        "  disable) printf '%s\\n' disabled > \"$SYSTEMCTL_STATE\" ;;\n"
+        "  is-active|is-enabled) ! grep -q '^disabled$' \"$SYSTEMCTL_STATE\" ;;\n"
+        "esac\n",
+    )
+    (fake_bin / "mountpoint").write_text("#!/bin/sh\nexit 0\n")
+    (fake_bin / "flock").write_text("#!/bin/sh\nexit 0\n")
+    (fake_bin / "install").write_text(
+        "#!/bin/sh\n"
+        "if [ -n \"${FAIL_INSTALL_MATCH:-}\" ]; then\n"
+        "  case \"$*\" in *\"$FAIL_INSTALL_MATCH\"*) exit 1 ;; esac\n"
+        "fi\n"
+        "exec \"$REAL_INSTALL\" \"$@\"\n",
+    )
+    (fake_bin / "curl").write_text(
+        "#!/bin/sh\n"
+        "case \"$*\" in\n"
+        "  *http_code*) printf '%s' 400 ;;\n"
+        "  *) printf '%s\\n' "
+        "'{\"ok\":true,\"backend\":\"researka-fullraw-indexed-fts5\",\"shard_dir\":\"/var/lib/v5-memo/v5-publish-fullraw-fts-remote\",\"shard_receipt\":{\"shards_total\":1525},\"coverage_requirements\":{\"min_shards_searched\":1525,\"require_complete_search\":1,\"sweep_require_complete\":1},\"async_sweep\":{\"max_inflight\":1,\"workers\":1}}' ;;\n"
+        "esac\n",
+    )
+    (fake_bin / "sleep").write_text("#!/bin/sh\nexit 0\n")
+    for command in ("systemctl", "mountpoint", "flock", "install", "curl", "sleep"):
+        (fake_bin / command).chmod(0o755)
+    sentinel = unit_dir / "researka-fullraw-search.service"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("platform-owned\n")
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "SYSTEMCTL_LOG": str(systemctl_log),
+        "SYSTEMCTL_STATE": str(systemctl_state),
+        "REAL_INSTALL": shutil.which("install") or "/usr/bin/install",
+        "SYSTEMD_UNIT_DIR": str(unit_dir),
+        "V5_MEMO_CONFIG_DIR": str(config_dir),
+        "V5_MEMO_PORTFOLIO_LOCK_PATH": str(tmp_path / "portfolio.lock"),
+        "V5_MEMO_PUBLISH_MOUNT_PATH": str(tmp_path / "mount"),
+        "V5_MEMO_PUBLISH_CATALOG_PATH": str(tmp_path / "catalog.json"),
+        "V5_MEMO_PORTFOLIO_SEARCH_ROUTE": "dedicated",
+    }
+    config_dir.mkdir()
+    (config_dir / "env").write_text("RESEARKA_FULLRAW_INDEX_TOKEN=test-token\n")
+    catalog_shard = tmp_path / "mount" / "batch_00000" / "fullraw_shard_0000.sqlite"
+    catalog_shard.parent.mkdir(parents=True)
+    catalog_shard.touch()
+    (tmp_path / "catalog.json").write_text(
+        json.dumps({
+            "entries": [
+                {"path": "/old/root/batch_00000/fullraw_shard_0000.sqlite"}
+                for _ in range(1525)
+            ],
+        }),
+    )
+
+    subprocess.run(
+        ["/bin/sh", str(deploy_dir / "install-v5-portfolio-isolation.sh")],
+        check=True,
+        env=env,
+    )
+
+    route = unit_dir / "v5-memo-portfolio-prepare.service.d" / "zzzzz-v5-portfolio-fullraw-route.conf"
+    assert "V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL" in route.read_text()
+    assert "enable v5-memo-publish-fullraw-fts-mount.service" in systemctl_log.read_text()
+    assert "restart v5-memo-publish-fullraw-search.service" in systemctl_log.read_text()
+    assert "stop v5-memo-portfolio-prepare.timer" in systemctl_log.read_text()
+    assert "start v5-memo-portfolio-prepare.timer" in systemctl_log.read_text()
+    assert "stop v5-memo-portfolio-prepare.service" in systemctl_log.read_text()
+    assert sentinel.read_text() == "platform-owned\n"
+
+    (fake_bin / "curl").write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' "
+        "'{\"ok\":true,\"corpus_complete\":true,\"async_sweep\":{\"max_inflight\":1,\"workers\":1}}'\n",
+    )
+    env["FAIL_INSTALL_MATCH"] = (
+        "v5-memo-portfolio-catchup.service.d/zzzzz-v5-portfolio-fullraw-route.conf"
+    )
+    failed_rollback = subprocess.run(
+        ["/bin/sh", str(deploy_dir / "install-v5-portfolio-isolation.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    catchup_route = (
+        unit_dir
+        / "v5-memo-portfolio-catchup.service.d"
+        / "zzzzz-v5-portfolio-fullraw-route.conf"
+    )
+    assert failed_rollback.returncode != 0
+    assert "rollback failed" in failed_rollback.stderr
+    assert "V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL" in catchup_route.read_text()
+    env.pop("FAIL_INSTALL_MATCH")
+
+    env["V5_MEMO_PORTFOLIO_SEARCH_ROUTE"] = "shared"
+    subprocess.run(
+        ["/bin/sh", str(deploy_dir / "install-v5-portfolio-isolation.sh")],
+        check=True,
+        env=env,
+    )
+
+    assert "UnsetEnvironment=V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL" in route.read_text()
+    assert "disable --now v5-memo-publish-fullraw-search.service" in systemctl_log.read_text()
+    assert sentinel.read_text() == "platform-owned\n"
+
+    env["V5_MEMO_PORTFOLIO_SEARCH_ROUTE"] = "dedicated"
+    with pytest.raises(subprocess.CalledProcessError):
+        subprocess.run(
+            ["/bin/sh", str(deploy_dir / "install-v5-portfolio-isolation.sh")],
+            check=True,
+            env=env,
+        )
+
+    assert "UnsetEnvironment=V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL" in route.read_text()
+    assert systemctl_state.read_text() == "disabled\n"
+    assert sentinel.read_text() == "platform-owned\n"
 
 
 def test_v5_isolated_fullraw_mount_uses_separate_vfs_cache() -> None:

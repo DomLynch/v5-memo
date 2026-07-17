@@ -2826,6 +2826,44 @@ def test_portfolio_injects_fullraw_wait_when_unconfigured(tmp_path: Path) -> Non
     assert run_env["V5_MEMO_FULL_RAW_SEARCH_BUDGET_SECONDS"] == "21600"
 
 
+def test_portfolio_route_override_is_scoped_to_portfolio_subprocess(tmp_path: Path) -> None:
+    portfolio = _load_portfolio()
+    config = portfolio.RunConfig(
+        output_dir=tmp_path,
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=None,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=0,
+        ready_buffer_size=3,
+    )
+    dedicated_url = "http://127.0.0.1:9935/search"
+    base_env = {
+        "RESEARKA_FULLRAW_SEARCH_URL": "http://127.0.0.1:9903/search",
+        "V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL": "http://127.0.0.1:9903/search",
+        portfolio.PORTFOLIO_SEARCH_URL_ENV: dedicated_url,
+    }
+
+    run_env = portfolio._portfolio_run_env(config, base_env)
+
+    assert run_env["RESEARKA_FULLRAW_SEARCH_URL"] == dedicated_url
+    assert run_env["V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL"] == dedicated_url
+    assert base_env["RESEARKA_FULLRAW_SEARCH_URL"] == "http://127.0.0.1:9903/search"
+
+
 def test_portfolio_caps_injected_fullraw_wait_to_lead_timeout(tmp_path: Path) -> None:
     portfolio = _load_portfolio()
     config = portfolio.RunConfig(

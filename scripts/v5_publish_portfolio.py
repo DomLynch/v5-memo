@@ -46,6 +46,7 @@ CACHE_SCAN_LIMIT = 512
 CACHE_DERIVED_SOURCE = "complete_sweep_cache"
 CACHE_QUEUE_IF_MISSING_ENV = "V5_MEMO_FULL_RAW_QUEUE_IF_MISSING"
 CACHE_PER_QUERY_LIMIT_ENV = "V5_MEMO_FULL_RAW_PER_QUERY_LIMIT"
+PORTFOLIO_SEARCH_URL_ENV = "V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL"
 
 Runner = Callable[
     [Sequence[str], Mapping[str, str], Path],
@@ -315,6 +316,13 @@ def _portfolio_sweep_wait_seconds(config: RunConfig) -> str:
 
 def _portfolio_run_env(config: RunConfig, base_env: Mapping[str, str]) -> dict[str, str]:
     run_env = dict(base_env)
+    portfolio_search_url = str(run_env.get(PORTFOLIO_SEARCH_URL_ENV, "")).strip()
+    if portfolio_search_url:
+        # The shared platform keeps ownership of the canonical route variables.
+        # A portfolio-only route is applied to this subprocess environment so a
+        # saturated shared queue cannot starve V5 publication.
+        run_env["RESEARKA_FULLRAW_SEARCH_URL"] = portfolio_search_url
+        run_env["V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL"] = portfolio_search_url
     # Every portfolio command explicitly requires fullraw, including hybrid and
     # smart modes, so all of them need the same bounded readiness grace period.
     if not (

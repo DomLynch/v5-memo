@@ -1,0 +1,24 @@
+[Unit]
+Description=V5 Memo bounded publish fullraw search service
+After=network-online.target v5-memo-publish-fullraw-fts-mount.service
+BindsTo=v5-memo-publish-fullraw-fts-mount.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/v5-memo
+EnvironmentFile=/etc/v5-memo/env
+# Loaded last so the bounded publish lane wins over legacy values in env.
+EnvironmentFile=/etc/v5-memo/publish-fullraw.env
+ExecStartPre=/usr/bin/mountpoint -q /var/lib/v5-memo/v5-publish-fullraw-fts-remote
+ExecStart=/usr/bin/python3 -m v5_memo.fullraw_index serve
+Restart=always
+RestartSec=10
+TimeoutStopSec=120
+KillMode=control-group
+MemoryHigh=7G
+MemoryMax=8G
+MemorySwapMax=1G
+
+[Install]
+WantedBy=multi-user.target
