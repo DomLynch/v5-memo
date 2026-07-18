@@ -601,6 +601,15 @@ def _attempt_priority(
             if warming_fingerprints is None:
                 return (0, remaining if remaining is not None else sys.maxsize)
             if lead_key != warming_lease_key:
+                current_fingerprint = warming_fingerprints.get(lead_key)
+                if (
+                    current_fingerprint
+                    and raw_meta.get("warming_fingerprint") == current_fingerprint
+                ):
+                    return (
+                        1,
+                        remaining if remaining is not None else sys.maxsize,
+                    )
                 return (3, 0)
             return (
                 0,
