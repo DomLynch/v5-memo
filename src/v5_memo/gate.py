@@ -7,6 +7,7 @@ import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 
+from v5_memo.miner import _HUMAN_POPULATION_TERMS, _norm_token, query_anchor_terms
 from v5_memo.schemas import ClaimCard, CorpusHit, InsightCandidate, SearchFailure
 
 _TIER_RANK = {"discovery_seed": 0, "publishable_alpha": 1, "elite_alpha": 2}
@@ -106,6 +107,108 @@ _TOPIC_ANCHOR_STOP = frozenset({
     "studies",
     "trial",
     "trials",
+})
+_TOPIC_ENTITY_STOP = (
+    _TOPIC_ANCHOR_STOP
+    | _METABOLIC_AXIS_TERMS
+    | _MUSCLE_ADAPTATION_AXIS_TERMS
+    | _PROXY_OUTCOME_TERMS
+    | frozenset({
+        "adaptation",
+        "endurance",
+        "exercise",
+        "healthy",
+        "individual",
+        "individuals",
+        "mobility",
+        "participant",
+        "participants",
+        "physical",
+        "power",
+        "recovery",
+        "resistance",
+        "supplement",
+        "supplementation",
+        "therapy",
+        "treatment",
+        "training",
+        "was",
+    })
+)
+_TOPIC_CONTEXT_SUFFIXES = (
+    "algia",
+    "emia",
+    "itis",
+    "oma",
+    "opathy",
+    "osis",
+    "penia",
+)
+_TOPIC_ENTITY_BOUNDARY_TERMS = _TOPIC_ENTITY_STOP | frozenset({
+    "aging",
+    "cardiovascular",
+    "cognitive",
+    "physical",
+})
+_CLINICAL_ENTITY_GUARD_TERMS = (
+    _HUMAN_POPULATION_TERMS
+    | _METABOLIC_AXIS_TERMS
+    | _MUSCLE_ADAPTATION_AXIS_TERMS
+    | _PROXY_OUTCOME_TERMS
+    | frozenset({
+    "child",
+    "children",
+    "clinical",
+    "older",
+    "placebo",
+    "randomised",
+    "randomized",
+    "trial",
+    "trials",
+    })
+)
+_TOPIC_TERM_CANONICAL = {"muscular": "muscle"}
+_RECEIPT_CONTEXT_TERMS = frozenset({
+    "baseline",
+    "community",
+    "daily",
+    "day",
+    "dwelling",
+    "eight",
+    "eleven",
+    "five",
+    "followup",
+    "four",
+    "fourteen",
+    "frail",
+    "frailty",
+    "high",
+    "hour",
+    "hourly",
+    "limitation",
+    "low",
+    "month",
+    "monthly",
+    "nine",
+    "one",
+    "post",
+    "pre",
+    "seven",
+    "severe",
+    "six",
+    "status",
+    "supervised",
+    "ten",
+    "thirteen",
+    "three",
+    "twelve",
+    "twenty",
+    "two",
+    "unsupervised",
+    "week",
+    "weekly",
+    "year",
+    "yearly",
 })
 _STRUCTURAL_ENDPOINT_TERMS = frozenset({
     "boundary",
@@ -576,6 +679,10 @@ def _off_topic_primary_receipts(
     topic_terms = set(re.findall(r"[a-z0-9]+", topic.casefold()))
     required_terms = topic_terms & {"resistance", "strength", "training"}
     anchor_terms = _topic_primary_anchor_terms(topic_terms)
+    topic_entity_anchors = _topic_entity_terms(topic)
+    primary_entity_anchor = topic_entity_anchors[0] if topic_entity_anchors else ""
+    topic_entity_terms = set(topic_entity_anchors)
+    enforce_entity_identity = bool(topic_terms & _CLINICAL_ENTITY_GUARD_TERMS)
     bridge_anchors = _topic_primary_anchor_terms({
         term
         for bridge in bridge_terms
@@ -587,7 +694,25 @@ def _off_topic_primary_receipts(
     for card in claim_cards:
         if card.role not in _PRIMARY_SIGNAL_ROLES:
             continue
-        card_terms = set(re.findall(r"[a-z0-9]+", card.quote.casefold()))
+        card_terms = {
+            _TOPIC_TERM_CANONICAL.get(term, term)
+            for term in re.findall(r"[a-z0-9]+", card.quote.casefold())
+        }
+        card_identity_terms = set(_normalized_entity_tokens(card.quote))
+        card_entity_terms = set(_specific_entity_terms(card.quote))
+        has_competing_entity = bool(
+            enforce_entity_identity
+            and primary_entity_anchor
+            and card_entity_terms
+            and (
+                primary_entity_anchor not in card_identity_terms
+                or (
+                    len(topic_entity_anchors) > 1
+                    and bool(card_identity_terms - topic_entity_terms)
+                    and not set(topic_entity_anchors[1:]) <= card_identity_terms
+                )
+            )
+        )
         if (
             required_terms
             and _off_topic_quote(card.quote)
@@ -596,11 +721,47 @@ def _off_topic_primary_receipts(
             out.append(card.receipt_id)
             continue
         if (
-            (axis_terms and not (axis_terms & card_terms))
+            has_competing_entity
+            or (axis_terms and not (axis_terms & card_terms))
             or (required_overlap and len(anchor_terms & card_terms) < required_overlap)
         ):
             out.append(card.receipt_id)
     return tuple(out)
+
+
+def _specific_entity_terms(text: str) -> tuple[str, ...]:
+    word_count = len(re.findall(r"[a-z0-9]+", text))
+    return tuple(
+        term
+        for term in query_anchor_terms([text], limit=max(8, word_count))
+        if term not in _TOPIC_ENTITY_STOP
+        and term not in _RECEIPT_CONTEXT_TERMS
+        and not term.endswith(_TOPIC_CONTEXT_SUFFIXES)
+    )
+
+
+def _normalized_entity_tokens(text: str) -> tuple[str, ...]:
+    return tuple(
+        _norm_token(raw)
+        for raw in re.findall(r"[a-z0-9]+", text.casefold())
+    )
+
+
+def _topic_entity_terms(topic: str) -> tuple[str, ...]:
+    raw_terms = re.findall(r"[a-z0-9]+", topic.casefold())
+    boundary = next(
+        (
+            index
+            for index, term in enumerate(raw_terms[1:], start=1)
+            if term in _TOPIC_ENTITY_BOUNDARY_TERMS
+        ),
+        len(raw_terms),
+    )
+    return tuple(
+        term
+        for term in _normalized_entity_tokens(" ".join(raw_terms[:boundary]))
+        if not term.endswith(_TOPIC_CONTEXT_SUFFIXES)
+    )
 
 
 def _topic_primary_anchor_terms(topic_terms: set[str]) -> set[str]:
