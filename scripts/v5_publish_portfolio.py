@@ -46,6 +46,7 @@ CACHE_SCAN_LIMIT = 512
 CACHE_DERIVED_SOURCE = "complete_sweep_cache"
 CACHE_QUEUE_IF_MISSING_ENV = "V5_MEMO_FULL_RAW_QUEUE_IF_MISSING"
 CACHE_PER_QUERY_LIMIT_ENV = "V5_MEMO_FULL_RAW_PER_QUERY_LIMIT"
+FOCUS_LEASE_ENV = "V5_MEMO_FULL_RAW_FOCUS_LEASE"
 PORTFOLIO_SEARCH_URL_ENV = "V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL"
 
 Runner = Callable[
@@ -1737,10 +1738,12 @@ def run_portfolio(
         receipt_path = lead_dir / "publish-receipt.json"
         lead_dir.mkdir(parents=True, exist_ok=True)
         cache_meta = _cache_derived_lead_meta(state, lead)
-        lead_env = run_env
+        lead_env = dict(run_env)
+        lead_env[FOCUS_LEASE_ENV] = (
+            "1" if _lead_key(lead) == warming_lease_lead_key else "0"
+        )
         explicit_query = None
         if cache_meta is not None:
-            lead_env = dict(run_env)
             lead_env[CACHE_QUEUE_IF_MISSING_ENV] = "0"
             cache_result_limit = cache_meta.get("cache_result_limit")
             if type(cache_result_limit) is int and cache_result_limit > 0:

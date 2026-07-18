@@ -2825,6 +2825,106 @@ def test_prepare_migrates_one_legacy_warming_lease_and_keeps_it(
     assert second_summary["warming_lease_lead"] == "leased warming lead"
 
 
+def test_prepare_sets_one_focus_lease_without_mutating_shared_env(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    portfolio = _load_portfolio()
+    leased = "leased warming lead"
+    other = "other warming lead"
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "attempted_leads": {
+            leased: {
+                "status": "warming:search_coverage",
+                "updated_at": "20260718T120000Z",
+                "warming_fingerprint": "leased-fingerprint",
+                "sweep_remaining_shards": 100,
+            },
+            other: {
+                "status": "warming:search_coverage",
+                "updated_at": "20260718T110000Z",
+                "warming_fingerprint": "other-fingerprint",
+                "sweep_remaining_shards": 10,
+            },
+        }
+    }))
+    monkeypatch.setattr(
+        portfolio,
+        "_complete_first_query_cache_lead_keys",
+        lambda *_args, **_kwargs: set(),
+    )
+    monkeypatch.setattr(
+        portfolio,
+        "_warming_fingerprints",
+        lambda *_args, **_kwargs: {
+            portfolio._lead_key(leased): "leased-fingerprint",
+            portfolio._lead_key(other): "other-fingerprint",
+        },
+    )
+    monkeypatch.setattr(
+        portfolio,
+        "_cache_derived_lead_meta",
+        lambda _state, lead: (
+            {"cache_result_limit": 25} if lead == leased else None
+        ),
+    )
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=2,
+        state_path=state_path,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=24,
+        ready_buffer_size=3,
+    )
+    base_env = {"V5_MEMO_FULL_RAW_QUEUE_IF_MISSING": "1"}
+    received: list[tuple[str, dict[str, str]]] = []
+
+    def warming_runner(
+        command: list[str],
+        env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        lead = command[command.index("--topic") + 1]
+        received.append((lead, env))
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps({
+            "error": "search_backend_error",
+            "message": "coverage too narrow: {'sweep_remaining_shards': 9}",
+        }))
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="warming")
+
+    assert portfolio.run_portfolio(
+        [other, leased],
+        config,
+        runner=warming_runner,
+        env=base_env,
+        cwd=Path.cwd(),
+    ) == 0
+
+    assert [lead for lead, _env in received] == [leased, other]
+    assert [env[portfolio.FOCUS_LEASE_ENV] for _lead, env in received] == ["1", "0"]
+    assert received[0][1][portfolio.CACHE_QUEUE_IF_MISSING_ENV] == "0"
+    assert received[1][1][portfolio.CACHE_QUEUE_IF_MISSING_ENV] == "1"
+    assert received[0][1] is not received[1][1]
+    assert portfolio.FOCUS_LEASE_ENV not in base_env
+
+
 def test_generic_backend_error_yields_to_fresh_lead_on_next_tick(
     tmp_path: Path,
 ) -> None:

@@ -1280,6 +1280,88 @@ def test_full_raw_client_sends_search_pass_receipts(monkeypatch: object) -> None
     }
     assert {hit.metadata["rank_mode"] for hit in hits} == {"relevance"}
 
+
+def test_full_raw_client_focus_lease_defaults_off_and_env_can_enable(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payloads.append(json.loads(cast(bytes, request.data).decode("utf-8")))
+        return FakeResponse({
+            "meta": {
+                "count": 1,
+                "shard_receipt": {
+                    "shards_searched": 1,
+                    "sources_searched": {"openalex": 1},
+                },
+            },
+            "results": [{
+                "doi": "10.123/focus",
+                "title": "Focused evidence",
+                "abstract": "Management forecast disclosure evidence.",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    for focus_lease in (False, True):
+        FullRawCorpusSearchClient(
+            search_url="https://search.example/full-raw",
+            max_variants=1,
+            min_shards_searched=1,
+            focus_lease=focus_lease,
+        ).search("management forecast disclosure", limit=10)
+
+    assert [payload["focus_lease"] for payload in payloads] == [False, True]
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_CORPUS_SEARCH_URL", "https://search.example/full-raw")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_FOCUS_LEASE", "1")
+    assert FullRawCorpusSearchClient.from_env()._focus_lease is True
+
+
+def test_full_raw_client_focus_lease_survives_cache_fallback(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        del timeout
+        payload = json.loads(cast(bytes, request.data).decode("utf-8"))
+        payloads.append(payload)
+        if len(payloads) == 1:
+            return FakeResponse({"meta": {"count": 0}, "results": []})
+        return FakeResponse({
+            "meta": {
+                "count": 1,
+                "shard_receipt": {
+                    "shards_searched": 1,
+                    "sources_searched": {"openalex": 1},
+                },
+            },
+            "results": [{
+                "doi": "10.123/fallback",
+                "title": "Fallback evidence",
+                "abstract": "Management forecast disclosure evidence.",
+                "year": 2024,
+                "source": "openalex",
+            }],
+        })
+
+    monkeypatch.setattr("v5_memo.client.urlopen", fake_urlopen)
+    hits = FullRawCorpusSearchClient(
+        search_url="https://search.example/full-raw",
+        max_variants=1,
+        min_shards_searched=1,
+        focus_lease=True,
+    ).search("management forecast disclosure", limit=25)
+
+    assert hits[0].doi == "10.123/fallback"
+    assert len(payloads) == 2
+    assert all(payload["focus_lease"] is True for payload in payloads)
+
 def test_full_raw_client_records_duplicate_rate_across_passes(monkeypatch: object) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
         del request, timeout
