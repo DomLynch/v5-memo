@@ -5631,20 +5631,61 @@ def _auto_sweep_max_inflight() -> int:
     if max_cache_bytes is None or worker_cache_bytes is None or worker_cache_bytes <= 0:
         return 1
     cache_lanes = max_cache_bytes // worker_cache_bytes
+    memory_budget_bytes = _cgroup_memory_budget_bytes()
+    memory_lanes = (
+        memory_budget_bytes // worker_cache_bytes
+        if memory_budget_bytes is not None
+        else None
+    )
     priority_burst = _fullraw_env("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "true").casefold()
     if priority_burst in {"1", "true", "yes"}:
         cache_lanes -= 1
-    return max(1, min(os.cpu_count() or 1, cache_lanes))
+        if memory_lanes is not None:
+            memory_lanes -= 1
+    lane_limits = [os.cpu_count() or 1, cache_lanes]
+    if memory_lanes is not None:
+        lane_limits.append(memory_lanes)
+    return max(1, min(lane_limits))
 
 
 def _auto_sweep_workers(max_inflight: int) -> int:
     cpu_workers = max(1, (os.cpu_count() or 1) // max(1, max_inflight))
     max_cache_bytes = _shard_local_cache_max_bytes()
     worker_cache_bytes = _sweep_worker_cache_bytes()
-    if max_cache_bytes is None or worker_cache_bytes is None or worker_cache_bytes <= 0:
+    memory_budget_bytes = _cgroup_memory_budget_bytes()
+    budgets = tuple(
+        budget
+        for budget in (max_cache_bytes, memory_budget_bytes)
+        if budget is not None
+    )
+    if not budgets or worker_cache_bytes is None or worker_cache_bytes <= 0:
         return cpu_workers
-    cache_workers = max(1, max_cache_bytes // (worker_cache_bytes * _sweep_cache_inflight_lanes(max_inflight)))
-    return max(1, min(cpu_workers, cache_workers))
+    lane_bytes = worker_cache_bytes * _sweep_cache_inflight_lanes(max_inflight)
+    budget_workers = (max(1, budget // lane_bytes) for budget in budgets)
+    return max(1, min(cpu_workers, *budget_workers))
+
+
+def _cgroup_memory_budget_bytes(
+    proc_self_cgroup: Path = Path("/proc/self/cgroup"),
+    cgroup_root: Path = Path("/sys/fs/cgroup"),
+) -> int | None:
+    try:
+        cgroup_path = next(
+            line.split(":", 2)[2]
+            for line in proc_self_cgroup.read_text().splitlines()
+            if line.startswith("0::")
+        )
+    except (OSError, StopIteration):
+        return None
+    group = cgroup_root / cgroup_path.lstrip("/")
+    for name in ("memory.high", "memory.max"):
+        try:
+            value = _int_or_none((group / name).read_text().strip())
+        except OSError:
+            continue
+        if value is not None and value > 0:
+            return value
+    return None
 
 
 def _sweep_worker_cache_bytes(*, default_gb: float | None = None) -> int | None:

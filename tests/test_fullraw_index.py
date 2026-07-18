@@ -4099,6 +4099,7 @@ def test_auto_sweep_inflight_preserves_cache_worker_envelope(
     monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", str(31 * gib))
     monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", str(8 * gib))
     monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", "0")
+    monkeypatch.setattr(fullraw_index, "_cgroup_memory_budget_bytes", lambda: None)
 
     assert fullraw_index._auto_sweep_max_inflight() == 3
     assert fullraw_index._auto_sweep_workers(3) == 1
@@ -4139,12 +4140,45 @@ def test_auto_sweep_workers_respects_cache_budget(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", str(8 * 1024 * 1024 * 1024))
     monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_GB", "1")
     monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", "1")
+    monkeypatch.setattr(fullraw_index, "_cgroup_memory_budget_bytes", lambda: None)
 
     assert fullraw_index._auto_sweep_workers(2) == 2
 
     monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", "0")
 
     assert fullraw_index._auto_sweep_workers(2) == 4
+
+
+def test_auto_sweep_capacity_respects_cgroup_memory_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gib = 1024 * 1024 * 1024
+    monkeypatch.setattr(os, "cpu_count", lambda: 16)
+    monkeypatch.setenv("RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES", str(64 * gib))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES", str(4 * gib))
+    monkeypatch.setenv("RESEARKA_FULLRAW_SWEEP_PRIORITY_BURST", "0")
+    monkeypatch.setattr(fullraw_index, "_cgroup_memory_budget_bytes", lambda: 12 * gib)
+
+    assert fullraw_index._auto_sweep_max_inflight() == 3
+    assert fullraw_index._auto_sweep_workers(3) == 1
+
+
+def test_cgroup_memory_budget_prefers_high_then_falls_back_to_max(
+    tmp_path: Path,
+) -> None:
+    proc_self_cgroup = tmp_path / "proc-self-cgroup"
+    cgroup_root = tmp_path / "cgroup"
+    group = cgroup_root / "system.slice" / "v5.service"
+    group.mkdir(parents=True)
+    proc_self_cgroup.write_text("0::/system.slice/v5.service\n")
+    (group / "memory.high").write_text("12000\n")
+    (group / "memory.max").write_text("16000\n")
+
+    assert fullraw_index._cgroup_memory_budget_bytes(proc_self_cgroup, cgroup_root) == 12000
+
+    (group / "memory.high").write_text("max\n")
+
+    assert fullraw_index._cgroup_memory_budget_bytes(proc_self_cgroup, cgroup_root) == 16000
 
 
 def test_auto_sweep_workers_uses_cpu_workers_when_cache_budget_exhausted(
