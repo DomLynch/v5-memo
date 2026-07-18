@@ -16,8 +16,8 @@ Restart=always
 RestartSec=10
 TimeoutStopSec=120
 KillMode=control-group
-MemoryHigh=7G
-MemoryMax=8G
+MemoryHigh=40%
+MemoryMax=50%
 MemorySwapMax=1G
 
 [Install]

@@ -423,7 +423,8 @@ def test_v5_publish_fullraw_service_is_bounded_and_not_legacy() -> None:
     assert "RESEARKA_FULLRAW_SWEEP_WORKER_CACHE_BYTES=4294967296" in env
     assert "RESEARKA_FULLRAW_FAST_HEALTH=0" in env
     assert "RESEARKA_FULLRAW_SHARD_MANIFEST_STATS=1" in env
-    assert "MemoryMax=8G" in search
+    assert "MemoryHigh=40%" in search
+    assert "MemoryMax=50%" in search
     assert "MemorySwapMax=1G" in search
     assert "ConditionPathExists=" not in search
     assert "9915" not in search
