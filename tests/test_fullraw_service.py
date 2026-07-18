@@ -399,6 +399,7 @@ def test_v5_publish_fullraw_service_is_bounded_and_not_legacy() -> None:
     search = (deploy_dir / "v5-memo-publish-fullraw-search.service").read_text()
     mount = (deploy_dir / "v5-memo-publish-fullraw-fts-mount.service").read_text()
     env = (deploy_dir / "v5-memo-publish-fullraw.env").read_text()
+    installer = (deploy_dir / "install-v5-portfolio-isolation.sh").read_text()
 
     assert "v5-memo-isolated-fullraw-search.service" not in search
     assert "BindsTo=v5-memo-publish-fullraw-fts-mount.service" in search
@@ -410,8 +411,12 @@ def test_v5_publish_fullraw_service_is_bounded_and_not_legacy() -> None:
     )
     assert "RESEARKA_FULLRAW_INDEX_PORT=9935" in env
     assert "V5_MEMO_FULL_RAW_INDEX_PORT=9935" in env
-    assert "RESEARKA_FULLRAW_SWEEP_WORKERS=1" in env
-    assert "RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=1" in env
+    assert "RESEARKA_FULLRAW_SWEEP_WORKERS=auto" in env
+    assert "RESEARKA_FULLRAW_SWEEP_MAX_INFLIGHT=auto" in env
+    assert ".async_sweep.max_inflight >= 1" in installer
+    assert ".async_sweep.workers >= 1" in installer
+    assert ".shard_cache.copy_max_inflight == .async_sweep.max_inflight" in installer
+    assert ".async_sweep.max_inflight == 1" not in installer
     assert "RESEARKA_FULLRAW_SWEEP_MAX_QUEUE=4" in env
     assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MAX_BYTES=auto" in env
     assert "RESEARKA_FULLRAW_SHARD_LOCAL_CACHE_MIN_FREE_GB=42" in env
@@ -459,7 +464,7 @@ def test_portfolio_route_installer_switches_without_touching_shared_unit(tmp_pat
         "case \"$*\" in\n"
         "  *http_code*) printf '%s' 400 ;;\n"
         "  *) printf '%s\\n' "
-        "'{\"ok\":true,\"backend\":\"researka-fullraw-indexed-fts5\",\"shard_dir\":\"/var/lib/v5-memo/v5-publish-fullraw-fts-remote\",\"shard_receipt\":{\"shards_total\":1525},\"coverage_requirements\":{\"min_shards_searched\":1525,\"require_complete_search\":1,\"sweep_require_complete\":1},\"async_sweep\":{\"max_inflight\":1,\"workers\":1}}' ;;\n"
+        "'{\"ok\":true,\"backend\":\"researka-fullraw-indexed-fts5\",\"shard_dir\":\"/var/lib/v5-memo/v5-publish-fullraw-fts-remote\",\"shard_receipt\":{\"shards_total\":1525},\"coverage_requirements\":{\"min_shards_searched\":1525,\"require_complete_search\":1,\"sweep_require_complete\":1},\"shard_cache\":{\"copy_max_inflight\":3},\"async_sweep\":{\"max_inflight\":3,\"workers\":1}}' ;;\n"
         "esac\n",
     )
     (fake_bin / "sleep").write_text("#!/bin/sh\nexit 0\n")
