@@ -85,6 +85,48 @@ def test_previously_sedentary_participants_remain_current_human_population() -> 
     assert card.support_type == "direct"
 
 
+def test_female_randomized_trial_is_direct_human_evidence() -> None:
+    hit = CorpusHit(
+        hit_id="10.1210/jc.2012-2340",
+        title=(
+            "Skeletal Muscle Strength in Young Asian Indian Females after Vitamin D and Calcium "
+            "Supplementation: A Double-Blind Randomized Controlled Clinical Trial"
+        ),
+        abstract=(
+            "Oral cholecalciferol/calcium supplementation in the dose/schedule used is effective "
+            "and safe in increasing and maintaining serum 25(OH)D. However, this does not lead to "
+            "improved skeletal muscle strength in young females."
+        ),
+        source="fullraw:openalex",
+        doi="10.1210/jc.2012-2340",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "null_signal", "human trial"))
+
+    assert card.design == "randomized_trial"
+    assert card.population == "human"
+    assert card.direction == "null"
+    assert card.support_type == "direct"
+    assert card.confidence == "high"
+
+
+def test_current_female_trial_overrides_prior_animal_background() -> None:
+    hit = CorpusHit(
+        hit_id="female-rct",
+        title="Supplement effects on muscle strength",
+        abstract=(
+            "Previous mouse models motivated the study. "
+            "Young females were randomized to the supplement and placebo."
+        ),
+        source="fullraw:openalex",
+    )
+
+    card = _claim_card(hit, ReceiptRole(hit.hit_id, "positive_signal", "human trial"))
+
+    assert card.population == "human"
+    assert card.support_type == "direct"
+
+
 def test_publish_gate_rejects_unmapped_multi_direction_primary_card() -> None:
     mixed = ClaimCard(
         "strength",
