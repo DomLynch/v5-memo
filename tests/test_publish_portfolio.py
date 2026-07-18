@@ -816,6 +816,41 @@ def test_resource_aware_prepare_fails_safe_to_one_lead(
     assert probed is None
 
 
+def test_resource_aware_prepare_uses_live_limit_when_configured_unbounded(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    portfolio = _load_portfolio()
+    monkeypatch.setattr(portfolio, "_fullraw_max_inflight", lambda _env: 3)
+    config = portfolio.RunConfig(
+        output_dir=tmp_path,
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=0,
+        state_path=None,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=0,
+        resource_aware_max_leads=True,
+    )
+
+    limit, probed = portfolio._preparation_lead_limit(config, {})
+
+    assert limit == 3
+    assert probed == 3
+
+
 def test_warming_coverage_order_handles_unknowns_and_stable_ties(tmp_path: Path) -> None:
     portfolio = _load_portfolio()
     state = {

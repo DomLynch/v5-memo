@@ -299,8 +299,8 @@ def test_v5_portfolio_publisher_keeps_strict_sweep_batch_focused() -> None:
     assert '--decision-wait-seconds "${V5_MEMO_PORTFOLIO_DECISION_WAIT_SECONDS:-600}"' in config
     assert "OnCalendar=*-*-* 00/8:20:00" in timer
     assert "Environment=V5_MEMO_READY_BUFFER_SIZE=3" in prepare_config
-    assert "Environment=V5_MEMO_PREPARE_MAX_LEADS=1" in prepare_config
-    assert "one strict candidate at a time" in prepare_config
+    assert "Environment=V5_MEMO_PREPARE_MAX_LEADS=0" in prepare_config
+    assert "resource-derived strict-query lanes" in prepare_config
     assert "--auto-discover-leads" in prepare_config
     assert "--min-open-leads" not in prepare_config
     assert "--discover-count 1" in prepare_config
