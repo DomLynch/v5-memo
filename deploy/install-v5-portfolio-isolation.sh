@@ -193,7 +193,7 @@ if [ "$route" = dedicated ]; then
         if curl -fsS --max-time 5 \
             -H "Authorization: Bearer $token" \
             http://127.0.0.1:9935/health |
-            jq -e '.ok == true and .backend == "researka-fullraw-indexed-fts5" and .shard_dir == "/var/lib/v5-memo/v5-publish-fullraw-fts-remote" and .shard_receipt.shards_total == 1525 and .coverage_requirements.min_shards_searched == 1525 and .coverage_requirements.require_complete_search == 1 and .coverage_requirements.sweep_require_complete == 1 and .async_sweep.max_inflight == 1 and .async_sweep.workers == 1' \
+            jq -e '.ok == true and .backend == "researka-fullraw-indexed-fts5" and .shard_dir == "/var/lib/v5-memo/v5-publish-fullraw-fts-remote" and .shard_receipt.shards_total == 1525 and .coverage_requirements.min_shards_searched == 1525 and .coverage_requirements.require_complete_search == 1 and .coverage_requirements.sweep_require_complete == 1 and .async_sweep.max_inflight >= 1 and .async_sweep.workers >= 1 and .shard_cache.copy_max_inflight == .async_sweep.max_inflight' \
                 >/dev/null 2>&1
         then
             healthy=1
