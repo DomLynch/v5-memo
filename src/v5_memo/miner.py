@@ -116,14 +116,15 @@ _AMBIGUOUS_ENTITY_PREFIXES = frozenset({"alpha", "beta", "delta", "gamma", "omeg
 _ANIMAL_POPULATION_TERMS = frozenset({"mouse", "mice", "rat", "rats", "animal", "animals", "wistar"})
 _CELL_POPULATION_TERMS = frozenset({"cell", "cells", "cellular"})
 _HUMAN_POPULATION_TERMS = frozenset({
-    "athlete", "athletes", "human", "humans", "participant", "participants",
-    "patient", "patients", "adult", "adults", "men", "women", "player", "players", "student",
-    "students", "subject", "subjects", "volunteer", "volunteered", "volunteers",
+    "athlete", "athletes", "female", "females", "human", "humans", "male", "males",
+    "participant", "participants", "patient", "patients", "adult", "adults", "men", "women",
+    "player", "players", "student", "students", "subject", "subjects", "volunteer", "volunteered",
+    "volunteers",
 })
 _EXPLICIT_HUMAN_STUDY_RE = re.compile(
     r"\b(?:randomi[sz]ed|assigned|enrolled|recruited|included|treated)\b[^.;:\n]{0,100}"
-    r"\b(?:human\s+)?(?:participants?|patients?|adults?|men|women|volunteers?|athletes?|players?|students?)\b"
-    r"|\b(?:human\s+)?(?:participants?|patients?|adults?|men|women|volunteers?|athletes?|players?|students?)\b"
+    r"\b(?:human\s+)?(?:participants?|patients?|adults?|females?|males?|men|women|volunteers?|athletes?|players?|students?)\b"
+    r"|\b(?:human\s+)?(?:participants?|patients?|adults?|females?|males?|men|women|volunteers?|athletes?|players?|students?)\b"
     r"[^.;:\n]{0,100}\b(?:randomi[sz]ed|assigned|enrolled|recruited|received|completed|treated)\b",
     re.IGNORECASE,
 )
