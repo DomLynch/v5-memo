@@ -333,6 +333,7 @@ class FullRawCorpusSearchClient:
         min_shards_searched: int = 0,
         min_sources_searched: int = 0,
         queue_if_missing: bool = True,
+        focus_lease: bool = False,
         require_auth: bool = False,
         progress: bool = False,
         strict: bool = False,
@@ -352,6 +353,7 @@ class FullRawCorpusSearchClient:
         self._min_shards_searched = max(0, min_shards_searched)
         self._min_sources_searched = max(0, min_sources_searched)
         self._queue_if_missing = queue_if_missing
+        self._focus_lease = focus_lease
         self._require_auth = require_auth or bool(self._token)
         self._progress = progress
         self._strict = strict
@@ -399,6 +401,7 @@ class FullRawCorpusSearchClient:
                 "V5_MEMO_FULL_RAW_QUEUE_IF_MISSING",
                 True,
             ),
+            focus_lease=_bool_env("V5_MEMO_FULL_RAW_FOCUS_LEASE", False),
             require_auth=_bool_env("V5_MEMO_FULL_RAW_REQUIRE_AUTH", bool(token)),
             progress=_bool_env("V5_MEMO_FULL_RAW_PROGRESS", False),
             strict=strict,
@@ -555,6 +558,7 @@ class FullRawCorpusSearchClient:
                 "cache_only": True,
                 "queue_if_missing": self._queue_if_missing,
                 "priority": True,
+                "focus_lease": self._focus_lease,
                 "min_shards_searched": self._min_shards_searched,
                 "min_sources_searched": self._min_sources_searched,
                 "require_complete_search": coverage_required,

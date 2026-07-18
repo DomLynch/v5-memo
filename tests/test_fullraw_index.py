@@ -1689,6 +1689,10 @@ def test_fast_health_reports_async_sweep_queue_config(
         "priority_burst": True,
         "workers": fullraw_index._auto_sweep_workers(2),
         "worker_thread_count": 0,
+        "focus_key": "",
+        "focus_running": False,
+        "focus_queued": False,
+        "yield_requested_count": 0,
     }
     fullraw_index._set_shard_cache_copy_max_inflight(None)
 
@@ -2052,6 +2056,31 @@ def test_queued_sweep_job_promotes_when_lane_frees() -> None:
     assert queued_jobs == {}
 
 
+def test_repolled_queued_job_reservation_clears_stale_queue_entry() -> None:
+    job = fullraw_index.SweepJob(
+        "target", "target query", 10, 1900, 2100, "relevance", []
+    )
+    inflight: set[str] = set()
+    queued = {"target"}
+    queued_jobs = {"target": job}
+
+    assert fullraw_index._admit_sweep_key(
+        "target",
+        sweep_inflight=inflight,
+        sweep_queued=queued,
+        max_inflight=1,
+    ) == "queued"
+    fullraw_index._reserve_sweep_job_start(
+        job,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+    )
+
+    assert inflight == {"target"}
+    assert queued == set()
+    assert queued_jobs == {}
+
+
 def test_repolled_queued_sweep_job_keeps_fifo_position() -> None:
     older = fullraw_index.SweepJob("older", "older query", 10, 1900, 2100, "relevance", [])
     target_old = fullraw_index.SweepJob("target", "target old", 10, 1900, 2100, "relevance", [])
@@ -2235,6 +2264,556 @@ def test_sweep_queue_cap_drops_new_background_before_priority() -> None:
 
     assert list(queued_jobs) == ["target", "older"]
     assert queued == {"target", "older"}
+
+
+def test_focus_queue_entry_survives_saturated_priority_queue() -> None:
+    first = fullraw_index.SweepJob(
+        "first", "first query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    second = fullraw_index.SweepJob(
+        "second", "second query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    focus = fullraw_index.SweepJob(
+        "focus", "focus query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    queued = {"first", "second", "focus"}
+    queued_jobs = {"first": first, "second": second}
+
+    fullraw_index._queue_sweep_job_with_priority(
+        queued_jobs,
+        "focus",
+        focus,
+        priority=True,
+        sweep_queued=queued,
+        max_queue=2,
+        protected_key="focus",
+    )
+
+    assert list(queued_jobs) == ["first", "focus"]
+    assert queued == {"first", "focus"}
+
+
+def test_later_priority_arrival_cannot_evict_current_focus() -> None:
+    focus = fullraw_index.SweepJob(
+        "focus", "focus query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    earlier = fullraw_index.SweepJob(
+        "earlier", "earlier query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    later = fullraw_index.SweepJob(
+        "later", "later query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    queued = {"focus", "earlier", "later"}
+    queued_jobs = {"focus": focus, "earlier": earlier}
+
+    fullraw_index._queue_sweep_job_with_priority(
+        queued_jobs,
+        "later",
+        later,
+        priority=True,
+        sweep_queued=queued,
+        max_queue=2,
+        protected_key="focus",
+    )
+
+    assert list(queued_jobs) == ["focus", "earlier"]
+    assert queued == {"focus", "earlier"}
+
+
+def test_replacing_focus_demotes_old_queued_focus_without_rotating_new_focus() -> None:
+    old_focus = fullraw_index.SweepJob(
+        "old", "old query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    background = fullraw_index.SweepJob(
+        "background", "background query", 10, 1900, 2100, "relevance", []
+    )
+    queued = {"old", "background"}
+    queued_jobs = {"old": old_focus, "background": background}
+    yield_requested = {"running"}
+
+    focus_key = fullraw_index._replace_sweep_focus(
+        "old",
+        "new",
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        sweep_yield_requested=yield_requested,
+        max_queue=2,
+    )
+
+    assert focus_key == "new"
+    assert list(queued_jobs) == ["background", "old"]
+    assert queued_jobs["old"].priority is False
+    assert yield_requested == set()
+
+    assert fullraw_index._replace_sweep_focus(
+        focus_key,
+        "new",
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        sweep_yield_requested=yield_requested,
+        max_queue=2,
+    ) == "new"
+    assert list(queued_jobs) == ["background", "old"]
+
+
+def test_focus_requests_exactly_one_cooperative_yield_and_never_self_yields() -> None:
+    first = fullraw_index.SweepJob("first", "first query", 10, 1900, 2100, "relevance", [])
+    second = fullraw_index.SweepJob("second", "second query", 10, 1900, 2100, "relevance", [])
+    focus = fullraw_index.SweepJob(
+        "focus", "focus query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    active = {"first": first, "second": second}
+    inflight = {"first", "second"}
+    queued_jobs = {"focus": focus}
+    yield_requested: set[str] = set()
+
+    victim = fullraw_index._request_one_sweep_yield_for_focus(
+        "focus",
+        sweep_active_jobs=active,
+        sweep_inflight=inflight,
+        sweep_queued_jobs=queued_jobs,
+        sweep_yield_requested=yield_requested,
+    )
+    repeated = fullraw_index._request_one_sweep_yield_for_focus(
+        "focus",
+        sweep_active_jobs=active,
+        sweep_inflight=inflight,
+        sweep_queued_jobs=queued_jobs,
+        sweep_yield_requested=yield_requested,
+    )
+
+    assert victim == repeated == "first"
+    assert yield_requested == {"first"}
+
+    inflight.add("focus")
+    assert fullraw_index._request_one_sweep_yield_for_focus(
+        "focus",
+        sweep_active_jobs={**active, "focus": focus},
+        sweep_inflight=inflight,
+        sweep_queued_jobs=queued_jobs,
+        sweep_yield_requested=yield_requested,
+    ) is None
+    assert yield_requested == set()
+
+
+def test_pass_boundary_handoff_preserves_jobs_bounds_and_single_owners() -> None:
+    owner = threading.Thread(target=lambda: None)
+    other_owner = threading.Thread(target=lambda: None)
+    old = fullraw_index.SweepJob(
+        "old", "old query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    other = fullraw_index.SweepJob(
+        "other", "other query", 10, 1900, 2100, "relevance", []
+    )
+    focus = fullraw_index.SweepJob(
+        "focus", "focus query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    waiting = fullraw_index.SweepJob(
+        "waiting", "waiting query", 10, 1900, 2100, "relevance", []
+    )
+    active = {"old": old, "other": other}
+    workers = {"old": owner, "other": other_owner}
+    inflight = {"old", "other"}
+    started = {"old": 1.0, "other": 2.0}
+    queued = {"focus", "waiting"}
+    queued_jobs = {"focus": focus, "waiting": waiting}
+    yield_requested = {"old"}
+    unique_before = set(inflight) | set(queued_jobs)
+
+    yielded, next_job = fullraw_index._yield_sweep_job_to_focus(
+        job=old,
+        owner_thread=owner,
+        focus_key="focus",
+        sweep_active_jobs=active,
+        sweep_worker_threads=workers,
+        sweep_inflight=inflight,
+        sweep_inflight_started=started,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        sweep_yield_requested=yield_requested,
+        max_inflight=2,
+        max_queue=2,
+    )
+
+    assert yielded is True
+    assert next_job == focus
+    assert inflight == {"other", "focus"}
+    assert set(queued_jobs) == {"old", "waiting"}
+    assert len(inflight) == 2
+    assert len(queued_jobs) == 2
+    assert (set(inflight) | set(queued_jobs)) == unique_before
+    assert "old" not in workers
+    assert "old" not in active
+    assert "old" not in started
+    assert yield_requested == set()
+
+
+def test_focus_worker_is_never_requeued_as_its_own_yield() -> None:
+    owner = threading.Thread(target=lambda: None)
+    focus = fullraw_index.SweepJob(
+        "focus", "focus query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    active = {"focus": focus}
+    workers = {"focus": owner}
+    inflight = {"focus"}
+    started = {"focus": 1.0}
+    queued: set[str] = set()
+    queued_jobs: dict[str, fullraw_index.SweepJob] = {}
+    yield_requested = {"focus"}
+
+    yielded, next_job = fullraw_index._yield_sweep_job_to_focus(
+        job=focus,
+        owner_thread=owner,
+        focus_key="focus",
+        sweep_active_jobs=active,
+        sweep_worker_threads=workers,
+        sweep_inflight=inflight,
+        sweep_inflight_started=started,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        sweep_yield_requested=yield_requested,
+        max_inflight=1,
+        max_queue=1,
+    )
+
+    assert (yielded, next_job) == (False, None)
+    assert inflight == {"focus"}
+    assert workers == {"focus": owner}
+    assert queued_jobs == {}
+
+
+def test_committed_yield_restores_owner_if_focus_started_before_finally() -> None:
+    owner = threading.Thread(target=lambda: None)
+    focus_owner = threading.Thread(target=lambda: None)
+    old = fullraw_index.SweepJob(
+        "old", "old query", 10, 1900, 2100, "relevance", [], priority=False
+    )
+    focus = fullraw_index.SweepJob(
+        "focus", "focus query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    active = {"old": old, "focus": focus}
+    workers = {"old": owner, "focus": focus_owner}
+    inflight = {"old", "focus"}
+    started = {"old": 1.0, "focus": 2.0}
+    queued: set[str] = set()
+    queued_jobs: dict[str, fullraw_index.SweepJob] = {}
+    yield_requested: set[str] = set()
+
+    yielded, next_job = fullraw_index._yield_sweep_job_to_focus(
+        job=old,
+        owner_thread=owner,
+        focus_key="focus",
+        sweep_active_jobs=active,
+        sweep_worker_threads=workers,
+        sweep_inflight=inflight,
+        sweep_inflight_started=started,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        sweep_yield_requested=yield_requested,
+        max_inflight=2,
+        max_queue=2,
+    )
+    assert (yielded, next_job) == (False, None)
+
+    assert fullraw_index._restore_sweep_job_after_committed_yield(
+        job=old,
+        owner_thread=owner,
+        sweep_active_jobs=active,
+        sweep_worker_threads=workers,
+        sweep_inflight=inflight,
+        sweep_inflight_started=started,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        sweep_yield_requested=yield_requested,
+        max_queue=2,
+    ) is True
+    assert inflight == {"focus"}
+    assert queued == {"old"}
+    assert queued_jobs == {"old": old}
+    assert workers == {"focus": focus_owner}
+    assert active == {"focus": focus}
+
+
+def test_focus_start_failure_retains_focus_and_yielded_owner_for_watchdog() -> None:
+    old_owner = threading.Thread(target=lambda: None)
+    failed_focus_owner = threading.Thread(target=lambda: None)
+    old = fullraw_index.SweepJob(
+        "old", "old query", 10, 1900, 2100, "relevance", [], priority=False
+    )
+    focus = fullraw_index.SweepJob(
+        "focus", "focus query", 10, 1900, 2100, "relevance", [], priority=True
+    )
+    active = {"old": old}
+    workers = {"old": old_owner}
+    inflight = {"old"}
+    started = {"old": 1.0}
+    queued = {"focus"}
+    queued_jobs = {"focus": focus}
+    yield_requested = {"old"}
+
+    yielded, next_job = fullraw_index._yield_sweep_job_to_focus(
+        job=old,
+        owner_thread=old_owner,
+        focus_key="focus",
+        sweep_active_jobs=active,
+        sweep_worker_threads=workers,
+        sweep_inflight=inflight,
+        sweep_inflight_started=started,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        sweep_yield_requested=yield_requested,
+        max_inflight=1,
+        max_queue=2,
+    )
+    assert (yielded, next_job) == (True, focus)
+    assert inflight == {"focus"}
+    assert queued_jobs == {"old": old}
+
+    workers["focus"] = failed_focus_owner
+    started["focus"] = 2.0
+    assert fullraw_index._requeue_sweep_after_start_failure(
+        job=focus,
+        failed_owner=failed_focus_owner,
+        sweep_worker_threads=workers,
+        sweep_inflight=inflight,
+        sweep_inflight_started=started,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_queue=2,
+    ) is True
+    assert set(queued_jobs) == {"focus", "old"}
+    assert len(queued_jobs) == 2
+    assert inflight == set()
+    assert workers == {}
+
+    stale, next_jobs = fullraw_index._sweep_watchdog_tick(
+        sweep_inflight=inflight,
+        sweep_inflight_started=started,
+        sweep_queued=queued,
+        sweep_queued_jobs=queued_jobs,
+        max_inflight=1,
+        allow_priority_burst=False,
+        stale_after_seconds=60.0,
+        now=10.0,
+        focus_key="focus",
+    )
+    assert stale == ()
+    assert next_jobs == [focus]
+    assert inflight == {"focus"}
+    assert queued_jobs == {"old": old}
+
+
+def test_focus_handoff_persists_checkpoint_before_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shard_dir = tmp_path / "shards"
+    shard_dir.mkdir()
+    entries = [_entry(shard_dir, index, "openalex") for index in range(2)]
+    catalog_path = tmp_path / "catalog.json"
+    cache_dir = tmp_path / "sweep-cache"
+    fullraw_index.write_shard_catalog_cache(catalog_path, entries)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_HOST", "127.0.0.1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_PORT", str(port))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_INDEX_TOKEN", "test-token")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_DIR", str(shard_dir))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SHARD_CATALOG_PATH", str(catalog_path))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_ASYNC_SWEEP", "1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_REQUIRE_COMPLETE_SEARCH", "1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_REQUIRE_COMPLETE", "1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_SHARD_LIMIT", "2")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_PASS_SHARD_LIMIT", "1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_MAX_PASSES", "2")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_MAX_INFLIGHT", "1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_MAX_QUEUE", "2")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_PRIORITY_BURST", "0")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_SWEEP_WORKERS", "1")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", "2")
+    monkeypatch.setenv("V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED", "0")
+    monkeypatch.setattr(fullraw_index, "load_or_build_manifest", lambda *_args, **_kwargs: [])
+
+    background_started = threading.Event()
+    release_background = threading.Event()
+    resumed_background_started = threading.Event()
+    release_resumed_background = threading.Event()
+    events: list[str] = []
+    calls: dict[str, list[str]] = {
+        "background": [],
+        "focus": [],
+        "later": [],
+        "resumed_background": [],
+        "error_focus": [],
+    }
+
+    def query_label(query: str) -> str:
+        if "failure" in query:
+            return "error_focus"
+        if "omega" in query:
+            return "resumed_background"
+        if "focus" in query:
+            return "focus"
+        if "background" in query:
+            return "background"
+        return "later"
+
+    def fake_search(
+        paths: list[Path],
+        query: str,
+        **_kwargs: object,
+    ) -> tuple[list[dict[str, object]], list[Path], bool, dict[str, object]]:
+        label = query_label(query)
+        calls[label].append(str(paths[0]))
+        if label == "background" and len(calls[label]) == 1:
+            background_started.set()
+            assert release_background.wait(2)
+        if label == "resumed_background" and len(calls[label]) == 1:
+            resumed_background_started.set()
+            assert release_resumed_background.wait(2)
+        if label == "error_focus":
+            raise RuntimeError("focus search failed")
+        events.append(f"search:{label}")
+        return [], [paths[0]], False, {}
+
+    original_write = fullraw_index._write_sweep_cache
+
+    def recording_write(path: Path, entry: fullraw_index.SweepCacheEntry) -> None:
+        original_write(path, entry)
+        query = str(
+            entry.receipt.get("sweep_original_query")
+            or entry.receipt.get("sweep_query")
+            or ""
+        )
+        label = query_label(query)
+        raw_completed = entry.receipt.get("sweep_completed_paths")
+        completed = len(raw_completed) if isinstance(raw_completed, list | tuple) else 0
+        events.append(f"cache:{label}:{completed}")
+
+    monkeypatch.setattr(
+        fullraw_index,
+        "_search_shard_paths_with_paths_and_receipt",
+        fake_search,
+    )
+    monkeypatch.setattr(fullraw_index, "_write_sweep_cache", recording_write)
+    threading.Thread(target=fullraw_index.run_server, daemon=True).start()
+
+    def post(
+        query: str,
+        *,
+        focus_lease: bool,
+        priority: bool = True,
+    ) -> dict[str, object]:
+        payload = json.dumps({
+            "query": query,
+            "limit": 25,
+            "cache_only": True,
+            "queue_if_missing": True,
+            "priority": priority,
+            "focus_lease": focus_lease,
+        }).encode()
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/search",
+            data=payload,
+            headers={
+                "Authorization": "Bearer test-token",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        for _ in range(50):
+            try:
+                with urllib.request.urlopen(request, timeout=2) as response:
+                    return cast(dict[str, object], json.loads(response.read().decode()))
+            except OSError:
+                time.sleep(0.02)
+        raise AssertionError("server did not start")
+
+    post("background trial evidence", focus_lease=False)
+    assert background_started.wait(2)
+    focus_response = post(
+        "focus trial evidence",
+        focus_lease=True,
+        priority=False,
+    )
+    focus_meta = cast(dict[str, object], focus_response["meta"])
+    focus_state = cast(dict[str, object], focus_meta["async_sweep"])
+    assert focus_state["focus_queued"] is True
+    assert focus_state["yield_requested_count"] == 1
+    assert focus_state["priority_queued_count"] == 1
+    post("later trial one", focus_lease=False)
+    later_response = post("later trial two", focus_lease=False)
+    later_meta = cast(dict[str, object], later_response["meta"])
+    later_state = cast(dict[str, object], later_meta["async_sweep"])
+    assert later_state["focus_queued"] is True
+    assert later_state["priority_queued_count"] == 2
+    release_background.set()
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if len(calls["background"]) == 2 and len(calls["focus"]) == 2:
+            break
+        time.sleep(0.02)
+
+    assert len(calls["background"]) == 2
+    assert len(calls["focus"]) == 2
+    assert calls["background"][0] != calls["background"][1]
+    background_checkpoints = [
+        int(event.rsplit(":", 1)[-1])
+        for event in events
+        if event.startswith("cache:background:")
+    ]
+    assert background_checkpoints == [1, 2]
+    assert events.index("cache:background:1") < events.index("search:focus")
+
+    health: dict[str, object] = {}
+    for _ in range(50):
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as response:
+            health = cast(dict[str, object], json.loads(response.read().decode()))
+        queue_state = cast(dict[str, object], health["async_sweep"])
+        if queue_state["inflight_count"] == 0 and queue_state["queued_count"] == 0:
+            break
+        time.sleep(0.02)
+    queue_state = cast(dict[str, object], health["async_sweep"])
+    assert queue_state["focus_key"] == ""
+    assert queue_state["yield_requested_count"] == 0
+    assert queue_state["inflight_count"] == 0
+    assert queue_state["queued_count"] == 0
+
+    post("omega intervention outcomes randomized", focus_lease=False)
+    assert resumed_background_started.wait(2)
+    error_response = post(
+        "failure zinc outcomes randomized",
+        focus_lease=True,
+        priority=False,
+    )
+    error_meta = cast(dict[str, object], error_response["meta"])
+    error_state = cast(dict[str, object], error_meta["async_sweep"])
+    assert error_state["focus_queued"] is True
+    release_resumed_background.set()
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if len(calls["resumed_background"]) == 2 and len(calls["error_focus"]) == 1:
+            break
+        time.sleep(0.02)
+
+    assert len(calls["resumed_background"]) == 2
+    assert len(calls["error_focus"]) == 1
+    for _ in range(50):
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as response:
+            health = cast(dict[str, object], json.loads(response.read().decode()))
+        queue_state = cast(dict[str, object], health["async_sweep"])
+        if queue_state["inflight_count"] == 0 and queue_state["queued_count"] == 0:
+            break
+        time.sleep(0.02)
+    assert queue_state["focus_key"] == ""
+    assert queue_state["yield_requested_count"] == 0
+    assert queue_state["inflight_count"] == 0
+    assert queue_state["queued_count"] == 0
 
 
 def test_priority_sweep_job_waits_without_burst_lane() -> None:

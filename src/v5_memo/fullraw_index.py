@@ -3339,6 +3339,7 @@ def _take_next_queued_sweep_job(
     max_inflight: int,
     allow_priority_burst: bool = False,
     priority_max_inflight: int = 0,
+    focus_key: str | None = None,
 ) -> SweepJob | None:
     inflight_limit = max(1, max_inflight)
     priority_limit = _priority_inflight_limit(
@@ -3346,12 +3347,19 @@ def _take_next_queued_sweep_job(
         allow_priority_burst=allow_priority_burst,
         priority_max_inflight=priority_max_inflight,
     )
-    for key in tuple(sweep_queued_jobs):
+    queued_keys = tuple(sweep_queued_jobs)
+    if focus_key and focus_key in sweep_queued_jobs:
+        queued_keys = (focus_key, *(key for key in queued_keys if key != focus_key))
+    for key in queued_keys:
         job = sweep_queued_jobs[key]
         if key not in sweep_queued:
             sweep_queued_jobs.pop(key, None)
             continue
-        can_burst = job.priority and priority_limit > inflight_limit
+        can_burst = (
+            job.priority
+            and key != focus_key
+            and priority_limit > inflight_limit
+        )
         if len(sweep_inflight) >= inflight_limit and (not can_burst or len(sweep_inflight) >= priority_limit):
             return None
         sweep_queued_jobs.pop(key, None)
@@ -3378,17 +3386,42 @@ def _queue_sweep_job(sweep_queued_jobs: dict[str, SweepJob], key: str, job: Swee
     _queue_sweep_job_with_priority(sweep_queued_jobs, key, job, priority=False)
 
 
+def _reserve_sweep_job_start(
+    job: SweepJob,
+    *,
+    sweep_queued: set[str],
+    sweep_queued_jobs: dict[str, SweepJob],
+) -> None:
+    sweep_queued_jobs.pop(job.key, None)
+    sweep_queued.discard(job.key)
+
+
 def _trim_sweep_queue(
     sweep_queued_jobs: dict[str, SweepJob],
     *,
     sweep_queued: set[str] | None = None,
     max_queue: int = 0,
+    protected_key: str | None = None,
 ) -> None:
     while max_queue > 0 and len(sweep_queued_jobs) > max_queue:
         drop_key = next(
-            (queued_key for queued_key in reversed(sweep_queued_jobs) if not sweep_queued_jobs[queued_key].priority),
-            next(reversed(sweep_queued_jobs)),
+            (
+                queued_key
+                for queued_key in reversed(sweep_queued_jobs)
+                if queued_key != protected_key
+                and not sweep_queued_jobs[queued_key].priority
+            ),
+            next(
+                (
+                    queued_key
+                    for queued_key in reversed(sweep_queued_jobs)
+                    if queued_key != protected_key
+                ),
+                "",
+            ),
         )
+        if not drop_key:
+            break
         sweep_queued_jobs.pop(drop_key, None)
         if sweep_queued is not None:
             sweep_queued.discard(drop_key)
@@ -3402,6 +3435,7 @@ def _queue_sweep_job_with_priority(
     priority: bool,
     sweep_queued: set[str] | None = None,
     max_queue: int = 0,
+    protected_key: str | None = None,
 ) -> None:
     existing_job = sweep_queued_jobs.get(key)
     effective_priority = priority or bool(existing_job and existing_job.priority)
@@ -3414,7 +3448,12 @@ def _queue_sweep_job_with_priority(
         # Refresh the job in place. Polling must not change FIFO order inside
         # either queue class or newer foreground work can starve older work.
         sweep_queued_jobs[key] = queued_job
-        _trim_sweep_queue(sweep_queued_jobs, sweep_queued=sweep_queued, max_queue=max_queue)
+        _trim_sweep_queue(
+            sweep_queued_jobs,
+            sweep_queued=sweep_queued,
+            max_queue=max_queue,
+            protected_key=protected_key,
+        )
         return
     priority_jobs = tuple(
         (queued_key, queued)
@@ -3436,7 +3475,171 @@ def _queue_sweep_job_with_priority(
     else:
         sweep_queued_jobs.update(background_jobs)
         sweep_queued_jobs[key] = queued_job
-    _trim_sweep_queue(sweep_queued_jobs, sweep_queued=sweep_queued, max_queue=max_queue)
+    _trim_sweep_queue(
+        sweep_queued_jobs,
+        sweep_queued=sweep_queued,
+        max_queue=max_queue,
+        protected_key=protected_key,
+    )
+
+
+def _replace_sweep_focus(
+    current_focus_key: str | None,
+    requested_focus_key: str,
+    *,
+    sweep_queued: set[str],
+    sweep_queued_jobs: dict[str, SweepJob],
+    sweep_yield_requested: set[str],
+    max_queue: int,
+) -> str:
+    if current_focus_key == requested_focus_key:
+        return requested_focus_key
+    sweep_yield_requested.clear()
+    if current_focus_key:
+        previous = sweep_queued_jobs.pop(current_focus_key, None)
+        if previous is not None:
+            _queue_sweep_job_with_priority(
+                sweep_queued_jobs,
+                current_focus_key,
+                replace(previous, priority=False),
+                priority=False,
+                sweep_queued=sweep_queued,
+                max_queue=max_queue,
+            )
+    return requested_focus_key
+
+
+def _request_one_sweep_yield_for_focus(
+    focus_key: str | None,
+    *,
+    sweep_active_jobs: dict[str, SweepJob],
+    sweep_inflight: set[str],
+    sweep_queued_jobs: dict[str, SweepJob],
+    sweep_yield_requested: set[str],
+) -> str | None:
+    if focus_key and focus_key in sweep_inflight:
+        sweep_yield_requested.clear()
+        return None
+    valid_requests = {
+        key
+        for key in sweep_yield_requested
+        if key in sweep_active_jobs and key in sweep_inflight and key != focus_key
+    }
+    sweep_yield_requested.intersection_update(valid_requests)
+    if valid_requests:
+        return next(iter(valid_requests))
+    if not focus_key or focus_key not in sweep_queued_jobs:
+        return None
+    victim = next(
+        (
+            key
+            for key in sweep_active_jobs
+            if key != focus_key and key in sweep_inflight
+        ),
+        None,
+    )
+    if victim is not None:
+        sweep_yield_requested.add(victim)
+    return victim
+
+
+def _yield_sweep_job_to_focus(
+    *,
+    job: SweepJob,
+    owner_thread: threading.Thread,
+    focus_key: str | None,
+    sweep_active_jobs: dict[str, SweepJob],
+    sweep_worker_threads: dict[str, threading.Thread],
+    sweep_inflight: set[str],
+    sweep_inflight_started: dict[str, float],
+    sweep_queued: set[str],
+    sweep_queued_jobs: dict[str, SweepJob],
+    sweep_yield_requested: set[str],
+    max_inflight: int,
+    max_queue: int,
+    allow_priority_burst: bool = False,
+    priority_max_inflight: int = 0,
+) -> tuple[bool, SweepJob | None]:
+    focus_pending = bool(
+        focus_key
+        and focus_key != job.key
+        and focus_key in sweep_queued_jobs
+    )
+    if sweep_worker_threads.get(job.key) is not owner_thread or not focus_pending:
+        sweep_yield_requested.discard(job.key)
+        return False, None
+
+    sweep_worker_threads.pop(job.key, None)
+    sweep_active_jobs.pop(job.key, None)
+    sweep_inflight.discard(job.key)
+    sweep_inflight_started.pop(job.key, None)
+    sweep_yield_requested.clear()
+
+    next_job = None
+    if focus_key in sweep_queued_jobs:
+        next_job = _take_next_queued_sweep_job(
+            sweep_inflight=sweep_inflight,
+            sweep_queued=sweep_queued,
+            sweep_queued_jobs=sweep_queued_jobs,
+            max_inflight=max_inflight,
+            allow_priority_burst=allow_priority_burst,
+            priority_max_inflight=priority_max_inflight,
+            focus_key=focus_key,
+        )
+
+    sweep_queued.add(job.key)
+    _queue_sweep_job_with_priority(
+        sweep_queued_jobs,
+        job.key,
+        job,
+        priority=job.priority,
+        sweep_queued=sweep_queued,
+        max_queue=max_queue,
+    )
+    if next_job is None and focus_key not in sweep_inflight:
+        next_job = _take_next_queued_sweep_job(
+            sweep_inflight=sweep_inflight,
+            sweep_queued=sweep_queued,
+            sweep_queued_jobs=sweep_queued_jobs,
+            max_inflight=max_inflight,
+            allow_priority_burst=allow_priority_burst,
+            priority_max_inflight=priority_max_inflight,
+            focus_key=focus_key,
+        )
+    return True, next_job
+
+
+def _restore_sweep_job_after_committed_yield(
+    *,
+    job: SweepJob,
+    owner_thread: threading.Thread,
+    sweep_active_jobs: dict[str, SweepJob],
+    sweep_worker_threads: dict[str, threading.Thread],
+    sweep_inflight: set[str],
+    sweep_inflight_started: dict[str, float],
+    sweep_queued: set[str],
+    sweep_queued_jobs: dict[str, SweepJob],
+    sweep_yield_requested: set[str],
+    max_queue: int,
+) -> bool:
+    if sweep_worker_threads.get(job.key) is not owner_thread:
+        return False
+    sweep_worker_threads.pop(job.key, None)
+    sweep_active_jobs.pop(job.key, None)
+    sweep_inflight.discard(job.key)
+    sweep_inflight_started.pop(job.key, None)
+    sweep_yield_requested.discard(job.key)
+    sweep_queued.add(job.key)
+    _queue_sweep_job_with_priority(
+        sweep_queued_jobs,
+        job.key,
+        job,
+        priority=job.priority,
+        sweep_queued=sweep_queued,
+        max_queue=max_queue,
+        protected_key=job.key,
+    )
+    return True
 
 
 def _sweep_queue_summary(
@@ -3609,6 +3812,7 @@ def _sweep_watchdog_tick(
     stale_after_seconds: float,
     now: float,
     live_keys: set[str] | None = None,
+    focus_key: str | None = None,
 ) -> tuple[tuple[str, ...], list[SweepJob]]:
     stale = _prune_stale_sweep_inflight(
         sweep_inflight,
@@ -3626,6 +3830,7 @@ def _sweep_watchdog_tick(
             max_inflight=max_inflight,
             allow_priority_burst=allow_priority_burst,
             priority_max_inflight=priority_max_inflight,
+            focus_key=focus_key,
         )
         if next_job is None:
             break
@@ -3989,6 +4194,9 @@ def run_server() -> None:
     sweep_queued: set[str] = set()
     sweep_queued_jobs: dict[str, SweepJob] = {}
     sweep_worker_threads: dict[str, threading.Thread] = {}
+    sweep_active_jobs: dict[str, SweepJob] = {}
+    sweep_yield_requested: set[str] = set()
+    sweep_focus_key: str | None = None
     sweep_lock = threading.RLock()
     sweep_inflight_stale_seconds = (
         _float_or_none(_fullraw_env("V5_MEMO_FULL_RAW_SWEEP_INFLIGHT_STALE_SECONDS", ""))
@@ -4023,6 +4231,7 @@ def run_server() -> None:
             stale_after_seconds=sweep_inflight_stale_seconds,
             now=now,
             live_keys=live_keys,
+            focus_key=sweep_focus_key,
         )
         return stale, next_jobs, ()
 
@@ -4075,6 +4284,12 @@ def run_server() -> None:
             summary["worker_thread_count"] = sum(
                 worker_thread.is_alive() for worker_thread in sweep_worker_threads.values()
             )
+            summary.update({
+                "focus_key": sweep_focus_key or "",
+                "focus_running": bool(sweep_focus_key and sweep_focus_key in sweep_inflight),
+                "focus_queued": bool(sweep_focus_key and sweep_focus_key in sweep_queued_jobs),
+                "yield_requested_count": len(sweep_yield_requested),
+            })
         report_sweep_tick(stale, next_jobs, expired_workers)
         return summary
 
@@ -4101,6 +4316,10 @@ def run_server() -> None:
                 "worker_thread_count": sum(
                     worker_thread.is_alive() for worker_thread in sweep_worker_threads.values()
                 ),
+                "focus_key": sweep_focus_key or "",
+                "focus_running": bool(sweep_focus_key and sweep_focus_key in sweep_inflight),
+                "focus_queued": bool(sweep_focus_key and sweep_focus_key in sweep_queued_jobs),
+                "yield_requested_count": len(sweep_yield_requested),
             }
         report_sweep_tick(stale, next_jobs, expired_workers)
         return state
@@ -4251,7 +4470,20 @@ def run_server() -> None:
 
     def start_sweep_worker(job: SweepJob) -> None:
         def worker() -> None:
+            nonlocal sweep_focus_key
             owner_thread = threading.current_thread()
+            yielded_for_focus = False
+
+            with sweep_lock:
+                if sweep_worker_threads.get(job.key) is owner_thread:
+                    sweep_active_jobs[job.key] = job
+                    _request_one_sweep_yield_for_focus(
+                        sweep_focus_key,
+                        sweep_active_jobs=sweep_active_jobs,
+                        sweep_inflight=sweep_inflight,
+                        sweep_queued_jobs=sweep_queued_jobs,
+                        sweep_yield_requested=sweep_yield_requested,
+                    )
 
             def progress_heartbeat() -> None:
                 with sweep_lock:
@@ -4397,17 +4629,73 @@ def run_server() -> None:
                     sweep_cache_put(job.key, SweepCacheEntry(time.time(), merged_hits, receipt), final=final)
                     if final or (timed_out and not completed_paths and not sweep_require_complete):
                         break
+                    with sweep_lock:
+                        if (
+                            job.key in sweep_yield_requested
+                            and sweep_focus_key != job.key
+                            and sweep_focus_key in sweep_queued_jobs
+                        ):
+                            yielded_for_focus = True
+                            break
             except Exception as exc:
                 print(f"fullraw sweep worker failed key={job.key}: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             finally:
                 next_job = None
                 with sweep_lock:
-                    if sweep_worker_threads.get(job.key) is owner_thread:
+                    yielded = False
+                    if yielded_for_focus:
+                        yielded, next_job = _yield_sweep_job_to_focus(
+                            job=job,
+                            owner_thread=owner_thread,
+                            focus_key=sweep_focus_key,
+                            sweep_active_jobs=sweep_active_jobs,
+                            sweep_worker_threads=sweep_worker_threads,
+                            sweep_inflight=sweep_inflight,
+                            sweep_inflight_started=sweep_inflight_started,
+                            sweep_queued=sweep_queued,
+                            sweep_queued_jobs=sweep_queued_jobs,
+                            sweep_yield_requested=sweep_yield_requested,
+                            max_inflight=sweep_max_inflight,
+                            max_queue=sweep_max_queue,
+                            allow_priority_burst=sweep_priority_burst,
+                            priority_max_inflight=sweep_priority_max_inflight,
+                        )
+                        if not yielded:
+                            yielded = _restore_sweep_job_after_committed_yield(
+                                job=job,
+                                owner_thread=owner_thread,
+                                sweep_active_jobs=sweep_active_jobs,
+                                sweep_worker_threads=sweep_worker_threads,
+                                sweep_inflight=sweep_inflight,
+                                sweep_inflight_started=sweep_inflight_started,
+                                sweep_queued=sweep_queued,
+                                sweep_queued_jobs=sweep_queued_jobs,
+                                sweep_yield_requested=sweep_yield_requested,
+                                max_queue=sweep_max_queue,
+                            )
+                            if yielded:
+                                next_job = _take_next_queued_sweep_job(
+                                    sweep_inflight=sweep_inflight,
+                                    sweep_queued=sweep_queued,
+                                    sweep_queued_jobs=sweep_queued_jobs,
+                                    max_inflight=sweep_max_inflight,
+                                    allow_priority_burst=sweep_priority_burst,
+                                    priority_max_inflight=sweep_priority_max_inflight,
+                                    focus_key=sweep_focus_key,
+                                )
+                                if next_job is not None:
+                                    sweep_inflight_started[next_job.key] = time.monotonic()
+                    if not yielded and sweep_worker_threads.get(job.key) is owner_thread:
                         sweep_worker_threads.pop(job.key, None)
+                        sweep_active_jobs.pop(job.key, None)
                         sweep_inflight.discard(job.key)
                         sweep_inflight_started.pop(job.key, None)
                         sweep_queued.discard(job.key)
                         sweep_queued_jobs.pop(job.key, None)
+                        sweep_yield_requested.discard(job.key)
+                        if sweep_focus_key == job.key:
+                            sweep_focus_key = None
+                            sweep_yield_requested.clear()
                         next_job = _take_next_queued_sweep_job(
                             sweep_inflight=sweep_inflight,
                             sweep_queued=sweep_queued,
@@ -4415,6 +4703,7 @@ def run_server() -> None:
                             max_inflight=sweep_max_inflight,
                             allow_priority_burst=sweep_priority_burst,
                             priority_max_inflight=sweep_priority_max_inflight,
+                            focus_key=sweep_focus_key,
                         )
                         if next_job is not None:
                             sweep_inflight_started[next_job.key] = time.monotonic()
@@ -4456,7 +4745,9 @@ def run_server() -> None:
         rank_mode: str,
         catalog: list[ShardCatalogEntry],
         priority: bool = False,
+        focus_lease: bool = False,
     ) -> str:
+        nonlocal sweep_focus_key
         if not sweep_enabled or shard_dir is None:
             return "disabled"
         result_limit = max(limit, _SWEEP_MIN_RESULT_LIMIT)
@@ -4475,6 +4766,7 @@ def run_server() -> None:
             )
         ):
             return "hit"
+        priority = priority or focus_lease
         job = SweepJob(
             key=key,
             query=query,
@@ -4486,13 +4778,22 @@ def run_server() -> None:
             priority=priority,
         )
         with sweep_lock:
+            if focus_lease:
+                sweep_focus_key = _replace_sweep_focus(
+                    sweep_focus_key,
+                    key,
+                    sweep_queued=sweep_queued,
+                    sweep_queued_jobs=sweep_queued_jobs,
+                    sweep_yield_requested=sweep_yield_requested,
+                    max_queue=sweep_max_queue,
+                )
             status = _admit_sweep_key(
                 key,
                 sweep_inflight=sweep_inflight,
                 sweep_queued=sweep_queued,
                 max_inflight=sweep_max_inflight,
                 priority=priority,
-                allow_priority_burst=sweep_priority_burst,
+                allow_priority_burst=sweep_priority_burst and not focus_lease,
                 priority_max_inflight=sweep_priority_max_inflight,
             )
             if status == "queued" and key not in sweep_inflight:
@@ -4503,6 +4804,7 @@ def run_server() -> None:
                     priority=priority,
                     sweep_queued=sweep_queued,
                     max_queue=sweep_max_queue,
+                    protected_key=sweep_focus_key,
                 )
                 if not priority:
                     return status
@@ -4513,14 +4815,34 @@ def run_server() -> None:
                     max_inflight=sweep_max_inflight,
                     allow_priority_burst=sweep_priority_burst,
                     priority_max_inflight=sweep_priority_max_inflight,
+                    focus_key=sweep_focus_key,
                 )
                 if next_job is None:
+                    _request_one_sweep_yield_for_focus(
+                        sweep_focus_key,
+                        sweep_active_jobs=sweep_active_jobs,
+                        sweep_inflight=sweep_inflight,
+                        sweep_queued_jobs=sweep_queued_jobs,
+                        sweep_yield_requested=sweep_yield_requested,
+                    )
                     return status
                 job = next_job
             if status != "queued":
+                if focus_lease:
+                    _request_one_sweep_yield_for_focus(
+                        sweep_focus_key,
+                        sweep_active_jobs=sweep_active_jobs,
+                        sweep_inflight=sweep_inflight,
+                        sweep_queued_jobs=sweep_queued_jobs,
+                        sweep_yield_requested=sweep_yield_requested,
+                    )
                 return status
             sweep_inflight_started[job.key] = time.monotonic()
-            sweep_queued_jobs.pop(key, None)
+            _reserve_sweep_job_start(
+                job,
+                sweep_queued=sweep_queued,
+                sweep_queued_jobs=sweep_queued_jobs,
+            )
         start_sweep_worker(job)
         return "queued"
 
@@ -4664,6 +4986,15 @@ def run_server() -> None:
                     isinstance(raw_priority, str)
                     and raw_priority.strip().casefold() in {"1", "true", "yes", "on"}
                 )
+                raw_focus_lease = payload.get("focus_lease")
+                focus_lease = bool(token) and (
+                    raw_focus_lease is True
+                    or (
+                        isinstance(raw_focus_lease, str)
+                        and raw_focus_lease.strip().casefold()
+                        in {"1", "true", "yes", "on"}
+                    )
+                )
                 raw_allow_partial_results = payload.get("allow_partial_results")
                 allow_partial_results = raw_allow_partial_results is True or (
                     isinstance(raw_allow_partial_results, str)
@@ -4778,6 +5109,7 @@ def run_server() -> None:
                             rank_mode=rank_mode,
                             catalog=catalog,
                             priority=priority,
+                            focus_lease=focus_lease,
                         )
                         if sweep_status == "hit" and (cached := sweep_cache_get(cache_key)) is not None:
                             receipt = auth_receipt(cached.receipt)
