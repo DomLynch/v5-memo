@@ -18,7 +18,7 @@ from concurrent.futures import (
 )
 from dataclasses import replace
 from pathlib import Path
-from typing import NamedTuple
+from typing import BinaryIO, NamedTuple, cast
 
 import pytest
 
@@ -2842,6 +2842,7 @@ def test_shard_cache_copy_command_bypasses_configured_mount(
         "sb:researka-database/index/v5/fullraw-fts/batch_00007/fullraw_shard_0003.sqlite",
         str(target),
     ]
+    assert "--inplace" in command
     assert command[-4:] == ["--retries", "1", "--low-level-retries", "2"]
 
 
@@ -2991,6 +2992,92 @@ def test_shard_cache_copy_retries_transient_stall_without_failure(
     assert after["copy_inflight"] == 0
     assert after["copy_timeouts_total"] == before_timeouts + 1
     assert after["copy_failures_total"] == before_failures
+
+
+def test_shard_cache_copy_retries_nonzero_exit_and_cleans_partial_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "local.sqlite"
+    returncodes = iter((1, 0))
+    targets_seen_before_spawn: list[bool] = []
+
+    class CopyAttempt:
+        def __init__(self, returncode: int, stderr: BinaryIO) -> None:
+            self.returncode = returncode
+            self.stderr = stderr
+
+        def wait(self, *, timeout: float) -> int:
+            del timeout
+            target.write_bytes(b"partial" if self.returncode else b"complete")
+            if self.returncode:
+                self.stderr.write(b"connection reset")
+            return self.returncode
+
+        def kill(self) -> None:
+            raise AssertionError("completed copy must not be killed")
+
+    def create_copy(*_args: object, **kwargs: object) -> CopyAttempt:
+        targets_seen_before_spawn.append(target.exists())
+        return CopyAttempt(next(returncodes), cast(BinaryIO, kwargs["stderr"]))
+
+    monkeypatch.setattr(subprocess, "Popen", create_copy)
+    before = fullraw_index._shard_local_cache_health()
+
+    fullraw_index._copy2_with_timeout(
+        Path("remote.sqlite"),
+        target,
+        timeout_seconds=10,
+        attempts=2,
+    )
+
+    after = fullraw_index._shard_local_cache_health()
+    assert targets_seen_before_spawn == [False, False]
+    assert target.read_bytes() == b"complete"
+    assert after["copy_failures_total"] == before["copy_failures_total"]
+
+
+def test_shard_cache_copy_reports_terminal_rclone_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    target = tmp_path / "local.sqlite"
+
+    class FailedCopy:
+        def __init__(self, stderr: BinaryIO) -> None:
+            self.stderr = stderr
+
+        def wait(self, *, timeout: float) -> int:
+            del timeout
+            target.write_bytes(b"partial")
+            self.stderr.write(b"connection reset by peer")
+            return 1
+
+        def kill(self) -> None:
+            raise AssertionError("completed copy must not be killed")
+
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_args, **kwargs: FailedCopy(cast(BinaryIO, kwargs["stderr"])),
+    )
+    before = fullraw_index._shard_local_cache_health()
+    before_failures = before["copy_failures_total"]
+    assert isinstance(before_failures, int)
+
+    with pytest.raises(OSError, match="connection reset by peer"):
+        fullraw_index._copy2_with_timeout(
+            Path("remote.sqlite"),
+            target,
+            timeout_seconds=10,
+            attempts=1,
+        )
+
+    after = fullraw_index._shard_local_cache_health()
+    assert not target.exists()
+    assert "connection reset by peer" in capsys.readouterr().err
+    assert after["copy_failures_total"] == before_failures + 1
 
 
 def test_shard_cache_copy_requests_restart_instead_of_overlapping_stuck_writer(
