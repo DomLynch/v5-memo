@@ -1015,6 +1015,10 @@ def test_legacy_warming_lease_uses_closest_when_timestamps_are_missing() -> None
 def test_current_warmers_backfill_before_fresh_and_stale_leads() -> None:
     portfolio = _load_portfolio()
     state = {
+        "warming_lease": {
+            "lead_key": "leased lead",
+            "warming_fingerprint": "leased",
+        },
         "attempted_leads": {
             "leased lead": {
                 "status": "warming:search_coverage",
@@ -2736,7 +2740,7 @@ def test_search_coverage_warming_continues_past_generic_zero_wait(tmp_path: Path
     assert second_summary["skipped_recent_attempts"] == 1
 
 
-def test_prepare_migrates_one_legacy_warming_lease_and_keeps_it(
+def test_prepare_migrates_closest_legacy_warming_lease_and_keeps_it(
     tmp_path: Path,
 ) -> None:
     portfolio = _load_portfolio()
@@ -2817,12 +2821,16 @@ def test_prepare_migrates_one_legacy_warming_lease_and_keeps_it(
     state = json.loads(state_path.read_text())
     first_summary = json.loads((tmp_path / "run-1" / "portfolio.json").read_text())
     second_summary = json.loads((tmp_path / "run-2" / "portfolio.json").read_text())
-    saved = state["attempted_leads"]["leased warming lead"]
-    assert calls == ["leased warming lead", "leased warming lead"]
+    saved = state["attempted_leads"]["old warming lead"]
+    assert calls == ["old warming lead", "old warming lead"]
     assert len(saved["warming_fingerprint"]) == 64
     assert saved["sweep_remaining_shards"] == 90
-    assert first_summary["warming_lease_lead"] == "leased warming lead"
-    assert second_summary["warming_lease_lead"] == "leased warming lead"
+    assert first_summary["warming_lease_lead"] == "old warming lead"
+    assert second_summary["warming_lease_lead"] == "old warming lead"
+    assert state["warming_lease"] == {
+        "lead_key": "old warming lead",
+        "warming_fingerprint": saved["warming_fingerprint"],
+    }
 
 
 def test_prepare_sets_one_focus_lease_without_mutating_shared_env(
@@ -2834,6 +2842,10 @@ def test_prepare_sets_one_focus_lease_without_mutating_shared_env(
     other = "other warming lead"
     state_path = tmp_path / "state.json"
     state_path.write_text(json.dumps({
+        "warming_lease": {
+            "lead_key": leased,
+            "warming_fingerprint": "leased-fingerprint",
+        },
         "attempted_leads": {
             leased: {
                 "status": "warming:search_coverage",
@@ -2923,6 +2935,200 @@ def test_prepare_sets_one_focus_lease_without_mutating_shared_env(
     assert received[1][1][portfolio.CACHE_QUEUE_IF_MISSING_ENV] == "1"
     assert received[0][1] is not received[1][1]
     assert portfolio.FOCUS_LEASE_ENV not in base_env
+
+
+def test_three_lead_prepare_persists_closest_focus_across_timestamp_ping_pong(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    portfolio = _load_portfolio()
+    first = "first warming lead"
+    closest = "middle closest warming lead"
+    last = "last warming lead"
+    fingerprints = {
+        portfolio._lead_key(first): "first-fingerprint",
+        portfolio._lead_key(closest): "closest-fingerprint",
+        portfolio._lead_key(last): "last-fingerprint",
+    }
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "attempted_leads": {
+            first: {
+                "status": "warming:search_coverage",
+                "warming_fingerprint": "first-fingerprint",
+                "updated_at": "20260718T120003Z",
+                "sweep_remaining_shards": 300,
+            },
+            closest: {
+                "status": "warming:search_coverage",
+                "warming_fingerprint": "closest-fingerprint",
+                "updated_at": "20260718T120001Z",
+                "sweep_remaining_shards": 10,
+            },
+            last: {
+                "status": "warming:search_coverage",
+                "warming_fingerprint": "last-fingerprint",
+                "updated_at": "20260718T120002Z",
+                "sweep_remaining_shards": 200,
+            },
+        }
+    }))
+    monkeypatch.setattr(
+        portfolio,
+        "_complete_first_query_cache_lead_keys",
+        lambda *_args, **_kwargs: set(),
+    )
+    monkeypatch.setattr(
+        portfolio,
+        "_warming_fingerprints",
+        lambda *_args, **_kwargs: fingerprints,
+    )
+    tick = 0
+
+    def timestamp() -> str:
+        nonlocal tick
+        tick += 1
+        return f"20260718T1200{tick:02d}Z"
+
+    monkeypatch.setattr(portfolio, "_timestamp", timestamp)
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run-1",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=False,
+        decision_wait_seconds=0,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=3,
+        state_path=state_path,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=24,
+        ready_buffer_size=3,
+    )
+    calls: list[tuple[int, str, str]] = []
+    run_number = 0
+
+    def warming_runner(
+        command: list[str],
+        env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        lead = command[command.index("--topic") + 1]
+        persisted = json.loads(state_path.read_text())["warming_lease"]
+        assert persisted == {
+            "lead_key": portfolio._lead_key(closest),
+            "warming_fingerprint": "closest-fingerprint",
+        }
+        calls.append((run_number, lead, env[portfolio.FOCUS_LEASE_ENV]))
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        remaining = {first: 300, closest: 9, last: 200}[lead]
+        receipt.write_text(json.dumps({
+            "error": "search_backend_error",
+            "message": f"coverage too narrow: {{'sweep_remaining_shards': {remaining}}}",
+        }))
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="warming")
+
+    for index in range(1, 4):
+        run_number = index
+        assert portfolio.run_portfolio(
+            [first, closest, last],
+            replace(config, output_dir=tmp_path / f"run-{index}"),
+            runner=warming_runner,
+            env={},
+            cwd=Path.cwd(),
+        ) == 0
+
+    for index in range(1, 4):
+        run_calls = [call for call in calls if call[0] == index]
+        assert [lead for _run, lead, _lease in run_calls] == [closest, last, first]
+        assert [lease for _run, _lead, lease in run_calls] == ["1", "0", "0"]
+    state = json.loads(state_path.read_text())
+    assert state["warming_lease"] == {
+        "lead_key": portfolio._lead_key(closest),
+        "warming_fingerprint": "closest-fingerprint",
+    }
+
+
+def test_persisted_warming_lease_releases_on_terminal_or_fingerprint_change() -> None:
+    portfolio = _load_portfolio()
+    leads = ["near lead", "leased lead"]
+    fingerprints = {
+        "near lead": "near-fingerprint",
+        "leased lead": "leased-fingerprint",
+    }
+    warming_near = {
+        "status": "warming:search_coverage",
+        "warming_fingerprint": "near-fingerprint",
+        "sweep_remaining_shards": 10,
+    }
+
+    terminal_state = {
+        "warming_lease": {
+            "lead_key": "leased lead",
+            "warming_fingerprint": "leased-fingerprint",
+        },
+        "attempted_leads": {
+            "near lead": warming_near,
+            "leased lead": {"status": "ready"},
+        },
+    }
+    terminal_replacement = portfolio._warming_lease_key(
+        leads,
+        terminal_state,
+        fingerprints,
+    )
+    assert terminal_replacement == "near lead"
+    portfolio._save_warming_lease(
+        None,
+        terminal_state,
+        terminal_replacement,
+        fingerprints,
+    )
+    assert terminal_state["warming_lease"] == {
+        "lead_key": "near lead",
+        "warming_fingerprint": "near-fingerprint",
+    }
+
+    changed_fingerprint_state = {
+        "warming_lease": {
+            "lead_key": "leased lead",
+            "warming_fingerprint": "leased-fingerprint",
+        },
+        "attempted_leads": {
+            "near lead": warming_near,
+            "leased lead": {
+                "status": "warming:search_coverage",
+                "warming_fingerprint": "leased-fingerprint",
+                "sweep_remaining_shards": 100,
+            },
+        },
+    }
+    changed_fingerprints = {**fingerprints, "leased lead": "new-fingerprint"}
+    fingerprint_replacement = portfolio._warming_lease_key(
+        leads,
+        changed_fingerprint_state,
+        changed_fingerprints,
+    )
+    assert fingerprint_replacement == "near lead"
+    portfolio._save_warming_lease(
+        None,
+        changed_fingerprint_state,
+        fingerprint_replacement,
+        changed_fingerprints,
+    )
+    assert changed_fingerprint_state["warming_lease"] == {
+        "lead_key": "near lead",
+        "warming_fingerprint": "near-fingerprint",
+    }
 
 
 def test_generic_backend_error_yields_to_fresh_lead_on_next_tick(

@@ -47,6 +47,7 @@ CACHE_DERIVED_SOURCE = "complete_sweep_cache"
 CACHE_QUEUE_IF_MISSING_ENV = "V5_MEMO_FULL_RAW_QUEUE_IF_MISSING"
 CACHE_PER_QUERY_LIMIT_ENV = "V5_MEMO_FULL_RAW_PER_QUERY_LIMIT"
 FOCUS_LEASE_ENV = "V5_MEMO_FULL_RAW_FOCUS_LEASE"
+WARMING_LEASE_STATE_KEY = "warming_lease"
 PORTFOLIO_SEARCH_URL_ENV = "V5_MEMO_PORTFOLIO_FULL_RAW_CORPUS_SEARCH_URL"
 
 Runner = Callable[
@@ -545,8 +546,8 @@ def _warming_lease_key(
     warming_fingerprints: Mapping[str, str],
 ) -> str:
     eligible_keys = {_lead_key(lead) for lead in leads}
-    exact: list[tuple[float, int, int, str]] = []
-    legacy: list[tuple[float, int, int, str]] = []
+    exact: list[tuple[int, int, str]] = []
+    legacy: list[tuple[int, int, str]] = []
     for order, (raw_lead, raw_meta) in enumerate(_attempted_leads(state).items()):
         if not isinstance(raw_meta, Mapping):
             continue
@@ -559,11 +560,8 @@ def _warming_lease_key(
         current_fingerprint = warming_fingerprints.get(lead_key)
         if not current_fingerprint:
             continue
-        updated_at = _parse_state_time(raw_meta.get("updated_at"))
-        updated_rank = -updated_at.timestamp() if updated_at is not None else float("inf")
         remaining = _receipt_remaining_shards(raw_meta)
         rank = (
-            updated_rank,
             remaining if remaining is not None else sys.maxsize,
             order,
             lead_key,
@@ -574,7 +572,45 @@ def _warming_lease_key(
         elif stored_fingerprint is None or stored_fingerprint == "":
             legacy.append(rank)
     candidates = exact or legacy
+    raw_lease = state.get(WARMING_LEASE_STATE_KEY)
+    if isinstance(raw_lease, Mapping):
+        stored_key = _lead_key(str(raw_lease.get("lead_key") or ""))
+        stored_fingerprint = str(raw_lease.get("warming_fingerprint") or "")
+        candidate_keys = {rank[-1] for rank in candidates}
+        if (
+            stored_key in candidate_keys
+            and stored_fingerprint
+            and warming_fingerprints.get(stored_key) == stored_fingerprint
+        ):
+            return stored_key
     return min(candidates)[-1] if candidates else ""
+
+
+def _save_warming_lease(
+    path: Path | None,
+    state: dict[str, object],
+    lead_key: str,
+    warming_fingerprints: Mapping[str, str],
+) -> None:
+    fingerprint = warming_fingerprints.get(lead_key, "")
+    lease = (
+        {
+            "lead_key": lead_key,
+            "warming_fingerprint": fingerprint,
+        }
+        if lead_key and fingerprint
+        else None
+    )
+    if lease is None:
+        if WARMING_LEASE_STATE_KEY not in state:
+            return
+        state.pop(WARMING_LEASE_STATE_KEY, None)
+    else:
+        if state.get(WARMING_LEASE_STATE_KEY) == lease:
+            return
+        state[WARMING_LEASE_STATE_KEY] = lease
+    if path is not None:
+        _write_state(path, state)
 
 
 def _attempt_priority(
@@ -1704,6 +1740,13 @@ def run_portfolio(
         if warming_fingerprints is not None
         else ""
     )
+    if preparing and warming_fingerprints is not None:
+        _save_warming_lease(
+            config.state_path,
+            state,
+            warming_lease_lead_key,
+            warming_fingerprints,
+        )
     if preparing:
         configured_lead_limit, resource_max_inflight = _preparation_lead_limit(
             config,
