@@ -11,6 +11,7 @@ import pytest
 from v5_memo.binder import bind_receipts
 from v5_memo.evidence import source_artifact_type
 from v5_memo.gate import (
+    _topic_entity_terms,
     candidate_alpha_tier,
     candidate_publish_blocker,
     memo_coverage_failure,
@@ -3601,6 +3602,345 @@ def test_publish_blocker_allows_primary_topic_context() -> None:
     )
 
     assert candidate_publish_blocker(candidate) is None
+
+
+def test_publish_blocker_requires_primary_entity_despite_shared_condition() -> None:
+    candidate = InsightCandidate(
+        topic="creatine sarcopenia muscle strength older adults randomized trial",
+        thesis="A shared condition must not substitute for creatine evidence.",
+        bridge_terms=("creatine", "muscle"),
+        tension_terms=("positive", "null"),
+        receipt_ids=("10.1002/ejsc.70155", "creatine"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "10.1002/ejsc.70155",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "muscle strength",
+                "positive",
+                "direct",
+                "high",
+                "Gliclazide improved muscle strength in adults with sarcopenia.",
+            ),
+            ClaimCard(
+                "creatine",
+                "null_signal",
+                "randomized_trial",
+                "human",
+                "muscle strength",
+                "null",
+                "direct",
+                "high",
+                "Creatine monohydrate did not improve muscle strength in older adults.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_topic_primary_signal",
+        "receipt_ids": ("10.1002/ejsc.70155",),
+    }
+
+
+def test_publish_blocker_enforces_entity_for_population_only_clinical_topic() -> None:
+    candidate = InsightCandidate(
+        topic="creatine muscle strength athletes",
+        thesis="A human population signal must activate intervention identity.",
+        bridge_terms=("muscle", "strength"),
+        tension_terms=("positive", "null"),
+        receipt_ids=("gliclazide", "creatine"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "gliclazide", "positive_signal", "randomized_trial", "human",
+                "muscle strength", "positive", "direct", "high",
+                "Gliclazide improved muscle strength in athletes.",
+            ),
+            ClaimCard(
+                "creatine", "null_signal", "randomized_trial", "human",
+                "muscle strength", "null", "direct", "high",
+                "Creatine did not improve muscle strength in athletes.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_topic_primary_signal",
+        "receipt_ids": ("gliclazide",),
+    }
+
+
+@pytest.mark.parametrize(
+    "generic_quote",
+    [
+        "Physical function and muscle strength improved in older adults.",
+        "Baseline physical function and muscle strength improved in older adults.",
+        "Supervised muscle strength improved in older adults.",
+        "Twelve-week muscle strength improved in older adults.",
+    ],
+)
+def test_publish_blocker_allows_generic_axis_quote_without_competing_entity(
+    generic_quote: str,
+) -> None:
+    candidate = InsightCandidate(
+        topic="creatine muscle strength older adults randomized trial",
+        thesis="A generic axis quote may be contextualized by an aligned receipt.",
+        bridge_terms=("creatine", "muscle"),
+        tension_terms=("positive", "null"),
+        receipt_ids=("generic", "creatine"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "generic",
+                "positive_signal",
+                "randomized_trial",
+                "human",
+                "muscle strength",
+                "positive",
+                "direct",
+                "high",
+                generic_quote,
+            ),
+            ClaimCard(
+                "creatine",
+                "null_signal",
+                "randomized_trial",
+                "human",
+                "muscle strength",
+                "null",
+                "direct",
+                "high",
+                "Among frail community dwelling participants with severe baseline "
+                "limitations and low functional status, creatine monohydrate improved "
+                "muscle strength.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) is None
+
+
+def test_publish_blocker_normalizes_muscular_to_muscle_axis() -> None:
+    candidate = InsightCandidate(
+        topic="vitamin d muscle strength older adults randomized trial",
+        thesis="The adjectival muscle form remains on the requested axis.",
+        bridge_terms=("vitamin", "strength"),
+        tension_terms=("positive", "null"),
+        receipt_ids=("muscular", "muscle"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "muscular", "positive_signal", "randomized_trial", "human",
+                "muscle strength", "positive", "direct", "high",
+                "Vitamin D improved muscular strength in older adults.",
+            ),
+            ClaimCard(
+                "muscle", "null_signal", "randomized_trial", "human",
+                "muscle strength", "null", "direct", "high",
+                "Vitamin D did not improve muscle strength in older adults.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) is None
+
+
+def test_publish_blocker_rejects_unverified_entity_acronyms() -> None:
+    candidate = InsightCandidate(
+        topic="nicotinamide mononucleotide sarcopenia muscle strength trial",
+        thesis="Receipt-derived acronyms must not authorize their own identity.",
+        bridge_terms=("strength", "nad"),
+        tension_terms=("positive", "negative", "null"),
+        receipt_ids=("nmn", "nad", "expanded"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "nmn", "positive_signal", "randomized_trial", "human",
+                "muscle strength", "positive", "direct", "high",
+                "NMN improved muscle strength in older adults.",
+            ),
+            ClaimCard(
+                "nad", "negative_signal", "randomized_trial", "human",
+                "muscle strength", "negative", "direct", "high",
+                "NAD reduced muscle strength in older adults.",
+            ),
+            ClaimCard(
+                "expanded", "null_signal", "randomized_trial", "human",
+                "muscle strength", "null", "direct", "high",
+                "Nicotinamide mononucleotide did not improve muscle strength.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_topic_primary_signal",
+        "receipt_ids": ("nmn", "nad"),
+    }
+
+
+def test_publish_blocker_rejects_expanded_entity_with_shared_prefix() -> None:
+    candidate = InsightCandidate(
+        topic="nicotinamide mononucleotide muscle strength trial",
+        thesis="A shared chemical prefix must not substitute for the named molecule.",
+        bridge_terms=("strength", "nicotinamide"),
+        tension_terms=("positive", "null"),
+        receipt_ids=("nad", "nmn"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "nad", "positive_signal", "randomized_trial", "human",
+                "muscle strength", "positive", "direct", "high",
+                "Nicotinamide adenine dinucleotide improved muscle strength in sarcopenia.",
+            ),
+            ClaimCard(
+                "nmn", "null_signal", "randomized_trial", "human",
+                "muscle strength", "null", "direct", "high",
+                "Nicotinamide mononucleotide did not improve muscle strength in sarcopenia.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_topic_primary_signal",
+        "receipt_ids": ("nad",),
+    }
+
+
+def test_publish_blocker_rejects_all_wrong_shared_prefix_entities() -> None:
+    candidate = InsightCandidate(
+        topic="nicotinamide mononucleotide sarcopenia muscle strength trial",
+        thesis="Wrong receipts must not weaken the topic-owned identity.",
+        bridge_terms=("strength", "nicotinamide"),
+        tension_terms=("positive", "null"),
+        receipt_ids=("nad-positive", "nad-null"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "nad-positive", "positive_signal", "randomized_trial", "human",
+                "muscle strength", "positive", "direct", "high",
+                "Nicotinamide adenine dinucleotide improved muscle strength in sarcopenia.",
+            ),
+            ClaimCard(
+                "nad-null", "null_signal", "randomized_trial", "human",
+                "muscle strength", "null", "direct", "high",
+                "Nicotinamide adenine dinucleotide did not improve muscle strength in sarcopenia.",
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_topic_primary_signal",
+        "receipt_ids": ("nad-positive", "nad-null"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("topic", "wrong_quote", "aligned_quote"),
+    [
+        (
+            "vitamin d muscle strength older adults randomized trial",
+            "Vitamin B12 improved muscle strength in older adults.",
+            "Vitamin D did not improve muscle strength in older adults.",
+        ),
+        (
+            "urolithin a muscle strength older adults randomized trial",
+            "Urolithin B improved muscle strength in older adults.",
+            "Urolithin A did not improve muscle strength in older adults.",
+        ),
+        (
+            "omega 3 muscle strength older adults randomized trial",
+            "Omega 6 improved muscle strength in older adults.",
+            "Omega 3 did not improve muscle strength in older adults.",
+        ),
+    ],
+)
+def test_publish_blocker_preserves_short_entity_disambiguators(
+    topic: str,
+    wrong_quote: str,
+    aligned_quote: str,
+) -> None:
+    candidate = InsightCandidate(
+        topic=topic,
+        thesis="Short entity suffixes remain part of the intervention identity.",
+        bridge_terms=("muscle", "strength"),
+        tension_terms=("positive", "null"),
+        receipt_ids=("wrong", "aligned"),
+        score=100,
+        novelty_score=58,
+        evidence_score=100,
+        reasons=("shape:directional_reversal", "tier:publishable_alpha"),
+        claim_cards=(
+            ClaimCard(
+                "wrong", "positive_signal", "randomized_trial", "human",
+                "muscle strength", "positive", "direct", "high", wrong_quote,
+            ),
+            ClaimCard(
+                "aligned", "null_signal", "randomized_trial", "human",
+                "muscle strength", "null", "direct", "high", aligned_quote,
+            ),
+        ),
+    )
+
+    assert candidate_publish_blocker(candidate) == {
+        "error": "off_topic_primary_signal",
+        "receipt_ids": ("wrong",),
+    }
+
+
+@pytest.mark.parametrize(
+    ("topic", "expected"),
+    [
+        ("cold water immersion resistance training trial", ("cold", "water", "immersion")),
+        ("nicotinamide riboside exercise performance trial", ("nicotinamide", "riboside")),
+        ("protein timing distribution resistance training trial", ("protein", "timing", "distribution")),
+        ("collagen peptides resistance training trial", ("collagen", "peptide")),
+        ("time restricted eating resistance training trial", ("time", "restricted", "eating")),
+        ("ketogenic diet resistance training trial", ("ketogenic", "diet")),
+        ("sauna bathing cardiovascular aging trial", ("sauna", "bathing")),
+        ("beta alanine resistance training trial", ("beta", "alanine")),
+        ("vitamin d muscle strength trial", ("vitamin", "d")),
+        ("urolithin a muscle strength trial", ("urolithin", "a")),
+        ("omega 3 muscle strength trial", ("omega", "3")),
+        ("fisetin senolytic muscle strength trial", ("fisetin", "senolytic")),
+        (
+            "quercetin dasatinib senolytic muscle strength trial",
+            ("quercetin", "dasatinib", "senolytic"),
+        ),
+        ("creatine sarcopenia muscle strength trial", ("creatine",)),
+        (
+            "nicotinamide mononucleotide sarcopenia muscle strength trial",
+            ("nicotinamide", "mononucleotide"),
+        ),
+    ],
+)
+def test_topic_entity_terms_preserve_intervention_prefix(
+    topic: str,
+    expected: tuple[str, ...],
+) -> None:
+    assert _topic_entity_terms(topic) == expected
 
 
 def test_publish_blocker_requires_two_core_topic_terms_per_primary_receipt() -> None:
