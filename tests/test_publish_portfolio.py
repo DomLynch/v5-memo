@@ -1012,6 +1012,72 @@ def test_legacy_warming_lease_uses_closest_when_timestamps_are_missing() -> None
     assert available == ["near lead", "fresh lead", "far lead"]
 
 
+def test_current_warmers_backfill_before_fresh_and_stale_leads() -> None:
+    portfolio = _load_portfolio()
+    state = {
+        "attempted_leads": {
+            "leased lead": {
+                "status": "warming:search_coverage",
+                "warming_fingerprint": "leased",
+                "updated_at": "20260718T120000Z",
+                "sweep_remaining_shards": 1400,
+            },
+            "far lead": {
+                "status": "warming:search_coverage",
+                "warming_fingerprint": "far",
+                "updated_at": "20260718T110000Z",
+                "sweep_remaining_shards": 1300,
+            },
+            "near lead": {
+                "status": "warming:search_coverage",
+                "warming_fingerprint": "near",
+                "updated_at": "20260718T100000Z",
+                "sweep_remaining_shards": 100,
+            },
+            "stale lead": {
+                "status": "warming:search_coverage",
+                "warming_fingerprint": "old-stale",
+                "updated_at": "20260718T090000Z",
+                "sweep_remaining_shards": 1,
+            },
+            "legacy no spec": {
+                "status": "warming:search_coverage",
+                "updated_at": "20260718T080000Z",
+                "sweep_remaining_shards": 0,
+            },
+        }
+    }
+
+    available = portfolio._available_leads(
+        [
+            "fresh lead",
+            "stale lead",
+            "legacy no spec",
+            "far lead",
+            "near lead",
+            "leased lead",
+        ],
+        state,
+        blocked_retry_hours=24,
+        now=portfolio.datetime.now(portfolio.UTC),
+        warming_fingerprints={
+            "leased lead": "leased",
+            "far lead": "far",
+            "near lead": "near",
+            "stale lead": "current-stale",
+        },
+    )
+
+    assert available == [
+        "leased lead",
+        "near lead",
+        "far lead",
+        "fresh lead",
+        "stale lead",
+        "legacy no spec",
+    ]
+
+
 def test_complete_cache_outranks_single_current_warming_lease() -> None:
     portfolio = _load_portfolio()
     state = {
