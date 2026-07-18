@@ -2277,7 +2277,7 @@ def _materialized_shard_path(
             _SHARD_LOCAL_CACHE_IN_PROGRESS.discard(cache_path)
             _SHARD_LOCAL_CACHE_IN_PROGRESS.discard(tmp_path)
             _SHARD_LOCAL_CACHE_RESERVED_BYTES.pop(tmp_path, None)
-        tmp_path.unlink(missing_ok=True)
+        _discard_copy_target(tmp_path)
 
 
 def _shard_cache_copy_timeout_seconds() -> float:
@@ -2375,6 +2375,12 @@ def _kill_and_reap_copy(process: subprocess.Popen[bytes]) -> None:
         raise OSError("copy child could not be reaped after SIGKILL") from exc
 
 
+def _discard_copy_target(target: Path) -> None:
+    target.unlink(missing_ok=True)
+    for partial in target.parent.glob(f"{target.name}.*.partial"):
+        partial.unlink(missing_ok=True)
+
+
 def _shard_cache_copy_command(source: Path, target: Path) -> list[str]:
     remote_root = _fullraw_env("V5_MEMO_FULL_RAW_SHARD_REMOTE").strip().rstrip("/")
     mount_root_raw = _fullraw_env("V5_MEMO_FULL_RAW_SHARD_DIR").strip()
@@ -2395,6 +2401,7 @@ def _shard_cache_copy_command(source: Path, target: Path) -> list[str]:
                 "15s",
                 "--timeout",
                 "60s",
+                "--inplace",
                 "--retries",
                 "1",
                 "--low-level-retries",
@@ -2431,48 +2438,58 @@ def _copy2_with_timeout(
         effective_timeout = timeout_seconds or _shard_cache_copy_timeout_seconds()
         attempt_limit = max(1, attempts or _shard_cache_copy_attempts())
         for attempt in range(attempt_limit):
-            process = subprocess.Popen(
-                _shard_cache_copy_command(source, target),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            last_size = -1
-            last_progress_at = time.monotonic()
-            try:
-                while True:
-                    if cancel_event is not None and cancel_event.is_set():
-                        _kill_and_reap_copy(process)
-                        raise CancelledError(f"shard cache copy cancelled: {source}")
-                    remaining = effective_timeout - (time.monotonic() - last_progress_at)
-                    if remaining <= 0:
-                        _kill_and_reap_copy(process)
-                        raise TimeoutError(
-                            f"shard cache copy made no progress for {effective_timeout:g}s: {source}"
-                        )
-                    try:
-                        returncode = process.wait(timeout=min(1.0, remaining))
-                        break
-                    except subprocess.TimeoutExpired:
-                        if progress_callback is not None:
-                            progress_callback()
+            _discard_copy_target(target)
+            with tempfile.TemporaryFile() as copy_stderr:
+                process = subprocess.Popen(
+                    _shard_cache_copy_command(source, target),
+                    stdout=subprocess.DEVNULL,
+                    stderr=copy_stderr,
+                )
+                last_size = -1
+                last_progress_at = time.monotonic()
+                try:
+                    while True:
+                        if cancel_event is not None and cancel_event.is_set():
+                            _kill_and_reap_copy(process)
+                            raise CancelledError(f"shard cache copy cancelled: {source}")
+                        remaining = effective_timeout - (time.monotonic() - last_progress_at)
+                        if remaining <= 0:
+                            _kill_and_reap_copy(process)
+                            raise TimeoutError(
+                                f"shard cache copy made no progress for {effective_timeout:g}s: {source}"
+                            )
                         try:
-                            current_size = target.stat().st_size
-                        except OSError:
-                            current_size = -1
-                        if current_size > last_size:
-                            last_size = current_size
-                            last_progress_at = time.monotonic()
-                if returncode != 0:
-                    raise OSError(f"shard cache copy failed with exit code {returncode}: {source}")
-                return
-            except TimeoutError:
-                with _SHARD_LOCAL_CACHE_LOCK:
-                    _SHARD_LOCAL_CACHE_COPY_TIMEOUTS += 1
-                if attempt + 1 >= attempt_limit:
+                            returncode = process.wait(timeout=min(1.0, remaining))
+                            break
+                        except subprocess.TimeoutExpired:
+                            if progress_callback is not None:
+                                progress_callback()
+                            try:
+                                current_size = target.stat().st_size
+                            except OSError:
+                                current_size = -1
+                            if current_size > last_size:
+                                last_size = current_size
+                                last_progress_at = time.monotonic()
+                    if returncode == 0:
+                        return
+                    copy_stderr.seek(0)
+                    detail = copy_stderr.read().decode("utf-8", errors="replace").strip()[-500:]
+                    message = f"shard cache copy failed with exit code {returncode}: {source}"
+                    if detail:
+                        message = f"{message}: {detail}"
+                    if attempt + 1 >= attempt_limit:
+                        _discard_copy_target(target)
+                        print(message, file=sys.stderr, flush=True)
+                        raise OSError(message)
+                except TimeoutError:
                     with _SHARD_LOCAL_CACHE_LOCK:
-                        _SHARD_LOCAL_CACHE_COPY_FAILURES += 1
-                    raise
-                target.unlink(missing_ok=True)
+                        _SHARD_LOCAL_CACHE_COPY_TIMEOUTS += 1
+                    if attempt + 1 >= attempt_limit:
+                        with _SHARD_LOCAL_CACHE_LOCK:
+                            _SHARD_LOCAL_CACHE_COPY_FAILURES += 1
+                        _discard_copy_target(target)
+                        raise
     except TimeoutError:
         raise
     except OSError:
