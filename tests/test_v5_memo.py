@@ -5167,6 +5167,8 @@ def test_researka_payload_preserves_authenticated_fullraw_coverage() -> None:
         "shards_total": 100,
         "shards_searched": 48,
         "sources_searched": {"openalex": 24, "semantic_scholar": 24},
+        "sweep_scanned_paths": [f"/private/fullraw/shard-{index}.sqlite" for index in range(1525)],
+        "sweep_completed_pass_roles": ["focused"] * 1525,
         "auth_required": True,
         "authenticated": True,
     }
@@ -5219,6 +5221,9 @@ def test_researka_payload_preserves_authenticated_fullraw_coverage() -> None:
     evidence = cast(dict[str, object], source_bundle[0]["retrieval_evidence"])
     shard_receipt = cast(dict[str, object], evidence["shard_receipt"])
     assert shard_receipt["authenticated"] is True
+    assert "sweep_scanned_paths" not in shard_receipt
+    assert "sweep_completed_pass_roles" not in shard_receipt
+    assert len(json.dumps(payload)) < 50_000
 
     evidence_bundle = cast(dict[str, object], payload["evidence_bundle"])
     coverage = cast(dict[str, object], evidence_bundle["fullraw_retrieval_coverage"])

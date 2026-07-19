@@ -20,6 +20,34 @@ _RETRIEVAL_EVIDENCE_KEYS = (
     "search_variant",
     "rank_mode",
 )
+_SHARD_RECEIPT_SUBMISSION_KEYS = frozenset({
+    "auth_required",
+    "authenticated",
+    "partial_shard_search",
+    "result_count_returned",
+    "result_count_unique",
+    "result_duplicate_rate",
+    "shards_searched",
+    "shards_total",
+    "source_count_searched",
+    "source_count_total",
+    "sources_missing_from_search",
+    "sources_searched",
+    "sources_total",
+    "sweep_failed_shards",
+    "sweep_passes",
+    "sweep_remaining_shards",
+    "sweep_scope",
+    "sweep_strategy",
+    "sweep_timed_out",
+})
+_SEARCH_RECEIPT_SUBMISSION_KEYS = frozenset({
+    "auth_required",
+    "authenticated",
+    "duplicate_rate",
+    "rank_modes",
+    "search_passes",
+})
 _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
 _CODE_DOI_RE = re.compile(r"`(10\.\d{4,9}/[^`\s]+)`", re.IGNORECASE)
 _MARKED_DOI_RE = re.compile(
@@ -541,11 +569,24 @@ def _clip_title(title: str) -> str:
 
 
 def _retrieval_evidence(hit: CorpusHit) -> dict[str, object]:
-    return {
-        key: value
-        for key in _RETRIEVAL_EVIDENCE_KEYS
-        if (value := hit.metadata.get(key)) not in (None, "", {}, ())
-    }
+    evidence: dict[str, object] = {}
+    for key in _RETRIEVAL_EVIDENCE_KEYS:
+        value = hit.metadata.get(key)
+        if key == "shard_receipt" and isinstance(value, Mapping):
+            value = {
+                nested_key: nested_value
+                for nested_key, nested_value in value.items()
+                if nested_key in _SHARD_RECEIPT_SUBMISSION_KEYS
+            }
+        elif key == "fullraw_search_receipt" and isinstance(value, Mapping):
+            value = {
+                nested_key: nested_value
+                for nested_key, nested_value in value.items()
+                if nested_key in _SEARCH_RECEIPT_SUBMISSION_KEYS
+            }
+        if value not in (None, "", {}, ()):
+            evidence[key] = value
+    return evidence
 
 
 def _abstract_from_markdown(markdown: str) -> str:
