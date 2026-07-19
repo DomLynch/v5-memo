@@ -249,6 +249,88 @@ def build_researka_payload(
     return payload
 
 
+def researka_infrastructure_retry_parent(decision: Mapping[str, object]) -> str:
+    """Return the server-authorized revision parent for infrastructure-only revises."""
+    if str(decision.get("decision") or "").strip().casefold() != "revise":
+        return ""
+    raw_resubmission = decision.get("resubmission")
+    if not isinstance(raw_resubmission, Mapping) or raw_resubmission.get("allowed") is not True:
+        return ""
+    raw_parent = raw_resubmission.get("parent_submission_id")
+    if not isinstance(raw_parent, str) or not (parent_id := raw_parent.strip()):
+        return ""
+    if any(
+        _decision_field_has_content(decision.get(field))
+        for field in (
+            "issues",
+            "major_issues",
+            "minor_issues",
+            "revisions",
+            "required_revisions",
+        )
+    ):
+        return ""
+
+    gate_failures = decision.get("gate_failures")
+    if _sole_source_authority_unavailable_gate(gate_failures):
+        if (
+            str(decision.get("failure_category") or "").strip()
+            != "source_authority_available"
+            or str(decision.get("failure_stage") or "").strip() != "editorial"
+        ):
+            return ""
+        return parent_id
+
+    integrity = decision.get("integrity")
+    if not isinstance(integrity, Mapping) or integrity.get("available") is not False:
+        return ""
+    if str(decision.get("failure_stage") or "").strip() != "integrity_check":
+        return ""
+    if _decision_field_has_content(gate_failures):
+        return ""
+    return parent_id
+
+
+def with_researka_revision_parent(
+    payload: Mapping[str, object],
+    parent_submission_id: str,
+) -> dict[str, object]:
+    """Copy a payload while deterministically mirroring its revision parent."""
+    parent_id = parent_submission_id.strip()
+    if not parent_id:
+        raise ValueError("parent_submission_id must not be empty")
+    updated = dict(payload)
+    raw_metadata = payload.get("metadata")
+    metadata = dict(raw_metadata) if isinstance(raw_metadata, Mapping) else {}
+    updated["parent_submission_id"] = parent_id
+    metadata["revision_of"] = parent_id
+    updated["metadata"] = metadata
+    return updated
+
+
+def _decision_field_has_content(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Mapping):
+        return bool(value)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return any(_decision_field_has_content(item) for item in value)
+    return bool(value)
+
+
+def _sole_source_authority_unavailable_gate(value: object) -> bool:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or len(value) != 1:
+        return False
+    failure = value[0]
+    return (
+        isinstance(failure, Mapping)
+        and str(failure.get("name") or "").strip() == "source_authority_available"
+        and failure.get("passed") is False
+    )
+
+
 def publication_quality_blocker(result: MemoResult) -> dict[str, object] | None:
     """Use the payload-equivalent evidence-quality gate."""
     _, body = _final_submission_body(result)

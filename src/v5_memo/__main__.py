@@ -35,12 +35,14 @@ from v5_memo.pipeline import build_alpha_memo
 from v5_memo.publisher import (
     build_researka_payload,
     load_researka_submit_config,
+    researka_infrastructure_retry_parent,
     researka_publication_id,
     researka_submission_id,
     set_researka_public_visibility,
     submission_readiness_blocker,
     submit_researka,
     wait_researka_decision,
+    with_researka_revision_parent,
 )
 from v5_memo.retriever import CorpusSearcher, _seed_query_key
 from v5_memo.schemas import CorpusHit, MemoBuildError, MemoResult
@@ -75,6 +77,9 @@ _DIRECT_EVIDENCE_QUERY_TERMS = frozenset({
 _MODEL_ONLY_QUERY_TERMS = frozenset({"germ", "mice", "mouse", "murine"})
 _UNSAFE_DOI_CHARS = frozenset("()")
 _DEFAULT_FULLRAW_RECALL_LIMIT = 25
+_MAX_RESEARKA_INFRASTRUCTURE_RETRIES = 5
+_MAX_RESEARKA_INFRASTRUCTURE_BACKOFF_SECONDS = 300.0
+_MAX_RESEARKA_INFRASTRUCTURE_RETRY_BUDGET_SECONDS = 480.0
 
 
 class DemoSearch:
@@ -158,6 +163,29 @@ def main() -> None:
         "--researka-submit-wait-seconds",
         type=float,
         default=float(os.environ.get("V5_MEMO_RESEARKA_SUBMIT_WAIT_SECONDS", "0") or 0),
+    )
+    parser.add_argument(
+        "--researka-infrastructure-retry-attempts",
+        type=int,
+        default=int(
+            os.environ.get("V5_MEMO_RESEARKA_INFRASTRUCTURE_RETRY_ATTEMPTS", "2") or 2
+        ),
+    )
+    parser.add_argument(
+        "--researka-infrastructure-retry-backoff-seconds",
+        type=float,
+        default=float(
+            os.environ.get("V5_MEMO_RESEARKA_INFRASTRUCTURE_RETRY_BACKOFF_SECONDS", "30")
+            or 30
+        ),
+    )
+    parser.add_argument(
+        "--researka-infrastructure-retry-budget-seconds",
+        type=float,
+        default=float(
+            os.environ.get("V5_MEMO_RESEARKA_INFRASTRUCTURE_RETRY_BUDGET_SECONDS", "300")
+            or 300
+        ),
     )
     args = parser.parse_args()
     fullraw_backed = args.searcher in {"fullraw", "hybrid", "smart"}
@@ -381,37 +409,136 @@ def main() -> None:
                 author_agent_id=config.agent_id,
                 domain_slug=config.domain_slug,
             )
-        response, fail_receipt = _submit_researka_with_cooldown(
-            payload,
-            agent_key=config.agent_key,
-            api_base=config.api_base,
-            submit_url=config.submit_url,
-            wait_seconds=args.researka_submit_wait_seconds,
-        )
-        if fail_receipt:
-            _write_json(args.publish_receipt_path, fail_receipt)
-            if fail_receipt.get("error") == "researka_submit_deferred":
-                print(f"Researka submit deferred for {fail_receipt['retry_after']}s", file=sys.stderr)
-            else:
-                print(f"Researka submit failed: HTTP {fail_receipt['status']} {fail_receipt['reason']}", file=sys.stderr)
-            raise SystemExit(6)
-        receipt: dict[str, object] = dict(response)
-        # Persist the submission identifier before polling. If the process is
-        # interrupted during decision/DOI minting, the durable receipt prevents
-        # an ambiguous retry from silently creating a duplicate submission.
-        _write_json(args.publish_receipt_path, receipt)
         should_wait = args.researka_decision_wait_seconds > 0 or args.researka_list_if_accepted
-        submission_id = researka_submission_id(response)
-        if should_wait and submission_id:
+        infrastructure_retries = min(
+            _MAX_RESEARKA_INFRASTRUCTURE_RETRIES,
+            max(0, args.researka_infrastructure_retry_attempts),
+        )
+        infrastructure_backoff = min(
+            _MAX_RESEARKA_INFRASTRUCTURE_BACKOFF_SECONDS,
+            max(0.0, args.researka_infrastructure_retry_backoff_seconds),
+        )
+        infrastructure_retry_budget = min(
+            _MAX_RESEARKA_INFRASTRUCTURE_RETRY_BUDGET_SECONDS,
+            max(0.0, args.researka_infrastructure_retry_budget_seconds),
+        )
+        retry_history: list[dict[str, object]] = []
+        latest_successful_submission_id = ""
+        retry_deadline: float | None = None
+        retries_used = 0
+        attempt = 1
+        while True:
+            response, fail_receipt = _submit_researka_with_cooldown(
+                payload,
+                agent_key=config.agent_key,
+                api_base=config.api_base,
+                submit_url=config.submit_url,
+                wait_seconds=args.researka_submit_wait_seconds,
+            )
+            if fail_receipt:
+                if retry_history and latest_successful_submission_id:
+                    fail_receipt["infrastructure_retry"] = _infrastructure_retry_receipt(
+                        latest_submission_id=latest_successful_submission_id,
+                        history=retry_history,
+                        configured_retries=infrastructure_retries,
+                        backoff_seconds=infrastructure_backoff,
+                        budget_seconds=infrastructure_retry_budget,
+                    )
+                _write_json(args.publish_receipt_path, fail_receipt)
+                if fail_receipt.get("error") == "researka_submit_deferred":
+                    print(
+                        f"Researka submit deferred for {fail_receipt['retry_after']}s",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"Researka submit failed: HTTP {fail_receipt['status']} "
+                        f"{fail_receipt['reason']}",
+                        file=sys.stderr,
+                    )
+                raise SystemExit(6)
+            receipt: dict[str, object] = dict(response)
+            submission_id = researka_submission_id(response)
+            if submission_id:
+                latest_successful_submission_id = submission_id
+            if retry_history:
+                receipt["infrastructure_retry"] = _infrastructure_retry_receipt(
+                    latest_submission_id=submission_id,
+                    history=retry_history,
+                    configured_retries=infrastructure_retries,
+                    backoff_seconds=infrastructure_backoff,
+                    budget_seconds=infrastructure_retry_budget,
+                )
+            # Persist the latest submission before polling. If the process is
+            # interrupted during decision/DOI minting, the durable receipt and
+            # retry history prevent an ambiguous or out-of-chain resubmission.
+            _write_json(args.publish_receipt_path, receipt)
+            if not (should_wait and submission_id):
+                break
+            poll_timeout = max(args.researka_decision_wait_seconds, 1.0)
+            if retry_deadline is not None:
+                poll_timeout = max(
+                    0.0,
+                    min(poll_timeout, retry_deadline - time.monotonic()),
+                )
             decision = wait_researka_decision(
                 submission_id,
                 api_base=config.api_base,
-                timeout_seconds=max(args.researka_decision_wait_seconds, 1.0),
+                timeout_seconds=poll_timeout,
                 poll_seconds=args.researka_decision_poll_seconds,
             )
             receipt["decision"] = decision
+            retry_parent = researka_infrastructure_retry_parent(decision)
+            if retry_parent and retry_deadline is None:
+                retry_deadline = time.monotonic() + infrastructure_retry_budget
+            delay = min(
+                _MAX_RESEARKA_INFRASTRUCTURE_BACKOFF_SECONDS,
+                infrastructure_backoff * (2**retries_used),
+            )
+            remaining_budget = (
+                max(0.0, retry_deadline - time.monotonic())
+                if retry_deadline is not None
+                else 0.0
+            )
+            retry_scheduled = bool(
+                retry_parent
+                and retries_used < infrastructure_retries
+                and delay < remaining_budget
+            )
+            if retry_history or retry_parent:
+                retry_history.append(
+                    _infrastructure_retry_history_entry(
+                        attempt=attempt,
+                        submission_id=submission_id,
+                        parent_submission_id=str(
+                            payload.get("parent_submission_id") or ""
+                        ),
+                        decision=decision,
+                        retry_scheduled=retry_scheduled,
+                    )
+                )
+                receipt["infrastructure_retry"] = _infrastructure_retry_receipt(
+                    latest_submission_id=submission_id,
+                    history=retry_history,
+                    configured_retries=infrastructure_retries,
+                    backoff_seconds=infrastructure_backoff,
+                    budget_seconds=infrastructure_retry_budget,
+                )
+            _write_json(args.publish_receipt_path, receipt)
+            if retry_scheduled:
+                retries_used += 1
+                attempt += 1
+                payload = with_researka_revision_parent(payload, retry_parent)
+                if delay > 0:
+                    time.sleep(delay)
+                continue
+
             publication_id = researka_publication_id(decision)
-            if args.researka_list_if_accepted and decision.get("decision") == "accept" and publication_id:
+            if (
+                args.researka_list_if_accepted
+                and decision.get("decision") == "accept"
+                and publication_id
+            ):
                 try:
                     receipt["visibility"] = set_researka_public_visibility(
                         publication_id,
@@ -426,9 +553,59 @@ def main() -> None:
                         "reason": exc.reason,
                         "publication_id": publication_id,
                     }
+            break
         _write_json(args.publish_receipt_path, receipt)
         print(json.dumps(receipt, sort_keys=True), file=sys.stderr)
     print(memo_path if memo_path is not None else result.markdown)
+
+
+def _infrastructure_retry_receipt(
+    *,
+    latest_submission_id: str,
+    history: Sequence[Mapping[str, object]],
+    configured_retries: int,
+    backoff_seconds: float,
+    budget_seconds: float,
+) -> dict[str, object]:
+    return {
+        "configured_retries": configured_retries,
+        "backoff_seconds": backoff_seconds,
+        "budget_seconds": budget_seconds,
+        "history": [dict(item) for item in history],
+        "latest_submission_id": latest_submission_id,
+    }
+
+
+def _infrastructure_retry_history_entry(
+    *,
+    attempt: int,
+    submission_id: str,
+    parent_submission_id: str,
+    decision: Mapping[str, object],
+    retry_scheduled: bool,
+) -> dict[str, object]:
+    return {
+        "attempt": attempt,
+        "submission_id": submission_id,
+        "parent_submission_id": parent_submission_id,
+        "status": str(decision.get("decision") or ""),
+        "failure_stage": str(decision.get("failure_stage") or ""),
+        "failure_category": str(decision.get("failure_category") or ""),
+        "failure": _infrastructure_failure_summary(decision),
+        "retry_scheduled": retry_scheduled,
+    }
+
+
+def _infrastructure_failure_summary(decision: Mapping[str, object]) -> str:
+    integrity = decision.get("integrity")
+    if isinstance(integrity, Mapping) and integrity.get("available") is False:
+        return str(integrity.get("reason") or "integrity_unavailable")[:300]
+    gate_failures = decision.get("gate_failures")
+    if isinstance(gate_failures, Sequence) and not isinstance(gate_failures, (str, bytes)):
+        failure = gate_failures[0] if gate_failures else None
+        if isinstance(failure, Mapping):
+            return str(failure.get("reason") or failure.get("name") or "")[:300]
+    return ""
 
 
 def _require_full_raw_or_exit() -> None:
@@ -822,7 +999,16 @@ def _write_json(path: str, payload: Mapping[str, object]) -> None:
         return
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _is_discovery_seed(result: object) -> bool:

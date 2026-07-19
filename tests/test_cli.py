@@ -21,10 +21,15 @@ from v5_memo.__main__ import (
     _submit_failed_receipt,
     _submit_researka_with_cooldown,
     _topic_anchored_queries,
+    _write_json,
     main,
 )
 from v5_memo.client import ResearkaSearchClient, SearchBackendError
 from v5_memo.coverage import FullRawCorpusUnavailable
+from v5_memo.publisher import (
+    researka_infrastructure_retry_parent,
+    with_researka_revision_parent,
+)
 from v5_memo.schemas import (
     ClaimCard,
     CorpusHit,
@@ -42,6 +47,9 @@ _COVERAGE_THRESHOLD_ENV = (
     "V5_MEMO_FULL_RAW_MIN_SOURCES_SEARCHED",
     "V5_MEMO_FULL_RAW_HEALTH_WAIT_SECONDS",
     "RESEARKA_FULLRAW_HEALTH_WAIT_SECONDS",
+    "V5_MEMO_RESEARKA_INFRASTRUCTURE_RETRY_ATTEMPTS",
+    "V5_MEMO_RESEARKA_INFRASTRUCTURE_RETRY_BACKOFF_SECONDS",
+    "V5_MEMO_RESEARKA_INFRASTRUCTURE_RETRY_BUDGET_SECONDS",
 )
 
 
@@ -49,6 +57,419 @@ _COVERAGE_THRESHOLD_ENV = (
 def _isolate_cli_coverage_threshold_env(monkeypatch: MonkeyPatch) -> None:
     for name in _COVERAGE_THRESHOLD_ENV:
         monkeypatch.delenv(name, raising=False)
+
+
+def _transient_integrity_decision(parent_submission_id: str) -> dict[str, object]:
+    return {
+        "status": "complete",
+        "decision": "revise",
+        "failure_stage": "integrity_check",
+        "failure_category": "integrity_duplicate",
+        "failed_checks": ["integrity_unavailable: temporary timeout"],
+        "gate_failures": [],
+        "integrity": {"available": False, "reason": "temporary timeout"},
+        "major_issues": [],
+        "minor_issues": [],
+        "required_revisions": [],
+        "resubmission": {
+            "allowed": True,
+            "parent_submission_id": parent_submission_id,
+        },
+    }
+
+
+def test_infrastructure_retry_parent_accepts_only_structured_source_authority_failure() -> None:
+    reason = "source metadata could not be verified: 10.1234/example"
+    decision: dict[str, object] = {
+        "decision": "revise",
+        "failure_stage": "editorial",
+        "failure_category": "source_authority_available",
+        "failed_checks": [reason],
+        "gate_failures": [
+            {
+                "name": "source_authority_available",
+                "passed": False,
+                "reason": reason,
+            }
+        ],
+        "major_issues": [],
+        "minor_issues": [],
+        "required_revisions": [],
+        "resubmission": {"allowed": True, "parent_submission_id": "sub-source"},
+    }
+
+    assert researka_infrastructure_retry_parent(decision) == "sub-source"
+
+    decision["gate_failures"] = [
+        *decision["gate_failures"],  # type: ignore[misc]
+        {"name": "source_evidence_match", "passed": False},
+    ]
+    assert researka_infrastructure_retry_parent(decision) == ""
+
+
+def test_with_researka_revision_parent_updates_both_identity_fields() -> None:
+    payload = {
+        "title": "Bounded alpha",
+        "parent_submission_id": "old-parent",
+        "metadata": {"revision_of": "old-parent", "score": 95},
+    }
+
+    updated = with_researka_revision_parent(payload, " new-parent ")
+
+    assert updated == {
+        "title": "Bounded alpha",
+        "parent_submission_id": "new-parent",
+        "metadata": {"revision_of": "new-parent", "score": 95},
+    }
+    assert payload["parent_submission_id"] == "old-parent"
+
+
+def test_cli_retries_integrity_unavailable_revision_with_server_parent(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "publish-receipt.json"
+    payloads: list[dict[str, object]] = []
+    pre_poll_receipts: list[dict[str, object]] = []
+    sleeps: list[float] = []
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr(
+        "v5_memo.__main__.build_alpha_memo",
+        lambda **_kwargs: SimpleNamespace(markdown="# Alpha memo: ok\n"),
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.build_researka_payload",
+        lambda _result, **_kwargs: {"title": "ok", "metadata": {"score": 95}},
+    )
+
+    def fake_submit(payload: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        payloads.append(payload)
+        return {"submission_id": f"sub-{len(payloads)}"}
+
+    def fake_wait(submission_id: str, **_kwargs: object) -> dict[str, object]:
+        pre_poll_receipts.append(json.loads(receipt_path.read_text()))
+        if submission_id == "sub-1":
+            return _transient_integrity_decision(submission_id)
+        return {"status": "complete", "decision": "accept", "publication": None}
+
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr("v5_memo.__main__.wait_researka_decision", fake_wait)
+    monkeypatch.setattr("v5_memo.__main__.time.sleep", sleeps.append)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--submit-researka",
+            "--researka-decision-wait-seconds",
+            "20",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    main()
+
+    assert sleeps == [30.0]
+    assert payloads == [
+        {"title": "ok", "metadata": {"score": 95}},
+        {
+            "title": "ok",
+            "parent_submission_id": "sub-1",
+            "metadata": {"score": 95, "revision_of": "sub-1"},
+        },
+    ]
+    assert pre_poll_receipts[0] == {"submission_id": "sub-1"}
+    assert pre_poll_receipts[1]["submission_id"] == "sub-2"
+    retry_state = pre_poll_receipts[1]["infrastructure_retry"]
+    assert isinstance(retry_state, dict)
+    assert retry_state["latest_submission_id"] == "sub-2"
+    assert len(retry_state["history"]) == 1
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["decision"]["decision"] == "accept"
+    assert len(receipt["infrastructure_retry"]["history"]) == 2
+
+
+def test_cli_does_not_retry_infrastructure_signal_with_quality_issue(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "publish-receipt.json"
+    submissions = 0
+    decision = _transient_integrity_decision("sub-quality")
+    decision["major_issues"] = ["Unsupported quantitative claim."]
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr(
+        "v5_memo.__main__.build_alpha_memo",
+        lambda **_kwargs: SimpleNamespace(markdown="# Alpha memo: ok\n"),
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.build_researka_payload",
+        lambda _result, **_kwargs: {"title": "ok", "metadata": {}},
+    )
+
+    def fake_submit(_payload: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        nonlocal submissions
+        submissions += 1
+        return {"submission_id": "sub-quality"}
+
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr(
+        "v5_memo.__main__.wait_researka_decision",
+        lambda *_args, **_kwargs: decision,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--submit-researka",
+            "--researka-decision-wait-seconds",
+            "20",
+            "--researka-infrastructure-retry-attempts",
+            "5",
+            "--researka-infrastructure-retry-backoff-seconds",
+            "0",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    main()
+
+    assert submissions == 1
+    assert json.loads(receipt_path.read_text())["decision"]["major_issues"]
+
+
+def test_cli_infrastructure_retry_attempt_bound(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "publish-receipt.json"
+    payloads: list[dict[str, object]] = []
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr(
+        "v5_memo.__main__.build_alpha_memo",
+        lambda **_kwargs: SimpleNamespace(markdown="# Alpha memo: ok\n"),
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.build_researka_payload",
+        lambda _result, **_kwargs: {"title": "ok", "metadata": {}},
+    )
+
+    def fake_submit(payload: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        payloads.append(payload)
+        return {"submission_id": f"sub-{len(payloads)}"}
+
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr(
+        "v5_memo.__main__.wait_researka_decision",
+        lambda submission_id, **_kwargs: _transient_integrity_decision(submission_id),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--submit-researka",
+            "--researka-decision-wait-seconds",
+            "20",
+            "--researka-infrastructure-retry-attempts",
+            "2",
+            "--researka-infrastructure-retry-backoff-seconds",
+            "0",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    main()
+
+    assert len(payloads) == 3
+    assert [payload.get("parent_submission_id") for payload in payloads] == [
+        None,
+        "sub-1",
+        "sub-2",
+    ]
+    history = json.loads(receipt_path.read_text())["infrastructure_retry"]["history"]
+    assert len(history) == 3
+    assert [entry["retry_scheduled"] for entry in history] == [True, True, False]
+
+
+def test_cli_retry_submit_failure_preserves_history_and_latest_submission(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "publish-receipt.json"
+    submissions = 0
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr(
+        "v5_memo.__main__.build_alpha_memo",
+        lambda **_kwargs: SimpleNamespace(markdown="# Alpha memo: ok\n"),
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.build_researka_payload",
+        lambda _result, **_kwargs: {"title": "ok", "metadata": {}},
+    )
+
+    def fake_submit(_payload: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        nonlocal submissions
+        submissions += 1
+        if submissions == 1:
+            return {"submission_id": "sub-first"}
+        raise HTTPError(
+            "https://api.researka.org/submissions",
+            503,
+            "Service Unavailable",
+            Message(),
+            BytesIO(b"temporary outage"),
+        )
+
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr(
+        "v5_memo.__main__.wait_researka_decision",
+        lambda *_args, **_kwargs: _transient_integrity_decision("sub-first"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--submit-researka",
+            "--researka-decision-wait-seconds",
+            "20",
+            "--researka-infrastructure-retry-attempts",
+            "1",
+            "--researka-infrastructure-retry-backoff-seconds",
+            "0",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 6
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["error"] == "researka_submit_failed"
+    retry_state = receipt["infrastructure_retry"]
+    assert retry_state["latest_submission_id"] == "sub-first"
+    assert len(retry_state["history"]) == 1
+
+
+def test_cli_retry_budget_caps_polling_and_stops_before_timer_limit(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "publish-receipt.json"
+    now = 0.0
+    submissions = 0
+    poll_timeouts: list[float] = []
+
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_KEY", "submit-key")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_AGENT_ID", "v5-memo-agent")
+    monkeypatch.setenv("V5_MEMO_RESEARKA_DOMAIN_SLUG", "longevity_research")
+    monkeypatch.setattr(
+        "v5_memo.__main__.build_alpha_memo",
+        lambda **_kwargs: SimpleNamespace(markdown="# Alpha memo: ok\n"),
+    )
+    monkeypatch.setattr(
+        "v5_memo.__main__.build_researka_payload",
+        lambda _result, **_kwargs: {"title": "ok", "metadata": {}},
+    )
+
+    def fake_submit(_payload: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        nonlocal submissions
+        submissions += 1
+        return {"submission_id": f"sub-{submissions}"}
+
+    def fake_wait(
+        submission_id: str,
+        *,
+        timeout_seconds: float,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        nonlocal now
+        poll_timeouts.append(timeout_seconds)
+        now += 10.0 if len(poll_timeouts) == 1 else timeout_seconds
+        return _transient_integrity_decision(submission_id)
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    monkeypatch.setattr("v5_memo.__main__.submit_researka", fake_submit)
+    monkeypatch.setattr("v5_memo.__main__.wait_researka_decision", fake_wait)
+    monkeypatch.setattr("v5_memo.__main__.time.monotonic", lambda: now)
+    monkeypatch.setattr("v5_memo.__main__.time.sleep", fake_sleep)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "v5_memo",
+            "--demo",
+            "--submit-researka",
+            "--researka-decision-wait-seconds",
+            "600",
+            "--researka-infrastructure-retry-attempts",
+            "5",
+            "--researka-infrastructure-retry-backoff-seconds",
+            "30",
+            "--researka-infrastructure-retry-budget-seconds",
+            "60",
+            "--publish-receipt-path",
+            str(receipt_path),
+        ],
+    )
+
+    main()
+
+    assert submissions == 2
+    assert poll_timeouts == [600.0, 30.0]
+    receipt = json.loads(receipt_path.read_text())
+    history = receipt["infrastructure_retry"]["history"]
+    assert [entry["retry_scheduled"] for entry in history] == [True, False]
+    assert "decision" not in history[0]
+
+
+def test_atomic_publish_receipt_write_preserves_then_recovers(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "publish-receipt.json"
+    receipt_path.write_text('{"original": true}\n')
+    original_replace = Path.replace
+
+    def fail_replace(_source: Path, _target: object) -> Path:
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(OSError, match="injected replace failure"):
+        _write_json(str(receipt_path), {"replacement": 1})
+
+    assert json.loads(receipt_path.read_text()) == {"original": True}
+    assert list(tmp_path.glob(".publish-receipt.json.*.tmp")) == []
+
+    monkeypatch.setattr(Path, "replace", original_replace)
+    _write_json(str(receipt_path), {"replacement": 2})
+    assert json.loads(receipt_path.read_text()) == {"replacement": 2}
 
 
 def test_submit_researka_with_cooldown_retries_transient_server_error(

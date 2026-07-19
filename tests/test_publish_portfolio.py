@@ -42,6 +42,26 @@ def _accepted_receipt() -> dict[str, object]:
     }
 
 
+def _infrastructure_revision_receipt(submission_id: str) -> dict[str, object]:
+    return {
+        "submission": {"id": submission_id},
+        "decision": {
+            "decision": "revise",
+            "failure_stage": "integrity_check",
+            "failure_category": "integrity_duplicate",
+            "gate_failures": [],
+            "integrity": {"available": False, "reason": "temporary timeout"},
+            "major_issues": [],
+            "minor_issues": [],
+            "required_revisions": [],
+            "resubmission": {
+                "allowed": True,
+                "parent_submission_id": submission_id,
+            },
+        },
+    }
+
+
 def _lead_proposal_receipt(
     portfolio: ModuleType,
     *,
@@ -2648,6 +2668,84 @@ def test_terminal_revision_receipt_is_persisted_without_automatic_resubmit(
     assert len(calls) == 1
     summary = json.loads((tmp_path / "prepare" / "portfolio.json").read_text())
     assert summary["selected_leads"] == 0
+
+
+def test_infrastructure_revision_resumes_ready_lead_with_latest_parent(
+    tmp_path: Path,
+) -> None:
+    portfolio = _load_portfolio()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "attempted_leads": {
+            "retry lead": {
+                "status": "ready",
+                "updated_at": portfolio._timestamp(),
+            },
+        },
+    }))
+    config = portfolio.RunConfig(
+        output_dir=tmp_path / "run-1",
+        python="python3",
+        module="v5_memo",
+        searcher="fullraw",
+        planner=None,
+        writer=None,
+        selector=None,
+        min_alpha_tier="publishable",
+        submit=True,
+        decision_wait_seconds=600,
+        decision_poll_seconds=1,
+        submit_wait_seconds=0,
+        max_leads=1,
+        state_path=state_path,
+        lead_file=None,
+        auto_discover_leads=False,
+        min_open_leads=0,
+        discover_count=0,
+        blocked_retry_hours=24,
+        ready_only=True,
+    )
+    commands: list[list[str]] = []
+
+    def fake_runner(
+        command: list[str],
+        _env: dict[str, str],
+        _cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        receipt = Path(command[command.index("--publish-receipt-path") + 1])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        submission_id = f"sub-{len(commands)}"
+        receipt.write_text(json.dumps(_infrastructure_revision_receipt(submission_id)))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    assert portfolio.run_portfolio(
+        ["retry lead"],
+        config,
+        runner=fake_runner,
+        env={},
+        cwd=Path.cwd(),
+    ) == 1
+    first_state = json.loads(state_path.read_text())
+    first = first_state["attempted_leads"]["retry lead"]
+    assert first["status"] == "ready"
+    assert first["revision"]["infrastructure_terminal"] is True
+    assert first["revision"]["parent_submission_id"] == "sub-1"
+    assert "--researka-parent-submission-id" not in commands[0]
+
+    assert portfolio.run_portfolio(
+        ["retry lead"],
+        replace(config, output_dir=tmp_path / "run-2"),
+        runner=fake_runner,
+        env={},
+        cwd=Path.cwd(),
+    ) == 1
+    second_state = json.loads(state_path.read_text())
+    second = second_state["attempted_leads"]["retry lead"]
+    parent_index = commands[1].index("--researka-parent-submission-id")
+    assert commands[1][parent_index + 1] == "sub-1"
+    assert second["status"] == "ready"
+    assert second["revision"]["parent_submission_id"] == "sub-2"
 
 
 def test_search_coverage_warming_continues_past_generic_zero_wait(tmp_path: Path) -> None:
