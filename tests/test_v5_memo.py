@@ -1308,6 +1308,8 @@ def test_pipeline_prunes_title_duplicates_from_candidate_and_public_payload(
         "v5_memo.pipeline.mine_insights",
         lambda *_args, **_kwargs: [candidate],
     )
+    monkeypatch.setattr("v5_memo.pipeline.minimum_submission_citations", lambda _result: 2)
+    monkeypatch.setattr("v5_memo.publisher.minimum_submission_citations", lambda _result: 2)
 
     result = build_alpha_memo(
         topic=candidate.topic,

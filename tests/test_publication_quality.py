@@ -17,8 +17,13 @@ from v5_memo.evidence import (
 from v5_memo.miner import mine_insights
 from v5_memo.pipeline import build_alpha_memo
 from v5_memo.publication_quality import assess_publication_quality, quality_blocker
-from v5_memo.publisher import build_researka_payload, publication_quality_blocker
+from v5_memo.publisher import (
+    build_researka_payload,
+    publication_quality_blocker,
+    submission_readiness_blocker,
+)
 from v5_memo.schemas import ClaimCard, CorpusHit, InsightCandidate, MemoResult
+from v5_memo.supporting import select_supporting_receipts
 from v5_memo.writer import render_memo
 
 
@@ -85,6 +90,49 @@ def _quality_result(*, metadata: dict[str, object] | None = None) -> MemoResult:
         claim_cards=cards,
     )
     return MemoResult(candidate=candidate, receipts=receipts, markdown=render_memo(candidate, receipts))
+
+
+def _strict_support(index: int, *, topic: str = "intervention outcome") -> CorpusHit:
+    return CorpusHit(
+        hit_id=f"support-{index}",
+        title=f"Randomized human {topic} support trial {index}",
+        abstract=(
+            f"A randomized placebo-controlled trial in human adults tested {topic}. "
+            f"The intervention improved the measured {topic} outcome with a prespecified protocol "
+            "and reported complete primary endpoint results for all enrolled participants."
+        ),
+        source="fullraw:pubmed",
+        doi=f"10.1234/support-{index}",
+        year=2020 + index,
+        metadata={
+            "document_type": "Journal Article",
+            "publication_types": ["Randomized Controlled Trial", "Journal Article"],
+            "is_retracted": False,
+            "is_withdrawn": False,
+            **_strict_retrieval_metadata(),
+        },
+    )
+
+
+def _strict_retrieval_metadata() -> dict[str, object]:
+    return {
+        "shard_receipt": {
+            "shards_searched": 1525,
+            "shards_total": 1525,
+            "partial_shard_search": False,
+            "sweep_failed_shards": 0,
+            "sweep_remaining_shards": 0,
+            "sources_searched": {
+                "crossref": 1,
+                "openalex": 1,
+                "pubmed": 1,
+                "semantic_scholar": 1,
+                "unpaywall": 1,
+            },
+        },
+        "search_pass": "focused",
+        "fullraw_search_receipt": {"search_passes": ["focused"]},
+    }
 
 
 @pytest.mark.parametrize(
@@ -551,6 +599,55 @@ def test_pipeline_stops_after_first_fully_quality_approved_query(
 
     assert result.candidate.receipt_ids == quality.candidate.receipt_ids
     assert calls == ["intervention outcome"]
+
+
+def test_pipeline_waits_for_safe_supports_before_early_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quality = _quality_result()
+    core = tuple(
+        replace(
+            hit,
+            hit_id=hit.receipt_id,
+            metadata=_strict_retrieval_metadata(),
+        )
+        for hit in quality.receipts
+    )
+    supports = tuple(_strict_support(index) for index in range(1, 4))
+    calls: list[str] = []
+
+    class Searcher:
+        def search(self, query: str, *, limit: int = 25) -> tuple[CorpusHit, ...]:
+            del limit
+            calls.append(query)
+            if query == "core only":
+                return core
+            if query == "supporting context":
+                return supports
+            raise AssertionError("pipeline should stop after the citation floor passes")
+
+    monkeypatch.setattr(
+        "v5_memo.pipeline.mine_insights",
+        lambda *_args, **_kwargs: [quality.candidate],
+    )
+
+    result = build_alpha_memo(
+        topic=quality.candidate.topic,
+        seed_queries=("core only", "supporting context", "unneeded later shape"),
+        anchor_queries=(),
+        searcher=Searcher(),
+        require_publish_quality=True,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        min_search_passes=1,
+    )
+
+    assert [hit.receipt_id for hit in result.supporting_receipts] == [
+        "10.1234/support-3",
+        "10.1234/support-2",
+        "10.1234/support-1",
+    ]
+    assert calls == ["core only", "supporting context"]
 
 
 def test_publication_quality_blocks_cross_receipt_quantitative_claim() -> None:
@@ -1461,6 +1558,632 @@ def test_payload_serializes_quality_evidence_and_uses_same_blocker() -> None:
     assert len(cast(list[object], evidence["risk_of_bias"])) == 2
     assert "fullraw_retrieval_coverage" in evidence
     assert json.loads(json.dumps(payload))["author_agent_id"] == "v5-memo-agent"
+
+
+def test_bounded_brief_uses_separate_safe_supports_for_five_source_floor() -> None:
+    core = _quality_result(metadata={"risk_of_bias": "high"})
+    core = replace(
+        core,
+        receipts=tuple(
+            replace(hit, metadata={**hit.metadata, **_strict_retrieval_metadata()})
+            for hit in core.receipts
+        ),
+    )
+    before = assess_publication_quality(core, public_markdown=core.markdown)
+    supports = tuple(_strict_support(index) for index in range(1, 4))
+
+    blocker = submission_readiness_blocker(core)
+    assert blocker is not None
+    assert blocker["reason"] == "minimum_citations"
+
+    result = replace(
+        core,
+        supporting_receipts=supports,
+        supporting_min_shards_searched=1525,
+        supporting_min_sources_searched=5,
+        supporting_min_search_passes=1,
+    )
+    assert submission_readiness_blocker(result) is None
+    payload = build_researka_payload(
+        result,
+        author_agent_id="v5-memo-agent",
+        domain_slug="longevity_research",
+    )
+    bundle = cast(list[dict[str, object]], payload["source_bundle"])
+    after = cast(dict[str, object], payload["evidence_bundle"])
+
+    assert len(bundle) == 5
+    assert [entry.get("directness") for entry in bundle] == [
+        "direct_core",
+        "direct_core",
+        "supporting_non_core",
+        "supporting_non_core",
+        "supporting_non_core",
+    ]
+    assert cast(dict[str, object], before["publish_verdict"]) == cast(
+        dict[str, object], after["publish_verdict"]
+    )
+    assert len(cast(list[object], after["claim_evidence_ledger"])) == 2
+    assert len(cast(list[object], after["risk_of_bias"])) == 2
+    assert cast(dict[str, object], payload["metadata"])["supporting_receipt_ids"] == [
+        "10.1234/support-1",
+        "10.1234/support-2",
+        "10.1234/support-3",
+    ]
+
+
+def test_final_submission_gate_revalidates_supporting_sources() -> None:
+    core = _quality_result(metadata={"risk_of_bias": "high"})
+    core = replace(
+        core,
+        receipts=tuple(
+            replace(hit, metadata={**hit.metadata, **_strict_retrieval_metadata()})
+            for hit in core.receipts
+        ),
+    )
+    unsafe = tuple(
+        replace(
+            _strict_support(index),
+            title=f"Correction: unrelated source {index}",
+        )
+        for index in range(1, 4)
+    )
+
+    blocker = submission_readiness_blocker(
+        replace(
+            core,
+            supporting_receipts=unsafe,
+            supporting_min_shards_searched=1525,
+            supporting_min_sources_searched=5,
+            supporting_min_search_passes=1,
+        )
+    )
+
+    assert blocker == {
+        "error": "candidate_publish_blocker",
+        "reason": "invalid_supporting_sources",
+    }
+
+
+def test_support_selector_rejects_padding_and_is_deterministic() -> None:
+    core = _quality_result().receipts
+    topic = "vitamin D muscle strength randomized trial"
+    good = [_strict_support(index, topic=topic) for index in range(1, 4)]
+    incomplete_receipt = {
+        **cast(dict[str, object], good[0].metadata["shard_receipt"]),
+        "shards_searched": 1524,
+        "sweep_remaining_shards": 1,
+    }
+    tiny_receipt = {
+        **cast(dict[str, object], good[0].metadata["shard_receipt"]),
+        "shards_searched": 1,
+        "shards_total": 1,
+        "sweep_remaining_shards": 0,
+    }
+    missing_partial = {
+        key: value
+        for key, value in cast(
+            dict[str, object], good[0].metadata["shard_receipt"]
+        ).items()
+        if key != "partial_shard_search"
+    }
+    invalid = [
+        replace(
+            good[0],
+            hit_id="incomplete",
+            doi="10.1234/incomplete",
+            metadata={**good[0].metadata, "shard_receipt": incomplete_receipt},
+        ),
+        replace(
+            good[0],
+            hit_id="tiny-complete",
+            doi="10.1234/tiny-complete",
+            metadata={**good[0].metadata, "shard_receipt": tiny_receipt},
+        ),
+        replace(
+            good[0],
+            hit_id="missing-coverage-field",
+            doi="10.1234/missing-coverage-field",
+            metadata={**good[0].metadata, "shard_receipt": missing_partial},
+        ),
+        replace(
+            good[0],
+            hit_id="off-topic",
+            doi="10.1234/off-topic",
+            title="Vitamin B12 trial",
+            abstract=good[0].abstract.replace("vitamin D", "vitamin B12"),
+        ),
+        replace(
+            good[0],
+            hit_id="misleading-title",
+            doi="10.1234/misleading-title",
+            abstract=(
+                "A randomized placebo-controlled trial in human adults tested vitamin B12 "
+                "for cognition. The intervention improved memory and attention with a "
+                "prespecified protocol and complete primary endpoint reporting for all "
+                "participants enrolled in the study."
+            ),
+        ),
+        replace(
+            good[0],
+            hit_id="correction",
+            doi="10.1234/correction",
+            title="Correction: randomized intervention outcome trial",
+        ),
+        replace(
+            good[0],
+            hit_id="combination",
+            doi="10.1234/combination",
+            abstract=good[0].abstract + " Treatments were tested alone or in combination.",
+        ),
+        replace(
+            good[0],
+            hit_id="multi-arm-list",
+            doi="10.1234/multi-arm-list",
+            title=(
+                "Vitamin D supplementation, omega-3 supplementation, or a home exercise "
+                "program for muscle strength: randomized trial"
+            ),
+        ),
+        replace(
+            good[0],
+            hit_id="combined-supplements",
+            doi="10.1234/combined-supplements",
+            title="Vitamin D and calcium supplementation improves muscle strength",
+        ),
+        replace(
+            good[0],
+            hit_id="combined-exercise",
+            doi="10.1234/combined-exercise",
+            title="Vitamin D supplementation and resistance exercise training improves muscle strength",
+        ),
+        replace(
+            good[0],
+            hit_id="mislinked-result",
+            doi="10.1234/mislinked-result",
+            abstract=(
+                "A randomized placebo-controlled trial in human adults tested vitamin D. "
+                "Muscle strength was measured as a secondary endpoint, but vitamin D did "
+                "not improve bone density. The prespecified protocol reported complete "
+                "primary endpoint results for all enrolled participants."
+            ),
+        ),
+        replace(
+            good[0],
+            hit_id="preprint",
+            doi="10.1101/2026.01.01.123456",
+        ),
+        replace(
+            good[0],
+            hit_id="url-fallback",
+            doi="10.bad",
+            url="https://example.org/articles/url-fallback",
+        ),
+        replace(
+            good[0],
+            hit_id="duplicate-source",
+            doi="10.1234/duplicate-source",
+            year=2010,
+        ),
+    ]
+
+    selected = select_supporting_receipts(
+        topic=topic,
+        hits=(*reversed(good), *invalid),
+        core_receipts=core,
+        needed=3,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        min_search_passes=1,
+    )
+
+    assert [hit.receipt_id for hit in selected] == [
+        "10.1234/support-3",
+        "10.1234/support-2",
+        "10.1234/support-1",
+    ]
+
+
+@pytest.mark.parametrize(
+    "hit",
+    [
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            title="Vitamin D plus resistance exercise improves muscle strength",
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            title="Vitamin D and calcium for muscle strength in adults",
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            title=(
+                "Vitamin D supplementation and resistance exercise training improves "
+                "muscle strength"
+            ),
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            title="Resistance training combined with vitamin D improves muscle strength",
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            title="Vitamin D together with resistance training improves muscle strength",
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            title="Vitamin D in combination with resistance training improves muscle strength",
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            abstract=(
+                "A randomized placebo-controlled trial in human adults tested vitamin D. "
+                "Muscle strength was measured as a secondary endpoint, but vitamin D did "
+                "not improve bone density. The prespecified protocol reported complete "
+                "primary endpoint results for all enrolled participants."
+            ),
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            abstract=(
+                "A randomized placebo-controlled trial in human adults tested vitamin D. "
+                "Muscle strength was a secondary endpoint and vitamin D improved bone "
+                "density. The prespecified protocol reported complete primary endpoint "
+                "results for all enrolled participants."
+            ),
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            abstract=(
+                "A randomized placebo-controlled trial in human adults tested vitamin D. "
+                "Muscle mass improved, strength was measured as a secondary endpoint. The "
+                "prespecified protocol reported complete primary endpoint results for all "
+                "enrolled participants."
+            ),
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            abstract=(
+                "A randomized placebo-controlled trial in human adults tested vitamin D. "
+                "Muscle mass was assessed before bone strength improved. The prespecified "
+                "protocol reported complete primary endpoint results for all enrolled "
+                "participants."
+            ),
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            abstract=(
+                "A randomized placebo-controlled trial in human adults tested vitamin D. "
+                "Bone density improved and muscle strength was measured as a secondary "
+                "endpoint. The prespecified protocol reported complete primary endpoint "
+                "results for all enrolled participants."
+            ),
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            abstract=(
+                "A randomized placebo-controlled trial in human adults tested vitamin D. "
+                "Vitamin D improved bone strength in adults. The prespecified protocol "
+                "reported complete primary endpoint results for all enrolled participants."
+            ),
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            title="Randomized trial of muscle strength in adults",
+            abstract=(
+                "A randomized placebo-controlled trial in human adults tested vitamin D "
+                "plus resistance exercise. Muscle strength improved after vitamin D plus "
+                "resistance exercise. The prespecified protocol reported complete primary "
+                "endpoint results for all enrolled participants."
+            ),
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            title="Randomized trial of muscle strength in adults",
+            abstract=(
+                "A randomized trial in human adults investigated vitamin D. Participants "
+                "received vitamin D plus resistance exercise training. Muscle strength "
+                "improved after the combined program. The prespecified protocol reported "
+                "complete primary endpoint results for all enrolled participants."
+            ),
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            title="Randomized trial of muscle strength in adults",
+            abstract=(
+                "A randomized trial in human adults tested vitamin D. Participants received "
+                "vitamin D plus calcium. Muscle strength improved after treatment. The "
+                "prespecified protocol reported complete primary endpoint results for all "
+                "enrolled participants."
+            ),
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            abstract=(
+                "A randomized placebo-controlled trial in human adults tested vitamin D. "
+                "Muscle strength assessment accompanied improved bone density. The "
+                "prespecified protocol reported complete primary endpoint results for all "
+                "enrolled participants."
+            ),
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            abstract=(
+                "A randomized placebo-controlled trial in human adults tested vitamin D. "
+                "Muscle strength measurement preceded improved bone density. The "
+                "prespecified protocol reported complete primary endpoint results for all "
+                "enrolled participants."
+            ),
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            abstract=(
+                "A randomized placebo-controlled trial in human adults tested vitamin D. "
+                "Muscle strength was recorded before improved bone density. The prespecified "
+                "protocol reported complete primary endpoint results for all enrolled "
+                "participants."
+            ),
+        ),
+        replace(
+            _strict_support(1, topic="vitamin D muscle strength randomized trial"),
+            abstract=(
+                "A randomized placebo-controlled trial in human adults tested vitamin D. "
+                "Bone density improved, and muscle strength was measured as a secondary "
+                "endpoint. The prespecified protocol reported complete primary endpoint "
+                "results for all enrolled participants."
+            ),
+        ),
+        replace(
+            _strict_support(1, topic="heat therapy muscle strength randomized trial"),
+            abstract=(
+                "A randomized placebo-controlled trial in human adults tested heat therapy. "
+                "Muscle strength was measured as a secondary endpoint, while heat therapy "
+                "improved skin perfusion. The prespecified protocol reported complete "
+                "primary endpoint results for all enrolled participants."
+            ),
+        ),
+    ],
+)
+def test_support_selector_rejects_competing_or_mislinked_results(hit: CorpusHit) -> None:
+    topic = (
+        "heat therapy muscle strength randomized trial"
+        if "heat therapy" in hit.abstract.casefold()
+        else "vitamin D muscle strength randomized trial"
+    )
+
+    assert select_supporting_receipts(
+        topic=topic,
+        hits=(hit,),
+        core_receipts=_quality_result().receipts,
+        needed=1,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        min_search_passes=1,
+    ) == ()
+
+
+def test_support_selector_allows_single_intervention_context_with_phrase() -> None:
+    topic = "vitamin D muscle strength randomized trial"
+    hit = replace(
+        _strict_support(1, topic=topic),
+        title="Muscle strength in older adults with vitamin D supplementation",
+    )
+
+    selected = select_supporting_receipts(
+        topic=topic,
+        hits=(hit,),
+        core_receipts=_quality_result().receipts,
+        needed=1,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        min_search_passes=1,
+    )
+
+    assert [receipt.receipt_id for receipt in selected] == ["10.1234/support-1"]
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Vitamin D and muscle strength in older adults: a randomized trial",
+        "Vitamin D and older adults: a randomized trial of muscle strength",
+        "Vitamin D and postmenopausal women: a randomized trial of muscle strength",
+    ],
+)
+def test_support_selector_allows_entity_joined_to_nonintervention_context(
+    title: str,
+) -> None:
+    topic = "vitamin D muscle strength randomized trial"
+    hit = replace(
+        _strict_support(1, topic=topic),
+        title=title,
+    )
+
+    selected = select_supporting_receipts(
+        topic=topic,
+        hits=(hit,),
+        core_receipts=_quality_result().receipts,
+        needed=1,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        min_search_passes=1,
+    )
+
+    assert [receipt.receipt_id for receipt in selected] == ["10.1234/support-1"]
+
+
+def test_support_selector_accepts_grip_strength_in_named_human_population() -> None:
+    topic = "vitamin D muscle strength randomized trial"
+    original = _strict_support(1, topic=topic)
+    hit = replace(
+        original,
+        title=(
+            "Can vitamin D improve grip strength in elderly nursing home residents? "
+            "A randomized controlled trial"
+        ),
+        abstract=(
+            "A randomized placebo-controlled trial tested vitamin D supplementation in "
+            "elderly nursing home residents. Grip strength did not improve in the vitamin D "
+            "group compared with the control group after one year. The prespecified protocol "
+            "reported complete endpoint results for all enrolled residents."
+        ),
+    )
+
+    selected = select_supporting_receipts(
+        topic=topic,
+        hits=(hit,),
+        core_receipts=_quality_result().receipts,
+        needed=1,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        min_search_passes=1,
+    )
+
+    assert [receipt.receipt_id for receipt in selected] == ["10.1234/support-1"]
+
+
+def test_support_selector_rejects_metadata_identified_preprint() -> None:
+    topic = "vitamin D muscle strength randomized trial"
+    original = _strict_support(1, topic=topic)
+    preprint = replace(
+        original,
+        doi="10.21203/rs.3.rs-1234567/v1",
+        metadata={
+            **original.metadata,
+            "document_type": "Preprint",
+            "publication_types": ["Preprint"],
+        },
+    )
+
+    assert select_supporting_receipts(
+        topic=topic,
+        hits=(preprint,),
+        core_receipts=_quality_result().receipts,
+        needed=1,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        min_search_passes=1,
+    ) == ()
+
+
+def test_support_selector_rejects_verified_conference_abstract() -> None:
+    topic = "vitamin D muscle strength randomized trial"
+    original = _strict_support(1, topic=topic)
+    conference_abstract = replace(
+        original,
+        metadata={
+            **original.metadata,
+            "document_type": "abstract",
+            "publication_types": ["conference abstract"],
+        },
+    )
+
+    assert select_supporting_receipts(
+        topic=topic,
+        hits=(conference_abstract,),
+        core_receipts=_quality_result().receipts,
+        needed=1,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        min_search_passes=1,
+    ) == ()
+
+
+def test_support_selector_rejects_unverified_pmc_article_type() -> None:
+    topic = "vitamin D muscle strength randomized trial"
+    original = _strict_support(1, topic=topic)
+    unresolved = replace(
+        original,
+        metadata={
+            **original.metadata,
+            "pmcid": "PMC9193606",
+            "document_type": "article",
+            "publication_types": ["article"],
+            "source_type_verification": "unavailable",
+        },
+    )
+
+    assert select_supporting_receipts(
+        topic=topic,
+        hits=(unresolved,),
+        core_receipts=_quality_result().receipts,
+        needed=1,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        min_search_passes=1,
+    ) == ()
+
+
+def test_final_submission_gate_preserves_configured_strict_coverage_floor() -> None:
+    tiny_metadata = _strict_retrieval_metadata()
+    tiny_receipt = {
+        **cast(dict[str, object], tiny_metadata["shard_receipt"]),
+        "shards_searched": 10,
+        "shards_total": 10,
+    }
+    tiny_metadata = {**tiny_metadata, "shard_receipt": tiny_receipt}
+    core = _quality_result(metadata={"risk_of_bias": "high"})
+    core = replace(
+        core,
+        receipts=tuple(
+            replace(hit, metadata={**hit.metadata, **tiny_metadata})
+            for hit in core.receipts
+        ),
+        supporting_receipts=tuple(
+            replace(
+                _strict_support(index),
+                metadata={**_strict_support(index).metadata, **tiny_metadata},
+            )
+            for index in range(1, 4)
+        ),
+        supporting_min_shards_searched=1525,
+        supporting_min_sources_searched=5,
+        supporting_min_search_passes=1,
+    )
+
+    assert submission_readiness_blocker(core) == {
+        "error": "candidate_publish_blocker",
+        "reason": "invalid_supporting_sources",
+    }
+
+
+def test_support_selector_dedupes_after_ranking_independent_of_input_order() -> None:
+    topic = "vitamin D muscle strength randomized trial"
+    low = replace(
+        _strict_support(1, topic=topic),
+        doi="10.1234/low",
+        year=2010,
+        metadata={**_strict_support(1, topic=topic).metadata, "cited_by_count": 1},
+    )
+    high = replace(
+        low,
+        hit_id="high",
+        doi="10.1234/high",
+        year=2025,
+        metadata={**low.metadata, "cited_by_count": 100},
+    )
+
+    forward = select_supporting_receipts(
+        topic=topic,
+        hits=(low, high),
+        core_receipts=_quality_result().receipts,
+        needed=1,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        min_search_passes=1,
+    )
+    reverse = select_supporting_receipts(
+        topic=topic,
+        hits=(high, low),
+        core_receipts=_quality_result().receipts,
+        needed=1,
+        min_shards_searched=1525,
+        min_sources_searched=5,
+        min_search_passes=1,
+    )
+
+    assert [hit.receipt_id for hit in forward] == ["10.1234/high"]
+    assert [hit.receipt_id for hit in reverse] == ["10.1234/high"]
 
 
 def test_one_high_risk_source_downgrades_instead_of_blocking_bounded_output() -> None:

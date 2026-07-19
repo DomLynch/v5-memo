@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 from v5_memo.evidence import source_artifact_type
 from v5_memo.publication_quality import assess_publication_quality, quality_blocker
 from v5_memo.schemas import ClaimCard, CorpusHit, MemoResult
+from v5_memo.supporting import supporting_receipts_are_valid
 
 _RETRIEVAL_EVIDENCE_KEYS = (
     "shard_receipt",
@@ -177,7 +178,18 @@ def build_researka_payload(
     title, body = _final_submission_body(result)
     candidate = result.candidate
     abstract = _abstract_from_markdown(body)
-    source_bundle = [_source_bundle_entry(hit) for hit in result.receipts]
+    supporting_keys = {hit.source_key for hit in result.supporting_receipts}
+    source_bundle = [
+        _source_bundle_entry(
+            hit,
+            directness=(
+                "supporting_non_core"
+                if hit.source_key in supporting_keys
+                else _core_source_directness(result, hit)
+            ),
+        )
+        for hit in _all_source_receipts(result)
+    ]
     fullraw_coverage = _fullraw_retrieval_coverage(result.receipts)
     evidence_bundle = assess_publication_quality(result, public_markdown=body)
     evidence_bundle["fullraw_retrieval_coverage"] = fullraw_coverage
@@ -192,7 +204,16 @@ def build_researka_payload(
         "body_markdown": body,
         "source_bundle": source_bundle,
         "evidence_bundle": evidence_bundle,
-        "metadata": {"receipt_ids": list(candidate.receipt_ids), "score": candidate.score},
+        "metadata": {
+            "receipt_ids": list(candidate.receipt_ids),
+            "supporting_receipt_ids": [hit.receipt_id for hit in result.supporting_receipts],
+            "supporting_coverage_requirements": {
+                "min_shards_searched": result.supporting_min_shards_searched,
+                "min_sources_searched": result.supporting_min_sources_searched,
+                "min_search_passes": result.supporting_min_search_passes,
+            },
+            "score": candidate.score,
+        },
     }
     if parent_submission_id.strip():
         payload["parent_submission_id"] = parent_submission_id.strip()
@@ -200,13 +221,66 @@ def build_researka_payload(
 
 
 def publication_quality_blocker(result: MemoResult) -> dict[str, object] | None:
-    """Use the payload-equivalent evidence gate for prepare and submit."""
+    """Use the payload-equivalent evidence-quality gate."""
     _, body = _final_submission_body(result)
     blocker = quality_blocker(assess_publication_quality(result, public_markdown=body))
     if blocker is None:
         return None
     reason = str(blocker.pop("error", "publication_quality_blocked"))
     return {"error": "candidate_publish_blocker", "reason": reason, **blocker}
+
+
+def submission_readiness_blocker(result: MemoResult) -> dict[str, object] | None:
+    """Apply evidence quality plus the live alpha source-count contract."""
+    blocker = publication_quality_blocker(result)
+    if blocker is not None:
+        return blocker
+    if result.supporting_receipts:
+        core_shards, core_sources, core_passes = _support_validation_requirements(
+            result.receipts
+        )
+        min_shards = max(result.supporting_min_shards_searched, core_shards)
+        min_sources = max(result.supporting_min_sources_searched, core_sources)
+        min_passes = max(result.supporting_min_search_passes, core_passes)
+        if result.supporting_min_shards_searched <= 0 or not supporting_receipts_are_valid(
+            topic=result.candidate.topic,
+            supporting_receipts=result.supporting_receipts,
+            core_receipts=result.receipts,
+            min_shards_searched=min_shards,
+            min_sources_searched=min_sources,
+            min_search_passes=min_passes,
+        ):
+            return {
+                "error": "candidate_publish_blocker",
+                "reason": "invalid_supporting_sources",
+            }
+    required = minimum_submission_citations(result)
+    available = len(_all_source_receipts(result))
+    if available >= required:
+        return None
+    return {
+        "error": "candidate_publish_blocker",
+        "reason": "minimum_citations",
+        "required_citations": required,
+        "available_citations": available,
+    }
+
+
+def minimum_submission_citations(result: MemoResult) -> int:
+    """Mirror the live alpha 2-4 source exception; bounded briefs require five."""
+    _, body = _final_submission_body(result)
+    assessment = assess_publication_quality(result, public_markdown=body)
+    raw_verdict = assessment.get("publish_verdict")
+    verdict = raw_verdict if isinstance(raw_verdict, Mapping) else {}
+    exception_eligible = (
+        verdict.get("decision") == "ready_to_publish"
+        and verdict.get("publish_tier") == "TIER_1"
+        and (
+            verdict.get("maturity_level") == "L5"
+            or verdict.get("confidence_label") == "evidence_backed_signal"
+        )
+    )
+    return 2 if exception_eligible else 5
 
 
 def _final_submission_body(result: MemoResult) -> tuple[str, str]:
@@ -497,7 +571,7 @@ def _alpha_disclaimer_first(text: str) -> str:
     return f"{disclaimer} {without_disclaimer}"
 
 
-def _source_bundle_entry(hit: CorpusHit) -> dict[str, object]:
+def _source_bundle_entry(hit: CorpusHit, *, directness: str = "") -> dict[str, object]:
     artifact_type = source_artifact_type(hit)
     if artifact_type != "article":
         raise ValueError(
@@ -518,6 +592,8 @@ def _source_bundle_entry(hit: CorpusHit) -> dict[str, object]:
         "excerpt": _source_excerpt(hit),
         "retrieval_evidence": _retrieval_evidence(hit),
     }
+    if directness:
+        entry["directness"] = directness
     doi = _valid_doi(hit.doi)
     if doi:
         entry["doi"] = doi
@@ -525,6 +601,64 @@ def _source_bundle_entry(hit: CorpusHit) -> dict[str, object]:
         entry["pmid"] = pmid
         entry["id"] = pmid
     return entry
+
+
+def _all_source_receipts(result: MemoResult) -> tuple[CorpusHit, ...]:
+    out: list[CorpusHit] = []
+    seen: set[str] = set()
+    for hit in (*result.receipts, *result.supporting_receipts):
+        if hit.source_key in seen:
+            continue
+        seen.add(hit.source_key)
+        out.append(hit)
+    return tuple(out)
+
+
+def _core_source_directness(result: MemoResult, hit: CorpusHit) -> str:
+    card = next(
+        (
+            card
+            for card in result.candidate.claim_cards
+            if card.receipt_id in {hit.hit_id, hit.receipt_id}
+        ),
+        None,
+    )
+    if card is None:
+        return ""
+    return (
+        "direct_core"
+        if card.population == "human" and card.support_type == "direct"
+        else "indirect_core"
+    )
+
+
+def _support_validation_requirements(
+    core_receipts: Sequence[CorpusHit],
+) -> tuple[int, int, int]:
+    min_shards = 0
+    min_sources = 0
+    min_passes = 0
+    for hit in core_receipts:
+        raw = hit.metadata.get("shard_receipt")
+        if isinstance(raw, Mapping):
+            min_shards = max(min_shards, _int_value(raw.get("shards_total")))
+            sources = raw.get("sources_searched")
+            if isinstance(sources, Mapping):
+                min_sources = max(
+                    min_sources,
+                    sum(_int_value(count) > 0 for count in sources.values()),
+                )
+        raw_search = hit.metadata.get("fullraw_search_receipt")
+        search = raw_search if isinstance(raw_search, Mapping) else {}
+        passes = search.get("search_passes")
+        if isinstance(passes, Sequence) and not isinstance(passes, (str, bytes)):
+            min_passes = max(
+                min_passes,
+                len({str(item) for item in passes if str(item)}),
+            )
+        elif hit.metadata.get("search_pass"):
+            min_passes = max(min_passes, 1)
+    return min_shards, min_sources, min_passes
 
 
 def _source_evidence_type(hit: CorpusHit) -> str:

@@ -35,10 +35,10 @@ from v5_memo.pipeline import build_alpha_memo
 from v5_memo.publisher import (
     build_researka_payload,
     load_researka_submit_config,
-    publication_quality_blocker,
     researka_publication_id,
     researka_submission_id,
     set_researka_public_visibility,
+    submission_readiness_blocker,
     submit_researka,
     wait_researka_decision,
 )
@@ -846,7 +846,7 @@ def _publish_blocker(result: object) -> dict[str, object] | None:
     candidate = getattr(result, "candidate", None)
     if candidate is not None and (blocker := candidate_publish_blocker(candidate)) is not None:
         return blocker
-    return publication_quality_blocker(result) if isinstance(result, MemoResult) else None
+    return submission_readiness_blocker(result) if isinstance(result, MemoResult) else None
 
 
 if __name__ == "__main__":

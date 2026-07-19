@@ -12,9 +12,14 @@ from v5_memo.gate import (
     no_alpha_failure,
 )
 from v5_memo.miner import _tokens, mine_insights, query_anchor_terms
-from v5_memo.publisher import publication_quality_blocker
+from v5_memo.publisher import (
+    minimum_submission_citations,
+    publication_quality_blocker,
+    submission_readiness_blocker,
+)
 from v5_memo.retriever import CorpusSearcher, collect_seed_hits
 from v5_memo.schemas import CorpusHit, InsightCandidate, MemoBuildError, MemoResult
+from v5_memo.supporting import select_supporting_receipts
 from v5_memo.writer import render_memo
 
 MemoWriter = Callable[[InsightCandidate, Sequence[CorpusHit]], str]
@@ -96,7 +101,14 @@ def build_alpha_memo(
                 receipts=receipts,
                 markdown=render_memo(candidate, receipts),
             )
-            if publication_quality_blocker(result) is None:
+            result, blocker = _attach_safe_supporting_receipts(
+                result,
+                partial_hits,
+                min_shards_searched=min_shards_searched,
+                min_sources_searched=min_sources_searched,
+                min_search_passes=min_search_passes,
+            )
+            if blocker is None and submission_readiness_blocker(result) is None:
                 return True
         return False
 
@@ -156,7 +168,24 @@ def build_alpha_memo(
                 markdown=memo_writer(candidate, receipts),
             )
             if require_publish_quality:
-                blocker = publication_quality_blocker(result)
+                content_blocker = publication_quality_blocker(result)
+                if content_blocker is not None:
+                    final_quality_blockers.append(
+                        {
+                            "receipt_ids": candidate.receipt_ids,
+                            "blocker": content_blocker,
+                        }
+                    )
+                    continue
+                result, blocker = _attach_safe_supporting_receipts(
+                    result,
+                    hits,
+                    min_shards_searched=min_shards_searched,
+                    min_sources_searched=min_sources_searched,
+                    min_search_passes=min_search_passes,
+                )
+                if blocker is None:
+                    blocker = submission_readiness_blocker(result)
                 if blocker is not None:
                     final_quality_blockers.append(
                         {
@@ -180,6 +209,46 @@ def build_alpha_memo(
             final_quality_blockers=final_quality_blockers,
         )
     )
+
+
+def _attach_safe_supporting_receipts(
+    result: MemoResult,
+    hits: Sequence[CorpusHit],
+    *,
+    min_shards_searched: int,
+    min_sources_searched: int,
+    min_search_passes: int,
+) -> tuple[MemoResult, dict[str, object] | None]:
+    content_blocker = publication_quality_blocker(result)
+    if content_blocker is not None:
+        return result, content_blocker
+    required = minimum_submission_citations(result)
+    core_count = len({hit.source_key for hit in result.receipts})
+    needed = max(0, required - core_count)
+    supporting = select_supporting_receipts(
+        topic=result.candidate.topic,
+        hits=hits,
+        core_receipts=result.receipts,
+        needed=needed,
+        min_shards_searched=min_shards_searched,
+        min_sources_searched=min_sources_searched,
+        min_search_passes=min_search_passes,
+    )
+    if len(supporting) < needed:
+        return result, {
+            "error": "candidate_publish_blocker",
+            "reason": "insufficient_safe_supporting_sources",
+            "required_citations": required,
+            "core_citations": core_count,
+            "safe_supporting_citations": len(supporting),
+        }
+    return replace(
+        result,
+        supporting_receipts=supporting,
+        supporting_min_shards_searched=min_shards_searched,
+        supporting_min_sources_searched=min_sources_searched,
+        supporting_min_search_passes=min_search_passes,
+    ), None
 
 
 def _publishable_candidates(

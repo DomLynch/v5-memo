@@ -1,5 +1,6 @@
 import json
 import urllib.parse
+from dataclasses import replace
 from email.message import Message
 from http.client import RemoteDisconnected
 from io import BytesIO
@@ -17,6 +18,7 @@ from v5_memo.client import (
     ResearkaSearchClient,
     SearchBackendError,
     _backfill_missing_openalex_abstracts,
+    _fetch_europe_pmc_artifact_metadata,
     _fullraw_search_passes,
     _parse_corpus_search_response,
     _parse_full_raw_search_response,
@@ -48,8 +50,9 @@ class FakeResponse:
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         return None
 
-    def read(self) -> bytes:
-        return json.dumps(self._payload).encode("utf-8")
+    def read(self, size: int = -1) -> bytes:
+        data = json.dumps(self._payload).encode("utf-8")
+        return data if size < 0 else data[:size]
 
 def test_client_posts_to_full_corpus_search(monkeypatch: object) -> None:
     captured: dict[str, object] = {}
@@ -1630,8 +1633,8 @@ def test_full_raw_client_strict_full_coverage_raises_backfill_default(
     strict_client = FullRawCorpusSearchClient.from_env(strict=True)
     loose_client = FullRawCorpusSearchClient.from_env(strict=False)
 
-    assert strict_client._doi_abstract_backfill_limit == 16
-    assert strict_client._doi_abstract_backfill_budget_seconds == 24.0
+    assert strict_client._doi_abstract_backfill_limit == 25
+    assert strict_client._doi_abstract_backfill_budget_seconds == 45.0
     assert loose_client._doi_abstract_backfill_limit == 6
     assert loose_client._doi_abstract_backfill_budget_seconds == 12.0
 
@@ -2175,6 +2178,94 @@ def test_fullraw_openalex_backfill_stops_at_total_budget(monkeypatch: MonkeyPatc
     assert calls == ["10.1/test0"]
     assert out[0].abstract == "Backfilled 10.1/test0"
     assert out[1].abstract == ""
+
+
+def test_europe_pmc_jats_marks_abstract_as_non_primary(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    class XmlResponse:
+        def __enter__(self) -> "XmlResponse":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            return None
+
+        def read(self, size: int = -1) -> bytes:
+            data = (
+                b'<article article-type="abstract"><front><journal-meta>'
+                b"<issue>Suppl 1</issue></journal-meta></front></article>"
+            )
+            return data if size < 0 else data[:size]
+
+    monkeypatch.setattr("v5_memo.client.urlopen", lambda request, timeout: XmlResponse())
+
+    metadata = _fetch_europe_pmc_artifact_metadata("9193606")
+
+    assert metadata == {
+        "document_type": "abstract",
+        "publication_types": ["abstract", "conference abstract"],
+    }
+
+
+def test_doi_backfill_merges_authoritative_non_primary_type(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    hit = CorpusHit(
+        "10.1234/abstract",
+        "Randomized trial abstract",
+        "Existing substantive abstract text for a randomized human trial endpoint result.",
+        "fullraw",
+        doi="10.1234/abstract",
+        metadata={"pmcid": "PMC123"},
+    )
+    enriched = replace(
+        hit,
+        source="openalex:full-corpus",
+        metadata={"document_type": "article", "publication_types": ["article"]},
+    )
+    monkeypatch.setattr(
+        "v5_memo.client._fetch_openalex_work_by_doi", lambda doi: enriched
+    )
+    monkeypatch.setattr(
+        "v5_memo.client._fetch_europe_pmc_artifact_metadata",
+        lambda pmcid: {
+            "document_type": "abstract",
+            "publication_types": ["abstract", "conference abstract"],
+        },
+    )
+
+    out = _backfill_missing_openalex_abstracts([hit], limit=1)
+
+    assert out[0].metadata["source_type_verification"] == "europe_pmc_jats"
+    assert "conference abstract" in str(out[0].metadata["publication_types"])
+
+
+def test_doi_backfill_marks_pmc_type_lookup_failure_unverified(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    hit = CorpusHit(
+        "10.1234/pmc",
+        "Randomized trial",
+        "Existing substantive abstract text for a randomized human trial endpoint result.",
+        "fullraw",
+        doi="10.1234/pmc",
+        metadata={"pmcid": "PMC123"},
+    )
+    enriched = replace(
+        hit,
+        source="openalex:full-corpus",
+        metadata={"document_type": "article", "publication_types": ["article"]},
+    )
+    monkeypatch.setattr(
+        "v5_memo.client._fetch_openalex_work_by_doi", lambda doi: enriched
+    )
+    monkeypatch.setattr(
+        "v5_memo.client._fetch_europe_pmc_artifact_metadata", lambda pmcid: {}
+    )
+
+    out = _backfill_missing_openalex_abstracts([hit], limit=1)
+
+    assert out[0].metadata["source_type_verification"] == "unavailable"
 
 def test_fullraw_search_drops_doi_title_mismatch(monkeypatch: MonkeyPatch) -> None:
     def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
