@@ -31,6 +31,7 @@ from v5_memo.gate import (
     lead_proposal_metadata_valid,
 )
 from v5_memo.miner import query_anchor_terms
+from v5_memo.publisher import researka_infrastructure_retry_parent
 
 TAIL_CHARS = 2000
 STATE_TIME_FORMAT = "%Y%m%dT%H%M%SZ"
@@ -153,6 +154,7 @@ def build_command(
     config: RunConfig,
     *,
     explicit_query: str | None = None,
+    parent_submission_id: str = "",
 ) -> list[str]:
     command = [
         config.python,
@@ -191,6 +193,8 @@ def build_command(
             "--researka-submit-wait-seconds",
             str(config.submit_wait_seconds),
         ])
+        if parent_id := parent_submission_id.strip():
+            command.extend(["--researka-parent-submission-id", parent_id])
     return command
 
 
@@ -264,7 +268,10 @@ def _ready_lead_keys(state: Mapping[str, object]) -> set[str]:
         _lead_key(str(lead))
         for lead, meta in _attempted_leads(state).items()
         if isinstance(meta, Mapping)
-        and str(meta.get("status") or "") == "ready"
+        and (
+            str(meta.get("status") or "") == "ready"
+            or bool(_infrastructure_revision_parent(meta))
+        )
         and _lead_key(str(lead)) not in completed
     }
 
@@ -279,7 +286,24 @@ def _terminal_decision_lead_keys(state: Mapping[str, object]) -> set[str]:
         for lead, meta in _attempted_leads(state).items()
         if isinstance(meta, Mapping)
         and str(meta.get("status") or "") in {"decision:reject", "decision:revise"}
+        and not _infrastructure_revision_parent(meta)
     }
+
+
+def _infrastructure_revision_parent(meta: Mapping[str, object]) -> str:
+    raw_revision = meta.get("revision")
+    if not isinstance(raw_revision, Mapping) or raw_revision.get("infrastructure_terminal") is not True:
+        return ""
+    raw_parent = raw_revision.get("parent_submission_id")
+    return raw_parent.strip() if isinstance(raw_parent, str) else ""
+
+
+def _infrastructure_parent_for_lead(state: Mapping[str, object], lead: str) -> str:
+    lead_key = _lead_key(lead)
+    for raw_lead, raw_meta in _attempted_leads(state).items():
+        if _lead_key(str(raw_lead)) == lead_key and isinstance(raw_meta, Mapping):
+            return _infrastructure_revision_parent(raw_meta)
+    return ""
 
 
 def _parse_state_time(value: object) -> datetime | None:
@@ -627,7 +651,7 @@ def _attempt_priority(
         if _lead_key(str(raw_lead)) != lead_key or not isinstance(raw_meta, Mapping):
             continue
         status = str(raw_meta.get("status") or "")
-        if status == "ready":
+        if status == "ready" or _infrastructure_revision_parent(raw_meta):
             return (-1 if prefer_ready else 4, 0)
         if _post_quality_status(status):
             return (0, -1)
@@ -1306,7 +1330,10 @@ def _save_attempted_lead(
     keep_ready = (
         preserve_ready
         and str(previous_meta.get("status") or "") == "ready"
-        and _submission_status_is_retryable(record_status)
+        and (
+            _submission_status_is_retryable(record_status)
+            or bool(_infrastructure_revision_parent(record))
+        )
     )
     entry: dict[str, object] = {
         "receipt_path": record["receipt_path"],
@@ -1333,6 +1360,8 @@ def _save_attempted_lead(
     revision = record.get("revision")
     if isinstance(revision, Mapping):
         entry["revision"] = dict(revision)
+    elif keep_ready and isinstance(previous_meta.get("revision"), Mapping):
+        entry["revision"] = dict(previous_meta["revision"])
     raw[lead] = entry
     _write_state(path, state)
 
@@ -1450,6 +1479,9 @@ def _revision_context(receipt: Mapping[str, object]) -> dict[str, object]:
         "required_revisions": required_revisions,
         "resubmission_allowed": resubmission.get("allowed") is True,
     }
+    if infrastructure_parent := researka_infrastructure_retry_parent(raw_decision):
+        context["infrastructure_terminal"] = True
+        parent_id = infrastructure_parent
     if parent_id:
         context["parent_submission_id"] = parent_id
     review_summary = raw_decision.get("review_summary")
@@ -1798,6 +1830,9 @@ def run_portfolio(
             receipt_path,
             config,
             explicit_query=explicit_query,
+            parent_submission_id=(
+                _infrastructure_parent_for_lead(state, lead) if config.submit else ""
+            ),
         )
         completed = _run_lead(
             runner,
