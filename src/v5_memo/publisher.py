@@ -215,8 +215,9 @@ def build_researka_payload(
             "score": candidate.score,
         },
     }
-    if parent_submission_id.strip():
-        payload["parent_submission_id"] = parent_submission_id.strip()
+    if revision_parent := parent_submission_id.strip():
+        payload["parent_submission_id"] = revision_parent
+        cast(dict[str, object], payload["metadata"])["revision_of"] = revision_parent
     return payload
 
 

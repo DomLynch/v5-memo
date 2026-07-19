@@ -2402,6 +2402,7 @@ def test_researka_payload_binds_revision_parent() -> None:
     )
 
     assert payload["parent_submission_id"] == "parent-submission"
+    assert payload["metadata"]["revision_of"] == "parent-submission"  # type: ignore[index]
 
 
 def test_researka_payload_drops_dangling_clipped_title_subtitle() -> None:
