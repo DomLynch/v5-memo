@@ -103,14 +103,18 @@ _PRIMARY_ARTICLE_TYPES = frozenset({
     "validation study",
 })
 _NON_PRIMARY_DOCUMENT_TYPES = frozenset({
+    "abstract",
     "book chapter",
     "comment",
+    "conference abstract",
     "correction",
     "editorial",
     "erratum",
     "expression of concern",
     "letter",
+    "meeting abstract",
     "peer review",
+    "poster abstract",
     "published erratum",
     "retraction notice",
     "review",

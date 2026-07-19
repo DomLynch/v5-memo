@@ -371,7 +371,16 @@ class FullRawCorpusSearchClient:
         min_shards_searched = _int_env("V5_MEMO_FULL_RAW_MIN_SHARDS_SEARCHED", default_min_shards)
         full_coverage_search = strict and bool(token) and min_shards_searched >= default_min_shards
         default_max_variants = 1 if full_coverage_search else 16
-        default_backfill_limit = 16 if full_coverage_search else 6
+        default_backfill_limit = 25 if full_coverage_search else 6
+        configured_backfill_limit = _int_env(
+            "V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT",
+            default_backfill_limit,
+        )
+        if (
+            full_coverage_search
+            and not os.environ.get("V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT", "").strip()
+        ):
+            configured_backfill_limit = max(default_backfill_limit, configured_backfill_limit)
         return cls(
             search_url=search_url,
             token=token,
@@ -383,13 +392,10 @@ class FullRawCorpusSearchClient:
             search_budget_seconds=search_budget_seconds,
             sweep_wait_seconds=min(_float_env("V5_MEMO_FULL_RAW_FOREGROUND_SWEEP_WAIT_SECONDS", 0.0), search_budget_seconds),
             sweep_poll_seconds=_float_env("V5_MEMO_FULL_RAW_SWEEP_POLL_SECONDS", 1.0),
-            doi_abstract_backfill_limit=_int_env(
-                "V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_LIMIT",
-                default_backfill_limit,
-            ),
+            doi_abstract_backfill_limit=configured_backfill_limit,
             doi_abstract_backfill_budget_seconds=_float_env(
                 "V5_MEMO_FULL_RAW_DOI_ABSTRACT_BACKFILL_BUDGET_SECONDS",
-                24.0 if full_coverage_search else 12.0,
+                45.0 if full_coverage_search else 12.0,
             ),
             allow_completed_low_limit_fallback=_bool_env(
                 "V5_MEMO_FULL_RAW_ALLOW_COMPLETED_LOW_LIMIT_FALLBACK",
@@ -1020,14 +1026,28 @@ def _backfill_missing_openalex_abstracts(
         if enriched.title and not _titles_match(hit.title, enriched.title):
             out[index] = None
             continue
-        if hit.abstract or not enriched.abstract:
-            continue
+        metadata = {
+            **hit.metadata,
+            **merge_publication_integrity(hit.metadata, enriched.metadata),
+            "source_type_backfill": "openalex_doi",
+        }
+        pmcid = str(hit.metadata.get("pmcid") or "").strip()
+        if pmcid:
+            pmc_metadata = _fetch_europe_pmc_artifact_metadata(pmcid)
+            metadata["source_type_verification"] = (
+                "europe_pmc_jats" if pmc_metadata else "unavailable"
+            )
+            if pmc_metadata:
+                metadata.update(merge_publication_integrity(metadata, pmc_metadata))
         out[index] = replace(
             hit,
-            abstract=enriched.abstract,
+            abstract=hit.abstract or enriched.abstract,
             year=hit.year or enriched.year,
             venue=hit.venue or enriched.venue,
-            metadata={**hit.metadata, "abstract_backfill": "openalex_doi"},
+            metadata={
+                **metadata,
+                **({"abstract_backfill": "openalex_doi"} if not hit.abstract and enriched.abstract else {}),
+            },
         )
     return [hit for hit in out if hit is not None]
 
@@ -1051,6 +1071,33 @@ def _fetch_openalex_work_by_doi(doi: str) -> CorpusHit | None:
     except (HTTPError, URLError, TimeoutError, ValueError):
         return None
     return _parse_openalex_work(data, match_count=None)
+
+
+def _fetch_europe_pmc_artifact_metadata(pmcid: str) -> dict[str, object]:
+    normalized = pmcid.strip().upper()
+    if normalized.isdigit():
+        normalized = f"PMC{normalized}"
+    if not re.fullmatch(r"PMC\d+", normalized):
+        return {}
+    request = Request(
+        f"https://www.ebi.ac.uk/europepmc/webservices/rest/{normalized}/fullTextXML",
+        headers={"User-Agent": "v5-memo/0.1"},
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=12.0) as response:
+            text = response.read(262_144).decode("utf-8", errors="ignore")
+    except (HTTPError, URLError, TimeoutError, ValueError):
+        return {}
+    article_type = re.search(r'<article\b[^>]*\barticle-type="([^"]+)"', text)
+    primary_type = unescape(article_type.group(1)).strip() if article_type else ""
+    values = [primary_type] if primary_type else []
+    if primary_type.casefold() == "abstract":
+        values.append("conference abstract")
+    return {
+        "document_type": values[0] if values else "",
+        "publication_types": values,
+    }
 
 
 def _titles_match(left: str, right: str) -> bool:

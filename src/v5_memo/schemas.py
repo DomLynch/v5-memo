@@ -107,6 +107,10 @@ class MemoResult:
     candidate: InsightCandidate
     receipts: Sequence[CorpusHit]
     markdown: str
+    supporting_receipts: Sequence[CorpusHit] = ()
+    supporting_min_shards_searched: int = 0
+    supporting_min_sources_searched: int = 0
+    supporting_min_search_passes: int = 0
 
 
 @dataclass(frozen=True, slots=True)
