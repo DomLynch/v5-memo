@@ -1,5 +1,11 @@
 # V5 Memo
 
+> [!WARNING]
+> **Deprecated and decommissioned as of 2026-07-19.** Production timers and
+> services are disabled. This repository is retained for audit and rollback;
+> do not restart publishing without an explicit reactivation decision and a
+> fresh end-to-end public proof. See [DEPRECATED.md](DEPRECATED.md).
+
 Small, independent alpha memo writer. It searches corpus surfaces, mines
 receipt-bound tensions, binds receipts, then writes a short memo.
 
